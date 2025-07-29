@@ -1,4 +1,3 @@
-from claude_everything.sub_agent import create_task_tool
 from claude_everything.model import model
 from claude_everything.tools import write_todos
 
@@ -17,13 +16,12 @@ It is critical that you mark todos as completed as soon as you are done with a t
 - When doing web search, prefer to use the `task` tool in order to reduce context usage."""
 
 
-
 def create_deep_agent(tools, prompt_prefix, state_schema=None, main_agent_tools=None):
     prompt = prompt_prefix + base_prompt
     main_extra_tools = main_agent_tools or []
     return create_react_agent(
         model,
         prompt=prompt,
-        tools=[create_task_tool(tools, prompt_prefix), write_todos] + tools + main_extra_tools,
-        state_schema=state_schema
+        tools=[write_todos] + tools + main_extra_tools,
+        state_schema=state_schema,
     ).with_config({"recursion_limit": 1000})

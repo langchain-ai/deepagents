@@ -30,6 +30,7 @@ def create_deep_agent(
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
+    full_prompt: Optional[str] = None,
 ):
     """Create a deep agent.
 
@@ -48,8 +49,11 @@ def create_deep_agent(
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
+        full_prompt: An optional full system prompt. If provided, it overrides the default
+            system prompt (which combines `instructions` and a base prompt).
     """
-    prompt = instructions + base_prompt
+    prompt = full_prompt if full_prompt is not None else instructions + base_prompt
+
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
     if model is None:
         model = get_default_model()

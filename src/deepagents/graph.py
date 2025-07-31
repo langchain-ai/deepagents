@@ -61,7 +61,7 @@ def create_deep_agent(
     task_tool = _create_task_tool(
         list(tools) + built_in_tools,
         instructions,
-        subagents,
+        subagents or [],
         model,
         state_schema
     )

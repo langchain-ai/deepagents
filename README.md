@@ -1,8 +1,10 @@
 # 🧠🤖Deep Agents
 
+**Note: This is a modified version of [hwchase17/deepagents](https://github.com/hwchase17/deepagents?ref=blog.langchain.com) with additional features including local Ollama support and improved output handling.**
+
 Using an LLM to call tools in a loop is the simplest form of an agent. 
-This architecture, however, can yield agents that are “shallow” and fail to plan and act over longer, more complex tasks. 
-Applications like “Deep Research”, "Manus", and “Claude Code” have gotten around this limitation by implementing a combination of four things:
+This architecture, however, can yield agents that are "shallow" and fail to plan and act over longer, more complex tasks. 
+Applications like "Deep Research", "Manus", and "Claude Code" have gotten around this limitation by implementing a combination of four things:
 a **planning tool**, **sub agents**, access to a **file system**, and a **detailed prompt**.
 
 <img src="deep_agents.png" alt="deep agent" width="600"/>
@@ -12,6 +14,27 @@ a **planning tool**, **sub agents**, access to a **file system**, and a **detail
 **Acknowledgements: This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.**
 
 ## Installation
+
+### Using UV (Recommended)
+
+[UV](https://github.com/astral-sh/uv) is a fast Python package and project manager:
+
+```bash
+# Install UV if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Clone the repository
+git clone https://github.com/your-username/deepagents.git
+cd deepagents
+
+# Create virtual environment and install dependencies
+uv sync
+
+# Activate the virtual environment (optional, UV handles this automatically)
+source .venv/bin/activate
+```
+
+### Using pip
 
 ```bash
 pip install deepagents
@@ -67,6 +90,78 @@ result = agent.invoke({"messages": [{"role": "user", "content": "what is langgra
 ```
 
 See [examples/research/research_agent.py](examples/research/research_agent.py) for a more complex example.
+
+### Running the Research Agent Example
+
+To run the research agent example:
+
+#### Using UV (Recommended)
+
+```bash
+# Create and configure .env file
+cp .env.example .env  # Then edit with your API keys
+# Or set environment variables directly:
+export TAVILY_API_KEY="your-tavily-api-key"
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
+
+# Optional: Enable LangSmith tracing
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY="your-langsmith-api-key"
+export LANGSMITH_PROJECT="your-project-name"
+
+# Run the research agent with UV
+uv run python run_research_agent.py "Your research question here"
+
+# Example:
+uv run python run_research_agent.py "What are the latest developments in quantum computing?"
+```
+
+#### Using pip
+
+```bash
+# Install dependencies
+pip install deepagents tavily-python
+
+# Set your API keys
+export TAVILY_API_KEY="your-tavily-api-key"
+export ANTHROPIC_API_KEY="your-anthropic-api-key"  # or configure your preferred LLM
+
+# Optional: Enable LangSmith tracing
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY="your-langsmith-api-key"
+export LANGSMITH_PROJECT="your-project-name"
+
+# Run the research agent
+python run_research_agent.py "Your research question here"
+
+# Example:
+python run_research_agent.py "What are the latest developments in quantum computing?"
+```
+
+### Running with Local Ollama Models
+
+You can also run the research agent using local Ollama models instead of cloud-based APIs:
+
+```bash
+# Install Ollama (if not already installed)
+# Visit https://ollama.ai for installation instructions
+
+# Pull a model
+ollama pull llama3.1
+
+# Configure Ollama settings (or add to .env)
+export OLLAMA_MODEL="llama3.1"              # Model to use
+export OLLAMA_HOST="http://localhost:11434" # Ollama server URL
+export OLLAMA_TEMPERATURE="0.7"             # Temperature (0.0-1.0)
+
+# Run the local research agent (with UV)
+uv run python run_research_agent_local.py "Your research question here"
+
+# Or without UV:
+python run_research_agent_local.py "Your research question here"
+```
+
+The local version uses the same research capabilities but runs entirely on your machine using Ollama.
 
 The agent created with `create_deep_agent` is just a LangGraph graph - so you can interact with it (streaming, human-in-the-loop, memory, studio)
 in the same way you would any LangGraph agent.
@@ -187,3 +282,21 @@ as well as custom instructions.
 [] Create an example of a deep coding agent built on top of this
 [] Benchmark the example of [deep research agent](examples/research/research_agent.py)
 [] Add human-in-the-loop support for tools
+
+## LangSmith Integration
+
+Deep Agents automatically supports LangSmith tracing when the appropriate environment variables are set:
+
+```bash
+# Enable LangSmith tracing
+export LANGSMITH_TRACING=true
+export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+export LANGSMITH_API_KEY="your-api-key"
+export LANGSMITH_PROJECT="your-project-name"
+```
+
+Once configured, all agent executions will be traced in LangSmith, allowing you to:
+- Debug agent reasoning and tool calls
+- Monitor performance and costs
+- Analyze agent behavior patterns
+- Share traces with your team

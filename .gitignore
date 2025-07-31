@@ -208,3 +208,8 @@ __marimo__/
 
 # LangGraph
 .langgraph_api
+
+# Generated output files
+output-examples/
+final_report.md
+question.txt

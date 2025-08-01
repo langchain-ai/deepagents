@@ -181,9 +181,9 @@ Sub agents are useful for ["context quarantine"](https://www.dbreunig.com/2025/0
 as well as custom instructions.
 
 ## Roadmap
-[] Allow users to customize full system prompt
-[] Code cleanliness (type hinting, docstrings, formating)
-[] Allow for more of a robust virtual filesystem
-[] Create an example of a deep coding agent built on top of this
-[] Benchmark the example of [deep research agent](examples/research/research_agent.py)
-[] Add human-in-the-loop support for tools
+- [ ] Allow users to customize full system prompt
+- [ ] Code cleanliness (type hinting, docstrings, formating)
+- [ ] Allow for more of a robust virtual filesystem
+- [ ] Create an example of a deep coding agent built on top of this
+- [ ] Benchmark the example of [deep research agent](examples/research/research_agent.py)
+- [ ] Add human-in-the-loop support for tools

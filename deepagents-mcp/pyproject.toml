@@ -1,0 +1,36 @@
+[project]
+name = "deepagents-mcp"
+version = "0.1.0"
+description = "MCP integration examples and documentation for DeepAgents"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "deepagents>=0.0.3",
+    "langchain-mcp-adapters>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[build-system]
+requires = ["setuptools>=73.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["deepagents_mcp"]
+[tool.setuptools.package-dir]
+"deepagents_mcp" = "src/deepagents_mcp"
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

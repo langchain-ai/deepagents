@@ -11,6 +11,12 @@ dependencies = [
     "langchain>=0.2.14",
     "python-dotenv>=1.1.1",
     "langchain-ollama>=0.3.6",
+    "tavily-python>=0.7.10",
+]
+
+[project.optional-dependencies]
+mcp = [
+    "langchain-mcp-adapters>=0.1.9",
 ]
 
 

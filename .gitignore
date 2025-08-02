@@ -209,7 +209,20 @@ __marimo__/
 # LangGraph
 .langgraph_api
 
+# MCP Configuration
+mcp_config.json
+mcp_config.json.with_keys
+*.backup
+mcp_config.json.backup
+
 # Generated output files
 output-examples/
 final_report.md
 question.txt
+
+# Claude Code Configuration
+.claude/
+CLAUDE.md
+
+# Documentation
+docs/

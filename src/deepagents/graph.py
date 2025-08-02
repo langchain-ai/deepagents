@@ -2,11 +2,19 @@ from deepagents.sub_agent import _create_task_tool, SubAgent
 from deepagents.model import get_default_model
 from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
 from deepagents.state import DeepAgentState
-from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
+from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional, Dict, List
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
 
 from langgraph.prebuilt import create_react_agent
+
+# Optional MCP client import
+try:
+    from deepagents_mcp.mcp_client import MCPToolProvider
+    MCP_AVAILABLE = True
+except ImportError:
+    MCP_AVAILABLE = False
+    MCPToolProvider = None
 
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
@@ -30,6 +38,7 @@ def create_deep_agent(
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
+    mcp_connections: Optional[Dict[str, Any]] = None,
 ):
     """Create a deep agent.
 
@@ -48,20 +57,97 @@ def create_deep_agent(
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
+        mcp_connections: Optional dictionary of MCP server connections. Format:
+            {
+                "server_name": {
+                    "command": "python",
+                    "args": ["/path/to/server.py"],
+                    "transport": "stdio"
+                }  # or {"url": "http://...", "transport": "streamable_http"}
+            }
     """
     prompt = instructions + base_prompt
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
     if model is None:
         model = get_default_model()
     state_schema = state_schema or DeepAgentState
+    
+    # Load MCP tools if connections provided
+    mcp_tools = []
+    if mcp_connections and MCP_AVAILABLE:
+        try:
+            import asyncio
+            # Create MCP provider and load tools
+            provider = MCPToolProvider(mcp_connections)
+            # Use asyncio.run to handle async tool loading
+            mcp_tools = asyncio.run(provider.get_tools())
+            if mcp_tools:
+                print(f"Loaded {len(mcp_tools)} MCP tools from {len(mcp_connections)} servers")
+        except Exception as e:
+            print(f"Warning: Failed to load MCP tools: {e}")
+    elif mcp_connections and not MCP_AVAILABLE:
+        print("Warning: MCP connections specified but langchain-mcp-adapters not available")
+    
+    # Combine all tools
+    all_user_tools = list(tools) + mcp_tools
     task_tool = _create_task_tool(
-        list(tools) + built_in_tools,
+        all_user_tools + built_in_tools,
         instructions,
         subagents or [],
         model,
         state_schema
     )
-    all_tools = built_in_tools + list(tools) + [task_tool]
+    all_tools = built_in_tools + all_user_tools + [task_tool]
+    return create_react_agent(
+        model,
+        prompt=prompt,
+        tools=all_tools,
+        state_schema=state_schema,
+    )
+
+
+async def create_deep_agent_async(
+    tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
+    instructions: str,
+    model: Optional[Union[str, LanguageModelLike]] = None,
+    subagents: list[SubAgent] = None,
+    state_schema: Optional[StateSchemaType] = None,
+    mcp_connections: Optional[Dict[str, Any]] = None,
+):
+    """Async version of create_deep_agent for better MCP tool loading.
+    
+    This version properly handles async MCP tool loading without blocking.
+    Recommended when using MCP connections.
+    """
+    prompt = instructions + base_prompt
+    built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
+    if model is None:
+        model = get_default_model()
+    state_schema = state_schema or DeepAgentState
+    
+    # Load MCP tools if connections provided
+    mcp_tools = []
+    if mcp_connections and MCP_AVAILABLE:
+        try:
+            provider = MCPToolProvider(mcp_connections)
+            mcp_tools = await provider.get_tools()
+            if mcp_tools:
+                print(f"Loaded {len(mcp_tools)} MCP tools from {len(mcp_connections)} servers")
+        except Exception as e:
+            print(f"Warning: Failed to load MCP tools: {e}")
+    elif mcp_connections and not MCP_AVAILABLE:
+        print("Warning: MCP connections specified but langchain-mcp-adapters not available")
+    
+    # Combine all tools
+    all_user_tools = list(tools) + mcp_tools
+    task_tool = _create_task_tool(
+        all_user_tools + built_in_tools,
+        instructions,
+        subagents or [],
+        model,
+        state_schema
+    )
+    all_tools = built_in_tools + all_user_tools + [task_tool]
     return create_react_agent(
         model,
         prompt=prompt,

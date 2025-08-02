@@ -1,0 +1,29 @@
+{
+  "mcp_servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/"
+      ],
+      "transport": "stdio"
+    },
+    "duckduckgosearch": {
+      "command": "uvx",
+      "args": [
+        "duckduckgo-mcp-server"
+      ],
+      "transport": "stdio"
+    },
+    "build-vault": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.buildaipod.com/mcp"
+      ],
+      "transport": "stdio"
+    }
+  }
+}

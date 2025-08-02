@@ -2,6 +2,8 @@
 
 **Note: This is a modified version of [hwchase17/deepagents](https://github.com/hwchase17/deepagents?ref=blog.langchain.com) with additional features including local Ollama support and improved output handling.**
 
+📚 **[DeepWiki Documentation](https://deepwiki.com/Cam10001110101/deepagents)** - Interactive documentation for this repository
+
 Using an LLM to call tools in a loop is the simplest form of an agent. 
 This architecture, however, can yield agents that are "shallow" and fail to plan and act over longer, more complex tasks. 
 Applications like "Deep Research", "Manus", and "Claude Code" have gotten around this limitation by implementing a combination of four things:
@@ -39,6 +41,33 @@ source .venv/bin/activate
 ```bash
 pip install deepagents
 ```
+
+## Model Context Protocol (MCP) Integration 🆕
+
+DeepAgents can now use tools from external MCP servers! This allows your agents to access tools from:
+- Claude Desktop's tool ecosystem
+- File system operations via MCP servers
+- Database queries, web search, and more
+
+MCP integration is available as a separate package for clean dependency management:
+
+```bash
+# Install MCP integration
+pip install deepagents[mcp]
+
+# Or from source
+cd extensions/mcp && pip install -e .
+```
+
+**Quick Example:**
+```bash
+# Run with MCP tools
+python -m deepagents --mcp-config examples/mcp/mcp_config_all.json
+```
+
+See `extensions/mcp/` directory for full documentation, and `examples/mcp/` for examples.
+
+For a complete example of using MCP tools with DeepAgents, see [examples/mcp/deepagents_with_mcp.py](examples/mcp/deepagents_with_mcp.py).
 
 ## Usage
 
@@ -147,10 +176,10 @@ You can also run the research agent using local Ollama models instead of cloud-b
 # Visit https://ollama.ai for installation instructions
 
 # Pull a model
-ollama pull llama3.1
+ollama pull qwen3:latest
 
 # Configure Ollama settings (or add to .env)
-export OLLAMA_MODEL="llama3.1"              # Model to use
+export OLLAMA_MODEL="qwen3:latest"              # Model to use
 export OLLAMA_HOST="http://localhost:11434" # Ollama server URL
 export OLLAMA_TEMPERATURE="0.7"             # Temperature (0.0-1.0)
 
@@ -162,6 +191,35 @@ python run_research_agent_local.py "Your research question here"
 ```
 
 The local version uses the same research capabilities but runs entirely on your machine using Ollama.
+
+### Running Local Research Agent with MCP Integration
+
+For the most advanced local research experience with full MCP (Model Context Protocol) integration:
+
+```bash
+# Ensure Ollama is running and model is pulled
+ollama pull llama3.1:latest  # or your preferred model
+
+# Set environment variable for the model
+export OLLAMA_MODEL="llama3.1:latest"
+
+# Run the research agent with MCP Phase 5 integration
+uv run python run_research_agent_local_mcp.py "Your research question here"
+
+# Example research queries:
+python run_research_agent_local_mcp.py "Analyze the enterprise integration landscape for AI platforms in 2024"
+python run_research_agent_local_mcp.py "What are the best practices for implementing multi-cloud service orchestration?"
+python run_research_agent_local_mcp.py "Compare enterprise CRM platforms and their API integration capabilities"
+```
+
+This version includes **MCP Phase 5 Integration** which provides:
+- **Phase 1 Foundation**: Filesystem, DuckDuckGo search, time utilities
+- **Phase 2 Knowledge & Memory**: Enhanced filesystem for knowledge storage and retrieval
+- **Phase 3 Development & Code**: GitHub integration and code analysis
+- **Phase 4 AI & Research**: Advanced search capabilities and AI tools
+- **Phase 5 Integration & Services**: Enterprise cloud services, databases, APIs, workflow automation, business intelligence, CRM/ERP integrations, and real-time messaging
+
+The research output is automatically saved to `output-examples/` directory with timestamps.
 
 The agent created with `create_deep_agent` is just a LangGraph graph - so you can interact with it (streaming, human-in-the-loop, memory, studio)
 in the same way you would any LangGraph agent.

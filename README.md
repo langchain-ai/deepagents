@@ -85,7 +85,7 @@ The agent (and any subagents) will have access to these tools.
 
 The second argument to `create_deep_agent` is `instructions`.
 This will serve as part of the prompt of the deep agent.
-Note that there is a [built in system prompt](#built-in-prompt) as well, so this is not the *entire* prompt the agent will see.
+Note that there is a [built in system prompt](src/deepagents/prompts.py) as well, so this is not the *entire* prompt the agent will see.
 
 ### `subagents` (Optional)
 
@@ -138,7 +138,7 @@ The below components are built into `deepagents` and helps make it work for deep
 `deepagents` comes with a [built-in system prompt](src/deepagents/prompts.py). This is relatively detailed prompt that is heavily based on and inspired by [attempts](https://github.com/kn1026/cc/blob/main/claudecode.md) to [replicate](https://github.com/asgeirtj/system_prompts_leaks/blob/main/Anthropic/claude-code.md)
 Claude Code's system prompt. It was made more general purpose than Claude Code's system prompt.
 This contains detailed instructions for how to use the built-in planning tool, file system tools, and sub agents.
-Note that part of this system prompt [can be customized](#promptprefix--required-)
+Note that part of this system prompt [can be customized](#instructions-required)
 
 Without this default system prompt - the agent would not be nearly as successful at going as it is.
 The importance of prompting for creating a "deep" agent cannot be understated.
@@ -175,7 +175,7 @@ result["files"]
 
 `deepagents` comes with the built-in ability to call sub agents (based on Claude Code).
 It has access to a `general-purpose` subagent at all times - this is a subagent with the same instructions as the main agent and all the tools that is has access to.
-You can also specify [custom sub agents](#subagents--optional-) with their own instructions and tools.
+You can also specify [custom sub agents](#subagents-optional) with their own instructions and tools.
 
 Sub agents are useful for ["context quarantine"](https://www.dbreunig.com/2025/06/26/how-to-fix-your-context.html#context-quarantine) (to help not pollute the overall context of the main agent)
 as well as custom instructions.

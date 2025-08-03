@@ -1,0 +1,3 @@
+deepagents
+langchain-anthropic
+langgraph-cli[inmem]

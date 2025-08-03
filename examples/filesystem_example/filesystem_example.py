@@ -8,6 +8,13 @@ NOTE: You need to set the ANTHROPIC_API_KEY environment variable before running 
 import os
 from deepagents import create_deep_agent
 
+# Export the graph for LangGraph deployment
+graph = create_deep_agent(
+    model="claude-3-5-sonnet-20241022",
+    tools=[],  # File system tools are included by default
+    instructions="You are a helpful assistant that can edit files.",
+)
+
 
 def main():
     # Check for API key
@@ -45,13 +52,9 @@ This is a simple project to demonstrate file editing.
 """,
     }
 
-    # Step 2: Create agent
+    # Step 2: Use the exported graph (for consistency with deployment)
     print("Creating agent...")
-    agent = create_deep_agent(
-        model="claude-3-5-sonnet-20241022",
-        tools=[],  # File system tools are included by default
-        instructions="You are a helpful assistant that can edit files.",
-    )
+    agent = graph
 
     # Step 3: Invoke agent with files and editing instructions
     print("\nSending request to agent...")

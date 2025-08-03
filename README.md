@@ -180,6 +180,58 @@ You can also specify [custom sub agents](#subagents--optional-) with their own i
 Sub agents are useful for ["context quarantine"](https://www.dbreunig.com/2025/06/26/how-to-fix-your-context.html#context-quarantine) (to help not pollute the overall context of the main agent)
 as well as custom instructions.
 
+## Development
+
+This project includes a test suite and build tools for development. You'll need Python 3.11 or higher installed on your system.
+
+### Setting Up a Development Environment
+
+1. Create a virtual environment (use one of these names which are already in `.gitignore`):
+   ```bash
+   python -m venv venv  # or .venv, env, or ENV
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+2. Install the package with development dependencies:
+   ```bash
+   pip install -e ".[dev]"
+   ```
+
+### Running Tests
+
+Run all tests:
+```bash
+pytest
+```
+
+Run tests with coverage report:
+```bash
+pytest --cov=deepagents
+```
+
+Run a specific test file:
+```bash
+pytest tests/test_create_deep_agent.py
+```
+
+### Building the Package
+
+To build the package for distribution:
+
+1. Install the build tool:
+   ```bash
+   pip install build
+   ```
+
+2. Build the package:
+   ```bash
+   python -m build
+   ```
+
+This will create both wheel and source distributions in the `dist/` directory:
+- `deepagents-{version}-py3-none-any.whl` - wheel distribution
+- `deepagents-{version}.tar.gz` - source distribution
+
 ## Roadmap
 - [ ] Allow users to customize full system prompt
 - [ ] Code cleanliness (type hinting, docstrings, formating)

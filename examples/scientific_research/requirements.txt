@@ -1,0 +1,7 @@
+deepagents
+langgraph-cli[inmem]
+langchain-community
+arxiv
+semanticscholar
+biopython
+xmltodict

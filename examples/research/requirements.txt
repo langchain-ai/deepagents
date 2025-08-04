@@ -1,3 +1,0 @@
-deepagents
-langgraph-cli[inmem]
-tavily-python

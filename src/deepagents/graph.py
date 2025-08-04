@@ -55,11 +55,7 @@ def create_deep_agent(
         model = get_default_model()
     state_schema = state_schema or DeepAgentState
     task_tool = _create_task_tool(
-        list(tools) + built_in_tools,
-        instructions,
-        subagents or [],
-        model,
-        state_schema
+        list(tools) + built_in_tools, instructions, subagents or [], model, state_schema
     )
     all_tools = built_in_tools + list(tools) + [task_tool]
     return create_react_agent(

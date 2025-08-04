@@ -68,6 +68,41 @@ result = agent.invoke({"messages": [{"role": "user", "content": "what is langgra
 
 See [examples/research/research_agent.py](examples/research/research_agent.py) for a more complex example.
 
+## Scientific Research Agent
+
+For scientific research tasks, we provide a specialized agent that searches across multiple academic databases:
+
+```python
+from examples.scientific_research.scientific_agent import scientific_agent
+
+# Example: Research a complex chemical synthesis
+research_question = """
+Design a multi-step synthesis route for Taxol (Paclitaxel), 
+including retrosynthetic analysis, literature review of key reactions, 
+and detailed experimental procedures. Consider the challenges of stereochemistry, 
+protecting group strategies, and scalability.
+"""
+
+result = scientific_agent.invoke({
+    "messages": [{"role": "user", "content": research_question}]
+})
+```
+
+The scientific research agent includes:
+- **Multi-database search**: PubMed, arXiv, Semantic Scholar
+- **Anti-hallucination measures**: Only uses information from search results
+- **Professional output**: Scientific citation format and comprehensive reports
+- **Parameterized queries**: Control results count and database selection
+
+See [examples/scientific_research/scientific_agent.py](examples/scientific_research/scientific_agent.py) for the full implementation.
+
+## Examples
+
+The repository includes several examples of deep agents:
+
+- [Research Agent](examples/research/research_agent.py) - A comprehensive research agent that can conduct deep research on any topic
+- [Scientific Research Agent](examples/scientific_research/scientific_agent.py) - A specialized agent for scientific research using academic databases (PubMed, arXiv, Semantic Scholar)
+
 The agent created with `create_deep_agent` is just a LangGraph graph - so you can interact with it (streaming, human-in-the-loop, memory, studio)
 in the same way you would any LangGraph agent.
 
@@ -185,5 +220,5 @@ as well as custom instructions.
 - [ ] Code cleanliness (type hinting, docstrings, formating)
 - [ ] Allow for more of a robust virtual filesystem
 - [ ] Create an example of a deep coding agent built on top of this
-- [ ] Benchmark the example of [deep research agent](examples/research/research_agent.py)
+- [ ] Benchmark the examples of [deep research agent](examples/research/research_agent.py) and [scientific research agent](examples/scientific_research/scientific_agent.py)
 - [ ] Add human-in-the-loop support for tools

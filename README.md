@@ -126,8 +126,29 @@ agent = create_deep_agent(
 
 ### `model` (Optional)
 
-By default, `deepagents` will use `"claude-sonnet-4-20250514"`. If you want to use a different model,
-you can pass a [LangChain model object](https://python.langchain.com/docs/integrations/chat/).
+By default, `deepagents` uses `"claude-sonnet-4-20250514"`. You can customize this by passing any [LangChain model object](https://python.langchain.com/docs/integrations/chat/).
+
+#### Example: Using a Custom Model
+
+Here's how to use a custom model (like OpenAI's `gpt-oss` model via Ollama):
+
+(Requires `pip install langchain` and then `pip install langchain-ollama` for Ollama models)
+
+```python
+from deepagents import create_deep_agent
+
+# ... existing agent definitions ...
+
+model = init_chat_model(
+    model="ollama:gpt-oss:20b",  
+)
+agent = create_deep_agent(
+    tools=tools,
+    instructions=instructions,
+    model=model,
+    ...
+)
+```
 
 ## Deep Agent Details
 

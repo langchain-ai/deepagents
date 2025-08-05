@@ -68,8 +68,6 @@ result = agent.invoke({"messages": [{"role": "user", "content": "what is langgra
 
 See [examples/research/research_agent.py](examples/research/research_agent.py) for a more complex example.
 
-## Scientific Research Agent
-
 For scientific research tasks, we provide a specialized agent that searches across multiple academic databases:
 
 ```python
@@ -220,6 +218,5 @@ as well as custom instructions.
 - [ ] Code cleanliness (type hinting, docstrings, formating)
 - [ ] Allow for more of a robust virtual filesystem
 - [ ] Create an example of a deep coding agent built on top of this
-- [ ] Benchmark the examples of [deep research agent](examples/research/research_agent.py) 
-- [ ] Benchmark the examples of [scientific research agent](examples/scientific_research/scientific_agent.py)
+- [ ] Benchmark the examples of [deep research agent](examples/research/research_agent.py)
 - [ ] Add human-in-the-loop support for tools

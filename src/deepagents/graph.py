@@ -5,6 +5,7 @@ from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
+from langgraph.types import Checkpointer
 
 from langgraph.prebuilt import create_react_agent
 
@@ -30,6 +31,7 @@ def create_deep_agent(
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
+    checkpointer: Optional[Checkpointer] = None,
 ):
     """Create a deep agent.
 
@@ -59,7 +61,8 @@ def create_deep_agent(
         instructions,
         subagents or [],
         model,
-        state_schema
+        state_schema,
+        checkpointer,
     )
     all_tools = built_in_tools + list(tools) + [task_tool]
     return create_react_agent(
@@ -67,4 +70,5 @@ def create_deep_agent(
         prompt=prompt,
         tools=all_tools,
         state_schema=state_schema,
+        checkpointer=checkpointer,
     )

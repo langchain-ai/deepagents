@@ -164,7 +164,7 @@ Note that part of this system prompt [can be customized](#instructions-required)
 Without this default system prompt - the agent would not be nearly as successful at going as it is.
 The importance of prompting for creating a "deep" agent cannot be understated.
 
-### Planing Tool
+### Planning Tool
 
 `deepagents` comes with a built-in planning tool. This planning tool is very simple and is based on ClaudeCode's TodoWrite tool.
 This tool doesn't actually do anything - it is just a way for the agent to come up with a plan, and then have that in the context to help keep it on track.

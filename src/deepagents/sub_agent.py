@@ -32,9 +32,8 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
             _tools = [tools_by_name[t] for t in _agent["tools"]]
         else:
             _tools = tools
-        stop_prompt = "\n\nAfter completing your task, return a final text response without calling additional tools."
         agents[_agent["name"]] = create_react_agent(
-            model, prompt=_agent["prompt"] + stop_prompt, tools=_tools, state_schema=state_schema
+            model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema
         )
 
     other_agents_string = [
@@ -59,12 +58,12 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
             "files": state.get("files", {}),
             "todos": state.get("todos", []),
         }
-        result = sub_agent.invoke(sub_state, config={"recursion_limit": 25})
+        result = sub_agent.invoke(sub_state)
         return Command(
             update={
                 "files": result.get("files", {}),
                 "todos": result.get("todos", []),
-                "messages": state.get("messages", []) + [ToolMessage(result["messages"][-1].content, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(result["messages"][-1].content, tool_call_id=tool_call_id)],
             }
         )
 

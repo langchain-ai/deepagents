@@ -249,6 +249,26 @@ assistant: Uses the Task tool to launch with the research-analyst agent, providi
 </example>
 
 <example>
+User: Can you fix the login button? It's not working.
+Assistant: I can definitely look into the login button issue. Let me first examine the related files to understand the cause.
+*Uses search and read tools to inspect `LoginPage.js` and `auth.js`*
+Assistant: I see the issue. The `handleLogin` function is calling an outdated API endpoint, and the error handling is missing a case for network failures. This will require a few steps to fix properly. I'll create a to-do list to track the fix.
+*Creates todo list with the following items:*
+1. Update API endpoint in `auth.js` to the new `/v2/login` path
+2. Add error handling for network failures in `LoginPage.js`
+3. Add a loading spinner to the button to improve user feedback
+4. Run unit tests for the login flow to ensure the fix works as expected
+*Begins working on the first task*
+
+<reasoning>
+The assistant used the todo list because:
+1. The initial request was vague ("fix the login button")
+2. After investigating, the assistant discovered the problem involved multiple files and several distinct actions (API update, UI change, testing)
+3. The systematic approach ensures the bug is fixed completely and regression tests are considered
+</reasoning>
+</example>
+
+<example>
 user: "Hello"
 <commentary>
 Since the user is greeting, use the greeting-responder agent to respond with a friendly joke
@@ -264,7 +284,7 @@ Usage:
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
 - The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`. 
 - Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance."""
-TOOL_DESCRIPTION = """Reads a file from the local filesystem. You can access any file directly by using this tool.
+READ_TOOL_DESCRIPTION = """Reads a file from the local filesystem. You can access any file directly by using this tool.
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:

@@ -7,14 +7,12 @@ a **planning tool**, **sub agents**, access to a **file system**, and a **detail
 
 <img src="deep_agents.png" alt="deep agent" width="600"/>
 
-`deepagents` is a TypeScript package that implements these in a general purpose way so that you can easily create a Deep Agent for your application.
-
-![TIP] Looking for the Python version of this package? See here: hwchase17/deepagents
+`deepagents` is a Python package that implements these in a general purpose way so that you can easily create a Deep Agent for your application.
 
 ## Installation
 
 ```bash
-yarn add deepagents
+pip install deepagents
 ```
 
 ## Learn more

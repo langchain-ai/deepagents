@@ -19,7 +19,7 @@ pip install deepagents
 
 ## Usage
 
-(To run the example below, will need to `pip install tavily-python`)
+(To run the example below, you will need to `pip install tavily-python`. **Note:** The default agent uses a Claude model, which also requires an `ANTHROPIC_API_KEY` environment variable to be set.)
 
 ```python
 import os
@@ -86,6 +86,47 @@ The agent (and any subagents) will have access to these tools.
 The second argument to `create_deep_agent` is `instructions`.
 This will serve as part of the prompt of the deep agent.
 Note that there is a [built in system prompt](src/deepagents/prompts.py) as well, so this is not the *entire* prompt the agent will see.
+
+### `model` (Optional)
+
+By default, `deepagents` uses `"claude-sonnet-4-20250514"`. You can customize this by passing any [LangChain model object](https://python.langchain.com/docs/integrations/chat/).
+
+#### Example: Using a Local Model with Ollama
+
+For a free option that runs on your own machine, you can use Ollama.
+
+First, install the required package:
+`pip install langchain-ollama`
+
+Then, make sure the [Ollama application](https://ollama.com) is running and you have pulled a model (e.g., `ollama run llama3`). You can then modify your script to use the local model:
+
+```python
+import os
+from typing import Literal
+from tavily import TavilyClient
+from deepagents import create_deep_agent
+# Import the Ollama chat model
+from langchain_ollama.chat_models import ChatOllama
+
+# Search tool (requires TAVILY_API_KEY)
+def internet_search(query: str):
+    # ... (same search function as above) ...
+
+research_instructions = """You are an expert researcher..."""
+
+# Instantiate the local model
+local_model = ChatOllama(model="llama3")
+
+# Create the agent, passing in the local model
+agent = create_deep_agent(
+    [internet_search],
+    research_instructions,
+    model=local_model,
+)
+
+# Invoke the agent
+result = agent.invoke({"messages": [{"role": "user", "content": "what is langgraph?"}]})
+```
 
 ### `subagents` (Optional)
 
@@ -233,7 +274,7 @@ asyncio.run(main())
 
 ## Roadmap
 - [ ] Allow users to customize full system prompt
-- [ ] Code cleanliness (type hinting, docstrings, formating)
+- [ ] Code cleanliness (type hinting, docstrings, formatting)
 - [ ] Allow for more of a robust virtual filesystem
 - [ ] Create an example of a deep coding agent built on top of this
 - [ ] Benchmark the example of [deep research agent](examples/research/research_agent.py)

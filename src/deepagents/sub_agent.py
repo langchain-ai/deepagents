@@ -9,7 +9,7 @@ from typing import Annotated, NotRequired, Optional
 from langgraph.types import Command
 
 from langgraph.prebuilt import InjectedState
-from deepagents.model import get_model
+from deepagents.model import get_default_model
 
 
 class SubAgent(TypedDict):
@@ -40,7 +40,7 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
             _tools = tools
         # Resolve per-subagent model if specified, else fallback to main model
         if "model" in _agent and _agent["model"]:
-            sub_model = get_model(
+            sub_model = get_default_model(
                 model_name=_agent["model"],
                 model_provider=_agent.get("model_provider", "anthropic"),
                 max_tokens=_agent.get("max_tokens", 8192),

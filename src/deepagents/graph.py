@@ -7,7 +7,7 @@ from langchain_core.language_models import LanguageModelLike
 
 from langgraph.prebuilt import create_react_agent
 
-from deepagents.model import get_model
+from deepagents.model import get_default_model
 
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
@@ -55,9 +55,9 @@ def create_deep_agent(
     prompt = instructions + base_prompt
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
     if model is None:
-        model = get_model()
+        model = get_default_model()
     elif isinstance(model, str):
-        model = get_model(model_name=model,model_provider=model_provider)
+        model = get_default_model(model_name=model,model_provider=model_provider)
     state_schema = state_schema or DeepAgentState
     task_tool = _create_task_tool(
         list(tools) + built_in_tools,

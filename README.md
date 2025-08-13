@@ -107,6 +107,7 @@ class SubAgent(TypedDict):
 - **description**: This is the description of the subagent that is shown to the main agent
 - **prompt**: This is the prompt used for the subagent
 - **tools**: This is the list of tools that the subagent has access to. By default will have access to all tools passed in, as well as all built-in tools.
+- Optional per-subagent model config: `model`, `model_provider`, `max_tokens`, `temperature` (inherits the main model when omitted).
 
 To use it looks like:
 
@@ -147,6 +148,30 @@ agent = create_deep_agent(
     instructions=instructions,
     model=model,
     ...
+)
+```
+
+#### Example: Per-subagent model override (optional)
+
+Use a fast, deterministic model for a critique sub-agent, while keeping a different default model for the main agent and others:
+
+```python
+from deepagents import create_deep_agent
+
+critique_sub_agent = {
+    "name": "critique-agent",
+    "description": "Critique the final report",
+    "prompt": "You are a tough editor.",
+    "model": "claude-3-5-haiku-20241022",
+    "model_provider": "anthropic",
+    "temperature": 0,
+}
+
+agent = create_deep_agent(
+    tools=[internet_search],
+    instructions="You are an expert researcher...",
+    model="claude-sonnet-4-20250514",  # default for main agent and other sub-agents
+    subagents=[critique_sub_agent],
 )
 ```
 

@@ -62,8 +62,7 @@ def create_deep_agent(
         instructions,
         subagents or [],
         model,
-        state_schema,
-        checkpointer,
+        state_schema
     )
     all_tools = built_in_tools + list(tools) + [task_tool]
     return create_react_agent(

@@ -2,10 +2,10 @@ from deepagents.prompts import TASK_DESCRIPTION_PREFIX, TASK_DESCRIPTION_SUFFIX
 from deepagents.state import DeepAgentState
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import BaseTool
-from typing import TypedDict
+from typing import TypedDict, Any
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
-from typing import Annotated, NotRequired, Optional
+from typing import Annotated, NotRequired
 from langgraph.types import Command
 
 from langgraph.prebuilt import InjectedState
@@ -18,10 +18,7 @@ class SubAgent(TypedDict):
     prompt: str
     tools: NotRequired[list[str]]
     # Optional per-subagent model configuration
-    model: NotRequired[str]
-    model_provider: NotRequired[str]
-    max_tokens: NotRequired[int]
-    temperature: NotRequired[float]
+    model_settings: NotRequired[dict[str, Any]]
 
 
 def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, state_schema):
@@ -39,13 +36,10 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         else:
             _tools = tools
         # Resolve per-subagent model if specified, else fallback to main model
-        if "model" in _agent and _agent["model"]:
-            sub_model = get_default_model(
-                model_name=_agent["model"],
-                model_provider=_agent.get("model_provider", "anthropic"),
-                max_tokens=_agent.get("max_tokens", 8192),
-                temperature=_agent.get("temperature"),
-            )
+        if "model_settings" in _agent:
+            model_config = _agent["model_settings"]
+            # Always use get_default_model to ensure all settings are applied
+            sub_model = get_default_model(**model_config)
         else:
             sub_model = model
         agents[_agent["name"]] = create_react_agent(

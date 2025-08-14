@@ -1,4 +1,5 @@
 from deepagents.sub_agent import _create_task_tool, SubAgent
+from deepagents.model import get_default_model
 from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
 from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
@@ -6,8 +7,6 @@ from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
 
 from langgraph.prebuilt import create_react_agent
-
-from deepagents.model import get_default_model
 
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
@@ -29,7 +28,6 @@ def create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
     instructions: str,
     model: Optional[Union[str, LanguageModelLike]] = None,
-    model_provider: Optional[str] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
 ):
@@ -43,7 +41,6 @@ def create_deep_agent(
         instructions: The additional instructions the agent should have. Will go in
             the system prompt.
         model: The model to use.
-        model_provider: The model provider to use. If not specified, will use the default
         subagents: The subagents to use. Each subagent should be a dictionary with the
             following keys:
                 - `name`
@@ -56,8 +53,6 @@ def create_deep_agent(
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
     if model is None:
         model = get_default_model()
-    elif isinstance(model, str):
-        model = get_default_model(model_name=model,model_provider=model_provider)
     state_schema = state_schema or DeepAgentState
     task_tool = _create_task_tool(
         list(tools) + built_in_tools,

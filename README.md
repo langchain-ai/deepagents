@@ -101,13 +101,14 @@ class SubAgent(TypedDict):
     description: str
     prompt: str
     tools: NotRequired[list[str]]
+    model_settings: NotRequired[dict[str, Any]]
 ```
 
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
 - **description**: This is the description of the subagent that is shown to the main agent
 - **prompt**: This is the prompt used for the subagent
 - **tools**: This is the list of tools that the subagent has access to. By default will have access to all tools passed in, as well as all built-in tools.
-- Optional per-subagent model config: `model`, `model_provider`, `max_tokens`, `temperature` (inherits the main model when omitted).
+- **model_settings**: Optional dictionary for per-subagent model configuration (inherits the main model when omitted).
 
 To use it looks like:
 
@@ -162,9 +163,11 @@ critique_sub_agent = {
     "name": "critique-agent",
     "description": "Critique the final report",
     "prompt": "You are a tough editor.",
-    "model": "claude-3-5-haiku-20241022",
-    "model_provider": "anthropic",
-    "temperature": 0,
+    "model_settings": {
+        "model": "anthropic:claude-3-5-haiku-20241022",
+        "temperature": 0,
+        "max_tokens": 8192
+    }
 }
 
 agent = create_deep_agent(

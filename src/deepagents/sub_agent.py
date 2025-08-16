@@ -22,11 +22,16 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
     agents = {
         "general-purpose": create_react_agent(model, prompt=instructions, tools=tools)
     }
+    agent_tools_by_name = {}
+
     tools_by_name = {}
+    tool_descriptions_by_name = {}
+    
     for tool_ in tools:
         if not isinstance(tool_, BaseTool):
             tool_ = tool(tool_)
         tools_by_name[tool_.name] = tool_
+        tool_descriptions_by_name[tool_.name] = tool_.description
     for _agent in subagents:
         if "tools" in _agent:
             _tools = [tools_by_name[t] for t in _agent["tools"]]
@@ -35,13 +40,23 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         agents[_agent["name"]] = create_react_agent(
             model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema
         )
+        
+        # Format tools with their descriptions for better readability
+        agent_tools_by_name[_agent["name"]] = [
+            f"{t}: {tool_descriptions_by_name[t]}" for t in _agent["tools"]
+        ]
+
+    def format_tools_list(tools_list):
+        # Each tool on a new line, indented with a tab
+        return "\n\t" + "\n\t".join(tools_list) if tools_list else ""
 
     other_agents_string = [
-        f"- {_agent['name']}: {_agent['description']}" for _agent in subagents
+        f"- {_agent['name']}: {_agent['description']}.\n  (Tools:{format_tools_list(agent_tools_by_name[_agent['name']])}\n)"
+        for _agent in subagents
     ]
 
     @tool(
-        description=TASK_DESCRIPTION_PREFIX.format(other_agents=other_agents_string)
+        description=TASK_DESCRIPTION_PREFIX.format(other_agents="\n".join(other_agents_string))
         + TASK_DESCRIPTION_SUFFIX
     )
     def task(

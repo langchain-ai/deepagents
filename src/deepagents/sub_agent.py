@@ -2,7 +2,7 @@ from deepagents.prompts import TASK_DESCRIPTION_PREFIX, TASK_DESCRIPTION_SUFFIX
 from deepagents.state import DeepAgentState
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import BaseTool
-from typing import TypedDict, Any
+from typing_extensions import TypedDict, Any
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from langchain.chat_models import init_chat_model
@@ -54,7 +54,7 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         description=TASK_DESCRIPTION_PREFIX.format(other_agents=other_agents_string)
         + TASK_DESCRIPTION_SUFFIX
     )
-    def task(
+    async def task(
         description: str,
         subagent_type: str,
         state: Annotated[DeepAgentState, InjectedState],
@@ -64,7 +64,7 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
             return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
         sub_agent = agents[subagent_type]
         state["messages"] = [{"role": "user", "content": description}]
-        result = sub_agent.invoke(state)
+        result = await sub_agent.ainvoke(state)
         return Command(
             update={
                 "files": result.get("files", {}),

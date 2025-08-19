@@ -5,11 +5,11 @@ from langchain_core.tools import BaseTool
 from typing import TypedDict, Any
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
+from langchain.chat_models import init_chat_model
 from typing import Annotated, NotRequired
 from langgraph.types import Command
 
 from langgraph.prebuilt import InjectedState
-from deepagents.model import get_default_model
 
 
 class SubAgent(TypedDict):
@@ -39,7 +39,7 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         if "model_settings" in _agent:
             model_config = _agent["model_settings"]
             # Always use get_default_model to ensure all settings are applied
-            sub_model = get_default_model(**model_config)
+            sub_model = init_chat_model(**model_config)
         else:
             sub_model = model
         agents[_agent["name"]] = create_react_agent(

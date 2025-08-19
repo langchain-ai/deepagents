@@ -5,6 +5,7 @@ from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
+from langgraph.types import Checkpointer
 
 from langgraph.prebuilt import create_react_agent
 
@@ -30,7 +31,8 @@ def create_deep_agent(
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
-    full_prompt: Optional[str] = None,
+    config_schema: Optional[Type[Any]] = None,
+    checkpointer: Optional[Checkpointer] = None,
 ):
     """Create a deep agent.
 
@@ -49,11 +51,10 @@ def create_deep_agent(
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
-        full_prompt: An optional full system prompt. If provided, it overrides the default
-            system prompt (which combines `instructions` and a base prompt).
+        config_schema: The schema of the deep agent.
+        checkpointer: Optional checkpointer for persisting agent state between runs.
     """
-    prompt = full_prompt if full_prompt is not None else instructions + base_prompt
-
+    prompt = instructions + base_prompt
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
     if model is None:
         model = get_default_model()
@@ -71,4 +72,6 @@ def create_deep_agent(
         prompt=prompt,
         tools=all_tools,
         state_schema=state_schema,
+        config_schema=config_schema,
+        checkpointer=checkpointer,
     )

@@ -16,11 +16,18 @@ class SubAgent(TypedDict):
     description: str
     prompt: str
     tools: NotRequired[list[str]]
+    include_files: NotRequired[bool]
+    include_todos: NotRequired[bool]
 
 
 def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, state_schema):
     agents = {
-        "general-purpose": create_react_agent(model, prompt=instructions, tools=tools, state_schema=state_schema)
+        "general-purpose": create_react_agent(
+            model, prompt=instructions, tools=tools, state_schema=state_schema
+        )
+    }
+    subagent_configs = {
+        "general-purpose": {"include_files": True, "include_todos": True}
     }
     tools_by_name = {}
     for tool_ in tools:
@@ -28,6 +35,10 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
             tool_ = tool(tool_)
         tools_by_name[tool_.name] = tool_
     for _agent in subagents:
+        subagent_configs[_agent["name"]] = {
+            "include_files": _agent.get("include_files", False),
+            "include_todos": _agent.get("include_todos", False)
+        }
         if "tools" in _agent:
             _tools = [tools_by_name[t] for t in _agent["tools"]]
         else:
@@ -44,7 +55,7 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         description=TASK_DESCRIPTION_PREFIX.format(other_agents=other_agents_string)
         + TASK_DESCRIPTION_SUFFIX
     )
-    def task(
+    async def task(
         description: str,
         subagent_type: str,
         state: Annotated[DeepAgentState, InjectedState],
@@ -53,18 +64,22 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         if subagent_type not in agents:
             return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
         sub_agent = agents[subagent_type]
-        sub_state = {
-            "messages": [{"role": "user", "content": description}],
-            "files": state.get("files", {}),
-            "todos": state.get("todos", []),
+        sub_state = {"messages": [{"role": "user", "content": description}]}
+        config = subagent_configs.get(subagent_type, {"include_files": False, "include_todos": False})
+        if config["include_files"]:
+            sub_state["files"] = state.get("files", {})
+        if config["include_todos"]:
+            sub_state["todos"] = state.get("todos", [])
+        result = await sub_agent.ainvoke(sub_state)
+        update = {
+            "messages": [
+                ToolMessage(result["messages"][-1].content, tool_call_id=tool_call_id)
+            ]
         }
-        result = sub_agent.invoke(sub_state)
-        return Command(
-            update={
-                "files": result.get("files", {}),
-                "todos": result.get("todos", []),
-                "messages": [ToolMessage(result["messages"][-1].content, tool_call_id=tool_call_id)],
-            }
-        )
+        if config["include_files"]:
+            update["files"] = result.get("files", {})
+        if config["include_todos"]:
+            update["todos"] = result.get("todos", [])
+        return Command(update=update)
 
     return task

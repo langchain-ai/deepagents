@@ -6,6 +6,7 @@ from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
 from deepagents.interrupt import InterruptConfig, create_interrupt_hook
+from langgraph.types import Checkpointer
 from langgraph.prebuilt import create_react_agent
 
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
@@ -33,6 +34,8 @@ def create_deep_agent(
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
     interrupt_config: Optional[InterruptConfig] = None,
+    config_schema: Optional[Type[Any]] = None,
+    checkpointer: Optional[Checkpointer] = None,
 ):
     """Create a deep agent.
 
@@ -53,6 +56,8 @@ def create_deep_agent(
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
         interrupt_config: Optional configuration for tool interrupts. If provided, specified tools
             will require user approval before execution.
+        config_schema: The schema of the deep agent.
+        checkpointer: Optional checkpointer for persisting agent state between runs.
     """
     prompt = instructions + base_prompt
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
@@ -79,4 +84,6 @@ def create_deep_agent(
         tools=all_tools,
         state_schema=state_schema,
         post_model_hook=post_model_hook,
+        config_schema=config_schema,
+        checkpointer=checkpointer,
     )

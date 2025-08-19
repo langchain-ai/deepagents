@@ -5,11 +5,13 @@ from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
-
+from deepagents.interrupt import InterruptConfig, create_interrupt_hook
 from langgraph.prebuilt import create_react_agent
 
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
+
+
 
 base_prompt = """You have access to a number of standard tools
 
@@ -30,6 +32,7 @@ def create_deep_agent(
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
+    interrupt_config: Optional[InterruptConfig] = None,
 ):
     """Create a deep agent.
 
@@ -48,6 +51,8 @@ def create_deep_agent(
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
+        interrupt_config: Optional configuration for tool interrupts. If provided, specified tools
+            will require user approval before execution.
     """
     prompt = instructions + base_prompt
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
@@ -62,9 +67,16 @@ def create_deep_agent(
         state_schema
     )
     all_tools = built_in_tools + list(tools) + [task_tool]
+    
+    # Create post model hook if interrupt config is provided
+    post_model_hook = None
+    if interrupt_config:
+        post_model_hook = create_interrupt_hook(interrupt_config)
+    
     return create_react_agent(
         model,
         prompt=prompt,
         tools=all_tools,
         state_schema=state_schema,
+        post_model_hook=post_model_hook,
     )

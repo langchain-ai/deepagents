@@ -2,11 +2,11 @@ from deepagents.prompts import TASK_DESCRIPTION_PREFIX, TASK_DESCRIPTION_SUFFIX
 from deepagents.state import DeepAgentState
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import BaseTool
-from typing_extensions import TypedDict, Any
+from typing_extensions import TypedDict
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from langchain.chat_models import init_chat_model
-from typing import Annotated, NotRequired
+from typing import Annotated, NotRequired, Any
 from langgraph.types import Command
 
 from langgraph.prebuilt import InjectedState

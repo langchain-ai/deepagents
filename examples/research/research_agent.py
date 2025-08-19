@@ -65,12 +65,6 @@ critique_sub_agent = {
     "name": "critique-agent",
     "description": "Used to critique the final report. Give this agent some infomration about how you want it to critique the report.",
     "prompt": sub_critique_prompt,
-    # Use a lightweight model specialized for fast critique, with deterministic output
-    "model_settings": {
-        "model": "anthropic:claude-3-5-haiku-20241022",
-        "temperature": 0,
-        "max_tokens": 8192
-    }
 }
 
 

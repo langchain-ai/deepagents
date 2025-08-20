@@ -9,7 +9,6 @@ from langgraph.prebuilt.interrupt import (
     HumanResponse,
 )
 
-# Type alias for cleaner usage
 ToolInterruptConfig = Dict[str, HumanInterruptConfig]
 
 # Common prebuilt configurations

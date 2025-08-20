@@ -1,6 +1,6 @@
 """Interrupt configuration functionality for deep agents using LangGraph prebuilts."""
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from langgraph.types import interrupt
 from langgraph.prebuilt.interrupt import (
     HumanInterruptConfig,
@@ -21,32 +21,42 @@ class InterruptConfig:
         self,
         tool_names: List[str],
         message: str,
-        include_tool_args: bool = True,
         *,
         allow_ignore: bool = True,
         allow_respond: bool = False,
         allow_edit: bool = True,
         allow_accept: bool = True,
+        # New: per-tool configurations
+        tool_configs: Optional[Dict[str, HumanInterruptConfig]] = None,
     ) -> None:
         """
         Args:
             tool_names: List of tool names that should trigger interrupts.
             message: The message/description prefix to show when interrupting.
-            include_tool_args: Whether to include tool arguments in the description.
-            allow_ignore: Whether user can ignore the interrupt.
-            allow_respond: Whether user can send a free-form response.
-            allow_edit: Whether user can edit the action arguments.
-            allow_accept: Whether user can accept the action as-is.
+            allow_ignore: Whether user can ignore the interrupt (default for all tools).
+            allow_respond: Whether user can send a free-form response (default for all tools).
+            allow_edit: Whether user can edit the action arguments (default for all tools).
+            allow_accept: Whether user can accept the action as-is (default for all tools).
+            tool_configs: Optional mapping of tool names to specific HumanInterruptConfig.
+                         If provided, overrides the default settings for specific tools.
         """
         self.tool_names = set(tool_names)
         self.message = message
-        self.include_tool_args = include_tool_args
-        self.human_config = HumanInterruptConfig(
+        
+        # Default configuration for all tools
+        self.default_config = HumanInterruptConfig(
             allow_ignore=allow_ignore,
             allow_respond=allow_respond,
             allow_edit=allow_edit,
             allow_accept=allow_accept,
         )
+        
+        # Per-tool configurations (optional)
+        self.tool_configs = tool_configs or {}
+    
+    def get_config_for_tool(self, tool_name: str) -> HumanInterruptConfig:
+        """Get the HumanInterruptConfig for a specific tool."""
+        return self.tool_configs.get(tool_name, self.default_config)
 
 
 def create_interrupt_hook(interrupt_config: InterruptConfig):
@@ -72,31 +82,28 @@ def create_interrupt_hook(interrupt_config: InterruptConfig):
 
             # Check if this tool should trigger an interrupt
             if tool_name in interrupt_config.tool_names:
-                description = interrupt_config.message
-                if interrupt_config.include_tool_args:
-                    description += f"\n\nTool: {tool_name}\nArgs: {tool_args}"
+                description = f"{interrupt_config.message}\n\nTool: {tool_name}\nArgs: {tool_args}"
 
-                # Build HumanInterrupt request using official schema
+                tool_config = interrupt_config.get_config_for_tool(tool_name)
+
                 request: HumanInterrupt = {
                     "action_request": ActionRequest(
                         action=tool_name,
                         args=tool_args,
                     ),
-                    "config": interrupt_config.human_config,
+                    "config": tool_config,
                     "description": description,
                 }
 
-                # Trigger interrupt; Agent Inbox returns a list, use the first response
                 responses: List[HumanResponse] = interrupt([request])
                 if not responses:
-                    # No response; default to ignore
                     continue
                 response = responses[0]
 
                 if response["type"] == "accept":
                     approved_tool_calls.append(tool_call)
                 elif response["type"] == "edit":
-                    edited: ActionRequest = response["args"]  # type: ignore[assignment]
+                    edited: ActionRequest = response["args"] 
                     # Replace args with edited args
                     new_tool_call = {
                         "name": tool_name,
@@ -104,7 +111,6 @@ def create_interrupt_hook(interrupt_config: InterruptConfig):
                         "id": tool_call.get("id", ""),
                     }
                     approved_tool_calls.append(new_tool_call)
-                # 'ignore' and 'response' both result in not executing the tool
                 else:
                     continue
             else:
@@ -117,7 +123,6 @@ def create_interrupt_hook(interrupt_config: InterruptConfig):
                 additional_kwargs=getattr(last_message, "additional_kwargs", {}),
             )
 
-            # Update the state with the new message
             new_messages = messages[:-1] + [new_message]
             state["messages"] = new_messages
 

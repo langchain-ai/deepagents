@@ -1,0 +1,17 @@
+# Core dependencies
+tavily-python>=0.3.0
+langchain>=0.1.0
+langgraph>=0.1.0
+
+# Web framework for HTML generation (optional)
+jinja2>=3.1.0
+
+# For image processing (if needed)
+Pillow>=10.0.0
+
+# For PDF export (optional)
+weasyprint>=60.0
+
+# Development dependencies
+pytest>=7.0.0
+pytest-asyncio>=0.21.0

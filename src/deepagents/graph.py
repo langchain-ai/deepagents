@@ -12,8 +12,6 @@ from langgraph.prebuilt import create_react_agent
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
 
-
-
 base_prompt = """You have access to a number of standard tools
 
 ## `write_todos`
@@ -60,12 +58,6 @@ def create_deep_agent(
         config_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
     """
-    # Validate that both interrupt_config and post_model_hook are not specified together
-    if interrupt_config and post_model_hook:
-        raise ValueError(
-            "Cannot specify both interrupt_config and post_model_hook together. "
-            "Use either interrupt_config for tool interrupts or post_model_hook for custom post-processing."
-        )
     
     prompt = instructions + base_prompt
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
@@ -82,11 +74,17 @@ def create_deep_agent(
     all_tools = built_in_tools + list(tools) + [task_tool]
     
     # Should never be the case that both are specified
-    selected_post_model_hook = None
-    if post_model_hook is not None:
+    if post_model_hook and interrupt_config:
+        raise ValueError(
+            "Cannot specify both post_model_hook and interrupt_config together. "
+            "Use either interrupt_config for tool interrupts or post_model_hook for custom post-processing."
+        )
+    elif post_model_hook is not None:
         selected_post_model_hook = post_model_hook
-    elif interrupt_config:
+    elif interrupt_config is not None:
         selected_post_model_hook = create_interrupt_hook(interrupt_config)
+    else:
+        selected_post_model_hook = None
     
     return create_react_agent(
         model,

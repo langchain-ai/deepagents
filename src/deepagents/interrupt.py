@@ -50,23 +50,6 @@ def create_interrupt_hook(
     Args:
         tool_configs: Dict mapping tool names to HumanInterruptConfig objects
         message_prefix: Optional message prefix for interrupt descriptions
-        
-    Example:
-        # Using prebuilt configs
-        hook = create_interrupt_hook({
-            "dangerous_tool": STANDARD_CONFIGS["approve_only"],
-            "file_editor": STANDARD_CONFIGS["review_and_edit"],
-        })
-        
-        # Using custom configs
-        hook = create_interrupt_hook({
-            "custom_tool": HumanInterruptConfig(
-                allow_ignore=True,
-                allow_respond=False,
-                allow_edit=True,
-                allow_accept=True,
-            )
-        })
     """
     
     def interrupt_hook(state: Dict[str, Any]) -> Dict[str, Any]:

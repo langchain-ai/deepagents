@@ -81,7 +81,7 @@ def create_deep_agent(
     )
     all_tools = built_in_tools + list(tools) + [task_tool]
     
-    # Select post model hook: prefer explicit post_model_hook, else build from interrupt_config
+    # Should never be the case that both are specified
     selected_post_model_hook = None
     if post_model_hook is not None:
         selected_post_model_hook = post_model_hook

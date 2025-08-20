@@ -101,12 +101,14 @@ class SubAgent(TypedDict):
     description: str
     prompt: str
     tools: NotRequired[list[str]]
+    model_settings: NotRequired[dict[str, Any]]
 ```
 
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
 - **description**: This is the description of the subagent that is shown to the main agent
 - **prompt**: This is the prompt used for the subagent
 - **tools**: This is the list of tools that the subagent has access to. By default will have access to all tools passed in, as well as all built-in tools.
+- **model_settings**: Optional dictionary for per-subagent model configuration (inherits the main model when omitted).
 
 To use it looks like:
 
@@ -147,6 +149,32 @@ agent = create_deep_agent(
     instructions=instructions,
     model=model,
     ...
+)
+```
+
+#### Example: Per-subagent model override (optional)
+
+Use a fast, deterministic model for a critique sub-agent, while keeping a different default model for the main agent and others:
+
+```python
+from deepagents import create_deep_agent
+
+critique_sub_agent = {
+    "name": "critique-agent",
+    "description": "Critique the final report",
+    "prompt": "You are a tough editor.",
+    "model_settings": {
+        "model": "anthropic:claude-3-5-haiku-20241022",
+        "temperature": 0,
+        "max_tokens": 8192
+    }
+}
+
+agent = create_deep_agent(
+    tools=[internet_search],
+    instructions="You are an expert researcher...",
+    model="claude-sonnet-4-20250514",  # default for main agent and other sub-agents
+    subagents=[critique_sub_agent],
 )
 ```
 

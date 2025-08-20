@@ -36,7 +36,7 @@ research_sub_agent = {
     "name": "research-agent",
     "description": "Used to research more in depth questions. Only give this researcher one topic at a time. Do not pass multiple sub questions to this researcher. Instead, you should break down a large topic into the necessary components, and then call multiple research agents in parallel, one for each sub question.",
     "prompt": sub_research_prompt,
-    "tools": ["internet_search"]
+    "tools": ["internet_search"],
 }
 
 sub_critique_prompt = """You are a dedicated editor. You are being tasked to critique a report.

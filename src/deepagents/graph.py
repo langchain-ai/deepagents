@@ -50,6 +50,7 @@ def create_deep_agent(
                 - `description` (used by the main agent to decide whether to call the sub agent)
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
+                - (optional) `model` (a LanguageModelLike instance, e.g., ChatAnthropic)
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
         config_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.

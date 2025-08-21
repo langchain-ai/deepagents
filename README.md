@@ -203,32 +203,48 @@ as well as custom instructions.
 
 ### Tool Interrupts
 
-`deepagents` supports human-in-the-loop approval for tool execution. You can configure specific tools to require human approval before execution using the `tool_interrupts` parameter.
+`deepagents` supports human-in-the-loop approval for tool execution. You can configure specific tools to require human approval before execution using the `interrupt_config` parameter.
 
-Available interrupt configurations:
-- `"approve_only"`: User can only accept or reject the tool call
-- `"approve_or_skip"`: User can accept, reject, or skip the tool call
-- `"full_control"`: User can accept, reject, skip, edit arguments, or respond with text
-- `"review_and_edit"`: User can accept, reject, edit arguments, or respond with text (no skip option)
+The interrupt configuration uses four boolean parameters:
+- `allow_ignore`: Whether the user can skip the tool call
+- `allow_respond`: Whether the user can add a text response
+- `allow_edit`: Whether the user can edit the tool arguments
+- `allow_accept`: Whether the user can accept the tool call
 
 Example usage:
 
 ```python
 from deepagents import create_deep_agent
+from langgraph.prebuilt.interrupt import HumanInterruptConfig
 
 # Create agent with file operations requiring approval
 agent = create_deep_agent(
     tools=[your_tools],
     instructions="Your instructions here",
-    tool_interrupts={
-        "write_file": "approve_only",      # Require approval for file writes
-        "edit_file": "full_control",       # Allow full control for file edits
-        "delete_file": "approve_or_skip",  # Allow skip for deletions
+    interrupt_config={
+        "write_file": HumanInterruptConfig(
+            allow_ignore=False,
+            allow_respond=False,
+            allow_edit=False,
+            allow_accept=True,
+        ),
+        "edit_file": HumanInterruptConfig(
+            allow_ignore=True,
+            allow_respond=True,
+            allow_edit=True,
+            allow_accept=True,
+        ),
+        "delete_file": HumanInterruptConfig(
+            allow_ignore=True,
+            allow_respond=False,
+            allow_edit=False,
+            allow_accept=True,
+        ),
     }
 )
 ```
 
-When a tool call requires approval, the agent will pause and wait for human input before proceeding.
+When a tool call requires approval, the agent will pause and wait for human input before proceeding. Multiple tool calls are processed in parallel, allowing you to review and approve multiple operations at once.
 
 ## MCP
 

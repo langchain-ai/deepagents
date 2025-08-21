@@ -5,7 +5,7 @@ from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional, Dict
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
-from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig, STANDARD_CONFIGS
+from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig, STANDARD_CONFIGS, HumanInterruptConfig
 from langgraph.types import Checkpointer
 from langgraph.prebuilt import create_react_agent
 
@@ -32,7 +32,7 @@ def create_deep_agent(
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
     interrupt_config: Optional[ToolInterruptConfig] = None,
-    tool_interrupts: Optional[Dict[str, str]] = None,
+
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
@@ -55,9 +55,7 @@ def create_deep_agent(
                 - (optional) `tools`
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
         interrupt_config: Optional Dict[str, HumanInterruptConfig] mapping tool names to interrupt configs.
-        tool_interrupts: Optional Dict[str, str] mapping tool names to standard config names.
-            Available configs: "approve_only", "approve_or_skip", "full_control", "review_and_edit".
-            Example: {"write_file": "approve_only", "edit_file": "full_control"}
+
         config_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
     """
@@ -76,22 +74,7 @@ def create_deep_agent(
     )
     all_tools = built_in_tools + list(tools) + [task_tool]
     
-    # Handle tool_interrupts parameter
-    if tool_interrupts is not None:
-        if interrupt_config is not None:
-            raise ValueError(
-                "Cannot specify both interrupt_config and tool_interrupts together. "
-                "Use either interrupt_config for custom configs or tool_interrupts for standard configs."
-            )
-        
-        # Convert tool_interrupts to interrupt_config using standard configs
-        interrupt_config = {}
-        for tool_name, config_name in tool_interrupts.items():
-            if config_name not in STANDARD_CONFIGS:
-                raise ValueError(
-                    f"Unknown config '{config_name}'. Available configs: {list(STANDARD_CONFIGS.keys())}"
-                )
-            interrupt_config[tool_name] = STANDARD_CONFIGS[config_name]
+
     
     # Should never be the case that both are specified
     if post_model_hook and interrupt_config:
@@ -102,7 +85,7 @@ def create_deep_agent(
     elif post_model_hook is not None:
         selected_post_model_hook = post_model_hook
     elif interrupt_config is not None:
-        selected_post_model_hook = create_interrupt_hook(interrupt_config)
+        selected_post_model_hook = create_interrupt_hook(interrupt_config, parallel=True)
     else:
         selected_post_model_hook = None
     

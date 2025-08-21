@@ -62,45 +62,60 @@ def create_interrupt_hook(
         if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
             return state
 
-        approved_tool_calls = []
-
-        # Check each tool call for approval
+        # Separate tool calls that need interrupts from those that don't
+        interrupt_tool_calls = []
+        auto_approved_tool_calls = []
+        
         for tool_call in last_message.tool_calls:
             tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-
-            # Check if this tool should trigger an interrupt
             if tool_name in tool_configs:
-                description = f"{message_prefix}\n\nTool: {tool_name}\nArgs: {tool_args}"
-                tool_config = tool_configs[tool_name]
-
-                request: HumanInterrupt = {
-                    "action_request": ActionRequest(
-                        action=tool_name,
-                        args=tool_args,
-                    ),
-                    "config": tool_config,
-                    "description": description,
-                }
-
-                responses: List[HumanResponse] = interrupt([request])
-                response = responses[0]
-
-                if response["type"] == "accept":
-                    approved_tool_calls.append(tool_call)
-                elif response["type"] == "edit":
-                    edited: ActionRequest = response["args"] 
-                    # Replace args with edited args
-                    new_tool_call = {
-                        "name": tool_name,
-                        "args": edited["args"],
-                        "id": tool_call.get("id", ""),
-                    }
-                    approved_tool_calls.append(new_tool_call)
-                else:
-                    continue
+                interrupt_tool_calls.append(tool_call)
             else:
+                auto_approved_tool_calls.append(tool_call)
+
+        # If no interrupts needed, return early
+        if not interrupt_tool_calls:
+            return state
+
+        approved_tool_calls = auto_approved_tool_calls.copy()
+
+        # Process all tool calls that need interrupts in parallel
+        requests = []
+        
+        for tool_call in interrupt_tool_calls:
+            tool_name = tool_call["name"]
+            tool_args = tool_call["args"]
+            description = f"{message_prefix}\n\nTool: {tool_name}\nArgs: {tool_args}"
+            tool_config = tool_configs[tool_name]
+
+            request: HumanInterrupt = {
+                "action_request": ActionRequest(
+                    action=tool_name,
+                    args=tool_args,
+                ),
+                "config": tool_config,
+                "description": description,
+            }
+            requests.append(request)
+
+        # Get responses for all requests at once
+        responses: List[HumanResponse] = interrupt(requests)
+        
+        # Process responses - they should be in the same order as requests
+        for i, response in enumerate(responses):
+            tool_call = interrupt_tool_calls[i]
+            
+            if response["type"] == "accept":
                 approved_tool_calls.append(tool_call)
+            elif response["type"] == "edit":
+                edited: ActionRequest = response["args"]
+                new_tool_call = {
+                    "name": tool_call["name"],
+                    "args": edited["args"],
+                    "id": tool_call.get("id", ""),
+                }
+                approved_tool_calls.append(new_tool_call)
+            # For "ignore" and other types, we skip adding the tool call
 
         last_message.tool_calls = approved_tool_calls
 

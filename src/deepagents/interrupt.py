@@ -81,7 +81,7 @@ def create_interrupt_hook(
                 new_tool_call = {
                     "name": tool_call["name"],
                     "args": edited["args"],
-                    "id": tool_call.get("id", ""),
+                    "id": tool_call["id"],
                 }
                 approved_tool_calls.append(new_tool_call)
             # For "ignore" and other types, we skip adding the tool call

@@ -84,11 +84,12 @@ def create_interrupt_hook(
                     "id": tool_call["id"],
                 }
                 approved_tool_calls.append(new_tool_call)
-            # For "ignore" and other types, we skip adding the tool call
+            else:
+                raise ValueError(f"Unknown response type: {response['type']}")
 
         last_message.tool_calls = approved_tool_calls
 
-        return state
+        return {"messages": [last_message]}
 
     return interrupt_hook
 

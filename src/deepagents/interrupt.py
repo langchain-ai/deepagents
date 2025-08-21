@@ -98,10 +98,8 @@ def create_interrupt_hook(
             }
             requests.append(request)
 
-        # Get responses for all requests at once
         responses: List[HumanResponse] = interrupt(requests)
         
-        # Process responses - they should be in the same order as requests
         for i, response in enumerate(responses):
             tool_call = interrupt_tool_calls[i]
             

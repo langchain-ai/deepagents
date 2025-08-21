@@ -201,6 +201,35 @@ You can also specify [custom sub agents](#subagents-optional) with their own ins
 Sub agents are useful for ["context quarantine"](https://www.dbreunig.com/2025/06/26/how-to-fix-your-context.html#context-quarantine) (to help not pollute the overall context of the main agent)
 as well as custom instructions.
 
+### Tool Interrupts
+
+`deepagents` supports human-in-the-loop approval for tool execution. You can configure specific tools to require human approval before execution using the `tool_interrupts` parameter.
+
+Available interrupt configurations:
+- `"approve_only"`: User can only accept or reject the tool call
+- `"approve_or_skip"`: User can accept, reject, or skip the tool call
+- `"full_control"`: User can accept, reject, skip, edit arguments, or respond with text
+- `"review_and_edit"`: User can accept, reject, edit arguments, or respond with text (no skip option)
+
+Example usage:
+
+```python
+from deepagents import create_deep_agent
+
+# Create agent with file operations requiring approval
+agent = create_deep_agent(
+    tools=[your_tools],
+    instructions="Your instructions here",
+    tool_interrupts={
+        "write_file": "approve_only",      # Require approval for file writes
+        "edit_file": "full_control",       # Allow full control for file edits
+        "delete_file": "approve_or_skip",  # Allow skip for deletions
+    }
+)
+```
+
+When a tool call requires approval, the agent will pause and wait for human input before proceeding.
+
 ## MCP
 
 The `deepagents` library can be ran with MCP tools. This can be achieved by using the [Langchain MCP Adapter library](https://github.com/langchain-ai/langchain-mcp-adapters).
@@ -237,4 +266,3 @@ asyncio.run(main())
 - [ ] Allow for more of a robust virtual filesystem
 - [ ] Create an example of a deep coding agent built on top of this
 - [ ] Benchmark the example of [deep research agent](examples/research/research_agent.py)
-- [ ] Add human-in-the-loop support for tools

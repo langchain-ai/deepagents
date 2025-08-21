@@ -66,8 +66,8 @@ def create_interrupt_hook(
 
         # Check each tool call for approval
         for tool_call in last_message.tool_calls:
-            tool_name = tool_call.get("name", "")
-            tool_args = tool_call.get("args", {})
+            tool_name = tool_call["name"]
+            tool_args = tool_call["args"]
 
             # Check if this tool should trigger an interrupt
             if tool_name in tool_configs:
@@ -83,10 +83,7 @@ def create_interrupt_hook(
                     "description": description,
                 }
 
-                interrupt_dict: Dict[str, HumanInterrupt] = {tool_name: request}
                 responses: List[HumanResponse] = interrupt([request])
-                if not responses:
-                    continue
                 response = responses[0]
 
                 if response["type"] == "accept":
@@ -105,15 +102,7 @@ def create_interrupt_hook(
             else:
                 approved_tool_calls.append(tool_call)
 
-        if len(approved_tool_calls) != len(last_message.tool_calls):
-            new_message = type(last_message)(
-                content=last_message.content,
-                tool_calls=approved_tool_calls,
-                additional_kwargs=getattr(last_message, "additional_kwargs", {}),
-            )
-
-            new_messages = messages[:-1] + [new_message]
-            state["messages"] = new_messages
+        last_message.tool_calls = approved_tool_calls
 
         return state
 

@@ -11,9 +11,6 @@ from langgraph.prebuilt.interrupt import (
 
 ToolInterruptConfig = Dict[str, HumanInterruptConfig]
 
-
-
-
 def create_interrupt_hook(
     tool_configs: ToolInterruptConfig,
     message_prefix: str = "Tool execution requires approval",

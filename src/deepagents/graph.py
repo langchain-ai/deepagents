@@ -5,7 +5,7 @@ from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional, Dict
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
-from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig, STANDARD_CONFIGS, HumanInterruptConfig
+from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig, HumanInterruptConfig
 from langgraph.types import Checkpointer
 from langgraph.prebuilt import create_react_agent
 
@@ -32,7 +32,7 @@ def create_deep_agent(
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
     interrupt_config: Optional[ToolInterruptConfig] = None,
-
+    message_prefix: str = "Tool execution requires approval",
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
@@ -55,6 +55,7 @@ def create_deep_agent(
                 - (optional) `tools`
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
         interrupt_config: Optional Dict[str, HumanInterruptConfig] mapping tool names to interrupt configs.
+        message_prefix: Custom message prefix for tool interrupt descriptions. Defaults to "Tool execution requires approval".
 
         config_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
@@ -74,8 +75,6 @@ def create_deep_agent(
     )
     all_tools = built_in_tools + list(tools) + [task_tool]
     
-
-    
     # Should never be the case that both are specified
     if post_model_hook and interrupt_config:
         raise ValueError(
@@ -85,7 +84,7 @@ def create_deep_agent(
     elif post_model_hook is not None:
         selected_post_model_hook = post_model_hook
     elif interrupt_config is not None:
-        selected_post_model_hook = create_interrupt_hook(interrupt_config, parallel=True)
+        selected_post_model_hook = create_interrupt_hook(interrupt_config, message_prefix)
     else:
         selected_post_model_hook = None
     

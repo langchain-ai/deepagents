@@ -11,33 +11,7 @@ from langgraph.prebuilt.interrupt import (
 
 ToolInterruptConfig = Dict[str, HumanInterruptConfig]
 
-# Common prebuilt configurations
-STANDARD_CONFIGS = {
-    "approve_only": HumanInterruptConfig(
-        allow_ignore=False,
-        allow_respond=False,
-        allow_edit=False,
-        allow_accept=True,
-    ),
-    "approve_or_skip": HumanInterruptConfig(
-        allow_ignore=True,
-        allow_respond=False,
-        allow_edit=False,
-        allow_accept=True,
-    ),
-    "full_control": HumanInterruptConfig(
-        allow_ignore=True,
-        allow_respond=True,
-        allow_edit=True,
-        allow_accept=True,
-    ),
-    "review_and_edit": HumanInterruptConfig(
-        allow_ignore=False,
-        allow_respond=True,
-        allow_edit=True,
-        allow_accept=True,
-    ),
-}
+
 
 
 def create_interrupt_hook(

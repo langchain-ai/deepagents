@@ -203,7 +203,7 @@ as well as custom instructions.
 
 ### Tool Interrupts
 
-`deepagents` supports human-in-the-loop approval for tool execution. You can configure specific tools to require human approval before execution using the `interrupt_config` parameter. You can also customize the message prefix shown to users when tool approval is required using the `message_prefix` parameter.
+`deepagents` supports human-in-the-loop approval for tool execution. You can configure specific tools to require human approval before execution using the `interrupt_config` parameter. You can also customize the message prefix shown to users for each tool when approval is required.
 
 The interrupt configuration uses four boolean parameters:
 - `allow_ignore`: Whether the user can skip the tool call
@@ -221,22 +221,9 @@ from langgraph.prebuilt.interrupt import HumanInterruptConfig
 agent = create_deep_agent(
     tools=[your_tools],
     instructions="Your instructions here",
-    message_prefix="⚠️ File operation requires your approval",
     interrupt_config={
         "write_file": HumanInterruptConfig(
             allow_ignore=False,
-            allow_respond=False,
-            allow_edit=False,
-            allow_accept=True,
-        ),
-        "edit_file": HumanInterruptConfig(
-            allow_ignore=True,
-            allow_respond=True,
-            allow_edit=True,
-            allow_accept=True,
-        ),
-        "delete_file": HumanInterruptConfig(
-            allow_ignore=True,
             allow_respond=False,
             allow_edit=False,
             allow_accept=True,

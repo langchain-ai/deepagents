@@ -44,12 +44,11 @@ def create_deep_agent(
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
     local_filesystem: bool = False,
-=======
 ):
     """Create a deep agent.
 
     This agent will by default have access to a tool to write todos (write_todos),
-    and then four file editing tools: write_file, ls, read_file, str_replace_based_edit_tool.
+    and then four file editing tools: write_file, ls, read_file, edit_file.
 
     Args:
         tools: The additional tools the agent should have access to.

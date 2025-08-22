@@ -31,7 +31,7 @@ def create_interrupt_hook(
         last_message = messages[-1]
 
         if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
-            return state
+            return
 
         # Separate tool calls that need interrupts from those that don't
         interrupt_tool_calls = []

@@ -26,7 +26,7 @@ def create_interrupt_hook(
         """Post model hook that checks for tool calls and triggers interrupts if needed."""
         messages = state.get("messages", [])
         if not messages:
-            return state
+            return
 
         last_message = messages[-1]
 

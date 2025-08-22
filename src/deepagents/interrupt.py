@@ -46,7 +46,7 @@ def create_interrupt_hook(
 
         # If no interrupts needed, return early
         if not interrupt_tool_calls:
-            return state
+            return
 
         approved_tool_calls = auto_approved_tool_calls.copy()
 

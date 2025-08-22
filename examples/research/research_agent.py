@@ -5,7 +5,9 @@ from tavily import TavilyClient
 
 
 from deepagents import create_deep_agent, SubAgent
-
+ 
+# It's best practice to initialize the client once and reuse it.
+tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 # Search tool to use to do research
 def internet_search(
@@ -15,8 +17,7 @@ def internet_search(
     include_raw_content: bool = False,
 ):
     """Run a web search"""
-    tavily_async_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-    search_docs = tavily_async_client.search(
+    search_docs = tavily_client.search(
         query,
         max_results=max_results,
         include_raw_content=include_raw_content,
@@ -35,7 +36,7 @@ research_sub_agent = {
     "name": "research-agent",
     "description": "Used to research more in depth questions. Only give this researcher one topic at a time. Do not pass multiple sub questions to this researcher. Instead, you should break down a large topic into the necessary components, and then call multiple research agents in parallel, one for each sub question.",
     "prompt": sub_research_prompt,
-    "tools": ["internet_search"]
+    "tools": ["internet_search"],
 }
 
 sub_critique_prompt = """You are a dedicated editor. You are being tasked to critique a report.

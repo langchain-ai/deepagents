@@ -28,6 +28,7 @@ from typing import Literal
 from tavily import TavilyClient
 from deepagents import create_deep_agent
 
+tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 
 # Search tool to use to do research
 def internet_search(
@@ -37,8 +38,7 @@ def internet_search(
     include_raw_content: bool = False,
 ):
     """Run a web search"""
-    tavily_async_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
-    return tavily_async_client.search(
+    return tavily_client.search(
         query,
         max_results=max_results,
         include_raw_content=include_raw_content,
@@ -101,12 +101,14 @@ class SubAgent(TypedDict):
     description: str
     prompt: str
     tools: NotRequired[list[str]]
+    model_settings: NotRequired[dict[str, Any]]
 ```
 
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
 - **description**: This is the description of the subagent that is shown to the main agent
 - **prompt**: This is the prompt used for the subagent
 - **tools**: This is the list of tools that the subagent has access to. By default will have access to all tools passed in, as well as all built-in tools.
+- **model_settings**: Optional dictionary for per-subagent model configuration (inherits the main model when omitted).
 
 To use it looks like:
 
@@ -150,6 +152,32 @@ agent = create_deep_agent(
 )
 ```
 
+#### Example: Per-subagent model override (optional)
+
+Use a fast, deterministic model for a critique sub-agent, while keeping a different default model for the main agent and others:
+
+```python
+from deepagents import create_deep_agent
+
+critique_sub_agent = {
+    "name": "critique-agent",
+    "description": "Critique the final report",
+    "prompt": "You are a tough editor.",
+    "model_settings": {
+        "model": "anthropic:claude-3-5-haiku-20241022",
+        "temperature": 0,
+        "max_tokens": 8192
+    }
+}
+
+agent = create_deep_agent(
+    tools=[internet_search],
+    instructions="You are an expert researcher...",
+    model="claude-sonnet-4-20250514",  # default for main agent and other sub-agents
+    subagents=[critique_sub_agent],
+)
+```
+
 ## Deep Agent Details
 
 The below components are built into `deepagents` and helps make it work for deep tasks off-the-shelf.
@@ -164,7 +192,7 @@ Note that part of this system prompt [can be customized](#instructions-required)
 Without this default system prompt - the agent would not be nearly as successful at going as it is.
 The importance of prompting for creating a "deep" agent cannot be understated.
 
-### Planing Tool
+### Planning Tool
 
 `deepagents` comes with a built-in planning tool. This planning tool is very simple and is based on ClaudeCode's TodoWrite tool.
 This tool doesn't actually do anything - it is just a way for the agent to come up with a plan, and then have that in the context to help keep it on track.
@@ -200,6 +228,39 @@ You can also specify [custom sub agents](#subagents-optional) with their own ins
 
 Sub agents are useful for ["context quarantine"](https://www.dbreunig.com/2025/06/26/how-to-fix-your-context.html#context-quarantine) (to help not pollute the overall context of the main agent)
 as well as custom instructions.
+
+### Tool Interrupts
+
+`deepagents` supports human-in-the-loop approval for tool execution. You can configure specific tools to require human approval before execution using the `interrupt_config` parameter. You can also customize the message prefix shown to users for each tool when approval is required.
+
+The interrupt configuration uses four boolean parameters:
+- `allow_ignore`: Whether the user can skip the tool call
+- `allow_respond`: Whether the user can add a text response
+- `allow_edit`: Whether the user can edit the tool arguments
+- `allow_accept`: Whether the user can accept the tool call
+
+Example usage:
+
+```python
+from deepagents import create_deep_agent
+from langgraph.prebuilt.interrupt import HumanInterruptConfig
+
+# Create agent with file operations requiring approval
+agent = create_deep_agent(
+    tools=[your_tools],
+    instructions="Your instructions here",
+    interrupt_config={
+        "write_file": HumanInterruptConfig(
+            allow_ignore=False,
+            allow_respond=False,
+            allow_edit=False,
+            allow_accept=True,
+        ),
+    }
+)
+```
+
+When a tool call requires approval, the agent will pause and wait for human input before proceeding. The message shown to users will include your custom prefix (or "Tool execution requires approval" by default) followed by the tool name and arguments. Multiple tool calls are processed in parallel, allowing you to review and approve multiple operations at once.
 
 ## MCP
 
@@ -237,4 +298,3 @@ asyncio.run(main())
 - [ ] Allow for more of a robust virtual filesystem
 - [ ] Create an example of a deep coding agent built on top of this
 - [ ] Benchmark the example of [deep research agent](examples/research/research_agent.py)
-- [ ] Add human-in-the-loop support for tools

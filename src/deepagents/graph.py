@@ -71,7 +71,7 @@ def create_deep_agent(
     
     prompt = instructions + base_prompt
     if local_filesystem:
-        built_in_tools = [write_todos, local_write_file, local_read_file, local_ls, local_glob, local_grep, str_replace_based_edit_tool]
+        built_in_tools = [local_write_file, local_read_file, local_ls, local_glob, local_grep, str_replace_based_edit_tool]
     else:
         built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
 

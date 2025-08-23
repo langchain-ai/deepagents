@@ -229,6 +229,39 @@ You can also specify [custom sub agents](#subagents-optional) with their own ins
 Sub agents are useful for ["context quarantine"](https://www.dbreunig.com/2025/06/26/how-to-fix-your-context.html#context-quarantine) (to help not pollute the overall context of the main agent)
 as well as custom instructions.
 
+### Tool Interrupts
+
+`deepagents` supports human-in-the-loop approval for tool execution. You can configure specific tools to require human approval before execution using the `interrupt_config` parameter. You can also customize the message prefix shown to users for each tool when approval is required.
+
+The interrupt configuration uses four boolean parameters:
+- `allow_ignore`: Whether the user can skip the tool call
+- `allow_respond`: Whether the user can add a text response
+- `allow_edit`: Whether the user can edit the tool arguments
+- `allow_accept`: Whether the user can accept the tool call
+
+Example usage:
+
+```python
+from deepagents import create_deep_agent
+from langgraph.prebuilt.interrupt import HumanInterruptConfig
+
+# Create agent with file operations requiring approval
+agent = create_deep_agent(
+    tools=[your_tools],
+    instructions="Your instructions here",
+    interrupt_config={
+        "write_file": HumanInterruptConfig(
+            allow_ignore=False,
+            allow_respond=False,
+            allow_edit=False,
+            allow_accept=True,
+        ),
+    }
+)
+```
+
+When a tool call requires approval, the agent will pause and wait for human input before proceeding. The message shown to users will include your custom prefix (or "Tool execution requires approval" by default) followed by the tool name and arguments. Multiple tool calls are processed in parallel, allowing you to review and approve multiple operations at once.
+
 ## MCP
 
 The `deepagents` library can be ran with MCP tools. This can be achieved by using the [Langchain MCP Adapter library](https://github.com/langchain-ai/langchain-mcp-adapters).
@@ -265,4 +298,3 @@ asyncio.run(main())
 - [ ] Allow for more of a robust virtual filesystem
 - [ ] Create an example of a deep coding agent built on top of this
 - [ ] Benchmark the example of [deep research agent](examples/research/research_agent.py)
-- [ ] Add human-in-the-loop support for tools

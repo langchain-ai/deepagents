@@ -54,7 +54,7 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         else:
             sub_model = model
         agents[_agent["name"]] = create_react_agent(
-            sub_model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema
+            sub_model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema, checkpointer=False
         )
 
     other_agents_string = [

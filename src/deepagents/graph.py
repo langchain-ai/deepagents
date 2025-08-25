@@ -5,6 +5,14 @@ from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional, Dict
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import LanguageModelLike
+from deepagents.local_tools import (
+    write_file as local_write_file,
+    read_file as local_read_file,
+    ls as local_ls,
+    glob as local_glob,
+    grep as local_grep,
+    str_replace_based_edit_tool,
+)
 from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig
 from langgraph.types import Checkpointer
 from langgraph.prebuilt import create_react_agent
@@ -35,6 +43,7 @@ def create_deep_agent(
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
+    local_filesystem: bool = False,
 ):
     """Create a deep agent.
 
@@ -61,7 +70,11 @@ def create_deep_agent(
     """
     
     prompt = instructions + base_prompt
-    built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
+    if local_filesystem:
+        built_in_tools = [local_write_file, local_read_file, local_ls, local_glob, local_grep, str_replace_based_edit_tool]
+    else:
+        built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
+
     if model is None:
         model = get_default_model()
     state_schema = state_schema or DeepAgentState

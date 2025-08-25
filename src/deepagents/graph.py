@@ -2,11 +2,15 @@ from deepagents.sub_agent import _create_task_tool, SubAgent
 from deepagents.model import get_default_model
 from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
 from deepagents.state import DeepAgentState
-from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional, Dict
+from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional, Dict, Awaitable
 from langchain_core.tools import BaseTool
-from langchain_core.language_models import LanguageModelLike
+from langchain_core.language_models import LanguageModelLike,LanguageModelInput, BaseMessage
+from langchain_core.chat_models import BaseChatModel
+from langchain_core.runnables import Runnable
 from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig
 from langgraph.types import Checkpointer
+from langgraph.runtime import Runtime
+from langgraph.typing import ContextT
 from langgraph.prebuilt import create_react_agent
 
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
@@ -28,7 +32,19 @@ It is critical that you mark todos as completed as soon as you are done with a t
 def create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
     instructions: str,
-    model: Optional[Union[str, LanguageModelLike]] = None,
+    model: Optional[Union[
+        str,
+        LanguageModelLike,
+        Callable[[StateSchema, Runtime[ContextT]], BaseChatModel],
+        Callable[[StateSchema, Runtime[ContextT]], Awaitable[BaseChatModel]],
+        Callable[
+            [StateSchema, Runtime[ContextT]], Runnable[LanguageModelInput, BaseMessage]
+        ],
+        Callable[
+            [StateSchema, Runtime[ContextT]],
+            Awaitable[Runnable[LanguageModelInput, BaseMessage]],
+        ],
+    ]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
     interrupt_config: Optional[ToolInterruptConfig] = None,
@@ -45,7 +61,17 @@ def create_deep_agent(
         tools: The additional tools the agent should have access to.
         instructions: The additional instructions the agent should have. Will go in
             the system prompt.
-        model: The model to use.
+        model: The language model for the agent. Supports static and dynamic
+            model selection.
+
+            - **Static model**: A chat model instance (e.g., `ChatOpenAI()`) or
+              string identifier (e.g., `"openai:gpt-4"`)
+            - **Dynamic model**: A callable with signature
+              `(state, runtime) -> BaseChatModel` that returns different models
+              based on runtime context
+              If the model has tools bound via `.bind_tools()` or other configurations,
+              the return type should be a Runnable[LanguageModelInput, BaseMessage]
+              Coroutines are also supported, allowing for asynchronous model selection.     
         subagents: The subagents to use. Each subagent should be a dictionary with the
             following keys:
                 - `name`

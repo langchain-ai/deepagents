@@ -6,6 +6,7 @@ from typing_extensions import TypedDict
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from langchain_core.language_models import LanguageModelLike
+from langchain.chat_models import init_chat_model
 from typing import Annotated, NotRequired, Any, Union
 from langgraph.types import Command
 
@@ -19,6 +20,8 @@ class SubAgent(TypedDict):
     tools: NotRequired[list[str]]
     # Optional per-subagent model instance (e.g., ChatAnthropic, ChatOpenAI, etc.)
     model: NotRequired[LanguageModelLike]
+    # Optional per-subagent model configuration (backward compatibility)
+    model_settings: NotRequired[dict[str, Any]]
 
 
 def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, state_schema):
@@ -35,9 +38,11 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
             _tools = [tools_by_name[t] for t in _agent["tools"]]
         else:
             _tools = tools
-        # Use per-subagent model if specified, else fallback to main model
         if "model" in _agent:
             sub_model = _agent["model"]
+        elif "model_settings" in _agent:
+            model_config = _agent["model_settings"]
+            sub_model = init_chat_model(**model_config)
         else:
             sub_model = model
         agents[_agent["name"]] = create_react_agent(

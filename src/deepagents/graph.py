@@ -51,6 +51,7 @@ def create_deep_agent(
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
                 - (optional) `model` (a LanguageModelLike instance, e.g., ChatAnthropic)
+                - (optional) `model_settings` (dict for model configuration, e.g., {"model": "anthropic", "model_name": "claude-3-sonnet", "max_tokens": 4000})
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
         config_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.

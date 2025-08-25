@@ -52,6 +52,7 @@ def create_deep_agent(
                 - `description` (used by the main agent to decide whether to call the sub agent)
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
+                - (optional) `model` (either a LanguageModelLike instance or dict settings)
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
         interrupt_config: Optional Dict[str, HumanInterruptConfig] mapping tool names to interrupt configs.
 

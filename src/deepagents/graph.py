@@ -67,10 +67,8 @@ def create_deep_agent(
     
     prompt = instructions + base_prompt
     
-    # Define all built-in tools with their names
     all_builtin_tools = [write_todos, write_file, read_file, ls, edit_file]
     
-    # Filter built-in tools based on parameters
     if exclude_builtin_tools:
         built_in_tools = []
     elif include_builtin_tool_names is not None:
@@ -81,7 +79,6 @@ def create_deep_agent(
             if (tool.name if hasattr(tool, 'name') else tool.__name__) in include_builtin_tool_names
         ]
     else:
-        # Include all built-in tools (default behavior)
         built_in_tools = all_builtin_tools
     
     if model is None:

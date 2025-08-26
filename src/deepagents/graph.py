@@ -30,6 +30,8 @@ def create_deep_agent(
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
+    exclude_builtin_tools: bool = False,
+    include_builtin_tool_names: Optional[list[str]] = None,
 ):
     """Create a deep agent.
 
@@ -48,9 +50,30 @@ def create_deep_agent(
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
+        exclude_builtin_tools: If True, exclude all built-in tools from the agent.
+        include_builtin_tool_names: If specified, only include built-in tools whose names 
+            match those in this list. If not specified, include all built-in tools 
+            (unless exclude_builtin_tools is True).
     """
     prompt = instructions + base_prompt
-    built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
+    
+    # Define all built-in tools with their names
+    all_builtin_tools = [write_todos, write_file, read_file, ls, edit_file]
+    
+    # Filter built-in tools based on parameters
+    if exclude_builtin_tools:
+        built_in_tools = []
+    elif include_builtin_tool_names is not None:
+        # Only include built-in tools whose names are in the specified list
+        builtin_tool_names = {tool.name if hasattr(tool, 'name') else tool.__name__ for tool in all_builtin_tools}
+        built_in_tools = [
+            tool for tool in all_builtin_tools 
+            if (tool.name if hasattr(tool, 'name') else tool.__name__) in include_builtin_tool_names
+        ]
+    else:
+        # Include all built-in tools (default behavior)
+        built_in_tools = all_builtin_tools
+    
     if model is None:
         model = get_default_model()
     state_schema = state_schema or DeepAgentState

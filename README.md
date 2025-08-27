@@ -113,7 +113,7 @@ class SubAgent(TypedDict):
 To use it looks like:
 
 ```python
-research_sub_agent = {
+research_subagent = {
     "name": "research-agent",
     "description": "Used to research more in depth questions",
     "prompt": sub_research_prompt,

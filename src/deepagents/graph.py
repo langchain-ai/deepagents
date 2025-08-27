@@ -70,7 +70,7 @@ def create_deep_agent(
         # Only include built-in tools whose names are in the specified list
         built_in_tools = [
             tool for tool in all_builtin_tools 
-            if getattr(tool, 'name', tool.__name__) in builtin_tools
+            if getattr(tool, 'name', getattr(tool, '__name__', None)) in builtin_tools
         ]
     else:
         built_in_tools = all_builtin_tools

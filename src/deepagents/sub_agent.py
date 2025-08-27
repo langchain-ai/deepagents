@@ -1,16 +1,16 @@
+from typing import Annotated, Any, NotRequired, Union
+
+from langchain.chat_models import init_chat_model
+from langchain_core.language_models import LanguageModelLike
+from langchain_core.messages import ToolMessage
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool
+from langgraph.prebuilt import InjectedState, create_react_agent
+from langgraph.types import Command
+from typing_extensions import TypedDict
+
 from deepagents.prompts import TASK_DESCRIPTION_PREFIX, TASK_DESCRIPTION_SUFFIX
 from deepagents.state import DeepAgentState
-from langgraph.prebuilt import create_react_agent
-from langchain_core.tools import BaseTool
-from typing_extensions import TypedDict
-from langchain_core.tools import tool, InjectedToolCallId
-from langchain_core.messages import ToolMessage
-from langchain_core.language_models import LanguageModelLike
-from langchain.chat_models import init_chat_model
-from typing import Annotated, NotRequired, Any, Union
-from langgraph.types import Command
-
-from langgraph.prebuilt import InjectedState
 
 
 class SubAgent(TypedDict):
@@ -20,6 +20,7 @@ class SubAgent(TypedDict):
     tools: NotRequired[list[str]]
     # Optional per-subagent model: can be either a model instance OR dict settings
     model: NotRequired[Union[LanguageModelLike, dict[str, Any]]]
+    graph: NotRequired[Runnable]
 
 
 def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, state_schema):
@@ -48,9 +49,13 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         else:
             # Fallback to main model
             sub_model = model
-        agents[_agent["name"]] = create_react_agent(
-            sub_model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema, checkpointer=False
-        )
+
+        if "graph" in _agent:
+            agents[_agent["name"]] = _agent["graph"]
+        else:
+            agents[_agent["name"]] = create_react_agent(
+                sub_model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema, checkpointer=False
+            )
 
     other_agents_string = [
         f"- {_agent['name']}: {_agent['description']}" for _agent in subagents

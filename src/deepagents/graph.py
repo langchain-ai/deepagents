@@ -31,8 +31,7 @@ def create_deep_agent(
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
-    exclude_builtin_tools: bool = False,
-    include_builtin_tool_names: Optional[list[str]] = None,
+    builtin_tools: Optional[list[str]] = None,
     interrupt_config: Optional[ToolInterruptConfig] = None,
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
@@ -56,10 +55,8 @@ def create_deep_agent(
                 - (optional) `tools`
                 - (optional) `model` (either a LanguageModelLike instance or dict settings)
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
-        exclude_builtin_tools: If True, exclude all built-in tools from the agent.
-        include_builtin_tool_names: If specified, only include built-in tools whose names 
-            match those in this list. If not specified, include all built-in tools 
-            (unless exclude_builtin_tools is True).
+        builtin_tools: If not provided, all built-in tools are included. If provided, 
+            only the specified built-in tools are included.
         interrupt_config: Optional Dict[str, HumanInterruptConfig] mapping tool names to interrupt configs.
         config_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
@@ -69,14 +66,11 @@ def create_deep_agent(
     
     all_builtin_tools = [write_todos, write_file, read_file, ls, edit_file]
     
-    if exclude_builtin_tools:
-        built_in_tools = []
-    elif include_builtin_tool_names is not None:
+    if builtin_tools is not None:
         # Only include built-in tools whose names are in the specified list
-        builtin_tool_names = {getattr(tool, 'name', tool.__name__) for tool in all_builtin_tools}
         built_in_tools = [
             tool for tool in all_builtin_tools 
-            if getattr(tool, 'name', tool.__name__) in include_builtin_tool_names
+            if getattr(tool, 'name', tool.__name__) in builtin_tools
         ]
     else:
         built_in_tools = all_builtin_tools

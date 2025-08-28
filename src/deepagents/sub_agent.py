@@ -9,7 +9,7 @@ from langchain_core.language_models import LanguageModelLike
 from langchain.chat_models import init_chat_model
 from typing import Annotated, NotRequired, Any, Union
 from langgraph.types import Command
-
+from langchain_anthropic import ChatAnthropic
 from langgraph.prebuilt import InjectedState
 
 
@@ -48,6 +48,9 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         else:
             # Fallback to main model
             sub_model = model
+        # If Anthropic model, we can bind tools and turn on prompt caching
+        if isinstance(sub_model, ChatAnthropic):
+            sub_model = sub_model.bind_tools(tools=_tools, cache_control={"type": "ephemeral"})
         agents[_agent["name"]] = create_react_agent(
             sub_model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema, checkpointer=False
         )

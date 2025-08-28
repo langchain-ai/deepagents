@@ -1,0 +1,3 @@
+deepagents
+langgraph-cli[inmem]
+exa-py

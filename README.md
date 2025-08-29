@@ -316,6 +316,25 @@ async def main():
 asyncio.run(main())
 ```
 
+## Configurable Agent
+
+Configurable agents allow you to control the agent via a config passed in.
+
+```python
+from deepagents import create_configurable_agent
+
+agent_config = {"instructions": "foo", "subagents": []}
+
+build_agent = create_configurable_agent(
+    agent_config['instructions'],
+    agent_config['subagents'],
+    [],
+    agent_config={"recursion_limit": 1000}
+)
+```
+You can now use `build_agent` in your `langgraph.json` and deploy it with `langgraph dev`
+
+
 ## Roadmap
 - [ ] Allow users to customize full system prompt
 - [ ] Code cleanliness (type hinting, docstrings, formating)

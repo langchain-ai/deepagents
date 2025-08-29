@@ -1,3 +1,4 @@
+from deepagents.prompts import BASE_PROMPT
 from deepagents.sub_agent import _create_task_tool, SubAgent
 from deepagents.model import get_default_model
 from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
@@ -28,6 +29,7 @@ It is critical that you mark todos as completed as soon as you are done with a t
 def create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
     instructions: str,
+    base_prompt_override: Optional[str] = None,
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
@@ -43,6 +45,9 @@ def create_deep_agent(
         tools: The additional tools the agent should have access to.
         instructions: The additional instructions the agent should have. Will go in
             the system prompt.
+        base_prompt_override: If provided, this will override the default base prompt.
+            If not provided, the default base prompt will be used. Your base prompt should include
+            the instructions for the `write_todos` tool and the `task` tool.
         model: The model to use.
         subagents: The subagents to use. Each subagent should be a dictionary with the
             following keys:
@@ -54,6 +59,7 @@ def create_deep_agent(
         config_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
     """
+    base_prompt = base_prompt_override or BASE_PROMPT
     prompt = instructions + base_prompt
     built_in_tools = [write_todos, write_file, read_file, ls, edit_file]
     if model is None:

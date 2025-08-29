@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "research": "./custom_prompt_agent.py:agent"
+  },
+  "env": ".env"
+}

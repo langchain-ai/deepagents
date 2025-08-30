@@ -48,7 +48,11 @@ def fred_search_series(
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
-        return response.json()
+        return {
+            'search_text': search_text,
+            'data': response.json(),
+            'url': url
+        }
     except requests.RequestException as e:
         return {"error": f"Failed to search series: {str(e)}"}
     
@@ -73,7 +77,11 @@ def fred_get_series_info(series_id: str) -> Dict[str, Any]:
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()
-        return response.json()
+        return {
+            'url': url,
+            'data': response.json(),
+            'series_id': series_id
+        }
     except requests.RequestException as e:
         return {"error": f"Failed to get series info: {str(e)}"}
     
@@ -127,7 +135,10 @@ def fred_get_series_data(
                 'metadata': {key: value for key, value in data.items() if key != 'observations'}
             }
         else:
-            return data
+            return {
+                'url': url,
+                'data': data,
+            }
 
     except requests.RequestException as e:
         return {"error": f"Failed to fetch data: {str(e)}"}
@@ -153,9 +164,9 @@ For economic data and statistics, always prefer FRED tools over internet search:
 - Federal Reserve data, BLS data, BEA data, Census data
 - Historical economic trends and comparisons
 
-**Always start with FRED tools for economic questions**, then supplement with internet search for context and analysis.
+**Always start with FRED tools for economic questions**, then supplement with internet search for context and analysis. Be sure to include links to your data sources and document any formulas you used in any calculations in the report. 
 
-Conduct thorough research and then reply to the user with a detailed answer to their question
+Conduct thorough research and then reply to the user with a detailed answer to their question. 
 
 only your FINAL answer will be passed on to the user. They will have NO knowledge of anything except your final message, so your final report should be your final message!"""
 
@@ -226,7 +237,7 @@ Note: the language the report should be in is the language the QUESTION is in, n
 
 Please create a detailed answer to the overall research brief that:
 1. Is well-organized with proper headings (# for title, ## for sections, ### for subsections)
-2. Includes specific facts and insights from the research
+2. Includes specific facts and insights from the research including relevant data, statistics and formulas used in calculations
 3. References relevant sources using [Title](URL) format
 4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
 5. Includes a "Sources" section at the end with all referenced links

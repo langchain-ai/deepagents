@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 from typing import Literal, Dict, Any, Optional
 from tavily import TavilyClient
+from langchain.chat_models.base import init_chat_model
 
 from deepagents import create_deep_agent
 
@@ -164,7 +165,14 @@ For economic data and statistics, always prefer FRED tools over internet search:
 - Federal Reserve data, BLS data, BEA data, Census data
 - Historical economic trends and comparisons
 
-**Always start with FRED tools for economic questions**, then supplement with internet search for context and analysis. Be sure to include links to your data sources and document any formulas you used in any calculations in the report. 
+**Always start with FRED tools for economic questions**, then supplement with internet search for context and analysis.
+
+## Critical Documentation Requirements:
+1. **Data Source URLs**: For EVERY piece of FRED data you use, include the exact API URL that was called to retrieve it
+2. **Mathematical Formulas**: When performing ANY calculations (growth rates, percentages, averages, etc.), document the mathematical formula used in this format:
+   - Formula: [mathematical expression, e.g., Growth Rate = ((New Value - Old Value) / Old Value) x 100]
+   - Example: If calculating GDP growth rate from 2022 to 2023, show: "Growth Rate = ((GDP_2023 - GDP_2022) / GDP_2022) x 100"
+3. **Data Points Used**: Clearly state which specific data points from FRED were used in calculations
 
 Conduct thorough research and then reply to the user with a detailed answer to their question. 
 
@@ -238,9 +246,11 @@ Note: the language the report should be in is the language the QUESTION is in, n
 Please create a detailed answer to the overall research brief that:
 1. Is well-organized with proper headings (# for title, ## for sections, ### for subsections)
 2. Includes specific facts and insights from the research including relevant data, statistics and formulas used in calculations
-3. References relevant sources using [Title](URL) format
-4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
-5. Includes a "Sources" section at the end with all referenced links
+3. **Documents all mathematical formulas**: When calculations are performed, show the formula used (e.g., "Growth Rate = ((New Value - Old Value) / Old Value) × 100")
+4. **Includes FRED API URLs**: For any FRED data used, include the specific API URL that was called to retrieve the data
+5. References relevant sources using [Title](URL) format
+6. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
+7. Includes a "Sources" section at the end with all referenced links
 
 You can structure your report in a number of different ways. Here are some examples:
 
@@ -336,5 +346,5 @@ agent = create_deep_agent(
     research_instructions,
     base_prompt_override=base_prompt,
     subagents=[critique_sub_agent, research_sub_agent],
-    # model=init_chat_model(model="openai:gpt-5-mini", max_tokens=128000)
+    model=init_chat_model(model="openai:gpt-5-mini", max_tokens=128000)
 ).with_config({"recursion_limit": 1000})

@@ -8,7 +8,7 @@ from langchain_core.language_models import LanguageModelLike
 from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig
 from langgraph.types import Checkpointer
 from langgraph.prebuilt import create_react_agent
-
+from langchain_anthropic import ChatAnthropic
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
 
@@ -102,6 +102,9 @@ def create_deep_agent(
     else:
         selected_post_model_hook = None
     
+    # If Anthropic model, we can bind tools and turn on prompt caching
+    if isinstance(model, ChatAnthropic):
+        model = model.bind_tools(tools=all_tools, cache_control={"type": "ephemeral"})
     return create_react_agent(
         model,
         prompt=prompt,

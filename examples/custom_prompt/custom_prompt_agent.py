@@ -1,11 +1,16 @@
 import os
 import requests
 import pandas as pd
-from typing import Literal, Dict, Any, Optional
+from typing import Literal, Dict, Any, Optional, Annotated
 from tavily import TavilyClient
+from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 from langchain.chat_models.base import init_chat_model
+from langchain_core.tools import tool, InjectedToolCallId
 
 from deepagents import create_deep_agent
+from deepagents.state import Todo
+
 
 FRED_API_KEY = os.environ["FRED_API_KEY"]
 FRED_API_BASE_URL = "https://api.stlouisfed.org/fred"
@@ -326,7 +331,7 @@ Use this to get information about a specific FRED economic data series.
 Use this to get the data for a specific FRED economic data series.
 """
 
-base_prompt = """You have access to a number of standard tools
+MY_BASE_PROMPT = """You have access to a number of standard tools
 
 ## `write_todos`
 
@@ -340,11 +345,172 @@ It is critical that you mark todos as completed as soon as you are done with a t
 - When doing data analysis with the FRED API, prefer to use the `task` tool in order to reduce context usage.
 """
 
+MY_WRITE_TODOS_DESCRIPTION = """The write_todos tool is crucial for organizing complex economic research tasks, tracking progress, and demonstrating thoroughness to users. It helps both you and the user understand the progress of tasks and the overall advancement of their requests.
+
+Use this tool proactively in the following scenarios:
+1. Complex multi-step economic analyses
+2. Non-trivial and intricate research tasks
+3. When the user explicitly requests a todo list
+4. When users provide multiple research tasks
+5. After receiving new instructions for an economic study
+6. When you start working on a research task
+7. After completing a task, to add any new follow-up research steps
+
+Do not use this tool when:
+1. There is only a single, straightforward economic calculation or data lookup
+2. The task is trivial and tracking it provides no organizational benefit
+3. The research task can be completed in less than 3 simple steps
+4. The task is purely conversational or informational about economics
+
+Examples of when to use the Todo List for economic studies and research:
+
+<example>
+User: I need to conduct a comprehensive analysis of the impact of recent monetary policy changes on inflation rates across major economies.
+Assistant: I'll help you conduct this comprehensive analysis. Let me create a todo list to organize our approach.
+*Creates todo list with the following items:*
+1. Identify major economies for analysis and recent monetary policy changes
+2. Collect historical inflation rate data for selected economies
+3. Gather data on monetary policy indicators (e.g., interest rates, quantitative easing measures)
+4. Perform statistical analysis to identify correlations between policy changes and inflation rates
+5. Conduct comparative analysis across economies
+6. Create visualizations of findings (graphs, charts)
+7. Draft report summarizing methodology, findings, and implications
+*Begins working on the first task*
+
+<reasoning>
+The assistant used the todo list because:
+1. This is a complex, multi-step economic analysis
+2. It involves data collection, statistical analysis, and report writing
+3. The systematic approach ensures all aspects of the study are covered
+4. Progress tracking helps maintain the research timeline and deliverables
+</reasoning>
+</example>
+
+<example>
+User: Help me prepare an economic forecast for the next fiscal year, including GDP growth, unemployment rates, and inflation projections.
+Assistant: I'll assist you in preparing an economic forecast for the next fiscal year. Let's create a todo list to structure our approach.
+*Creates todo list with the following items:*
+1. Collect historical data on GDP growth, unemployment rates, and inflation
+2. Identify key economic indicators and leading factors influencing these metrics
+3. Analyze current economic trends and policy environments
+4. Develop econometric models for projections
+5. Run simulations and sensitivity analyses
+6. Compare results with other reputable forecasts
+7. Prepare detailed report with methodology, assumptions, and projections
+8. Create executive summary with key findings and visualizations
+*Begins working on the first task*
+
+<reasoning>
+The assistant used the todo list because:
+1. Economic forecasting involves multiple complex steps and analyses
+2. Each component requires careful consideration and methodological approach
+3. The systematic approach ensures all aspects of the forecast are addressed
+4. Progress tracking helps maintain the research timeline and ensures thoroughness
+</reasoning>
+</example>
+
+Examples of when NOT to use the Todo List:
+
+<example>
+User: What was the US GDP growth rate in the last quarter?
+Assistant: I'll look up the most recent US GDP growth rate for you.
+
+*Searches for the latest US GDP growth rate data*
+
+According to the latest data from the Bureau of Economic Analysis, the US GDP growth rate for the last quarter was [insert latest figure]. This represents an [increase/decrease] from the previous quarter.
+
+<reasoning>
+The assistant did not use the todo list because this is a single, straightforward data lookup task. There are no multiple steps to track or organize, making the todo list unnecessary for this simple economic information request.
+</reasoning>
+</example>
+
+<example>
+User: Can you explain the concept of elasticity in economics?
+Assistant: Certainly! I'd be happy to explain the concept of elasticity in economics.
+
+Elasticity in economics refers to the responsiveness of one economic variable to changes in another variable. It measures how much one variable changes in response to a change in another variable, all else being equal.
+
+The most common types of elasticity are:
+
+1. Price Elasticity of Demand: This measures how sensitive the quantity demanded of a good is to changes in its price.
+
+2. Price Elasticity of Supply: This measures how responsive the quantity supplied of a good is to changes in its price.
+
+3. Income Elasticity of Demand: This measures how the quantity demanded of a good changes in response to changes in consumer income.
+
+4. Cross-Price Elasticity of Demand: This measures how the quantity demanded of one good changes in response to a change in the price of another good.
+
+Elasticity is typically calculated as a ratio of percentage changes. For example, the formula for price elasticity of demand is:
+
+(Percentage change in quantity demanded) / (Percentage change in price)
+
+The result of this calculation tells us whether demand is:
+- Elastic (> 1): Quantity demanded changes more than proportionally to price changes
+- Inelastic (< 1): Quantity demanded changes less than proportionally to price changes
+- Unit Elastic (= 1): Quantity demanded changes proportionally to price changes
+
+Understanding elasticity is crucial in economics as it helps businesses make pricing decisions, governments formulate tax policies, and economists predict market behaviors.
+
+<reasoning>
+The assistant did not use the todo list because this is an informational request with no actual tasks to complete. The user is simply asking for an explanation of an economic concept, not for the assistant to perform multiple steps or activities.
+</reasoning>
+</example>
+
+Task States and Management:
+1. Use these states to track progress:
+   - pending: Task not yet started
+   - in_progress: Currently working on (limit to ONE task at a time)
+   - completed: Task finished successfully
+
+2. Task Management:
+   - Update task status in real-time as you work
+   - Mark tasks complete IMMEDIATELY after finishing (don't batch completions)
+   - Only have ONE task in_progress at any time
+   - Complete current tasks before starting new ones
+   - Remove tasks that are no longer relevant from the list entirely
+
+Task Completion Requirements:
+- ONLY mark a task as completed when you have FULLY accomplished it
+- If you encounter errors, blockers, or cannot finish, keep the task as in_progress
+- When blocked, create a new task describing what needs to be resolved
+- Never mark a task as completed if:
+  - There are unresolved issues or errors
+  - Work is partial or incomplete
+  - You encountered blockers that prevent completion
+  - You couldn't find necessary resources or dependencies
+  - Quality standards haven't been met
+
+Task Breakdown:
+- Create specific, actionable items related to economic research and analysis
+- Break complex economic studies into smaller, manageable steps
+- Use clear, descriptive task names that reflect the economic nature of the work
+
+When in doubt, use this tool. Being proactive with task management demonstrates attentiveness and ensures you complete all requirements of economic studies and research successfully.
+"""
+
+
+@tool(description=MY_WRITE_TODOS_DESCRIPTION)
+def write_todos(
+    todos: list[Todo], tool_call_id: Annotated[str, InjectedToolCallId]
+) -> Command:
+    return Command(
+        update={
+            "todos": todos,
+            "messages": [
+                ToolMessage(f"CustomTodos Updated todo list to {todos}", tool_call_id=tool_call_id)
+            ],
+        }
+    )
+
+
 # Create the agent
 agent = create_deep_agent(
     [internet_search, fred_search_series, fred_get_series_info, fred_get_series_data],
     research_instructions,
-    base_prompt_override=base_prompt,
+    base_prompt_override=MY_BASE_PROMPT,
+    builtin_tools_override={
+        'write_todos': write_todos
+    },
     subagents=[critique_sub_agent, research_sub_agent],
     model=init_chat_model(model="openai:gpt-5-mini", max_tokens=128000)
 ).with_config({"recursion_limit": 1000})

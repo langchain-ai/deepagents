@@ -1,6 +1,22 @@
 from deepagents.sub_agent import _create_task_tool, SubAgent
 from deepagents.model import get_default_model
-from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
+from deepagents.tools import (
+    write_todos,
+    write_file,
+    read_file,
+    ls,
+    edit_file,
+    glob,
+    grep,
+)
+from deepagents.local_fs_tools import (
+    write_file as local_write_file,
+    read_file as local_read_file,
+    ls as local_ls,
+    edit_file as local_edit_file,
+    glob as local_glob,
+    grep as local_grep,
+)
 from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional, Dict
 from langchain_core.tools import BaseTool, tool
@@ -22,7 +38,9 @@ These tools are also EXTREMELY helpful for planning tasks, and for breaking down
 It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
 ## `task`
 
-- When doing web search, prefer to use the `task` tool in order to reduce context usage."""
+- When doing web search, prefer to use the `task` tool in order to reduce context usage.
+
+"""
 
 
 def create_deep_agent(
@@ -31,6 +49,7 @@ def create_deep_agent(
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
+    local_filesystem: bool = False,
     builtin_tools: Optional[list[str]] = None,
     interrupt_config: Optional[ToolInterruptConfig] = None,
     config_schema: Optional[Type[Any]] = None,
@@ -40,7 +59,7 @@ def create_deep_agent(
     """Create a deep agent.
 
     This agent will by default have access to a tool to write todos (write_todos),
-    and then four file editing tools: write_file, ls, read_file, edit_file.
+    and then six file system tools: write_file, ls, read_file, edit_file, glob, grep.
 
     Args:
         tools: The additional tools the agent should have access to.
@@ -55,17 +74,29 @@ def create_deep_agent(
                 - (optional) `tools`
                 - (optional) `model` (either a LanguageModelLike instance or dict settings)
         state_schema: The schema of the deep agent. Should subclass from DeepAgentState
+        local_filesystem: If True, use real filesystem tools instead of mock state-based tools
         builtin_tools: If not provided, all built-in tools are included. If provided, 
             only the specified built-in tools are included.
         interrupt_config: Optional Dict[str, HumanInterruptConfig] mapping tool names to interrupt configs.
         config_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
+        post_model_hook: Optional post model hook function for intercepting tool calls.
     """
     
     prompt = instructions + base_prompt
-    
-    all_builtin_tools = [write_todos, write_file, read_file, ls, edit_file]
-    
+    if local_filesystem:
+        all_builtin_tools = [
+            write_todos,
+            local_write_file,
+            local_read_file,
+            local_ls,
+            local_edit_file,
+            local_glob,
+            local_grep,
+        ]
+    else:
+        all_builtin_tools = [write_todos, write_file, read_file, ls, edit_file, glob, grep]
+
     if builtin_tools is not None:
         tools_by_name = {}
         for tool_ in all_builtin_tools:
@@ -81,14 +112,10 @@ def create_deep_agent(
         model = get_default_model()
     state_schema = state_schema or DeepAgentState
     task_tool = _create_task_tool(
-        list(tools) + built_in_tools,
-        instructions,
-        subagents or [],
-        model,
-        state_schema
+        list(tools) + built_in_tools, instructions, subagents or [], model, state_schema
     )
     all_tools = built_in_tools + list(tools) + [task_tool]
-    
+
     # Should never be the case that both are specified
     if post_model_hook and interrupt_config:
         raise ValueError(
@@ -101,7 +128,7 @@ def create_deep_agent(
         selected_post_model_hook = create_interrupt_hook(interrupt_config)
     else:
         selected_post_model_hook = None
-    
+
     return create_react_agent(
         model,
         prompt=prompt,

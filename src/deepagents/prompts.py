@@ -275,3 +275,53 @@ Usage:
 - Results are returned using cat -n format, with line numbers starting at 1
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful. 
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents."""
+
+GLOB_DESCRIPTION = """Find files and directories using glob patterns (similar to Unix glob/find commands).
+This tool searches for files and directories that match specified patterns. It's ideal for finding files by name, extension, or path patterns.
+Usage:
+- pattern: Glob pattern to match (e.g., "*.py", "**/*.js", "src/**/test_*.py")
+- path: Directory to start search from (defaults to current directory ".")
+- max_results: Maximum number of results to return (defaults to 100)
+- include_dirs: Include directories in results (defaults to False, files only)
+- recursive: Enable recursive search (defaults to True)
+Glob Pattern Examples:
+- "*.py" - All Python files in current directory
+- "**/*.py" - All Python files recursively
+- "src/**/*.js" - All JS files under src/ directory recursively  
+- "test_*.py" - Files starting with "test_" and ending with ".py"
+- "**/node_modules" - All node_modules directories
+- "*.{py,js,ts}" - Files with .py, .js, or .ts extensions
+Returns: List of matching file/directory paths, one per line
+CRITICAL: Always use absolute paths for the path parameter"""
+
+GREP_DESCRIPTION = """A powerful search tool that uses ripgrep (rg) for fast text pattern matching.
+This tool searches file contents for specified patterns and returns matching lines with context. It's ideal for finding specific content, functions, variables, or text across your codebase.
+Usage:
+- pattern: Text pattern to search for (supports regular expressions if regex=True)
+- files: List of file paths to search in, or single file path string
+- path: Directory to search in (alternative to files parameter)
+- file_pattern: Glob pattern for files to search (e.g., "*.py") when using path
+- max_results: Maximum number of matching lines to return (defaults to 50)
+- case_sensitive: Whether search should be case-sensitive (defaults to False)
+- context_lines: Number of lines to show before/after each match (defaults to 0)
+- regex: Treat pattern as regular expression (defaults to False)
+Examples:
+- Search for "TODO" in specific files: pattern="TODO", files=["main.py", "utils.py"]
+- Search in all Python files: pattern="def main", path=".", file_pattern="*.py"
+- Regex search: pattern=r"function\\s+\\w+", regex=True, file_pattern="*.js"
+- Case-sensitive search: pattern="ClassName", case_sensitive=True
+- With context: pattern="import", context_lines=2
+Returns: File paths with line numbers and matching lines, plus context if requested
+CRITICAL: Always use absolute paths for files and path parameters"""
+
+WRITE_DESCRIPTION = """Write a file to the local filesystem. Overwrites the existing file if there is one.
+Before using this tool:
+- Use the Read tool to understand the file's contents and context.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly instructed to do so.
+Directory Verification (only applicable when creating new files):
+Use the LS tool to verify the parent directory exists and is the correct location
+Usage:
+- file_path: Path to the file to write (absolute or relative path)
+- content: The content to write to the file
+The tool will automatically create parent directories if they don't exist.
+CRITICAL: Always use absolute paths (starting with /)"""

@@ -1,6 +1,6 @@
 from deepagents.sub_agent import _create_task_tool, SubAgent
 from deepagents.model import get_default_model
-from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
+from deepagents.tools import write_todos, write_file, read_file, ls, edit_file, regex_search
 from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional, Dict
 from langchain_core.tools import BaseTool, tool
@@ -64,7 +64,7 @@ def create_deep_agent(
     
     prompt = instructions + base_prompt
     
-    all_builtin_tools = [write_todos, write_file, read_file, ls, edit_file]
+    all_builtin_tools = [write_todos, write_file, read_file, ls, edit_file, regex_search]
     
     if builtin_tools is not None:
         tools_by_name = {}
@@ -73,7 +73,7 @@ def create_deep_agent(
                 tool_ = tool(tool_)
             tools_by_name[tool_.name] = tool_
         # Only include built-in tools whose names are in the specified list
-        built_in_tools = [ tools_by_name[_tool] for _tool in builtin_tools        ]
+        built_in_tools = [tools_by_name[_tool] for _tool in builtin_tools]
     else:
         built_in_tools = all_builtin_tools
     

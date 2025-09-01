@@ -1,13 +1,15 @@
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.types import Command
 from langchain_core.messages import ToolMessage
-from typing import Annotated
+from typing import Annotated, Optional
 from langgraph.prebuilt import InjectedState
+import re
 
 from deepagents.prompts import (
     WRITE_TODOS_DESCRIPTION,
     EDIT_DESCRIPTION,
     TOOL_DESCRIPTION,
+    REGEX_SEARCH_DESCRIPTION,
 )
 from deepagents.state import Todo, DeepAgentState
 
@@ -145,3 +147,101 @@ def edit_file(
             "messages": [ToolMessage(result_msg, tool_call_id=tool_call_id)],
         }
     )
+
+
+@tool(description=REGEX_SEARCH_DESCRIPTION)
+def regex_search(
+    pattern: str,
+    state: Annotated[DeepAgentState, InjectedState],
+    file_path: Optional[str] = None,
+    max_matches: int = 100,
+    context_chars: int = 100,
+) -> str:
+    """Search for regex patterns across files in the mocked filesystem."""
+    mock_filesystem = state.get("files", {})
+    
+    if not mock_filesystem:
+        return "No files found in the filesystem"
+    
+    # Compile the regex pattern
+    try:
+        compiled_pattern = re.compile(pattern, re.IGNORECASE)
+    except re.error as e:
+        return f"Error: Invalid regex pattern '{pattern}': {e}, fix your mistakes"
+    
+    results = []
+    total_matches = 0
+    
+    # Determine which files to search
+    files_to_search = {}
+    if file_path:
+        if file_path not in mock_filesystem:
+            return f"Error: File '{file_path}' not found"
+        files_to_search[file_path] = mock_filesystem[file_path]
+    else:
+        files_to_search = mock_filesystem
+    
+    # Search each file
+    for current_file_path, content in files_to_search.items():
+        if not content or content.strip() == "":
+            continue
+            
+        file_matches = []
+        
+        for match in compiled_pattern.finditer(content):
+            if len(file_matches) >= max_matches:
+                break
+            
+            match_start = match.start()
+            match_end = match.end()
+            
+            context_start = max(0, match_start - context_chars)
+            context_end = min(len(content), match_end + context_chars)
+            
+            before_context = content[context_start:match_start]
+            matched_text = content[match_start:match_end]
+            after_context = content[match_end:context_end]
+            
+            line_number = content[:match_start].count('\n') + 1
+            
+            # Create context display with match highlighted
+            context_display = f"{before_context}>>>{matched_text}<<<{after_context}"
+            
+            file_matches.append({
+                "line_number": line_number,
+                "match_text": matched_text,
+                "match_start": match_start,
+                "match_end": match_end,
+                "context": context_display,
+            })
+        
+        if file_matches:
+            results.append({
+                "file_path": current_file_path,
+                "matches": file_matches,
+                "match_count": len(file_matches)
+            })
+            total_matches += len(file_matches)
+    
+    # Format results
+    if not results:
+        search_scope = f"file '{file_path}'" if file_path else "all files"
+        return f"<search_results>\n<summary>No matches found for pattern '{pattern}' in {search_scope}</summary>\n</search_results>"
+    
+    output_lines = []
+    output_lines.append("<search_results>")
+    output_lines.append(f"<summary>Found {total_matches} matches for pattern '{pattern}'</summary>")
+    
+    for file_result in results:
+        output_lines.append(f"<file path='{file_result['file_path']}' match_count='{file_result['match_count']}'>")
+        
+        for i, match in enumerate(file_result['matches'], 1):
+            output_lines.append(f"<match id='{i}' line='{match['line_number']}' start='{match['match_start']}' end='{match['match_end']}'>")
+            output_lines.append(f"<matched_text>{match['match_text']}</matched_text>")
+            output_lines.append(f"<context>{match['context']}</context>")
+            output_lines.append("</match>")
+        
+        output_lines.append("</file>")
+    
+    output_lines.append("</search_results>")
+    return "\n".join(output_lines)

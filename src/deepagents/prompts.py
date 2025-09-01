@@ -275,3 +275,28 @@ Usage:
 - Results are returned using cat -n format, with line numbers starting at 1
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful. 
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents."""
+
+REGEX_SEARCH_DESCRIPTION = """Search for patterns using regular expressions across files in the filesystem.
+
+This tool allows you to find text patterns, complex matches, and perform advanced searches across all files in the system using Python regex syntax.
+
+Usage:
+- pattern: A valid Python regular expression pattern to search for
+- file_path (optional): Search only in a specific file; if not provided, searches all files
+- max_matches: Maximum number of matches to return per file (default: 100)
+- context_chars: Number of characters before and after each match to include for context (default: 50)
+
+Examples:
+- Simple text search: "hello world"
+- Case-insensitive search: "(?i)error" or use case_sensitive=False
+- Word boundaries: r"\\bfunction\\b" (matches "function" as a whole word)
+- Multiple alternatives: "error|warning|exception"
+- Line patterns: r"^def \\w+\\(" (functions starting with "def")
+- Complex patterns: r"@\\w+\\s*\\(" (decorators)
+
+Returns:
+- Structured XML output with search results
+- File paths and line numbers where matches were found
+- The matched text with surrounding context
+- Total number of matches per file
+- Error messages in XML format for invalid patterns or missing files"""

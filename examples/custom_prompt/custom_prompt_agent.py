@@ -5,7 +5,6 @@ from typing import Literal, Dict, Any, Optional, Annotated
 from tavily import TavilyClient
 from langgraph.types import Command
 from langchain_core.messages import ToolMessage
-from langchain.chat_models.base import init_chat_model
 from langchain_core.tools import tool, InjectedToolCallId
 
 from deepagents import create_deep_agent
@@ -150,7 +149,7 @@ def fred_get_series_data(
         return {"error": f"Failed to fetch data: {str(e)}"}
 
 
-sub_research_prompt = """You are a dedicated researcher. Your job is to conduct research based on the users questions.
+sub_research_prompt = """You are a dedicated researcher specialized in economics and finance. Your job is to conduct research based on the users questions.
 
 You have access to several research tools:
 
@@ -198,7 +197,7 @@ research_sub_agent = {
     ]
 }
 
-sub_critique_prompt = """You are a dedicated editor. You are being tasked to critique a report.
+sub_critique_prompt = """You are a dedicated editor specializing in finance and economics. You are being tasked to critique a report.
 
 You can find the report at `final_report.md`.
 
@@ -228,7 +227,7 @@ critique_sub_agent = {
 
 
 # Prompt prefix to steer the agent to be an expert researcher
-research_instructions = """You are an expert researcher. Your job is to conduct thorough research, and then write a polished report.
+research_instructions = """You are an expert economist and researcher. Your job is to conduct thorough research, and then write a polished report.
 
 The first thing you should do is to write the original user question to `question.txt` so you have a record of it.
 
@@ -335,7 +334,7 @@ MY_BASE_PROMPT = """You have access to a number of standard tools
 
 ## `write_todos`
 
-You have access to the `write_todos` tools to help you manage and plan tasks. Use these tools VERY frequently to ensure that you are tracking your tasks and giving the user visibility into your progress.
+You have access to the `write_todos` tool to help you manage and plan tasks. Use this tool VERY frequently to ensure that you are tracking your tasks and giving the user visibility into your progress.
 These tools are also EXTREMELY helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable.
 
 It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
@@ -512,5 +511,4 @@ agent = create_deep_agent(
         'write_todos': write_todos
     },
     subagents=[critique_sub_agent, research_sub_agent],
-    model=init_chat_model(model="openai:gpt-5-mini", max_tokens=128000)
 ).with_config({"recursion_limit": 1000})

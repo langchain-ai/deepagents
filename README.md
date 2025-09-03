@@ -269,7 +269,7 @@ Currently, `deepagents` does NOT support `allow_ignore`
 
 Currently, `deepagents` only support interrupting one tool at a time. If multiple tools are called in parallel, each requiring interrupts, then the agent will error.
 
-Instead of specifying a `HumanInterruptConfig` for a tool, you can also just set `True`. This will set `allow_ignore`, `allow_respond`, and `allow_edit` to be `True`.
+Instead of specifying a `HumanInterruptConfig` for a tool, you can also just set `True`. This will set `allow_ignore`, `allow_respond`, `allow_edit`, and `allow_accept` to be `True`.
 
 In order to use human in the loop, you need to have a checkpointer attached.
 Note: if you are using LangGraph Platform, this is automatically attached.

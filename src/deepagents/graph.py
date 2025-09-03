@@ -59,24 +59,7 @@ def _agent_builder(
     if model is None:
         model = get_default_model()
     state_schema = state_schema or DeepAgentState
-    if not is_async:
-        task_tool = _create_sync_task_tool(
-            list(tools) + built_in_tools,
-            instructions,
-            subagents or [],
-            model,
-            state_schema,
-        )
-    else:
-        task_tool = _create_task_tool(
-            list(tools) + built_in_tools,
-            instructions,
-            subagents or [],
-            model,
-            state_schema,
-        )
-    all_tools = built_in_tools + list(tools) + [task_tool]
-
+    
     # Should never be the case that both are specified
     if post_model_hook and interrupt_config:
         raise ValueError(
@@ -89,6 +72,26 @@ def _agent_builder(
         selected_post_model_hook = create_interrupt_hook(interrupt_config)
     else:
         selected_post_model_hook = None
+    
+    if not is_async:
+        task_tool = _create_sync_task_tool(
+            list(tools) + built_in_tools,
+            instructions,
+            subagents or [],
+            model,
+            state_schema,
+            selected_post_model_hook,
+        )
+    else:
+        task_tool = _create_task_tool(
+            list(tools) + built_in_tools,
+            instructions,
+            subagents or [],
+            model,
+            state_schema,
+            selected_post_model_hook,
+        )
+    all_tools = built_in_tools + list(tools) + [task_tool]
 
     return create_react_agent(
         model,

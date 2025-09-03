@@ -7,7 +7,7 @@ from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from langchain_core.language_models import LanguageModelLike
 from langchain.chat_models import init_chat_model
-from typing import Annotated, NotRequired, Any, Union
+from typing import Annotated, NotRequired, Any, Union, Optional, Callable
 from langgraph.types import Command
 
 from langgraph.prebuilt import InjectedState
@@ -22,10 +22,10 @@ class SubAgent(TypedDict):
     model: NotRequired[Union[LanguageModelLike, dict[str, Any]]]
 
 
-def _get_agents(tools, instructions, subagents: list[SubAgent], model, state_schema):
+def _get_agents(tools, instructions, subagents: list[SubAgent], model, state_schema, post_model_hook: Optional[Callable] = None):
     agents = {
         "general-purpose": create_react_agent(
-            model, prompt=instructions, tools=tools, checkpointer=False
+            model, prompt=instructions, tools=tools, checkpointer=False, post_model_hook=post_model_hook
         )
     }
     tools_by_name = {}
@@ -56,6 +56,7 @@ def _get_agents(tools, instructions, subagents: list[SubAgent], model, state_sch
             tools=_tools,
             state_schema=state_schema,
             checkpointer=False,
+            post_model_hook=post_model_hook,
         )
     return agents
 
@@ -65,9 +66,9 @@ def _get_subagent_description(subagents):
 
 
 def _create_task_tool(
-    tools, instructions, subagents: list[SubAgent], model, state_schema
+    tools, instructions, subagents: list[SubAgent], model, state_schema, post_model_hook: Optional[Callable] = None
 ):
-    agents = _get_agents(tools, instructions, subagents, model, state_schema)
+    agents = _get_agents(tools, instructions, subagents, model, state_schema, post_model_hook)
     other_agents_string = _get_subagent_description(subagents)
 
     @tool(
@@ -100,9 +101,9 @@ def _create_task_tool(
 
 
 def _create_sync_task_tool(
-    tools, instructions, subagents: list[SubAgent], model, state_schema
+    tools, instructions, subagents: list[SubAgent], model, state_schema, post_model_hook: Optional[Callable] = None
 ):
-    agents = _get_agents(tools, instructions, subagents, model, state_schema)
+    agents = _get_agents(tools, instructions, subagents, model, state_schema, post_model_hook)
     other_agents_string = _get_subagent_description(subagents)
 
     @tool(

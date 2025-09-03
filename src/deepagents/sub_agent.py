@@ -86,16 +86,7 @@ def _create_task_tool(
         sub_agent = agents[subagent_type]
         state["messages"] = [{"role": "user", "content": description}]
         result = await sub_agent.ainvoke(state)
-        return Command(
-            update={
-                "files": result.get("files", {}),
-                "messages": [
-                    ToolMessage(
-                        result["messages"][-1].content, tool_call_id=tool_call_id
-                    )
-                ],
-            }
-        )
+        return Command(update=result)
 
     return task
 
@@ -121,15 +112,6 @@ def _create_sync_task_tool(
         sub_agent = agents[subagent_type]
         state["messages"] = [{"role": "user", "content": description}]
         result = sub_agent.invoke(state)
-        return Command(
-            update={
-                "files": result.get("files", {}),
-                "messages": [
-                    ToolMessage(
-                        result["messages"][-1].content, tool_call_id=tool_call_id
-                    )
-                ],
-            }
-        )
+        return Command(update=result)
 
     return task

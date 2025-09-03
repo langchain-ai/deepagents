@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "research": "./regex-demo.py:agent"
+  },
+  "env": ".env"
+}

@@ -1,7 +1,7 @@
 from langchain_core.tools import tool, InjectedToolCallId
 from langgraph.types import Command
 from langchain_core.messages import ToolMessage
-from typing import Annotated
+from typing import Annotated, Union
 from langgraph.prebuilt import InjectedState
 
 from deepagents.prompts import (
@@ -104,7 +104,7 @@ def edit_file(
     state: Annotated[DeepAgentState, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
     replace_all: bool = False,
-) -> Command:
+) -> Union[Command, str]:
     """Write to a file."""
     mock_filesystem = state.get("files", {})
     # Check if file exists in mock filesystem

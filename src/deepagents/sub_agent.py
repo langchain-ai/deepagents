@@ -22,9 +22,11 @@ class SubAgent(TypedDict):
     model: NotRequired[Union[LanguageModelLike, dict[str, Any]]]
 
 
-def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, state_schema):
+def _get_agents(tools, instructions, subagents: list[SubAgent], model, state_schema):
     agents = {
-        "general-purpose": create_react_agent(model, prompt=instructions, tools=tools, checkpointer=False)
+        "general-purpose": create_react_agent(
+            model, prompt=instructions, tools=tools, checkpointer=False
+        )
     }
     tools_by_name = {}
     for tool_ in tools:
@@ -49,12 +51,24 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
             # Fallback to main model
             sub_model = model
         agents[_agent["name"]] = create_react_agent(
-            sub_model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema, checkpointer=False
+            sub_model,
+            prompt=_agent["prompt"],
+            tools=_tools,
+            state_schema=state_schema,
+            checkpointer=False,
         )
+    return agents
 
-    other_agents_string = [
-        f"- {_agent['name']}: {_agent['description']}" for _agent in subagents
-    ]
+
+def _get_subagent_description(subagents):
+    return [f"- {_agent['name']}: {_agent['description']}" for _agent in subagents]
+
+
+def _create_task_tool(
+    tools, instructions, subagents: list[SubAgent], model, state_schema
+):
+    agents = _get_agents(tools, instructions, subagents, model, state_schema)
+    other_agents_string = _get_subagent_description(subagents)
 
     @tool(
         description=TASK_DESCRIPTION_PREFIX.format(other_agents=other_agents_string)
@@ -71,6 +85,41 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
         sub_agent = agents[subagent_type]
         state["messages"] = [{"role": "user", "content": description}]
         result = await sub_agent.ainvoke(state)
+        return Command(
+            update={
+                "files": result.get("files", {}),
+                "messages": [
+                    ToolMessage(
+                        result["messages"][-1].content, tool_call_id=tool_call_id
+                    )
+                ],
+            }
+        )
+
+    return task
+
+
+def _create_sync_task_tool(
+    tools, instructions, subagents: list[SubAgent], model, state_schema
+):
+    agents = _get_agents(tools, instructions, subagents, model, state_schema)
+    other_agents_string = _get_subagent_description(subagents)
+
+    @tool(
+        description=TASK_DESCRIPTION_PREFIX.format(other_agents=other_agents_string)
+        + TASK_DESCRIPTION_SUFFIX
+    )
+    def task(
+        description: str,
+        subagent_type: str,
+        state: Annotated[DeepAgentState, InjectedState],
+        tool_call_id: Annotated[str, InjectedToolCallId],
+    ):
+        if subagent_type not in agents:
+            return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
+        sub_agent = agents[subagent_type]
+        state["messages"] = [{"role": "user", "content": description}]
+        result = sub_agent.invoke(state)
         return Command(
             update={
                 "files": result.get("files", {}),

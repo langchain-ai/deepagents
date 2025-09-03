@@ -1,0 +1,6 @@
+-e ../../
+langgraph-cli[inmem]
+langchain-openai
+tavily-python
+pandas
+python-dotenv

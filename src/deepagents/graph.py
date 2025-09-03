@@ -1,3 +1,4 @@
+from deepagents.prompts import BASE_PROMPT
 from deepagents.sub_agent import _create_task_tool, _create_sync_task_tool, SubAgent
 from deepagents.model import get_default_model
 from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
@@ -12,22 +13,12 @@ from langgraph.prebuilt import create_react_agent
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
 
-base_prompt = """You have access to a number of standard tools
-
-## `write_todos`
-
-You have access to the `write_todos` tools to help you manage and plan tasks. Use these tools VERY frequently to ensure that you are tracking your tasks and giving the user visibility into your progress.
-These tools are also EXTREMELY helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable.
-
-It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
-## `task`
-
-- When doing web search, prefer to use the `task` tool in order to reduce context usage."""
-
 
 def _agent_builder(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
     instructions: str,
+    base_prompt_override: Optional[str] = None,
+    builtin_tools_override: Optional[Sequence[Union[BaseTool, Callable, dict[str, Any]]]] = None,
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
@@ -38,7 +29,7 @@ def _agent_builder(
     post_model_hook: Optional[Callable] = None,
     is_async: bool = False,
 ):
-    prompt = instructions + base_prompt
+    prompt = base_prompt_override or BASE_PROMPT
 
     all_builtin_tools = [write_todos, write_file, read_file, ls, edit_file]
 
@@ -52,6 +43,18 @@ def _agent_builder(
         built_in_tools = [tools_by_name[_tool] for _tool in builtin_tools]
     else:
         built_in_tools = all_builtin_tools
+
+    if builtin_tools_override is not None:
+        tools_by_name = {}
+        for tool_ in built_in_tools:
+            if not isinstance(tool_, BaseTool):
+                tool_ = tool(tool_)
+            tools_by_name[tool_.name] = tool_
+        # If a tool override was passed in, replace the built-in tool with the override
+        for tool_name, tool_override in builtin_tools_override.items():
+            if tool_name in tools_by_name:
+                tools_by_name[tool_name] = tool_override
+        built_in_tools = [tools_by_name[_tool] for _tool in tools_by_name]
 
     if model is None:
         model = get_default_model()
@@ -104,6 +107,8 @@ def _agent_builder(
 def create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
     instructions: str,
+    base_prompt_override: Optional[str] = None,
+    builtin_tools_override: Optional[Sequence[Union[BaseTool, Callable, dict[str, Any]]]] = None,
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
@@ -122,6 +127,11 @@ def create_deep_agent(
         tools: The additional tools the agent should have access to.
         instructions: The additional instructions the agent should have. Will go in
             the system prompt.
+        base_prompt_override: If provided, this will override the default base prompt.
+            If not provided, the default base prompt will be used. Your base prompt should include
+            the instructions for the `write_todos` tool and the `task` tool.
+        builtin_tools_override: If provided, this will override the default built-in tools for each tool specified.
+            Built-in tools are: write_todos, write_file, read_file, ls, edit_file.
         model: The model to use.
         subagents: The subagents to use. Each subagent should be a dictionary with the
             following keys:
@@ -141,6 +151,8 @@ def create_deep_agent(
     return _agent_builder(
         tools=tools,
         instructions=instructions,
+        base_prompt_override=base_prompt_override,
+        builtin_tools_override=builtin_tools_override,
         model=model,
         subagents=subagents,
         state_schema=state_schema,
@@ -156,6 +168,8 @@ def create_deep_agent(
 def async_create_deep_agent(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
     instructions: str,
+    base_prompt_override: Optional[str] = None,
+    builtin_tools_override: Optional[Sequence[Union[BaseTool, Callable, dict[str, Any]]]] = None,
     model: Optional[Union[str, LanguageModelLike]] = None,
     subagents: list[SubAgent] = None,
     state_schema: Optional[StateSchemaType] = None,
@@ -174,6 +188,11 @@ def async_create_deep_agent(
         tools: The additional tools the agent should have access to.
         instructions: The additional instructions the agent should have. Will go in
             the system prompt.
+        base_prompt_override: If provided, this will override the default base prompt.
+            If not provided, the default base prompt will be used. Your base prompt should include
+            the instructions for the `write_todos` tool and the `task` tool.
+        builtin_tools_override: If provided, this will override the default built-in tools for each tool specified.
+            Built-in tools are: write_todos, write_file, read_file, ls, edit_file.
         model: The model to use.
         subagents: The subagents to use. Each subagent should be a dictionary with the
             following keys:
@@ -193,6 +212,8 @@ def async_create_deep_agent(
     return _agent_builder(
         tools=tools,
         instructions=instructions,
+        base_prompt_override=base_prompt_override,
+        builtin_tools_override=builtin_tools_override,
         model=model,
         subagents=subagents,
         state_schema=state_schema,

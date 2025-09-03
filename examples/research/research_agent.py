@@ -5,9 +5,10 @@ from tavily import TavilyClient
 
 
 from deepagents import create_deep_agent, SubAgent
- 
+
 # It's best practice to initialize the client once and reuse it.
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
 
 # Search tool to use to do research
 def internet_search(

@@ -269,7 +269,7 @@ Currently, `deepagents` does NOT support `allow_ignore`
 
 Currently, `deepagents` only support interrupting one tool at a time. If multiple tools are called in parallel, each requiring interrupts, then the agent will error.
 
-Instead of specifying a `HumanInterruptConfig` for a tool, you can also just set `True`. This will set `allow_ignore`, `allow_respond`, and `allow_edit` to be `True`.
+Instead of specifying a `HumanInterruptConfig` for a tool, you can also just set `True`. This will set `allow_ignore`, `allow_respond`, `allow_edit`, and `allow_accept` to be `True`.
 
 In order to use human in the loop, you need to have a checkpointer attached.
 Note: if you are using LangGraph Platform, this is automatically attached.
@@ -358,10 +358,14 @@ for s in agent.stream(Command(resume=[{"type": "response", "args": "..."}]), con
     print(s)
 
 ```
+## Async
 
+If you are passing async tools to your agent, you will want to `from deepagents import async_create_deep_agent`
 ## MCP
 
 The `deepagents` library can be ran with MCP tools. This can be achieved by using the [Langchain MCP Adapter library](https://github.com/langchain-ai/langchain-mcp-adapters).
+
+**NOTE:** will want to use `from deepagents import async_create_deep_agent` to use the async version of `deepagents`, since MCP tools are async
 
 (To run the example below, will need to `pip install langchain-mcp-adapters`)
 
@@ -376,7 +380,7 @@ async def main():
     mcp_tools = await mcp_client.get_tools()
 
     # Create agent
-    agent = create_deep_agent(tools=mcp_tools, ....)
+    agent = async_create_deep_agent(tools=mcp_tools, ....)
 
     # Stream the agent
     async for chunk in agent.astream(
@@ -388,6 +392,27 @@ async def main():
 
 asyncio.run(main())
 ```
+
+## Configurable Agent
+
+Configurable agents allow you to control the agent via a config passed in.
+
+```python
+from deepagents import create_configurable_agent
+
+agent_config = {"instructions": "foo", "subagents": []}
+
+build_agent = create_configurable_agent(
+    agent_config['instructions'],
+    agent_config['subagents'],
+    [],
+    agent_config={"recursion_limit": 1000}
+)
+```
+You can now use `build_agent` in your `langgraph.json` and deploy it with `langgraph dev`
+
+For async tools, you can use `from deepagents import async_create_configurable_agent`
+
 
 ## Roadmap
 - [ ] Allow users to customize full system prompt

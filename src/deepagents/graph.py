@@ -3,6 +3,7 @@ from deepagents.model import get_default_model
 from deepagents.tools import write_todos, write_file, read_file, ls, edit_file
 from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
+from langchain_core.runnables.base import RunnableLike
 from langchain_core.tools import BaseTool, tool
 from langchain_core.language_models import LanguageModelLike
 from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig
@@ -35,6 +36,7 @@ def _agent_builder(
     interrupt_config: Optional[ToolInterruptConfig] = None,
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
+    pre_model_hook: Optional[RunnableLike] = None,
     post_model_hook: Optional[Callable] = None,
     is_async: bool = False,
 ):
@@ -77,6 +79,7 @@ def _agent_builder(
             subagents or [],
             model,
             state_schema,
+            pre_model_hook,
             selected_post_model_hook,
         )
     else:
@@ -86,6 +89,7 @@ def _agent_builder(
             subagents or [],
             model,
             state_schema,
+            pre_model_hook,
             selected_post_model_hook,
         )
     all_tools = built_in_tools + list(tools) + [task_tool]
@@ -95,6 +99,7 @@ def _agent_builder(
         prompt=prompt,
         tools=all_tools,
         state_schema=state_schema,
+        pre_model_hook=pre_model_hook,
         post_model_hook=selected_post_model_hook,
         config_schema=config_schema,
         checkpointer=checkpointer,
@@ -111,6 +116,7 @@ def create_deep_agent(
     interrupt_config: Optional[ToolInterruptConfig] = None,
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
+    pre_model_hook: Optional[RunnableLike] = None,
     post_model_hook: Optional[Callable] = None,
 ):
     """Create a deep agent.
@@ -135,6 +141,7 @@ def create_deep_agent(
             only the specified built-in tools are included.
         interrupt_config: Optional Dict[str, HumanInterruptConfig] mapping tool names to interrupt configs.
         config_schema: The schema of the deep agent.
+        pre_model_hook: Custom pre model hook
         post_model_hook: Custom post model hook
         checkpointer: Optional checkpointer for persisting agent state between runs.
     """
@@ -148,6 +155,7 @@ def create_deep_agent(
         interrupt_config=interrupt_config,
         config_schema=config_schema,
         checkpointer=checkpointer,
+        pre_model_hook=pre_model_hook,
         post_model_hook=post_model_hook,
         is_async=False,
     )
@@ -163,6 +171,7 @@ def async_create_deep_agent(
     interrupt_config: Optional[ToolInterruptConfig] = None,
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
+    pre_model_hook: Optional[RunnableLike] = None,
     post_model_hook: Optional[Callable] = None,
 ):
     """Create a deep agent.
@@ -187,6 +196,7 @@ def async_create_deep_agent(
             only the specified built-in tools are included.
         interrupt_config: Optional Dict[str, HumanInterruptConfig] mapping tool names to interrupt configs.
         config_schema: The schema of the deep agent.
+        pre_model_hook: Custom pre model hook
         post_model_hook: Custom post model hook
         checkpointer: Optional checkpointer for persisting agent state between runs.
     """
@@ -200,6 +210,7 @@ def async_create_deep_agent(
         interrupt_config=interrupt_config,
         config_schema=config_schema,
         checkpointer=checkpointer,
+        pre_model_hook=pre_model_hook,
         post_model_hook=post_model_hook,
         is_async=True,
     )

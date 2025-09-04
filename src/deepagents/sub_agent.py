@@ -1,5 +1,6 @@
 from deepagents.prompts import TASK_DESCRIPTION_PREFIX, TASK_DESCRIPTION_SUFFIX
 from deepagents.state import DeepAgentState
+from langchain_core.runnables.base import RunnableLike
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import BaseTool
 from typing_extensions import TypedDict
@@ -22,10 +23,10 @@ class SubAgent(TypedDict):
     model: NotRequired[Union[LanguageModelLike, dict[str, Any]]]
 
 
-def _get_agents(tools, instructions, subagents: list[SubAgent], model, state_schema, post_model_hook: Optional[Callable] = None):
+def _get_agents(tools, instructions, subagents: list[SubAgent], model, state_schema, pre_model_hook: Optional[RunnableLike] = None, post_model_hook: Optional[Callable] = None):
     agents = {
         "general-purpose": create_react_agent(
-            model, prompt=instructions, tools=tools, checkpointer=False, post_model_hook=post_model_hook
+            model, prompt=instructions, tools=tools, checkpointer=False, pre_model_hook=pre_model_hook, post_model_hook=post_model_hook
         )
     }
     tools_by_name = {}
@@ -56,6 +57,7 @@ def _get_agents(tools, instructions, subagents: list[SubAgent], model, state_sch
             tools=_tools,
             state_schema=state_schema,
             checkpointer=False,
+            pre_model_hook=pre_model_hook,
             post_model_hook=post_model_hook,
         )
     return agents
@@ -66,9 +68,9 @@ def _get_subagent_description(subagents):
 
 
 def _create_task_tool(
-    tools, instructions, subagents: list[SubAgent], model, state_schema, post_model_hook: Optional[Callable] = None
+    tools, instructions, subagents: list[SubAgent], model, state_schema, pre_model_hook: Optional[RunnableLike] = None, post_model_hook: Optional[Callable] = None
 ):
-    agents = _get_agents(tools, instructions, subagents, model, state_schema, post_model_hook)
+    agents = _get_agents(tools, instructions, subagents, model, state_schema, pre_model_hook, post_model_hook)
     other_agents_string = _get_subagent_description(subagents)
 
     @tool(
@@ -101,9 +103,9 @@ def _create_task_tool(
 
 
 def _create_sync_task_tool(
-    tools, instructions, subagents: list[SubAgent], model, state_schema, post_model_hook: Optional[Callable] = None
+    tools, instructions, subagents: list[SubAgent], model, state_schema, pre_model_hook: Optional[RunnableLike] = None, post_model_hook: Optional[Callable] = None
 ):
-    agents = _get_agents(tools, instructions, subagents, model, state_schema, post_model_hook)
+    agents = _get_agents(tools, instructions, subagents, model, state_schema, pre_model_hook, post_model_hook)
     other_agents_string = _get_subagent_description(subagents)
 
     @tool(

@@ -41,6 +41,7 @@ def _agent_builder(
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
+    main_agent_tools: Optional[list[str]] = None,
     is_async: bool = False,
 ):
     prompt = instructions + base_prompt
@@ -93,7 +94,16 @@ def _agent_builder(
             state_schema,
             selected_post_model_hook,
         )
-    all_tools = built_in_tools + list(tools) + [task_tool]
+    if main_agent_tools is not None:
+        passed_in_tools = []
+        for tool_ in tools:
+            if not isinstance(tool_, BaseTool):
+                tool_ = tool(tool_)
+            if tool_.name in main_agent_tools:
+                passed_in_tools.append(tool_)
+    else:
+        passed_in_tools = list(tools)
+    all_tools = built_in_tools + passed_in_tools + [task_tool]
 
     return create_react_agent(
         model,
@@ -117,6 +127,7 @@ def create_deep_agent(
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
+    main_agent_tools: Optional[list[str]] = None,
 ):
     """Create a deep agent.
 
@@ -142,6 +153,9 @@ def create_deep_agent(
         config_schema: The schema of the deep agent.
         post_model_hook: Custom post model hook
         checkpointer: Optional checkpointer for persisting agent state between runs.
+        main_agent_tools: Optional list of tool names that the main agent should have. If not provided,
+            will have access to all tools. Note that built-in tools (for filesystem and todo and subagents) are
+            always included - this filtering only applies to passed in tools.
     """
     return _agent_builder(
         tools=tools,
@@ -154,6 +168,7 @@ def create_deep_agent(
         config_schema=config_schema,
         checkpointer=checkpointer,
         post_model_hook=post_model_hook,
+        main_agent_tools=main_agent_tools,
         is_async=False,
     )
 
@@ -169,6 +184,7 @@ def async_create_deep_agent(
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
+    main_agent_tools: Optional[list[str]] = None,
 ):
     """Create a deep agent.
 
@@ -194,6 +210,9 @@ def async_create_deep_agent(
         config_schema: The schema of the deep agent.
         post_model_hook: Custom post model hook
         checkpointer: Optional checkpointer for persisting agent state between runs.
+        main_agent_tools: Optional list of tool names that the main agent should have. If not provided,
+            will have access to all tools. Note that built-in tools (for filesystem and todo and subagents) are
+            always included - this filtering only applies to passed in tools.
     """
     return _agent_builder(
         tools=tools,
@@ -206,5 +225,6 @@ def async_create_deep_agent(
         config_schema=config_schema,
         checkpointer=checkpointer,
         post_model_hook=post_model_hook,
+        main_agent_tools=main_agent_tools,
         is_async=True,
     )

@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "filesystem_agent": "./filesystem_example.py:graph"
+  },
+  "env": ".env",
+  "image_distro": "wolfi"
+}

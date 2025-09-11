@@ -13,7 +13,9 @@ from langchain_core.language_models import LanguageModelLike
 from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig
 from langgraph.types import Checkpointer
 from langgraph.prebuilt import create_react_agent
+from pydantic import BaseModel
 
+StructuredResponseSchema = Union[dict, type[BaseModel]]
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
 
@@ -41,6 +43,9 @@ def _agent_builder(
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
+    response_format: Optional[
+        Union[StructuredResponseSchema, tuple[str, StructuredResponseSchema]]
+    ] = None,
     is_async: bool = False,
 ):
     prompt = instructions + base_prompt
@@ -103,6 +108,7 @@ def _agent_builder(
         post_model_hook=selected_post_model_hook,
         config_schema=config_schema,
         checkpointer=checkpointer,
+        response_format=response_format,
     )
 
 
@@ -117,6 +123,9 @@ def create_deep_agent(
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
+    response_format: Optional[
+        Union[StructuredResponseSchema, tuple[str, StructuredResponseSchema]]
+    ] = None,
 ):
     """Create a deep agent.
 
@@ -155,6 +164,7 @@ def create_deep_agent(
         checkpointer=checkpointer,
         post_model_hook=post_model_hook,
         is_async=False,
+        response_format=response_format,
     )
 
 
@@ -169,6 +179,9 @@ def async_create_deep_agent(
     config_schema: Optional[Type[Any]] = None,
     checkpointer: Optional[Checkpointer] = None,
     post_model_hook: Optional[Callable] = None,
+    response_format: Optional[
+        Union[StructuredResponseSchema, tuple[str, StructuredResponseSchema]]
+    ] = None,
 ):
     """Create a deep agent.
 
@@ -206,5 +219,6 @@ def async_create_deep_agent(
         config_schema=config_schema,
         checkpointer=checkpointer,
         post_model_hook=post_model_hook,
+        response_format=response_format,
         is_async=True,
     )

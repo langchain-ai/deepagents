@@ -114,13 +114,10 @@ def _create_task_tool(
             return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
         sub_agent = agents[subagent_type]
         state["messages"] = [{"role": "user", "content": description}]
-        print("The config is: ", special_config_param)
         if special_config_param.get('configurable').get("stream_mode") == "stream":
-            # Stream the sub_agent and collect all chunks
             result = None
             async for chunk in sub_agent.astream(input=state, config=special_config_param):
-                print("Chunk received:", chunk)  # Optional: print each chunk as it arrives
-                result = chunk  # Keep updating with the latest chunk
+                result = chunk
         else:
             result = await sub_agent.ainvoke(input=state, config=special_config_param)
         return Command(

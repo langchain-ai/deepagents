@@ -142,10 +142,10 @@ agent = create_deep_agent(
 For more complex use cases, you can provide your own pre-built LangGraph graph as a subagent:
 
 ```python
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 # Create a custom agent graph
-custom_graph = create_react_agent(
+custom_graph = create_agent(
     model=your_model,
     tools=specialized_tools,
     prompt="You are a specialized agent for data analysis..."

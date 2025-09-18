@@ -1,4 +1,4 @@
-from langgraph.prebuilt.chat_agent_executor import AgentState
+from langchain.agents import AgentState
 from typing import NotRequired, Annotated
 from typing import Literal
 from typing_extensions import TypedDict

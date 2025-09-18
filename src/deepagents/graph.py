@@ -1,6 +1,6 @@
 from deepagents.sub_agent import (
-    _create_task_tool,
-    _create_sync_task_tool,
+    create_task_tool,
+    create_sync_task_tool,
     SubAgent,
     CustomSubAgent,
 )
@@ -10,15 +10,22 @@ from deepagents.state import DeepAgentState
 from typing import Sequence, Union, Callable, Any, TypeVar, Type, Optional
 from langchain_core.tools import BaseTool, tool
 from langchain_core.language_models import LanguageModelLike
-from deepagents.interrupt import create_interrupt_hook, ToolInterruptConfig
+from deepagents.interrupt import ToolInterruptConfig
 from langgraph.types import Checkpointer
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from deepagents.prompts import BASE_AGENT_PROMPT
+from langchain_anthropic import ChatAnthropic
+from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
+from langchain.chat_models import init_chat_model
+from deepagents.middleware import PostModelHookMiddleware, InterruptMiddleware, create_custom_state_middleware
+
 
 StateSchema = TypeVar("StateSchema", bound=DeepAgentState)
 StateSchemaType = Type[StateSchema]
 
-
+# TODO: Once v1 is released, we'll allow the user to specify their own middleware
+# For now, keeping post_model_hook for back-compat
 def _agent_builder(
     tools: Sequence[Union[BaseTool, Callable, dict[str, Any]]],
     instructions: str,
@@ -49,47 +56,50 @@ def _agent_builder(
 
     if model is None:
         model = get_default_model()
+    elif isinstance(model, str):
+        model = init_chat_model(model)
+
     state_schema = state_schema or DeepAgentState
 
-    # Should never be the case that both are specified
-    if post_model_hook and interrupt_config:
-        raise ValueError(
-            "Cannot specify both post_model_hook and interrupt_config together. "
-            "Use either interrupt_config for tool interrupts or post_model_hook for custom post-processing."
+    # Add middleware for the agent
+    middleware = [
+        create_custom_state_middleware(state_schema),
+        SummarizationMiddleware(
+            model,
+            max_tokens_before_summary=180000,
+            messages_to_keep=20,
         )
-    elif post_model_hook is not None:
-        selected_post_model_hook = post_model_hook
-    elif interrupt_config is not None:
-        selected_post_model_hook = create_interrupt_hook(interrupt_config)
-    else:
-        selected_post_model_hook = None
+    ]
+    if isinstance(model, ChatAnthropic):
+        middleware.append(AnthropicPromptCachingMiddleware())
+    if interrupt_config:
+        middleware.append(InterruptMiddleware(interrupt_config))
+    if post_model_hook:
+        middleware.append(PostModelHookMiddleware(post_model_hook))
 
     if not is_async:
-        task_tool = _create_sync_task_tool(
+        task_tool = create_sync_task_tool(
             list(tools) + built_in_tools,
             instructions,
             subagents or [],
             model,
-            state_schema,
-            selected_post_model_hook,
+            middleware,
         )
     else:
-        task_tool = _create_task_tool(
+        task_tool = create_task_tool(
             list(tools) + built_in_tools,
             instructions,
             subagents or [],
             model,
-            state_schema,
-            selected_post_model_hook,
+            middleware,
         )
     all_tools = built_in_tools + list(tools) + [task_tool]
 
-    return create_react_agent(
+    return create_agent(
         model,
         prompt=prompt,
         tools=all_tools,
-        state_schema=state_schema,
-        post_model_hook=selected_post_model_hook,
+        middleware=middleware,
         config_schema=config_schema,
         checkpointer=checkpointer,
     )

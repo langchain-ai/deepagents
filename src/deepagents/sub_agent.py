@@ -1,6 +1,5 @@
 from deepagents.prompts import TASK_TOOL_DESCRIPTION
 from deepagents.state import DeepAgentState
-from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import BaseTool
 from typing_extensions import TypedDict
 from langchain_core.tools import tool, InjectedToolCallId
@@ -10,7 +9,7 @@ from langchain.chat_models import init_chat_model
 from typing import Annotated, NotRequired, Any, Union, Optional, Callable
 from langgraph.types import Command
 from langchain_core.runnables import Runnable
-
+from langchain.agents import create_agent
 from langgraph.prebuilt import InjectedState
 
 
@@ -34,17 +33,15 @@ def _get_agents(
     instructions,
     subagents: list[SubAgent | CustomSubAgent],
     model,
-    state_schema,
-    post_model_hook: Optional[Callable] = None,
+    middleware,
 ):
     agents = {
-        "general-purpose": create_react_agent(
+        "general-purpose": create_agent(
             model,
             prompt=instructions,
             tools=tools,
             checkpointer=False,
-            post_model_hook=post_model_hook,
-            state_schema=state_schema,
+            middleware=middleware,
         )
     }
     tools_by_name = {}
@@ -72,13 +69,12 @@ def _get_agents(
         else:
             # Fallback to main model
             sub_model = model
-        agents[_agent["name"]] = create_react_agent(
+        agents[_agent["name"]] = create_agent(
             sub_model,
             prompt=_agent["prompt"],
             tools=_tools,
-            state_schema=state_schema,
             checkpointer=False,
-            post_model_hook=post_model_hook,
+            middleware=middleware,
         )
     return agents
 
@@ -87,16 +83,15 @@ def _get_subagent_description(subagents: list[SubAgent | CustomSubAgent]):
     return [f"- {_agent['name']}: {_agent['description']}" for _agent in subagents]
 
 
-def _create_task_tool(
+def create_task_tool(
     tools,
     instructions,
     subagents: list[SubAgent | CustomSubAgent],
     model,
-    state_schema,
-    post_model_hook: Optional[Callable] = None,
+    middleware,
 ):
     agents = _get_agents(
-        tools, instructions, subagents, model, state_schema, post_model_hook
+        tools, instructions, subagents, model, middleware
     )
     other_agents_string = _get_subagent_description(subagents)
 
@@ -128,16 +123,15 @@ def _create_task_tool(
     return task
 
 
-def _create_sync_task_tool(
+def create_sync_task_tool(
     tools,
     instructions,
     subagents: list[SubAgent | CustomSubAgent],
     model,
-    state_schema,
-    post_model_hook: Optional[Callable] = None,
+    middleware,
 ):
     agents = _get_agents(
-        tools, instructions, subagents, model, state_schema, post_model_hook
+        tools, instructions, subagents, model, middleware
     )
     other_agents_string = _get_subagent_description(subagents)
 

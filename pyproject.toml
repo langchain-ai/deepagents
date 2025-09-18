@@ -6,9 +6,10 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "langgraph>=0.2.6",
+    "langgraph>=1.0.0a3",
     "langchain-anthropic>=0.1.23",
-    "langchain>=0.2.14",
+    "langchain>=1.0.0a5",
+    "langgraph-prebuilt>=0.7.0a2",
 ]
 
 

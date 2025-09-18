@@ -107,7 +107,7 @@ def _create_task_tool(
     async def task(
         description: str,
         subagent_type: str,
-        state: Annotated[DeepAgentState, InjectedState],
+        state: Annotated[dict, InjectedState],
         tool_call_id: Annotated[str, InjectedToolCallId],
     ):
         if subagent_type not in agents:

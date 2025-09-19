@@ -1,6 +1,6 @@
 """Interrupt configuration functionality for deep agents using LangGraph prebuilts."""
 
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Union
 from langgraph.types import interrupt
 from langgraph.prebuilt.interrupt import (
     HumanInterruptConfig,
@@ -11,7 +11,7 @@ from langgraph.prebuilt.interrupt import (
 
 ToolInterruptConfig = Dict[str, Union[HumanInterruptConfig, bool]]
 
-
+# TODO: This should be replaced with Middleware as it is no longer used.
 def create_interrupt_hook(
     tool_configs: ToolInterruptConfig,
     message_prefix: str = "Tool execution requires approval",

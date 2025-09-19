@@ -361,10 +361,7 @@ Usage:
 - The write_file tool will create the a new file.
 - Prefer to edit existing files over creating new ones when possible."""
 
-
-BASE_AGENT_PROMPT = """In order to complete the objective that the user asks ofyou, you have access to a number of standard tools.
-
-## `write_todos`
+WRITE_TODOS_SYSTEM_PROMPT = """## `write_todos`
 
 You have access to the `write_todos` tool to help you manage and plan complex objectives. 
 Use this tool for complex objectives to ensure that you are tracking each necessary step and giving the user visibility into your progress.
@@ -374,9 +371,11 @@ It is critical that you mark todos as completed as soon as you are done with a s
 For simple objectives that only require a few steps, it is better to just complete the objective directly and NOT use this tool.
 Writing todos takes time and tokens, use it when it is helpful for managing complex many-step problems! But not for simple few-step requests.
 
-IMPORTANT: The `write_todos` tool should never be called multiple times in parallel.
+## Important To-Do List Usage Notes to Remember
+- The `write_todos` tool should never be called multiple times in parallel.
+- Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant."""
 
-## `task` (subagent spawner)
+TASK_SYSTEM_PROMPT = """## `task` (subagent spawner)
 
 You have access to a `task` tool to launch short-lived subagents that handle isolated tasks. These agents are ephemeral — they live only for the duration of the task and return a single result.
 
@@ -399,17 +398,19 @@ When NOT to use the task tool:
 - If delegating does not reduce token usage, complexity, or context switching
 - If splitting would add latency without benefit
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`
+## Important Task Tool Usage Notes to Remember
+- Whenever possible, parallelize the work that you do. This is true for both tool_calls, and for tasks. Whenever you have independent steps to complete - make tool_calls, or kick off tasks (subagents) in parallel to accomplish them faster. This saves time for the user, which is incredibly important.
+- Remember to use the `task` tool to silo independent tasks within a multi-part objective.
+- You should use the `task` tool whenever you have a complex task that will take multiple steps, and is independent from other tasks that the agent needs to complete. These agents are highly competent and efficient."""
+
+FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`
 
 You have access to a local, private filesystem which you can interact with using these tools.
 - ls: list all files in the local filesystem
 - read_file: read a file from the local filesystem
 - write_file: write to a file in the local filesystem
-- edit_file: edit a file in the local filesystem
+- edit_file: edit a file in the local filesystem"""
 
-# Important Usage Notes to Remember
-- Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant.
-- Whenever possible, parallelize the work that you do. This is true for both tool_calls, and for tasks. Whenever you have independent steps to complete - make tool_calls, or kick off tasks (subagents) in parallel to accomplish them faster. This saves time for the user, which is incredibly important.
-- Remember to use the `task` tool to silo independent tasks within a multi-part objective.
-- You should use the `task` tool whenever you have a complex task that will take multiple steps, and is independent from other tasks that the agent needs to complete. These agents are highly competent and efficient.
+BASE_AGENT_PROMPT = """
+In order to complete the objective that the user asks ofyou, you have access to a number of standard tools.
 """

@@ -42,7 +42,7 @@ def create_configurable_agent(
             instructions=config.instructions,
             tools=[t for t in tools if t.name in config.tools],
             subagents=config.subagents,
-            config_schema=AgentConfig,
+            context_schema=AgentConfig,
             **kwargs,
         ).with_config(agent_config or {})
 
@@ -77,7 +77,7 @@ def async_create_configurable_agent(
             instructions=config.instructions,
             tools=[t for t in tools if t.name in config.tools],
             subagents=config.subagents,
-            config_schema=AgentConfig,
+            context_schema=AgentConfig,
             **kwargs,
         ).with_config(agent_config or {"recursion_limit": 1000})
 

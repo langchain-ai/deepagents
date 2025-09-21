@@ -95,9 +95,6 @@ def _create_task_tool(
     state_schema,
     post_model_hook: Optional[Callable] = None,
 ):
-    agents = _get_agents(
-        tools, instructions, subagents, model, state_schema, post_model_hook
-    )
     other_agents_string = _get_subagent_description(subagents)
 
     @tool(
@@ -109,6 +106,10 @@ def _create_task_tool(
         state: Annotated[DeepAgentState, InjectedState],
         tool_call_id: Annotated[str, InjectedToolCallId],
     ):
+        agents = _get_agents(
+            tools, instructions, subagents, model, state_schema, post_model_hook
+        )
+        
         if subagent_type not in agents:
             return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
         sub_agent = agents[subagent_type]
@@ -136,9 +137,6 @@ def _create_sync_task_tool(
     state_schema,
     post_model_hook: Optional[Callable] = None,
 ):
-    agents = _get_agents(
-        tools, instructions, subagents, model, state_schema, post_model_hook
-    )
     other_agents_string = _get_subagent_description(subagents)
 
     @tool(
@@ -150,6 +148,10 @@ def _create_sync_task_tool(
         state: Annotated[DeepAgentState, InjectedState],
         tool_call_id: Annotated[str, InjectedToolCallId],
     ):
+        agents = _get_agents(
+            tools, instructions, subagents, model, state_schema, post_model_hook
+        )
+        
         if subagent_type not in agents:
             return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
         sub_agent = agents[subagent_type]

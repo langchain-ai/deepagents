@@ -362,7 +362,7 @@ Usage:
 - Prefer to edit existing files over creating new ones when possible."""
 
 
-BASE_AGENT_PROMPT = """In order to complete the objective that the user asks ofyou, you have access to a number of standard tools.
+BASE_AGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
 
 ## `write_todos`
 

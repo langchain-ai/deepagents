@@ -25,28 +25,29 @@ def agent_builder(
     if model is None:
         model = get_default_model()
 
-    deepagent_middleware = [
-        PlanningMiddleware(),
-        FilesystemMiddleware(),
-        SubAgentMiddleware(
-            default_subagent_tools=tools,   # NOTE: These tools are piped to the general-purpose subagent.
-            subagents=subagents if subagents is not None else [],
-            model=model,
-            is_async=is_async,
-        ),
-        SummarizationMiddleware(
-            model=model,
-            max_tokens_before_summary=120000,
-            messages_to_keep=20,
-        ),
-        AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore")
-    ]
+    if middleware is None:
+        deepagent_middleware = [
+            PlanningMiddleware(),
+            FilesystemMiddleware(),
+            SubAgentMiddleware(
+                default_subagent_tools=tools,   # NOTE: These tools are piped to the general-purpose subagent.
+                subagents=subagents if subagents is not None else [],
+                model=model,
+                is_async=is_async,
+            ),
+            SummarizationMiddleware(
+                model=model,
+                max_tokens_before_summary=120000,
+                messages_to_keep=20,
+            ),
+            AnthropicPromptCachingMiddleware(ttl="5m", unsupported_model_behavior="ignore")
+        ]
+    else:
+        deepagent_middleware = list(middleware)
+
     # Add tool interrupt config if provided
     if tool_configs is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=tool_configs))
-
-    if middleware is not None:
-        deepagent_middleware.extend(middleware)
 
     return create_agent(
         model,

@@ -1,5 +1,6 @@
 """DeepAgents implemented as Middleware"""
 
+import os
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, AgentState, ModelRequest, SummarizationMiddleware
 from langchain.agents.middleware.prompt_caching import AnthropicPromptCachingMiddleware
@@ -33,6 +34,16 @@ class PlanningMiddleware(AgentMiddleware):
 class FilesystemMiddleware(AgentMiddleware):
     state_schema = FilesystemState
     tools = [ls, read_file, write_file, edit_file]
+
+    def before_model(self, agent_state: FilesystemState) -> FilesystemState:
+        has_started = agent_state.get("has_started")
+        if has_started is None:
+            if os.getenv("FILE_SYSTEM_PATH") is not None:
+                os.chdir(os.getenv("FILE_SYSTEM_PATH"))
+            agent_state["has_started"] = True
+        return agent_state
+            
+
 
     def modify_model_request(self, request: ModelRequest, agent_state: FilesystemState) -> ModelRequest:
         request.system_prompt = request.system_prompt + "\n\n" + FILESYSTEM_SYSTEM_PROMPT

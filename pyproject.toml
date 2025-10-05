@@ -4,7 +4,7 @@ version = "0.0.10"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.11,<4.0"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "langgraph>=1.0.0a3",
     "langchain-anthropic>=0.1.23",
@@ -19,16 +19,18 @@ dev = [
     "build",
     "twine",
 ]
+file-server = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+]
 
 [build-system]
 requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["deepagents", "tests"]
-[tool.setuptools.package-dir]
-"deepagents" = "src/deepagents"
-"tests" = "tests"
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]

@@ -1,7 +1,6 @@
-from langchain.agents.middleware import AgentState
-from typing import NotRequired, Annotated
-from typing import Literal
-from typing_extensions import TypedDict
+from langgraph.graph import MessagesState
+from typing import Annotated, Literal
+from typing_extensions import TypedDict, NotRequired
 
 
 class Todo(TypedDict):
@@ -17,17 +16,22 @@ def file_reducer(l, r):
     elif r is None:
         return l
     else:
-        return {**l, **r}
+        # Combine lists and remove duplicates while preserving order
+        combined = l.copy()
+        for item in r:
+            if item not in combined:
+                combined.append(item)
+        return combined
 
 
-class DeepAgentState(AgentState):
+class DeepAgentState(MessagesState):
     todos: NotRequired[list[Todo]]
-    files: Annotated[NotRequired[dict[str, str]], file_reducer]
 
 
-class PlanningState(AgentState):
+class PlanningState(MessagesState):
     todos: NotRequired[list[Todo]]
 
 
-class FilesystemState(AgentState):
-    files: Annotated[NotRequired[dict[str, str]], file_reducer]
+class FilesystemState(MessagesState):
+    files: Annotated[NotRequired[list[str]], file_reducer]
+    has_started: NotRequired[bool]

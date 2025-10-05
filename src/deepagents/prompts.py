@@ -323,43 +323,68 @@ Since the user is greeting, use the greeting-responder agent to respond with a f
 assistant: "I'm going to use the Task tool to launch with the greeting-responder agent"
 </example>"""
 
-LIST_FILES_TOOL_DESCRIPTION = """Lists all files in the local filesystem.
+LIST_FILES_TOOL_DESCRIPTION = """Lists files and directories in the specified path within the allowed filesystem boundary.
 
 Usage:
-- The list_files tool will return a list of all files in the local filesystem.
-- This is very useful for exploring the file system and finding the right file to read or edit.
-- You should almost ALWAYS use this tool before using the Read or Edit tools."""
+- The list_files tool will return a list of files and directories in the specified path
+- All operations are restricted to the configured filesystem boundary for security
+- Directories are shown with a trailing '/' to distinguish them from files
+- This is very useful for exploring the file system and finding the right file to read or edit
+- You should almost ALWAYS use this tool before using the Read or Edit tools
+- Default path is "." (current directory) if not specified"""
 
-READ_FILE_TOOL_DESCRIPTION = """Reads a file from the local filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem. You can access any file directly by using this tool.
 
 Usage:
-- The file_path parameter must be an absolute path, not a relative path
 - By default, it reads up to 2000 lines starting from the beginning of the file
-- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
-- Any lines longer than 2000 characters will be truncated
+- You can optionally specify a line offset and limit (especially handy for long files)
+- Files are limited to 100KB characters to prevent memory issues
+- Files larger than 10MB will be rejected - use specialized tools for large files
+- Any lines longer than 2000 characters will be truncated with a warning
 - Results are returned using cat -n format, with line numbers starting at 1
-- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful. 
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- You should ALWAYS make sure a file has been read before editing it."""
+- You have the capability to call multiple tools in a single response
+- If you read a file that exists but has empty contents you will receive a system reminder warning
+- You should ALWAYS make sure a file has been read before editing it
+- The tool automatically handles UTF-8 and Latin-1 encodings
 
-EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files. 
+IMPORTANT LIMITATIONS - When NOT to use this tool:
+- DO NOT try to read big data files directly (CSV, Parquet, Avro, JSON, JSONL and other tabular formats)
+- The tool will warn you about tabular/binary files and suggest using specialized tools instead
+- For tabular files, use the character limit to peek into file structure if absolutely needed
+- Binary files (PDF, images, executables) cannot be read as text - use appropriate tools
+- Files with unsupported encodings will be rejected
+
+PROPER USAGE:
+- Use this tool for reading text files, configuration files, source code, documentation
+- Use for exploring file contents when you need to understand structure or content
+- Use with offset/limit parameters for large text files to read specific sections
+- Perfect for reading log files, config files, scripts, and other text-based content"""
+
+EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files within the allowed filesystem boundary.
 
 Usage:
-- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file. 
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab. Everything after that tab is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`. 
-- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance."""
+- All file operations are restricted to the configured filesystem boundary for security
+- You must use your `Read` tool at least once in the conversation before editing
+- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix
+- The line number prefix format is: spaces + line number + tab. Everything after that tab is the actual file content to match
+- Never include any part of the line number prefix in the old_string or new_string
+- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required
+- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked
+- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`
+- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance
+- Files with unsupported encodings will be rejected
+- The tool automatically handles UTF-8 and Latin-1 encodings"""
 
-WRITE_FILE_TOOL_DESCRIPTION = """Writes to a file in the local filesystem.
+WRITE_FILE_TOOL_DESCRIPTION = """Writes content to a file in the real filesystem within the allowed filesystem boundary.
 
 Usage:
-- The file_path parameter must be an absolute path, not a relative path
+- All file operations are restricted to the configured filesystem boundary for security
 - The content parameter must be a string
-- The write_file tool will create the a new file.
-- Prefer to edit existing files over creating new ones when possible."""
+- The write_file tool will create a new file or overwrite an existing file
+- Parent directories will be created automatically if they don't exist
+- Files are written using UTF-8 encoding
+- Prefer to edit existing files over creating new ones when possible
+- The tool will track created files in the agent state for reference"""
 
 WRITE_TODOS_SYSTEM_PROMPT = """## `write_todos`
 

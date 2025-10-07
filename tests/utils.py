@@ -1,7 +1,7 @@
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain.agents.middleware import AgentMiddleware
 from typing import Annotated
-from langchain.agents.tool_node import InjectedState
+from langchain.tools.tool_node import InjectedState
 from langchain.agents.middleware import AgentMiddleware, AgentState
 from langgraph.types import Command
 from langchain_core.messages import ToolMessage

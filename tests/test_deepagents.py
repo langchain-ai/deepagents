@@ -90,7 +90,7 @@ class TestDeepAgents:
                 "graph": create_agent(
                     model=SAMPLE_MODEL,
                     tools=[get_soccer_scores],
-                    prompt="You are a soccer agent.",
+                    system_prompt="You are a soccer agent.",
                 )
             }
         ]

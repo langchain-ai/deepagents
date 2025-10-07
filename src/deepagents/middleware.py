@@ -7,6 +7,7 @@ from langchain_core.tools import BaseTool, tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from langchain.chat_models import init_chat_model
 from langgraph.types import Command
+from langgraph.runtime import Runtime
 from langchain.tools.tool_node import InjectedState
 from typing import Annotated
 from deepagents.state import PlanningState, FilesystemState
@@ -22,7 +23,7 @@ class PlanningMiddleware(AgentMiddleware):
     state_schema = PlanningState
     tools = [write_todos]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: PlanningState) -> ModelRequest:
+    def modify_model_request(self, request: ModelRequest, agent_state: PlanningState, runtime: Runtime) -> ModelRequest:
         request.system_prompt = request.system_prompt + "\n\n" + WRITE_TODOS_SYSTEM_PROMPT
         return request
 
@@ -34,7 +35,7 @@ class FilesystemMiddleware(AgentMiddleware):
     state_schema = FilesystemState
     tools = [ls, read_file, write_file, edit_file]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: FilesystemState) -> ModelRequest:
+    def modify_model_request(self, request: ModelRequest, agent_state: FilesystemState, runtime: Runtime) -> ModelRequest:
         request.system_prompt = request.system_prompt + "\n\n" + FILESYSTEM_SYSTEM_PROMPT
         return request
 
@@ -59,7 +60,7 @@ class SubAgentMiddleware(AgentMiddleware):
         )
         self.tools = [task_tool]
 
-    def modify_model_request(self, request: ModelRequest, agent_state: AgentState) -> ModelRequest:
+    def modify_model_request(self, request: ModelRequest, agent_state: AgentState, runtime: Runtime) -> ModelRequest:
         request.system_prompt = request.system_prompt + "\n\n" + TASK_SYSTEM_PROMPT
         return request
 
@@ -82,7 +83,7 @@ def _get_agents(
     agents = {
         "general-purpose": create_agent(
             model,
-            prompt=BASE_AGENT_PROMPT,
+            system_prompt=BASE_AGENT_PROMPT,
             tools=default_subagent_tools,
             checkpointer=False,
             middleware=default_subagent_middleware
@@ -114,7 +115,7 @@ def _get_agents(
             _middleware = default_subagent_middleware
         agents[_agent["name"]] = create_agent(
             sub_model,
-            prompt=_agent["prompt"],
+            system_prompt=_agent["prompt"],
             tools=_tools,
             middleware=_middleware,
             checkpointer=False,

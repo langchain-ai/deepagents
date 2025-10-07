@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.0.10"
+version = "0.0.11"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
@@ -8,8 +8,9 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "langgraph>=1.0.0a3",
     "langchain-anthropic>=0.1.23",
-    "langchain>=1.0.0a10",
+    "langchain>=1.0.0a12",
     "langgraph-prebuilt>=0.7.0a2",
+    "langchain-core>=1.0.0a6"
 ]
 
 [project.optional-dependencies]

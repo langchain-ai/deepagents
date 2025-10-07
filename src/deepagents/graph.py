@@ -50,7 +50,7 @@ def agent_builder(
 
     return create_agent(
         model,
-        prompt=instructions + "\n\n" + BASE_AGENT_PROMPT,
+        system_prompt=instructions + "\n\n" + BASE_AGENT_PROMPT,
         tools=tools,
         middleware=deepagent_middleware,
         context_schema=context_schema,

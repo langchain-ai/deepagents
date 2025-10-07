@@ -82,7 +82,7 @@ def _get_agents(
     agents = {
         "general-purpose": create_agent(
             model,
-            prompt=BASE_AGENT_PROMPT,
+            system_prompt=BASE_AGENT_PROMPT,
             tools=default_subagent_tools,
             checkpointer=False,
             middleware=default_subagent_middleware
@@ -114,7 +114,7 @@ def _get_agents(
             _middleware = default_subagent_middleware
         agents[_agent["name"]] = create_agent(
             sub_model,
-            prompt=_agent["prompt"],
+            system_prompt=_agent["prompt"],
             tools=_tools,
             middleware=_middleware,
             checkpointer=False,

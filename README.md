@@ -405,7 +405,7 @@ The `deepagents` library can be ran with MCP tools. This can be achieved by usin
 ```python
 import asyncio
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from deepagents import create_deep_agent
+from deepagents import async_create_deep_agent
 
 async def main():
     # Collect MCP tools

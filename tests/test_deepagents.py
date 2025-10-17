@@ -1,10 +1,14 @@
-from deepagents.graph import create_deep_agent
+from deepagents.graph import create_deep_agent, async_create_deep_agent
 from langchain.agents import create_agent
 from tests.utils import assert_all_deepagent_qualities, SAMPLE_MODEL, sample_tool, get_weather, get_soccer_scores, SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, WeatherToolMiddleware, ResearchMiddleware, ResearchMiddlewareWithTools, TOY_BASKETBALL_RESEARCH
 
 class TestDeepAgents:
     def test_base_deep_agent(self):
         agent = create_deep_agent()
+        assert_all_deepagent_qualities(agent)
+
+    def test_base_async_deep_agent(self):
+        agent = async_create_deep_agent()
         assert_all_deepagent_qualities(agent)
 
     def test_deep_agent_with_tool(self):

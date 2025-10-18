@@ -18,6 +18,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.local_filesystem import LocalFilesystemMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
@@ -47,6 +48,7 @@ def create_deep_agent(
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
     use_longterm_memory: bool = False,
+    use_local_filesystem: bool = False,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     debug: bool = False,
     name: str | None = None,
@@ -80,6 +82,8 @@ def create_deep_agent(
         store: Optional store for persisting longterm memories.
         use_longterm_memory: Whether to use longterm memory - you must provide a store
             in order to use longterm memory.
+        use_local_filesystem: If True, injects LocalFilesystemMiddleware (tools operate on disk).
+            When True, longterm memory is not supported and `use_longterm_memory` must be False.
         interrupt_on: Optional Dict[str, bool | InterruptOnConfig] mapping tool names to
             interrupt configs.
         debug: Whether to enable debug mode. Passed through to create_agent.
@@ -92,20 +96,25 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
 
+    if use_local_filesystem and use_longterm_memory:
+        raise ValueError("Longterm memory is not supported when using the local filesystem. Set use_longterm_memory=False or disable use_local_filesystem.")
+
+    # Choose filesystem middleware kind
+    def _fs_middleware():
+        if use_local_filesystem:
+            return LocalFilesystemMiddleware()
+        return FilesystemMiddleware(long_term_memory=use_longterm_memory)
+
     deepagent_middleware = [
         TodoListMiddleware(),
-        FilesystemMiddleware(
-            long_term_memory=use_longterm_memory,
-        ),
+        _fs_middleware(),
         SubAgentMiddleware(
             default_model=model,
             default_tools=tools,
             subagents=subagents if subagents is not None else [],
             default_middleware=[
                 TodoListMiddleware(),
-                FilesystemMiddleware(
-                    long_term_memory=use_longterm_memory,
-                ),
+                _fs_middleware(),
                 SummarizationMiddleware(
                     model=model,
                     max_tokens_before_summary=170000,

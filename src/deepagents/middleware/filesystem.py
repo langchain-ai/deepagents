@@ -27,6 +27,8 @@ from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore, Item
 from langgraph.types import Command
 from typing_extensions import TypedDict
+from deepagents.middleware.common import TOO_LARGE_TOOL_MSG
+from deepagents.prompts import EDIT_DESCRIPTION, TOOL_DESCRIPTION, LONGTERM_MEMORY_SYSTEM_PROMPT, DEFAULT_MEMORY
 
 MEMORIES_PREFIX = "/memories/"
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -357,6 +359,9 @@ class FilesystemState(AgentState):
 
     files: Annotated[NotRequired[dict[str, FileData]], _file_data_reducer]
     """Files in the filesystem."""
+    
+    agent_memory: NotRequired[str]
+    """Content of /memories/agent.md for long-term memory."""
 
 
 LIST_FILES_TOOL_DESCRIPTION = """Lists all files in the filesystem, optionally filtering by directory.
@@ -368,29 +373,10 @@ Usage:
 - You should almost ALWAYS use this tool before using the Read or Edit tools."""
 LIST_FILES_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT = f"\n- Files from the longterm filesystem will be prefixed with the {MEMORIES_PREFIX} path."
 
-READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
-
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 2000 lines starting from the beginning of the file
-- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
-- Any lines longer than 2000 characters will be truncated
-- Results are returned using cat -n format, with line numbers starting at 1
-- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- You should ALWAYS make sure a file has been read before editing it."""
+READ_FILE_TOOL_DESCRIPTION = TOOL_DESCRIPTION + "\n- You should ALWAYS make sure a file has been read before editing it."
 READ_FILE_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT = f"\n- file_paths prefixed with the {MEMORIES_PREFIX} path will be read from the longterm filesystem."
 
-EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
-
-Usage:
-- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab. Everything after that tab is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.
-- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance."""
+EDIT_FILE_TOOL_DESCRIPTION = EDIT_DESCRIPTION
 EDIT_FILE_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT = (
     f"\n- You can edit files in the longterm filesystem by prefixing the filename with the {MEMORIES_PREFIX} path."
 )
@@ -416,11 +402,7 @@ All file paths must start with a /.
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
 - edit_file: edit a file in the filesystem"""
-FILESYSTEM_SYSTEM_PROMPT_LONGTERM_SUPPLEMENT = f"""
-
-You also have access to a longterm filesystem in which you can store files that you want to keep around for longer than the current conversation.
-In order to interact with the longterm filesystem, you can use those same tools, but filenames must be prefixed with the {MEMORIES_PREFIX} path.
-Remember, to interact with the longterm filesystem, you must prefix the filename with the {MEMORIES_PREFIX} path."""
+FILESYSTEM_SYSTEM_PROMPT_LONGTERM_SUPPLEMENT = LONGTERM_MEMORY_SYSTEM_PROMPT.format(memory_path=MEMORIES_PREFIX)
 
 
 def _get_namespace() -> tuple[str] | tuple[str, str]:
@@ -911,16 +893,6 @@ def _get_filesystem_tools(custom_tool_descriptions: dict[str, str] | None = None
     return tools
 
 
-TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
-You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-You can do this by specifying an offset and limit in the read_file tool call.
-For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
-
-Here are the first 10 lines of the result:
-{content_sample}
-"""
-
-
 class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem tools to an agent.
 
@@ -933,6 +905,7 @@ class FilesystemMiddleware(AgentMiddleware):
         long_term_memory: Whether to enable longterm memory support.
         system_prompt_extension: Optional custom system prompt override.
         custom_tool_descriptions: Optional custom tool descriptions override.
+        skills: Optional list of SkillDefinition to load into virtual filesystem.
 
     Raises:
         ValueError: If longterm memory is enabled but no store is available.
@@ -947,6 +920,10 @@ class FilesystemMiddleware(AgentMiddleware):
 
         # With long-term memory
         agent = create_agent(middleware=[FilesystemMiddleware(long_term_memory=True)])
+        
+        # With skills
+        skills = [{"name": "slack-gif", "files": {"SKILL.md": "..."}}]
+        agent = create_agent(middleware=[FilesystemMiddleware(skills=skills)])
         ```
     """
 
@@ -959,6 +936,7 @@ class FilesystemMiddleware(AgentMiddleware):
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        skills: list[dict[str, Any]] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -967,26 +945,70 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            skills: Optional list of SkillDefinition to load into virtual filesystem.
         """
         self.long_term_memory = long_term_memory
         self.tool_token_limit_before_evict = tool_token_limit_before_evict
-        self.system_prompt = FILESYSTEM_SYSTEM_PROMPT
+        self.skills = skills or []
+        
+        # Build system prompt with skills
+        base_prompt = FILESYSTEM_SYSTEM_PROMPT
         if system_prompt is not None:
-            self.system_prompt = system_prompt
+            base_prompt = system_prompt
         elif long_term_memory:
-            self.system_prompt += FILESYSTEM_SYSTEM_PROMPT_LONGTERM_SUPPLEMENT
+            base_prompt += FILESYSTEM_SYSTEM_PROMPT_LONGTERM_SUPPLEMENT
+        
+        skills_prompt = self._build_skills_prompt()
+        self.system_prompt = base_prompt + skills_prompt
 
         self.tools = _get_filesystem_tools(custom_tool_descriptions, long_term_memory=long_term_memory)
-
-    def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
-        """Validate that store is available if longterm memory is enabled.
-
+    
+    def _build_skills_prompt(self) -> str:
+        """Build the skills section of the system prompt.
+        
+        Returns:
+            System prompt text describing available skills, or empty string if no skills.
+        """
+        if not self.skills:
+            return ""
+        
+        from deepagents.skills import parse_skill_frontmatter
+        
+        prompt = "\n\n## Available Skills\n\nYou have access to the following skills:"
+        
+        for i, skill in enumerate(self.skills, 1):
+            skill_name = skill['name']
+            skill_path = f"/skills/{skill_name}/SKILL.md"
+            
+            # Try to extract description from SKILL.md if present
+            description = ""
+            skill_files = skill.get('files', {})
+            if 'SKILL.md' in skill_files:
+                try:
+                    content = skill_files['SKILL.md']
+                    if isinstance(content, str):
+                        frontmatter = parse_skill_frontmatter(content)
+                        description = frontmatter.get('description', '')
+                except Exception:
+                    pass
+            
+            prompt += f"\n\n{i}. **{skill_name}** ({skill_path})"
+            if description:
+                prompt += f"\n   - {description}"
+        
+        prompt += "\n\nTo use a skill, read its SKILL.md file using `read_file`. Skills may contain additional resources in scripts/, references/, and assets/ subdirectories."
+        
+        return prompt
+    
+    def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:
+        """Load skills into virtual filesystem and agent memory from store if needed.
+        
         Args:
             state: The state of the agent.
             runtime: The LangGraph runtime.
 
         Returns:
-            The unmodified model request.
+            State update with skills loaded and/or agent_memory loaded, or None if nothing to load.
 
         Raises:
             ValueError: If long_term_memory is True but runtime.store is None.
@@ -994,14 +1016,59 @@ class FilesystemMiddleware(AgentMiddleware):
         if self.long_term_memory and runtime.store is None:
             msg = "Longterm memory is enabled, but no store is available"
             raise ValueError(msg)
-        return None
+        
+        state_update = {}
+        
+        # Load agent.md from store if long_term_memory is enabled
+        if self.long_term_memory and "agent_memory" not in state:
+            config = get_config()
+            assistant_id = config.get("metadata", {}).get("assistant_id") if config else None
+            
+            if assistant_id is not None:
+                store = _get_store(runtime)
+                namespace = _get_namespace()
+                
+                # Load /memories/agent.md from store
+                # Strip the /memories/ prefix to get the key
+                agent_md_key = _strip_memories_prefix("/memories/agent.md")
+                item = store.get(namespace, agent_md_key)
+                
+                if item is not None:
+                    # Extract content from store item
+                    file_data = _convert_store_item_to_file_data(item)
+                    agent_memory_content = _file_data_to_string(file_data)
+                else:
+                    # Create empty agent.md in store
+                    agent_memory_content = DEFAULT_MEMORY
+                    empty_file_data = _create_file_data(agent_memory_content)
+                    store.put(namespace, agent_md_key, _convert_file_data_to_store_item(empty_file_data))
+                
+                state_update["agent_memory"] = agent_memory_content
+        
+        # Load skills into virtual filesystem
+        if self.skills:
+            files_update = {}
+            for skill in self.skills:
+                skill_name = skill['name']
+                skill_files = skill.get('files', {})
+                
+                for file_path, content in skill_files.items():
+                    # Write to /skills/<skill_name>/<file_path>
+                    full_path = f"/skills/{skill_name}/{file_path}"
+                    files_update[full_path] = _create_file_data(content)
+            
+            state_update["files"] = files_update
+        
+        return state_update if state_update else None
+
+
 
     def wrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Update the system prompt to include instructions on using the filesystem.
+        """Update the system prompt to include agent memory and filesystem instructions.
 
         Args:
             request: The model request being processed.
@@ -1010,8 +1077,26 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
+        final_prompt = ""
+        
+        # Add agent memory if available in state
+        if self.long_term_memory:
+            agent_memory_content = request.state.get("agent_memory", "")
+            if agent_memory_content:
+                final_prompt = f"<agent_memory>\n{agent_memory_content}\n</agent_memory>\n\n"
+        
+        # Add middleware system prompt
         if self.system_prompt is not None:
-            request.system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
+            final_prompt += self.system_prompt
+        
+        # Prepend to request system prompt
+        if final_prompt:
+            request.system_prompt = (
+                final_prompt + "\n\n" + request.system_prompt
+                if request.system_prompt
+                else final_prompt
+            )
+        
         return handler(request)
 
     async def awrap_model_call(
@@ -1019,7 +1104,7 @@ class FilesystemMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """(async) Update the system prompt to include instructions on using the filesystem.
+        """(async) Update the system prompt to include agent memory and filesystem instructions.
 
         Args:
             request: The model request being processed.
@@ -1028,8 +1113,26 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
+        final_prompt = ""
+        
+        # Add agent memory if available in state
+        if self.long_term_memory:
+            agent_memory_content = request.state.get("agent_memory", "")
+            if agent_memory_content:
+                final_prompt = f"<agent_memory>\n{agent_memory_content}\n</agent_memory>\n\n"
+        
+        # Add middleware system prompt
         if self.system_prompt is not None:
-            request.system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
+            final_prompt += self.system_prompt
+        
+        # Prepend to request system prompt
+        if final_prompt:
+            request.system_prompt = (
+                final_prompt + "\n\n" + request.system_prompt
+                if request.system_prompt
+                else final_prompt
+            )
+        
         return await handler(request)
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command) -> ToolMessage | Command:

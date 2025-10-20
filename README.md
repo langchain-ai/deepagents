@@ -312,6 +312,24 @@ agent = create_deep_agent(
 )
 ```
 
+### `use_local_filesystem`
+If you prefer the agent to operate on your machine's filesystem (read/write actual files), enable local mode:
+
+```python
+from deepagents import create_deep_agent
+
+agent = create_deep_agent(
+    use_local_filesystem=True,   # Tools operate on disk
+    # use_longterm_memory=False  # Must be False when using local filesystem
+)
+```
+
+Notes:
+- Local filesystem mode injects `ls`, `read_file`, `write_file`, `edit_file`, plus `glob` and `grep` (ripgrep-powered) for discovery/search.
+- Long-term memory is not supported in local mode; attempting to set both `use_local_filesystem=True` and `use_longterm_memory=True` raises a ValueError.
+- Large tool outputs are automatically evicted to the in-memory filesystem state as files under `/large_tool_results/{tool_call_id}`; use `read_file` with `offset`/`limit` to page through results.
+- Be careful when enabling local mode in sensitive environments — tools can read and write files on disk.
+
 ### `interrupt_on`
 A common reality for agents is that some tool operations may be sensitive and require human approval before execution. Deep Agents supports human-in-the-loop workflows through LangGraph’s interrupt capabilities. You can configure which tools require approval using a checkpointer.
 
@@ -375,11 +393,13 @@ agent = create_agent(
 ### FilesystemMiddleware
 
 Context engineering is one of the main challenges in building effective agents. This can be particularly hard when using tools that can return variable length results (ex. web_search, rag), as long ToolResults can quickly fill up your context window.
-**FilesystemMiddleware** provides four tools to your agent to interact with both short-term and long-term memory.
+**FilesystemMiddleware** provides four tools to your agent to interact with short-term memory (in agent state) and, optionally, long-term memory (via a Store).
 - **ls**: List the files in your filesystem
 - **read_file**: Read an entire file, or a certain number of lines from a file
 - **write_file**: Write a new file to your filesystem
 - **edit_file**: Edit an existing file in your filesystem
+
+If you want these tools to operate on your host filesystem instead of the agent state, use `create_deep_agent(..., use_local_filesystem=True)` or attach `LocalFilesystemMiddleware` directly. Local mode also provides `glob` and `grep` helpers for file discovery and content search.
 
 ```python
 from langchain.agents import create_agent

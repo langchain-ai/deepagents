@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from typing import Any
+import os
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -10,6 +11,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+from langchain.agents.middleware import ShellToolMiddleware, HostExecutionPolicy
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
@@ -18,6 +20,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.local_filesystem import LocalFilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
@@ -48,6 +51,9 @@ def create_deep_agent(
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
     use_longterm_memory: bool = False,
+    use_local_filesystem: bool = False,
+    long_term_memory: bool = False,
+    skills: list[dict[str, Any]] | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     debug: bool = False,
     name: str | None = None,
@@ -81,6 +87,14 @@ def create_deep_agent(
         store: Optional store for persisting longterm memories.
         use_longterm_memory: Whether to use longterm memory - you must provide a store
             in order to use longterm memory.
+        use_local_filesystem: If True, injects LocalFilesystemMiddleware (tools operate on disk).
+            When True, longterm memory is not supported and `use_longterm_memory` must be False.
+            Skills are automatically discovered from ~/.deepagents/skills/ and ./.deepagents/skills/.
+            The agent_name for memory storage can be passed via config: {"configurable": {"agent_name": "myagent"}}.
+        long_term_memory: If True, enables long-term memory features like agent.md persistence
+            and memories folder. Only applies when use_local_filesystem=True.
+        skills: Optional list of SkillDefinition for virtual filesystem mode. Only valid when
+            use_local_filesystem=False. Skills are loaded into /skills/<name>/ in virtual filesystem.
         interrupt_on: Optional Dict[str, bool | InterruptOnConfig] mapping tool names to
             interrupt configs.
         debug: Whether to enable debug mode. Passed through to create_agent.
@@ -93,28 +107,39 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
 
+    if use_local_filesystem and skills is not None:
+        raise ValueError(
+            "Cannot provide skill definitions with use_local_filesystem=True. "
+            "Skills are automatically discovered from ~/.deepagents/skills/ and ./.deepagents/skills/. "
+            "To use custom skills, set use_local_filesystem=False."
+        )
+
+    # Choose filesystem middleware kind
+    def _fs_middleware() -> list[AgentMiddleware]:
+        if use_local_filesystem:
+            shell_middleware = ShellToolMiddleware(
+                workspace_root=os.getcwd(),
+                execution_policy=HostExecutionPolicy()
+            )
+            return [LocalFilesystemMiddleware(long_term_memory=long_term_memory), shell_middleware]
+        return [FilesystemMiddleware(long_term_memory=use_longterm_memory, skills=skills)]
+
     deepagent_middleware = [
         TodoListMiddleware(),
-        FilesystemMiddleware(
-            long_term_memory=use_longterm_memory,
-        ),
         SubAgentMiddleware(
             default_model=model,
             default_tools=tools,
             subagents=subagents if subagents is not None else [],
             default_middleware=[
                 TodoListMiddleware(),
-                FilesystemMiddleware(
-                    long_term_memory=use_longterm_memory,
-                ),
                 SummarizationMiddleware(
                     model=model,
                     max_tokens_before_summary=170000,
                     messages_to_keep=6,
                 ),
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-                PatchToolCallsMiddleware(),
-            ],
+                                   PatchToolCallsMiddleware(),
+            ] + _fs_middleware(),
             default_interrupt_on=interrupt_on,
             general_purpose_agent=True,
         ),
@@ -125,7 +150,7 @@ def create_deep_agent(
         ),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
-    ]
+    ]+ _fs_middleware()
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
     if middleware is not None:

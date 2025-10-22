@@ -583,6 +583,310 @@ class TestFilesystem:
         assert "/test.txt" in response["files"].keys()
         assert "research" in response
 
+    def test_glob_search_shortterm_only(self):
+        checkpointer = MemorySaver()
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=False,
+                )
+            ],
+            checkpointer=checkpointer,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Use glob_search to find all Python files")],
+                "files": {
+                    "/test.py": FileData(
+                        content=["import os"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                    "/main.py": FileData(
+                        content=["def main(): pass"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                    "/readme.txt": FileData(
+                        content=["Documentation"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                },
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        glob_message = next(message for message in messages if message.type == "tool" and message.name == "glob_search")
+        assert "/test.py" in glob_message.content
+        assert "/main.py" in glob_message.content
+        assert "/readme.txt" not in glob_message.content
+
+    def test_glob_search_longterm_only(self):
+        checkpointer = MemorySaver()
+        store = InMemoryStore()
+        store.put(
+            ("filesystem",),
+            "/config.py",
+            {
+                "content": ["DEBUG = True"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        store.put(
+            ("filesystem",),
+            "/settings.py",
+            {
+                "content": ["SECRET_KEY = 'abc'"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        store.put(
+            ("filesystem",),
+            "/notes.txt",
+            {
+                "content": ["Important notes"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=True,
+                )
+            ],
+            checkpointer=checkpointer,
+            store=store,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Use glob_search to find all Python files in longterm memory")],
+                "files": {},
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        glob_message = next(message for message in messages if message.type == "tool" and message.name == "glob_search")
+        assert "/memories/config.py" in glob_message.content
+        assert "/memories/settings.py" in glob_message.content
+        assert "/memories/notes.txt" not in glob_message.content
+
+    def test_glob_search_mixed_memory(self):
+        checkpointer = MemorySaver()
+        store = InMemoryStore()
+        store.put(
+            ("filesystem",),
+            "/longterm.py",
+            {
+                "content": ["# Longterm file"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        store.put(
+            ("filesystem",),
+            "/longterm.txt",
+            {
+                "content": ["Text file"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=True,
+                )
+            ],
+            checkpointer=checkpointer,
+            store=store,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Use glob_search to find all Python files in both short-term and longterm memory")],
+                "files": {
+                    "/shortterm.py": FileData(
+                        content=["# Shortterm file"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                    "/shortterm.txt": FileData(
+                        content=["Another text file"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                },
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        glob_message = next(message for message in messages if message.type == "tool" and message.name == "glob_search")
+        assert "/shortterm.py" in glob_message.content
+        assert "/memories/longterm.py" in glob_message.content
+        assert "/shortterm.txt" not in glob_message.content
+        assert "/memories/longterm.txt" not in glob_message.content
+
+    def test_grep_search_shortterm_only(self):
+        checkpointer = MemorySaver()
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=False,
+                )
+            ],
+            checkpointer=checkpointer,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Use grep_search to find all files containing the word 'import'")],
+                "files": {
+                    "/test.py": FileData(
+                        content=["import os", "import sys"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                    "/main.py": FileData(
+                        content=["def main(): pass"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                    "/helper.py": FileData(
+                        content=["import json"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                },
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        grep_message = next(message for message in messages if message.type == "tool" and message.name == "grep_search")
+        assert "/test.py" in grep_message.content
+        assert "/helper.py" in grep_message.content
+        assert "/main.py" not in grep_message.content
+
+    def test_grep_search_longterm_only(self):
+        checkpointer = MemorySaver()
+        store = InMemoryStore()
+        store.put(
+            ("filesystem",),
+            "/pokemon/charmander.txt",
+            {
+                "content": ["Charmander is a fire type", "It evolves into Charmeleon"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        store.put(
+            ("filesystem",),
+            "/pokemon/squirtle.txt",
+            {
+                "content": ["Squirtle is a water type", "It evolves into Wartortle"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        store.put(
+            ("filesystem",),
+            "/pokemon/bulbasaur.txt",
+            {
+                "content": ["Bulbasaur is a grass type"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=True,
+                )
+            ],
+            checkpointer=checkpointer,
+            store=store,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Use grep_search to find all files in longterm memory containing the word 'fire'")],
+                "files": {},
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        grep_message = next(message for message in messages if message.type == "tool" and message.name == "grep_search")
+        assert "/memories/pokemon/charmander.txt" in grep_message.content
+        assert "/memories/pokemon/squirtle.txt" not in grep_message.content
+        assert "/memories/pokemon/bulbasaur.txt" not in grep_message.content
+
+    def test_grep_search_mixed_memory(self):
+        checkpointer = MemorySaver()
+        store = InMemoryStore()
+        store.put(
+            ("filesystem",),
+            "/longterm_config.py",
+            {
+                "content": ["DEBUG = True", "TESTING = False"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        store.put(
+            ("filesystem",),
+            "/longterm_settings.py",
+            {
+                "content": ["SECRET_KEY = 'abc'"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=True,
+                )
+            ],
+            checkpointer=checkpointer,
+            store=store,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Use grep_search to find all files containing 'DEBUG' in both short-term and longterm memory")],
+                "files": {
+                    "/shortterm_config.py": FileData(
+                        content=["DEBUG = False", "VERBOSE = True"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                    "/shortterm_main.py": FileData(
+                        content=["def main(): pass"],
+                        created_at="2021-01-01",
+                        modified_at="2021-01-01",
+                    ),
+                },
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        grep_message = next(message for message in messages if message.type == "tool" and message.name == "grep_search")
+        assert "/shortterm_config.py" in grep_message.content
+        assert "/memories/longterm_config.py" in grep_message.content
+        assert "/shortterm_main.py" not in grep_message.content
+        assert "/memories/longterm_settings.py" not in grep_message.content
+
 
 # Take actions on multiple threads to test longterm memory
 def assert_longterm_mem_tools(agent, store):

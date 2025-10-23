@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 import os
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -22,11 +22,12 @@ from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
-from langgraph.config import get_config
 from langgraph.runtime import Runtime
-from langgraph.store.base import BaseStore, Item
 from langgraph.types import Command
 from typing_extensions import TypedDict
+
+from deepagents.memory.protocol import MemoryBackend
+from deepagents.memory.backends import StateBackend, CompositeBackend
 
 MEMORIES_PREFIX = "/memories/"
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -74,10 +75,8 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
         ```
     """
     if left is None:
-        # Filter out None values when initializing
         return {k: v for k, v in right.items() if v is not None}
 
-    # Merge, filtering out None values (deletions)
     result = {**left}
     for key, value in right.items():
         if value is None:
@@ -115,22 +114,16 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
         validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
         ```
     """
-    # Reject paths with traversal attempts
     if ".." in path or path.startswith("~"):
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)
 
-    # Normalize path (resolve ., //, etc.)
     normalized = os.path.normpath(path)
-
-    # Convert to forward slashes for consistency
     normalized = normalized.replace("\\", "/")
 
-    # Ensure path starts with /
     if not normalized.startswith("/"):
         normalized = f"/{normalized}"
 
-    # Check allowed prefixes if specified
     if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
         msg = f"Path must start with one of {allowed_prefixes}: {path}"
         raise ValueError(msg)
@@ -171,7 +164,6 @@ def _format_content_with_line_numbers(
     """
     if isinstance(content, str):
         lines = content.split("\n")
-        # Remove trailing empty line from split
         if lines and lines[-1] == "":
             lines = lines[:-1]
     else:
@@ -180,7 +172,6 @@ def _format_content_with_line_numbers(
     if format_style == "pipe":
         return "\n".join(f"{i + start_line}|{line}" for i, line in enumerate(lines))
 
-    # Tab format with defined width and line truncation
     return "\n".join(f"{i + start_line:{LINE_NUMBER_WIDTH}d}\t{line[:MAX_LINE_LENGTH]}" for i, line in enumerate(lines))
 
 
@@ -299,61 +290,6 @@ def _check_empty_content(content: str) -> str | None:
     return None
 
 
-def _has_memories_prefix(file_path: str) -> bool:
-    """Check if a file path is in the longterm memory filesystem.
-
-    Longterm memory files are distinguished by the `/memories/` path prefix.
-
-    Args:
-        file_path: File path to check.
-
-    Returns:
-        `True` if the file path starts with `/memories/`, `False` otherwise.
-
-    Example:
-        ```python
-        has_memories_prefix("/memories/notes.txt")  # Returns: True
-        has_memories_prefix("/temp/file.txt")  # Returns: False
-        ```
-    """
-    return file_path.startswith(MEMORIES_PREFIX)
-
-
-def _append_memories_prefix(file_path: str) -> str:
-    """Add the longterm memory prefix to a file path.
-
-    Args:
-        file_path: File path to prefix.
-
-    Returns:
-        File path with `/memories` prepended.
-
-    Example:
-        ```python
-        append_memories_prefix("/notes.txt")  # Returns: "/memories/notes.txt"
-        ```
-    """
-    return f"/memories{file_path}"
-
-
-def _strip_memories_prefix(file_path: str) -> str:
-    """Remove the longterm memory prefix from a file path.
-
-    Args:
-        file_path: File path potentially containing the memories prefix.
-
-    Returns:
-        File path with `/memories` removed if present at the start.
-
-    Example:
-        ```python
-        strip_memories_prefix("/memories/notes.txt")  # Returns: "/notes.txt"
-        strip_memories_prefix("/notes.txt")  # Returns: "/notes.txt"
-        ```
-    """
-    if file_path.startswith(MEMORIES_PREFIX):
-        return file_path[len(MEMORIES_PREFIX) - 1 :]  # Keep the leading slash
-    return file_path
 
 
 class FilesystemState(AgentState):
@@ -427,188 +363,44 @@ In order to interact with the longterm filesystem, you can use those same tools,
 Remember, to interact with the longterm filesystem, you must prefix the filename with the {MEMORIES_PREFIX} path."""
 
 
-def _get_namespace() -> tuple[str] | tuple[str, str]:
-    """Get the namespace for longterm filesystem storage.
-
-    Returns a tuple for organizing files in the store. If an assistant_id is available
-    in the config metadata, returns a 2-tuple of (assistant_id, "filesystem") to provide
-    per-assistant isolation. Otherwise, returns a 1-tuple of ("filesystem",) for shared storage.
-
-    Returns:
-        Namespace tuple for store operations, either `(assistant_id, "filesystem")` or `("filesystem",)`.
-    """
-    namespace = "filesystem"
-    config = get_config()
-    if config is None:
-        return (namespace,)
-    assistant_id = config.get("metadata", {}).get("assistant_id")
-    if assistant_id is None:
-        return (namespace,)
-    return (assistant_id, "filesystem")
-
-
-def _get_store(runtime: ToolRuntime[None, FilesystemState]) -> BaseStore:
-    """Get the store from the runtime, raising an error if unavailable.
-
-    Args:
-        runtime: The LangGraph runtime containing the store.
-
-    Returns:
-        The BaseStore instance for longterm file storage.
-
-    Raises:
-        ValueError: If longterm memory is enabled but no store is available in runtime.
-    """
-    if runtime.store is None:
-        msg = "Longterm memory is enabled, but no store is available"
-        raise ValueError(msg)
-    return runtime.store
-
-
-def _convert_store_item_to_file_data(store_item: Item) -> FileData:
-    """Convert a store Item to FileData format.
-
-    Args:
-        store_item: The store Item containing file data.
-
-    Returns:
-        FileData with content, created_at, and modified_at fields.
-
-    Raises:
-        ValueError: If required fields are missing or have incorrect types.
-    """
-    if "content" not in store_item.value or not isinstance(store_item.value["content"], list):
-        msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
-        raise ValueError(msg)
-    if "created_at" not in store_item.value or not isinstance(store_item.value["created_at"], str):
-        msg = f"Store item does not contain valid created_at field. Got: {store_item.value.keys()}"
-        raise ValueError(msg)
-    if "modified_at" not in store_item.value or not isinstance(store_item.value["modified_at"], str):
-        msg = f"Store item does not contain valid modified_at field. Got: {store_item.value.keys()}"
-        raise ValueError(msg)
-    return FileData(
-        content=store_item.value["content"],
-        created_at=store_item.value["created_at"],
-        modified_at=store_item.value["modified_at"],
-    )
-
-
-def _convert_file_data_to_store_item(file_data: FileData) -> dict[str, Any]:
-    """Convert FileData to a dict suitable for store.put().
-
-    Args:
-        file_data: The FileData to convert.
-
-    Returns:
-        Dictionary with content, created_at, and modified_at fields.
-    """
-    return {
-        "content": file_data["content"],
-        "created_at": file_data["created_at"],
-        "modified_at": file_data["modified_at"],
-    }
-
-
-def _get_file_data_from_state(state: FilesystemState, file_path: str) -> FileData:
-    """Retrieve file data from the agent's state.
-
-    Args:
-        state: The current filesystem state.
-        file_path: The path of the file to retrieve.
-
-    Returns:
-        The FileData for the requested file.
-
-    Raises:
-        ValueError: If the file is not found in state.
-    """
-    mock_filesystem = state.get("files", {})
-    if file_path not in mock_filesystem:
-        msg = f"File '{file_path}' not found"
-        raise ValueError(msg)
-    return mock_filesystem[file_path]
-
-
-def _ls_tool_generator(custom_description: str | None = None, *, long_term_memory: bool) -> BaseTool:
+def _ls_tool_generator(
+    backend: MemoryBackend,
+    custom_description: str | None = None,
+) -> BaseTool:
     """Generate the ls (list files) tool.
 
     Args:
+        backend: Backend to use for file storage.
         custom_description: Optional custom description for the tool.
-        long_term_memory: Whether to enable longterm memory support.
 
     Returns:
-        Configured ls tool that lists files from state and optionally from longterm store.
+        Configured ls tool that lists files using the backend.
     """
-    tool_description = LIST_FILES_TOOL_DESCRIPTION
-    if custom_description:
-        tool_description = custom_description
-    elif long_term_memory:
-        tool_description += LIST_FILES_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT
+    tool_description = custom_description or LIST_FILES_TOOL_DESCRIPTION
 
-    def _get_filenames_from_state(state: FilesystemState) -> list[str]:
-        """Extract list of filenames from the filesystem state.
-
-        Args:
-            state: The current filesystem state.
-
-        Returns:
-            List of file paths in the state.
-        """
-        files_dict = state.get("files", {})
-        return list(files_dict.keys())
-
-    def _filter_files_by_path(filenames: list[str], path: str | None) -> list[str]:
-        """Filter filenames by path prefix.
-
-        Args:
-            filenames: List of file paths to filter.
-            path: Optional path prefix to filter by.
-
-        Returns:
-            Filtered list of file paths matching the prefix.
-        """
-        if path is None:
-            return filenames
-        normalized_path = _validate_path(path)
-        return [f for f in filenames if f.startswith(normalized_path)]
-
-    if long_term_memory:
-
-        @tool(description=tool_description)
-        def ls(runtime: ToolRuntime[None, FilesystemState], path: str | None = None) -> list[str]:
-            files = _get_filenames_from_state(runtime.state)
-            # Add filenames from longterm memory
-            store = _get_store(runtime)
-            namespace = _get_namespace()
-            longterm_files = store.search(namespace)
-            longterm_files_prefixed = [_append_memories_prefix(f.key) for f in longterm_files]
-            files.extend(longterm_files_prefixed)
-            return _filter_files_by_path(files, path)
-    else:
-
-        @tool(description=tool_description)
-        def ls(runtime: ToolRuntime[None, FilesystemState], path: str | None = None) -> list[str]:
-            files = _get_filenames_from_state(runtime.state)
-            return _filter_files_by_path(files, path)
+    @tool(description=tool_description)
+    def ls(runtime: ToolRuntime[None, FilesystemState], path: str | None = None) -> list[str]:
+        prefix = _validate_path(path) if path is not None else None
+        files = backend.ls(prefix)
+        return files
 
     return ls
 
 
-def _read_file_tool_generator(custom_description: str | None = None, *, long_term_memory: bool) -> BaseTool:
+def _read_file_tool_generator(
+    backend: MemoryBackend,
+    custom_description: str | None = None,
+) -> BaseTool:
     """Generate the read_file tool.
 
     Args:
+        backend: Backend to use for file storage.
         custom_description: Optional custom description for the tool.
-        long_term_memory: Whether to enable longterm memory support.
 
     Returns:
-        Configured read_file tool that reads files from state and optionally from longterm store.
+        Configured read_file tool that reads files using the backend.
     """
-    tool_description = READ_FILE_TOOL_DESCRIPTION
-    if custom_description:
-        tool_description = custom_description
-    elif long_term_memory:
-        tool_description += READ_FILE_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT
+    tool_description = custom_description or READ_FILE_TOOL_DESCRIPTION
 
     def _read_file_data_content(file_data: FileData, offset: int, limit: int) -> str:
         """Read and format file content with line numbers.
@@ -633,145 +425,79 @@ def _read_file_tool_generator(custom_description: str | None = None, *, long_ter
         selected_lines = lines[start_idx:end_idx]
         return _format_content_with_line_numbers(selected_lines, format_style="tab", start_line=start_idx + 1)
 
-    if long_term_memory:
-
-        @tool(description=tool_description)
-        def read_file(
-            file_path: str,
-            runtime: ToolRuntime[None, FilesystemState],
-            offset: int = DEFAULT_READ_OFFSET,
-            limit: int = DEFAULT_READ_LIMIT,
-        ) -> str:
-            file_path = _validate_path(file_path)
-            if _has_memories_prefix(file_path):
-                stripped_file_path = _strip_memories_prefix(file_path)
-                store = _get_store(runtime)
-                namespace = _get_namespace()
-                item: Item | None = store.get(namespace, stripped_file_path)
-                if item is None:
-                    return f"Error: File '{file_path}' not found"
-                file_data = _convert_store_item_to_file_data(item)
-            else:
-                try:
-                    file_data = _get_file_data_from_state(runtime.state, file_path)
-                except ValueError as e:
-                    return str(e)
-            return _read_file_data_content(file_data, offset, limit)
-
-    else:
-
-        @tool(description=tool_description)
-        def read_file(
-            file_path: str,
-            runtime: ToolRuntime[None, FilesystemState],
-            offset: int = DEFAULT_READ_OFFSET,
-            limit: int = DEFAULT_READ_LIMIT,
-        ) -> str:
-            file_path = _validate_path(file_path)
-            try:
-                file_data = _get_file_data_from_state(runtime.state, file_path)
-            except ValueError as e:
-                return str(e)
-            return _read_file_data_content(file_data, offset, limit)
+    @tool(description=tool_description)
+    def read_file(
+        file_path: str,
+        runtime: ToolRuntime[None, FilesystemState],
+        offset: int = DEFAULT_READ_OFFSET,
+        limit: int = DEFAULT_READ_LIMIT,
+    ) -> str:
+        file_path = _validate_path(file_path)
+        file_data = backend.get(file_path)
+        if file_data is None:
+            return f"Error: File '{file_path}' not found"
+        return _read_file_data_content(file_data, offset, limit)
 
     return read_file
 
 
-def _write_file_tool_generator(custom_description: str | None = None, *, long_term_memory: bool) -> BaseTool:
+def _write_file_tool_generator(
+    backend: MemoryBackend,
+    custom_description: str | None = None,
+) -> BaseTool:
     """Generate the write_file tool.
 
     Args:
+        backend: Backend to use for file storage.
         custom_description: Optional custom description for the tool.
-        long_term_memory: Whether to enable longterm memory support.
 
     Returns:
-        Configured write_file tool that creates new files in state or longterm store.
+        Configured write_file tool that creates new files using the backend.
     """
-    tool_description = WRITE_FILE_TOOL_DESCRIPTION
-    if custom_description:
-        tool_description = custom_description
-    elif long_term_memory:
-        tool_description += WRITE_FILE_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT
+    tool_description = custom_description or WRITE_FILE_TOOL_DESCRIPTION
 
-    def _write_file_to_state(state: FilesystemState, tool_call_id: str, file_path: str, content: str) -> Command | str:
-        """Write a new file to the filesystem state.
-
-        Args:
-            state: The current filesystem state.
-            tool_call_id: ID of the tool call for generating ToolMessage.
-            file_path: The path where the file should be written.
-            content: The content to write to the file.
-
-        Returns:
-            Command to update state with new file, or error string if file exists.
-        """
-        mock_filesystem = state.get("files", {})
-        existing = mock_filesystem.get(file_path)
+    @tool(description=tool_description)
+    def write_file(
+        file_path: str,
+        content: str,
+        runtime: ToolRuntime[None, FilesystemState],
+    ) -> Command | str:
+        file_path = _validate_path(file_path)
+        if not runtime.tool_call_id:
+            value_error_msg = "Tool call ID is required for write_file invocation"
+            raise ValueError(value_error_msg)
+        
+        existing = backend.get(file_path)
         if existing:
             return f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
+        
         new_file_data = _create_file_data(content)
-        return Command(
-            update={
-                "files": {file_path: new_file_data},
-                "messages": [ToolMessage(f"Updated file {file_path}", tool_call_id=tool_call_id)],
-            }
-        )
-
-    if long_term_memory:
-
-        @tool(description=tool_description)
-        def write_file(
-            file_path: str,
-            content: str,
-            runtime: ToolRuntime[None, FilesystemState],
-        ) -> Command | str:
-            file_path = _validate_path(file_path)
-            if not runtime.tool_call_id:
-                value_error_msg = "Tool call ID is required for write_file invocation"
-                raise ValueError(value_error_msg)
-            if _has_memories_prefix(file_path):
-                stripped_file_path = _strip_memories_prefix(file_path)
-                store = _get_store(runtime)
-                namespace = _get_namespace()
-                if store.get(namespace, stripped_file_path) is not None:
-                    return f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
-                new_file_data = _create_file_data(content)
-                store.put(namespace, stripped_file_path, _convert_file_data_to_store_item(new_file_data))
-                return f"Updated longterm memories file {file_path}"
-            return _write_file_to_state(runtime.state, runtime.tool_call_id, file_path, content)
-
-    else:
-
-        @tool(description=tool_description)
-        def write_file(
-            file_path: str,
-            content: str,
-            runtime: ToolRuntime[None, FilesystemState],
-        ) -> Command | str:
-            file_path = _validate_path(file_path)
-            if not runtime.tool_call_id:
-                value_error_msg = "Tool call ID is required for write_file invocation"
-                raise ValueError(value_error_msg)
-            return _write_file_to_state(runtime.state, runtime.tool_call_id, file_path, content)
+        result = backend.put(file_path, new_file_data)
+        
+        if isinstance(result, Command):
+            return result
+        elif isinstance(result, str):
+            return result
+        else:
+            return f"Updated file {file_path}"
 
     return write_file
 
 
-def _edit_file_tool_generator(custom_description: str | None = None, *, long_term_memory: bool) -> BaseTool:
+def _edit_file_tool_generator(
+    backend: MemoryBackend,
+    custom_description: str | None = None,
+) -> BaseTool:
     """Generate the edit_file tool.
 
     Args:
+        backend: Backend to use for file storage.
         custom_description: Optional custom description for the tool.
-        long_term_memory: Whether to enable longterm memory support.
 
     Returns:
-        Configured edit_file tool that performs string replacements in files.
+        Configured edit_file tool that performs string replacements in files using the backend.
     """
-    tool_description = EDIT_FILE_TOOL_DESCRIPTION
-    if custom_description:
-        tool_description = custom_description
-    elif long_term_memory:
-        tool_description += EDIT_FILE_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT
+    tool_description = custom_description or EDIT_FILE_TOOL_DESCRIPTION
 
     def _perform_file_edit(
         file_data: FileData,
@@ -803,87 +529,38 @@ def _edit_file_tool_generator(custom_description: str | None = None, *, long_ter
         result_msg = f"Successfully replaced {occurrences} instance(s) of the string"
         return new_file_data, result_msg
 
-    if long_term_memory:
+    @tool(description=tool_description)
+    def edit_file(
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        runtime: ToolRuntime[None, FilesystemState],
+        *,
+        replace_all: bool = False,
+    ) -> Command | str:
+        file_path = _validate_path(file_path)
+        file_data = backend.get(file_path)
+        if file_data is None:
+            return f"Error: File '{file_path}' not found"
 
-        @tool(description=tool_description)
-        def edit_file(
-            file_path: str,
-            old_string: str,
-            new_string: str,
-            runtime: ToolRuntime[None, FilesystemState],
-            *,
-            replace_all: bool = False,
-        ) -> Command | str:
-            file_path = _validate_path(file_path)
-            is_longterm_memory = _has_memories_prefix(file_path)
+        result = _perform_file_edit(file_data, old_string, new_string, replace_all=replace_all)
+        if isinstance(result, str):
+            return result
 
-            # Retrieve file data from appropriate storage
-            if is_longterm_memory:
-                stripped_file_path = _strip_memories_prefix(file_path)
-                store = _get_store(runtime)
-                namespace = _get_namespace()
-                item: Item | None = store.get(namespace, stripped_file_path)
-                if item is None:
-                    return f"Error: File '{file_path}' not found"
-                file_data = _convert_store_item_to_file_data(item)
-            else:
-                try:
-                    file_data = _get_file_data_from_state(runtime.state, file_path)
-                except ValueError as e:
-                    return str(e)
+        new_file_data, result_msg = result
+        full_msg = f"{result_msg} in '{file_path}'"
 
-            # Perform the edit
-            result = _perform_file_edit(file_data, old_string, new_string, replace_all=replace_all)
-            if isinstance(result, str):  # Error message
-                return result
-
-            new_file_data, result_msg = result
-            full_msg = f"{result_msg} in '{file_path}'"
-
-            # Save to appropriate storage
-            if is_longterm_memory:
-                store.put(namespace, stripped_file_path, _convert_file_data_to_store_item(new_file_data))
-                return full_msg
-
+        put_result = backend.put(file_path, new_file_data)
+        
+        if isinstance(put_result, Command):
             return Command(
                 update={
-                    "files": {file_path: new_file_data},
+                    **put_result.update,
                     "messages": [ToolMessage(full_msg, tool_call_id=runtime.tool_call_id)],
                 }
             )
-    else:
-
-        @tool(description=tool_description)
-        def edit_file(
-            file_path: str,
-            old_string: str,
-            new_string: str,
-            runtime: ToolRuntime[None, FilesystemState],
-            *,
-            replace_all: bool = False,
-        ) -> Command | str:
-            file_path = _validate_path(file_path)
-
-            # Retrieve file data from state
-            try:
-                file_data = _get_file_data_from_state(runtime.state, file_path)
-            except ValueError as e:
-                return str(e)
-
-            # Perform the edit
-            result = _perform_file_edit(file_data, old_string, new_string, replace_all=replace_all)
-            if isinstance(result, str):  # Error message
-                return result
-
-            new_file_data, result_msg = result
-            full_msg = f"{result_msg} in '{file_path}'"
-
-            return Command(
-                update={
-                    "files": {file_path: new_file_data},
-                    "messages": [ToolMessage(full_msg, tool_call_id=runtime.tool_call_id)],
-                }
-            )
+        else:
+            return full_msg
 
     return edit_file
 
@@ -896,12 +573,15 @@ TOOL_GENERATORS = {
 }
 
 
-def _get_filesystem_tools(custom_tool_descriptions: dict[str, str] | None = None, *, long_term_memory: bool) -> list[BaseTool]:
+def _get_filesystem_tools(
+    backend: MemoryBackend,
+    custom_tool_descriptions: dict[str, str] | None = None,
+) -> list[BaseTool]:
     """Get filesystem tools.
 
     Args:
+        backend: Backend to use for file storage.
         custom_tool_descriptions: Optional custom descriptions for tools.
-        long_term_memory: Whether to enable longterm memory support.
 
     Returns:
         List of configured filesystem tools (ls, read_file, write_file, edit_file).
@@ -910,7 +590,7 @@ def _get_filesystem_tools(custom_tool_descriptions: dict[str, str] | None = None
         custom_tool_descriptions = {}
     tools = []
     for tool_name, tool_generator in TOOL_GENERATORS.items():
-        tool = tool_generator(custom_tool_descriptions.get(tool_name), long_term_memory=long_term_memory)
+        tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
         tools.append(tool)
     return tools
 
@@ -934,12 +614,12 @@ class FilesystemMiddleware(AgentMiddleware):
     - Long-term: In a persistent store (persists across conversations when enabled)
 
     Args:
-        long_term_memory: Whether to enable longterm memory support.
-        system_prompt_extension: Optional custom system prompt override.
+        backend: Optional backend for file storage. If not provided, defaults to StateBackend.
+        long_term_backend: Optional backend for /memories/ files. If provided, creates CompositeBackend
+            with StateBackend as default and long_term_backend for /memories/ prefix.
+        system_prompt: Optional custom system prompt override.
         custom_tool_descriptions: Optional custom tool descriptions override.
-
-    Raises:
-        ValueError: If longterm memory is enabled but no store is available.
+        tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
 
     Example:
         ```python
@@ -947,10 +627,11 @@ class FilesystemMiddleware(AgentMiddleware):
         from langchain.agents import create_agent
 
         # Short-term memory only
-        agent = create_agent(middleware=[FilesystemMiddleware(long_term_memory=False)])
+        agent = create_agent(middleware=[FilesystemMiddleware()])
 
         # With long-term memory
-        agent = create_agent(middleware=[FilesystemMiddleware(long_term_memory=True)])
+        from deepagents.memory.backends import StoreBackend
+        agent = create_agent(middleware=[FilesystemMiddleware(long_term_backend=StoreBackend())])
         ```
     """
 
@@ -959,7 +640,8 @@ class FilesystemMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        long_term_memory: bool = False,
+        backend: MemoryBackend | None = None,
+        long_term_backend: MemoryBackend | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
@@ -967,38 +649,31 @@ class FilesystemMiddleware(AgentMiddleware):
         """Initialize the filesystem middleware.
 
         Args:
-            long_term_memory: Whether to enable longterm memory support.
+            backend: Optional backend for file storage. If provided, uses it directly.
+            long_term_backend: Optional backend for /memories/ files. If provided, creates CompositeBackend.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
         """
-        self.long_term_memory = long_term_memory
         self.tool_token_limit_before_evict = tool_token_limit_before_evict
+        
+        if backend is not None:
+            self.backend = backend
+        elif long_term_backend is not None:
+            self.backend = CompositeBackend(
+                default=StateBackend(),
+                routes={MEMORIES_PREFIX: long_term_backend}
+            )
+        else:
+            self.backend = StateBackend()
+        
         self.system_prompt = FILESYSTEM_SYSTEM_PROMPT
         if system_prompt is not None:
             self.system_prompt = system_prompt
-        elif long_term_memory:
+        elif isinstance(self.backend, CompositeBackend):
             self.system_prompt += FILESYSTEM_SYSTEM_PROMPT_LONGTERM_SUPPLEMENT
 
-        self.tools = _get_filesystem_tools(custom_tool_descriptions, long_term_memory=long_term_memory)
-
-    def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
-        """Validate that store is available if longterm memory is enabled.
-
-        Args:
-            state: The state of the agent.
-            runtime: The LangGraph runtime.
-
-        Returns:
-            The unmodified model request.
-
-        Raises:
-            ValueError: If long_term_memory is True but runtime.store is None.
-        """
-        if self.long_term_memory and runtime.store is None:
-            msg = "Longterm memory is enabled, but no store is available"
-            raise ValueError(msg)
-        return None
+        self.tools = _get_filesystem_tools(self.backend, custom_tool_descriptions)
 
     def wrap_model_call(
         self,
@@ -1100,7 +775,6 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        # If no token limit specified, or if it is a filesystem tool, do not evict
         if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
             return handler(request)
 
@@ -1121,7 +795,6 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        # If no token limit specified, or if it is a filesystem tool, do not evict
         if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
             return await handler(request)
 

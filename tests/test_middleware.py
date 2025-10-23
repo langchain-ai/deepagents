@@ -9,6 +9,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langgraph.graph.message import add_messages
+from langgraph.store.memory import InMemoryStore
 
 from deepagents.middleware.filesystem import (
     FILESYSTEM_SYSTEM_PROMPT,
@@ -16,6 +17,7 @@ from deepagents.middleware.filesystem import (
     FileData,
     FilesystemMiddleware,
     FilesystemState,
+    _search_store_paginated,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import DEFAULT_GENERAL_PURPOSE_DESCRIPTION, TASK_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, SubAgentMiddleware
@@ -31,6 +33,8 @@ class TestAddMiddleware:
         assert "read_file" in agent_tools
         assert "write_file" in agent_tools
         assert "edit_file" in agent_tools
+        assert "glob_search" in agent_tools
+        assert "grep_search" in agent_tools
 
     def test_subagent_middleware(self):
         middleware = [SubAgentMiddleware(default_tools=[], subagents=[], default_model="claude-sonnet-4-20250514")]
@@ -46,6 +50,8 @@ class TestAddMiddleware:
         assert "read_file" in agent_tools
         assert "write_file" in agent_tools
         assert "edit_file" in agent_tools
+        assert "glob_search" in agent_tools
+        assert "grep_search" in agent_tools
         assert "task" in agent_tools
 
 
@@ -54,25 +60,25 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(long_term_memory=False)
         assert middleware.long_term_memory is False
         assert middleware.system_prompt == FILESYSTEM_SYSTEM_PROMPT
-        assert len(middleware.tools) == 4
+        assert len(middleware.tools) == 6
 
     def test_init_longterm(self):
         middleware = FilesystemMiddleware(long_term_memory=True)
         assert middleware.long_term_memory is True
         assert middleware.system_prompt == (FILESYSTEM_SYSTEM_PROMPT + FILESYSTEM_SYSTEM_PROMPT_LONGTERM_SUPPLEMENT)
-        assert len(middleware.tools) == 4
+        assert len(middleware.tools) == 6
 
     def test_init_custom_system_prompt_shortterm(self):
         middleware = FilesystemMiddleware(long_term_memory=False, system_prompt="Custom system prompt")
         assert middleware.long_term_memory is False
         assert middleware.system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 4
+        assert len(middleware.tools) == 6
 
     def test_init_custom_system_prompt_longterm(self):
         middleware = FilesystemMiddleware(long_term_memory=True, system_prompt="Custom system prompt")
         assert middleware.long_term_memory is True
         assert middleware.system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 4
+        assert len(middleware.tools) == 6
 
     def test_init_custom_tool_descriptions_shortterm(self):
         middleware = FilesystemMiddleware(long_term_memory=False, custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -147,6 +153,483 @@ class TestFilesystemMiddleware:
         )
         assert "/pokemon/test2.txt" in result
         assert "/pokemon/charmander.txt" in result
+
+    def test_glob_search_shortterm_simple_pattern(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.txt": FileData(
+                    content=["Hello world"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/test.py": FileData(
+                    content=["print('hello')"],
+                    modified_at="2021-01-02",
+                    created_at="2021-01-01",
+                ),
+                "/pokemon/charmander.py": FileData(
+                    content=["Ember"],
+                    modified_at="2021-01-03",
+                    created_at="2021-01-01",
+                ),
+                "/pokemon/squirtle.txt": FileData(
+                    content=["Water"],
+                    modified_at="2021-01-04",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob_search")
+        result = glob_search_tool.invoke(
+            {
+                "pattern": "*.py",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        # Standard glob: *.py only matches files in root directory, not subdirectories
+        assert "/test.py" in result
+        assert "/test.txt" not in result
+        assert "/pokemon/charmander.py" not in result
+        lines = result.split("\n")
+        assert len(lines) == 1
+        assert lines[0] == "/test.py"
+
+    def test_glob_search_shortterm_wildcard_pattern(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/src/main.py": FileData(
+                    content=["main code"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/src/utils/helper.py": FileData(
+                    content=["helper code"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/tests/test_main.py": FileData(
+                    content=["test code"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob_search")
+        result = glob_search_tool.invoke(
+            {
+                "pattern": "**/*.py",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/src/main.py" in result
+        assert "/src/utils/helper.py" in result
+        assert "/tests/test_main.py" in result
+
+    def test_glob_search_shortterm_with_path(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/src/main.py": FileData(
+                    content=["main code"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/src/utils/helper.py": FileData(
+                    content=["helper code"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/tests/test_main.py": FileData(
+                    content=["test code"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob_search")
+        result = glob_search_tool.invoke(
+            {
+                "pattern": "*.py",
+                "path": "/src",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/src/main.py" in result
+        assert "/src/utils/helper.py" not in result
+        assert "/tests/test_main.py" not in result
+
+    def test_glob_search_shortterm_brace_expansion(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.py": FileData(
+                    content=["code"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/test.pyi": FileData(
+                    content=["stubs"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/test.txt": FileData(
+                    content=["text"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob_search")
+        result = glob_search_tool.invoke(
+            {
+                "pattern": "*.{py,pyi}",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/test.py" in result
+        assert "/test.pyi" in result
+        assert "/test.txt" not in result
+
+    def test_glob_search_shortterm_no_matches(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.txt": FileData(
+                    content=["Hello world"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob_search")
+        result = glob_search_tool.invoke(
+            {
+                "pattern": "*.py",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result == "No files found"
+
+    def test_grep_search_shortterm_files_with_matches(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.py": FileData(
+                    content=["import os", "import sys", "print('hello')"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/main.py": FileData(
+                    content=["def main():", "    pass"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/helper.txt": FileData(
+                    content=["import json"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep_search")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/test.py" in result
+        assert "/helper.txt" in result
+        assert "/main.py" not in result
+
+    def test_grep_search_shortterm_content_mode(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.py": FileData(
+                    content=["import os", "import sys", "print('hello')"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep_search")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "output_mode": "content",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/test.py:1:import os" in result
+        assert "/test.py:2:import sys" in result
+        assert "print" not in result
+
+    def test_grep_search_shortterm_count_mode(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.py": FileData(
+                    content=["import os", "import sys", "print('hello')"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/main.py": FileData(
+                    content=["import json", "data = {}"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep_search")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "output_mode": "count",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/test.py:2" in result or "/test.py: 2" in result
+        assert "/main.py:1" in result or "/main.py: 1" in result
+
+    def test_grep_search_shortterm_with_include(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.py": FileData(
+                    content=["import os"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/test.txt": FileData(
+                    content=["import nothing"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep_search")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "include": "*.py",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/test.py" in result
+        assert "/test.txt" not in result
+
+    def test_grep_search_shortterm_with_path(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/src/main.py": FileData(
+                    content=["import os"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+                "/tests/test.py": FileData(
+                    content=["import pytest"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep_search")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "path": "/src",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/src/main.py" in result
+        assert "/tests/test.py" not in result
+
+    def test_grep_search_shortterm_regex_pattern(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.py": FileData(
+                    content=["def hello():", "def world():", "x = 5"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep_search")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": r"def \w+\(",
+                "output_mode": "content",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "/test.py:1:def hello():" in result
+        assert "/test.py:2:def world():" in result
+        assert "x = 5" not in result
+
+    def test_grep_search_shortterm_no_matches(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.py": FileData(
+                    content=["print('hello')"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep_search")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result == "No matches found"
+
+    def test_grep_search_shortterm_invalid_regex(self):
+        state = FilesystemState(
+            messages=[],
+            files={
+                "/test.py": FileData(
+                    content=["print('hello')"],
+                    modified_at="2021-01-01",
+                    created_at="2021-01-01",
+                ),
+            },
+        )
+        middleware = FilesystemMiddleware(long_term_memory=False)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep_search")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "[invalid",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert "Invalid regex pattern" in result
+
+    def test_search_store_paginated_empty(self):
+        """Test pagination with no items."""
+        store = InMemoryStore()
+        result = _search_store_paginated(store, ("filesystem",))
+        assert result == []
+
+    def test_search_store_paginated_less_than_page_size(self):
+        """Test pagination with fewer items than page size."""
+        store = InMemoryStore()
+        for i in range(5):
+            store.put(
+                ("filesystem",),
+                f"/file{i}.txt",
+                {
+                    "content": [f"content {i}"],
+                    "created_at": "2021-01-01",
+                    "modified_at": "2021-01-01",
+                },
+            )
+
+        result = _search_store_paginated(store, ("filesystem",), page_size=10)
+        assert len(result) == 5
+        # Check that all files are present (order may vary)
+        keys = {item.key for item in result}
+        assert keys == {f"/file{i}.txt" for i in range(5)}
+
+    def test_search_store_paginated_exact_page_size(self):
+        """Test pagination with exactly one page of items."""
+        store = InMemoryStore()
+        for i in range(10):
+            store.put(
+                ("filesystem",),
+                f"/file{i}.txt",
+                {
+                    "content": [f"content {i}"],
+                    "created_at": "2021-01-01",
+                    "modified_at": "2021-01-01",
+                },
+            )
+
+        result = _search_store_paginated(store, ("filesystem",), page_size=10)
+        assert len(result) == 10
+        keys = {item.key for item in result}
+        assert keys == {f"/file{i}.txt" for i in range(10)}
+
+    def test_search_store_paginated_multiple_pages(self):
+        """Test pagination with multiple pages of items."""
+        store = InMemoryStore()
+        for i in range(250):
+            store.put(
+                ("filesystem",),
+                f"/file{i}.txt",
+                {
+                    "content": [f"content {i}"],
+                    "created_at": "2021-01-01",
+                    "modified_at": "2021-01-01",
+                },
+            )
+
+        result = _search_store_paginated(store, ("filesystem",), page_size=100)
+        assert len(result) == 250
+        keys = {item.key for item in result}
+        assert keys == {f"/file{i}.txt" for i in range(250)}
+
+    def test_search_store_paginated_with_filter(self):
+        """Test pagination with filter parameter."""
+        store = InMemoryStore()
+        for i in range(20):
+            store.put(
+                ("filesystem",),
+                f"/file{i}.txt",
+                {
+                    "content": [f"content {i}"],
+                    "created_at": "2021-01-01",
+                    "modified_at": "2021-01-01",
+                    "type": "test" if i % 2 == 0 else "other",
+                },
+            )
+
+        # Filter for type="test" (every other item, so 10 items)
+        result = _search_store_paginated(store, ("filesystem",), filter={"type": "test"}, page_size=5)
+        assert len(result) == 10
+        # Verify all returned items have type="test"
+        for item in result:
+            assert item.value.get("type") == "test"
+
+    def test_search_store_paginated_custom_page_size(self):
+        """Test pagination with custom page size."""
+        store = InMemoryStore()
+        # Add 55 items
+        for i in range(55):
+            store.put(
+                ("filesystem",),
+                f"/file{i}.txt",
+                {
+                    "content": [f"content {i}"],
+                    "created_at": "2021-01-01",
+                    "modified_at": "2021-01-01",
+                },
+            )
+
+        result = _search_store_paginated(store, ("filesystem",), page_size=20)
+        # Should make 3 calls: 20, 20, 15
+        assert len(result) == 55
+        keys = {item.key for item in result}
+        assert keys == {f"/file{i}.txt" for i in range(55)}
 
 
 @pytest.mark.requires("langchain_openai")

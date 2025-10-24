@@ -411,7 +411,18 @@ WRITE_FILE_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT = (
     f"\n- file_paths prefixed with the {MEMORIES_PREFIX} path will be written to the longterm filesystem."
 )
 
-FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`
+DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file from the filesystem.
+
+Usage:
+- The file_path parameter must be an absolute path, not a relative path
+- The delete_file tool will permanently remove the file.
+- Use this tool when you need to clean up temporary files or remove files that are no longer needed.
+- The file must exist in the filesystem to be deleted."""
+DELETE_FILE_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT = (
+    f"\n- file_paths prefixed with the {MEMORIES_PREFIX} path will be deleted from the longterm filesystem."
+)
+
+FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `delete_file`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /.
@@ -419,7 +430,8 @@ All file paths must start with a /.
 - ls: list all files in the filesystem
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
-- edit_file: edit a file in the filesystem"""
+- edit_file: edit a file in the filesystem
+- delete_file: delete a file from the filesystem"""
 FILESYSTEM_SYSTEM_PROMPT_LONGTERM_SUPPLEMENT = f"""
 
 You also have access to a longterm filesystem in which you can store files that you want to keep around for longer than the current conversation.
@@ -888,11 +900,86 @@ def _edit_file_tool_generator(custom_description: str | None = None, *, long_ter
     return edit_file
 
 
+def _delete_file_tool_generator(custom_description: str | None = None, *, long_term_memory: bool) -> BaseTool:
+    """Generate the delete_file tool.
+
+    Args:
+        custom_description: Optional custom description for the tool.
+        long_term_memory: Whether to enable longterm memory support.
+
+    Returns:
+        Configured delete_file tool that deletes files from state or longterm store.
+    """
+    tool_description = DELETE_FILE_TOOL_DESCRIPTION
+    if custom_description:
+        tool_description = custom_description
+    elif long_term_memory:
+        tool_description += DELETE_FILE_TOOL_DESCRIPTION_LONGTERM_SUPPLEMENT
+
+    def _delete_file_from_state(state: FilesystemState, tool_call_id: str, file_path: str) -> Command | str:
+        """Delete a file from the filesystem state.
+
+        Args:
+            state: The current filesystem state.
+            tool_call_id: ID of the tool call for generating ToolMessage.
+            file_path: The path of the file to delete.
+
+        Returns:
+            Command to update state with file deletion, or error string if file doesn't exist.
+        """
+        mock_filesystem = state.get("files", {})
+        if file_path not in mock_filesystem:
+            return f"Error: File '{file_path}' not found"
+        return Command(
+            update={
+                "files": {file_path: None},  # None triggers deletion via reducer
+                "messages": [ToolMessage(f"Deleted file {file_path}", tool_call_id=tool_call_id)],
+            }
+        )
+
+    if long_term_memory:
+
+        @tool(description=tool_description)
+        def delete_file(
+            file_path: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> Command | str:
+            file_path = _validate_path(file_path)
+            if not runtime.tool_call_id:
+                value_error_msg = "Tool call ID is required for delete_file invocation"
+                raise ValueError(value_error_msg)
+            if _has_memories_prefix(file_path):
+                stripped_file_path = _strip_memories_prefix(file_path)
+                store = _get_store(runtime)
+                namespace = _get_namespace()
+                if store.get(namespace, stripped_file_path) is None:
+                    return f"Error: File '{file_path}' not found"
+                store.delete(namespace, stripped_file_path)
+                return f"Deleted longterm memories file {file_path}"
+            return _delete_file_from_state(runtime.state, runtime.tool_call_id, file_path)
+
+    else:
+
+        @tool(description=tool_description)
+        def delete_file(
+            file_path: str,
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> Command | str:
+            file_path = _validate_path(file_path)
+            if not runtime.tool_call_id:
+                value_error_msg = "Tool call ID is required for delete_file invocation"
+                raise ValueError(value_error_msg)
+            return _delete_file_from_state(runtime.state, runtime.tool_call_id, file_path)
+
+    return delete_file
+
+
 TOOL_GENERATORS = {
     "ls": _ls_tool_generator,
     "read_file": _read_file_tool_generator,
     "write_file": _write_file_tool_generator,
     "edit_file": _edit_file_tool_generator,
+    "delete_file": _delete_file_tool_generator,
 }
 
 
@@ -904,7 +991,7 @@ def _get_filesystem_tools(custom_tool_descriptions: dict[str, str] | None = None
         long_term_memory: Whether to enable longterm memory support.
 
     Returns:
-        List of configured filesystem tools (ls, read_file, write_file, edit_file).
+        List of configured filesystem tools (ls, read_file, write_file, edit_file, delete_file).
     """
     if custom_tool_descriptions is None:
         custom_tool_descriptions = {}
@@ -928,8 +1015,8 @@ Here are the first 10 lines of the result:
 class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem tools to an agent.
 
-    This middleware adds four filesystem tools to the agent: ls, read_file, write_file,
-    and edit_file. Files can be stored in two locations:
+    This middleware adds five filesystem tools to the agent: ls, read_file, write_file,
+    edit_file, and delete_file. Files can be stored in two locations:
     - Short-term: In the agent's state (ephemeral, lasts only for the conversation)
     - Long-term: In a persistent store (persists across conversations when enabled)
 

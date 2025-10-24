@@ -583,6 +583,126 @@ class TestFilesystem:
         assert "/test.txt" in response["files"].keys()
         assert "research" in response
 
+    def test_delete_file_shortterm(self):
+        checkpointer = MemorySaver()
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=False,
+                )
+            ],
+            checkpointer=checkpointer,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        # First create a file
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Write a haiku about Pikachu to /pikachu.txt")],
+                "files": {},
+            },
+            config=config,
+        )
+        assert "/pikachu.txt" in response["files"]
+        
+        # Now delete the file
+        response = agent.invoke(
+            {"messages": [HumanMessage(content="Delete the file /pikachu.txt")]},
+            config=config,
+        )
+        messages = response["messages"]
+        delete_file_message = next(message for message in messages if message.type == "tool" and message.name == "delete_file")
+        assert delete_file_message is not None
+        assert "Deleted file /pikachu.txt" in delete_file_message.content
+        assert "/pikachu.txt" not in response["files"]
+
+    def test_delete_file_longterm(self):
+        checkpointer = MemorySaver()
+        store = InMemoryStore()
+        store.put(
+            ("filesystem",),
+            "/pikachu.txt",
+            {
+                "content": ["Thunder shock!"],
+                "created_at": "2021-01-01",
+                "modified_at": "2021-01-01",
+            },
+        )
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=True,
+                )
+            ],
+            checkpointer=checkpointer,
+            store=store,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Delete the file /pikachu.txt from longterm memory")],
+                "files": {},
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        delete_file_message = next(message for message in messages if message.type == "tool" and message.name == "delete_file")
+        assert delete_file_message is not None
+        assert "Deleted longterm memories file /memories/pikachu.txt" in delete_file_message.content
+        # Verify the file was actually deleted from store
+        assert store.get(("filesystem",), "/pikachu.txt") is None
+
+    def test_delete_file_not_found_shortterm(self):
+        checkpointer = MemorySaver()
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=False,
+                )
+            ],
+            checkpointer=checkpointer,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Delete the file /nonexistent.txt")],
+                "files": {},
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        delete_file_message = next(message for message in messages if message.type == "tool" and message.name == "delete_file")
+        assert delete_file_message is not None
+        assert "Error: File '/nonexistent.txt' not found" in delete_file_message.content
+
+    def test_delete_file_not_found_longterm(self):
+        checkpointer = MemorySaver()
+        store = InMemoryStore()
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(
+                    long_term_memory=True,
+                )
+            ],
+            checkpointer=checkpointer,
+            store=store,
+        )
+        config = {"configurable": {"thread_id": uuid.uuid4()}}
+        response = agent.invoke(
+            {
+                "messages": [HumanMessage(content="Delete the file /nonexistent.txt from longterm memory")],
+                "files": {},
+            },
+            config=config,
+        )
+        messages = response["messages"]
+        delete_file_message = next(message for message in messages if message.type == "tool" and message.name == "delete_file")
+        assert delete_file_message is not None
+        assert "Error: File '/memories/nonexistent.txt' not found" in delete_file_message.content
+
 
 # Take actions on multiple threads to test longterm memory
 def assert_longterm_mem_tools(agent, store):
@@ -640,6 +760,18 @@ def assert_longterm_mem_tools(agent, store):
     read_file_message = next(message for message in messages if message.type == "tool" and message.name == "read_file")
     assert "ember" in read_file_message.content or "Ember" in read_file_message.content
 
+    # Delete the longterm memory file
+    config6 = {"configurable": {"thread_id": uuid.uuid4()}}
+    response = agent.invoke(
+        {"messages": [HumanMessage(content="Delete the haiku about Charmander from longterm memory at /charmander.txt")]},
+        config=config6,
+    )
+    messages = response["messages"]
+    delete_file_message = next(message for message in messages if message.type == "tool" and message.name == "delete_file")
+    assert delete_file_message is not None
+    file_item = store.get(("filesystem",), "/charmander.txt")
+    assert file_item is None
+
 
 def assert_shortterm_mem_tools(agent):
     # Write a shortterm memory file
@@ -686,3 +818,13 @@ def assert_shortterm_mem_tools(agent):
     messages = response["messages"]
     read_file_message = next(message for message in reversed(messages) if message.type == "tool" and message.name == "read_file")
     assert "ember" in read_file_message.content or "Ember" in read_file_message.content
+
+    # Delete the shortterm memory file
+    response = agent.invoke(
+        {"messages": [HumanMessage(content="Delete the haiku about Charmander at /charmander.txt")]},
+        config=config,
+    )
+    messages = response["messages"]
+    delete_file_message = next(message for message in messages if message.type == "tool" and message.name == "delete_file")
+    assert delete_file_message is not None
+    assert "/charmander.txt" not in response["files"]

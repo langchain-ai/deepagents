@@ -319,7 +319,7 @@ def _create_task_tool(
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(result["messages"][-1].content, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(result["messages"][-1].text, tool_call_id=tool_call_id)],
             }
         )
 

@@ -9,6 +9,8 @@ dependencies = [
     "langchain-anthropic>=1.0.0,<2.0.0",
     "langchain>=1.0.0,<2.0.0",
     "langchain-core>=1.0.0,<2.0.0",
+    "daytona>=0.111.1",
+    "hotbeak",
 ]
 
 [project.optional-dependencies]
@@ -92,3 +94,6 @@ enable_error_code = ["deprecated"]
 # Optional: reduce strictness if needed
 disallow_any_generics = false
 warn_return_any = false
+
+[tool.uv.sources]
+hotbeak = { path = "../hotbeak" }

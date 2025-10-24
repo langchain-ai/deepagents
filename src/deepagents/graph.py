@@ -17,7 +17,6 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
-from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
@@ -93,20 +92,24 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
 
+    import os
+
+    root = os.getcwd()
+
     deepagent_middleware = [
         TodoListMiddleware(),
-        FilesystemMiddleware(
-            long_term_memory=use_longterm_memory,
-        ),
+        # ShellToolMiddleware(workspace_root=root),
+        # FilesystemClaudeTextEditorMiddleware(root_path=root),
+        # FilesystemClaudeMemoryMiddleware(root_path=root),
         SubAgentMiddleware(
             default_model=model,
             default_tools=tools,
             subagents=subagents if subagents is not None else [],
             default_middleware=[
                 TodoListMiddleware(),
-                FilesystemMiddleware(
-                    long_term_memory=use_longterm_memory,
-                ),
+                # FilesystemClaudeTextEditorMiddleware(root_path=root),
+                # ShellToolMiddleware(workspace_root=root),
+                # FilesystemClaudeMemoryMiddleware(root_path=root),
                 SummarizationMiddleware(
                     model=model,
                     max_tokens_before_summary=170000,

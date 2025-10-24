@@ -52,7 +52,7 @@ def create_deep_agent(
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-) -> CompiledStateGraph:
+) -> CompiledStateGraph[Any, Any, Any, Any]:
     """Create a deep agent.
 
     This agent will by default have access to a tool to write todos (write_todos),
@@ -69,11 +69,11 @@ def create_deep_agent(
             following keys:
                 - `name`
                 - `description` (used by the main agent to decide whether to call the
-                  sub agent)
+                    sub agent)
                 - `prompt` (used as the system prompt in the subagent)
                 - (optional) `tools`
                 - (optional) `model` (either a LanguageModelLike instance or dict
-                  settings)
+                    settings)
                 - (optional) `middleware` (list of AgentMiddleware)
         response_format: A structured output response format to use for the agent.
         context_schema: The schema of the deep agent.

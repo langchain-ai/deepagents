@@ -87,7 +87,7 @@ in the same way you would any LangGraph agent.
 
 **Context Management**
 
- File system tools (`ls`, `read_file`, `write_file`, `edit_file`) allow agents to offload large context to memory, preventing context window overflow and enabling work with variable-length tool results.
+ File system tools (`ls`, `read_file`, `write_file`, `edit_file`, `delete_file`) allow agents to offload large context to memory, preventing context window overflow and enabling work with variable-length tool results.
 
 **Subagent Spawning**
 
@@ -375,11 +375,12 @@ agent = create_agent(
 ### FilesystemMiddleware
 
 Context engineering is one of the main challenges in building effective agents. This can be particularly hard when using tools that can return variable length results (ex. web_search, rag), as long ToolResults can quickly fill up your context window.
-**FilesystemMiddleware** provides four tools to your agent to interact with both short-term and long-term memory.
+**FilesystemMiddleware** provides five tools to your agent to interact with both short-term and long-term memory.
 - **ls**: List the files in your filesystem
 - **read_file**: Read an entire file, or a certain number of lines from a file
 - **write_file**: Write a new file to your filesystem
 - **edit_file**: Edit an existing file in your filesystem
+- **delete_file**: Delete a file from your filesystem
 
 ```python
 from langchain.agents import create_agent

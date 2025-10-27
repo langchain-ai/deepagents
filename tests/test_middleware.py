@@ -283,13 +283,9 @@ class TestPatchToolCallsMiddleware:
         ]
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is not None
-        assert len(state_update["messages"]) == 6
-        assert state_update["messages"][0].type == "remove"
-        assert state_update["messages"][1:] == input_messages
-        updated_messages = add_messages(input_messages, state_update["messages"])
-        assert len(updated_messages) == 5
-        assert updated_messages == input_messages
+        # When there are no missing tool calls, middleware should return None
+        # to avoid streaming unnecessary RemoveMessage to clients
+        assert state_update is None
 
     def test_two_missing_tool_calls(self) -> None:
         input_messages = [

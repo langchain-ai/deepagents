@@ -17,10 +17,9 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         if not messages or len(messages) == 0:
             return None
 
-        patched_messages = []
-        # Iterate over the messages and add any dangling tool calls
+        # Collect patches for dangling tool calls
+        patches_to_add = []
         for i, msg in enumerate(messages):
-            patched_messages.append(msg)
             if msg.type == "ai" and msg.tool_calls:
                 for tool_call in msg.tool_calls:
                     corresponding_tool_msg = next(
@@ -33,12 +32,31 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                             f"Tool call {tool_call['name']} with id {tool_call['id']} was "
                             "cancelled - another message came in before it could be completed."
                         )
-                        patched_messages.append(
+                        patches_to_add.append(
                             ToolMessage(
                                 content=tool_msg,
                                 name=tool_call["name"],
                                 tool_call_id=tool_call["id"],
                             )
                         )
+
+        # Only return patches if there are dangling tool calls
+        # This prevents unnecessary RemoveMessage from being streamed to clients
+        if not patches_to_add:
+            return None
+
+        # Rebuild message list with patches inserted after their corresponding AI messages
+        patched_messages = []
+        for i, msg in enumerate(messages):
+            patched_messages.append(msg)
+            if msg.type == "ai" and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    # Find patch for this specific tool call
+                    patch = next(
+                        (p for p in patches_to_add if p.tool_call_id == tool_call["id"]),
+                        None,
+                    )
+                    if patch:
+                        patched_messages.append(patch)
 
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *patched_messages]}

@@ -1,10 +1,11 @@
 """Shared utility functions for memory backend implementations."""
 
 import re
-import wcmatch.glob as wcglob
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+
+import wcmatch.glob as wcglob
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 2000
@@ -18,11 +19,11 @@ def format_content_with_line_numbers(
     start_line: int = 1,
 ) -> str:
     """Format file content with line numbers (cat -n style).
-    
+
     Args:
         content: File content as string or list of lines
         start_line: Starting line number (default: 1)
-    
+
     Returns:
         Formatted content with line numbers
     """
@@ -32,19 +33,16 @@ def format_content_with_line_numbers(
             lines = lines[:-1]
     else:
         lines = content
-    
-    return "\n".join(
-        f"{i + start_line:{LINE_NUMBER_WIDTH}d}\t{line[:MAX_LINE_LENGTH]}" 
-        for i, line in enumerate(lines)
-    )
+
+    return "\n".join(f"{i + start_line:{LINE_NUMBER_WIDTH}d}\t{line[:MAX_LINE_LENGTH]}" for i, line in enumerate(lines))
 
 
 def check_empty_content(content: str) -> str | None:
     """Check if content is empty and return warning message.
-    
+
     Args:
         content: Content to check
-    
+
     Returns:
         Warning message if empty, None otherwise
     """
@@ -55,10 +53,10 @@ def check_empty_content(content: str) -> str | None:
 
 def file_data_to_string(file_data: dict[str, Any]) -> str:
     """Convert FileData to plain string content.
-    
+
     Args:
         file_data: FileData dict with 'content' key
-    
+
     Returns:
         Content as string with lines joined by newlines
     """
@@ -67,18 +65,18 @@ def file_data_to_string(file_data: dict[str, Any]) -> str:
 
 def create_file_data(content: str, created_at: str | None = None) -> dict[str, Any]:
     """Create a FileData object with timestamps.
-    
+
     Args:
         content: File content as string
         created_at: Optional creation timestamp (ISO format)
-    
+
     Returns:
         FileData dict with content and timestamps
     """
     lines = content.split("\n") if isinstance(content, str) else content
-    lines = [line[i:i+MAX_LINE_LENGTH] for line in lines for i in range(0, len(line) or 1, MAX_LINE_LENGTH)]
+    lines = [line[i : i + MAX_LINE_LENGTH] for line in lines for i in range(0, len(line) or 1, MAX_LINE_LENGTH)]
     now = datetime.now(UTC).isoformat()
-    
+
     return {
         "content": lines,
         "created_at": created_at or now,
@@ -88,18 +86,18 @@ def create_file_data(content: str, created_at: str | None = None) -> dict[str, A
 
 def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
     """Update FileData with new content, preserving creation timestamp.
-    
+
     Args:
         file_data: Existing FileData dict
         content: New content as string
-    
+
     Returns:
         Updated FileData dict
     """
     lines = content.split("\n") if isinstance(content, str) else content
-    lines = [line[i:i+MAX_LINE_LENGTH] for line in lines for i in range(0, len(line) or 1, MAX_LINE_LENGTH)]
+    lines = [line[i : i + MAX_LINE_LENGTH] for line in lines for i in range(0, len(line) or 1, MAX_LINE_LENGTH)]
     now = datetime.now(UTC).isoformat()
-    
+
     return {
         "content": lines,
         "created_at": file_data["created_at"],
@@ -113,12 +111,12 @@ def format_read_response(
     limit: int,
 ) -> str:
     """Format file data for read response with line numbers.
-    
+
     Args:
         file_data: FileData dict
         offset: Line offset (0-indexed)
         limit: Maximum number of lines
-    
+
     Returns:
         Formatted content or error message
     """
@@ -126,14 +124,14 @@ def format_read_response(
     empty_msg = check_empty_content(content)
     if empty_msg:
         return empty_msg
-    
+
     lines = content.splitlines()
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
-    
+
     if start_idx >= len(lines):
         return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
-    
+
     selected_lines = lines[start_idx:end_idx]
     return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
 
@@ -145,24 +143,24 @@ def perform_string_replacement(
     replace_all: bool,
 ) -> tuple[str, int] | str:
     """Perform string replacement with occurrence validation.
-    
+
     Args:
         content: Original content
         old_string: String to replace
         new_string: Replacement string
         replace_all: Whether to replace all occurrences
-    
+
     Returns:
         Tuple of (new_content, occurrences) on success, or error message string
     """
     occurrences = content.count(old_string)
-    
+
     if occurrences == 0:
         return f"Error: String not found in file: '{old_string}'"
-    
+
     if occurrences > 1 and not replace_all:
         return f"Error: String '{old_string}' appears {occurrences} times in file. Use replace_all=True to replace all instances, or provide a more specific string with surrounding context."
-    
+
     new_content = content.replace(old_string, new_string)
     return new_content, occurrences
 
@@ -174,33 +172,33 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
         if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
             return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]
         return result
-    else:  # string
-        if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
-        return result
+    # string
+    if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
+        return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
+    return result
 
 
 def _validate_path(path: str | None) -> str:
     """Validate and normalize a path.
-    
+
     Args:
         path: Path to validate
-    
+
     Returns:
         Normalized path starting with /
-    
+
     Raises:
         ValueError: If path is invalid
     """
     path = path or "/"
     if not path or path.strip() == "":
         raise ValueError("Path cannot be empty")
-    
+
     normalized = path if path.startswith("/") else "/" + path
-    
+
     if not normalized.endswith("/"):
         normalized += "/"
-    
+
     return normalized
 
 
@@ -210,16 +208,16 @@ def _glob_search_files(
     path: str = "/",
 ) -> str:
     """Search files dict for paths matching glob pattern.
-    
+
     Args:
         files: Dictionary of file paths to FileData.
         pattern: Glob pattern (e.g., "*.py", "**/*.ts").
         path: Base path to search from.
-    
+
     Returns:
         Newline-separated file paths, sorted by modification time (most recent first).
         Returns "No files found" if no matches.
-    
+
     Example:
         ```python
         files = {"/src/main.py": FileData(...), "/test.py": FileData(...)}
@@ -256,29 +254,28 @@ def _format_grep_results(
     output_mode: Literal["files_with_matches", "content", "count"],
 ) -> str:
     """Format grep search results based on output mode.
-    
+
     Args:
         results: Dictionary mapping file paths to list of (line_num, line_content) tuples
         output_mode: Output format - "files_with_matches", "content", or "count"
-    
+
     Returns:
         Formatted string output
     """
     if output_mode == "files_with_matches":
         return "\n".join(sorted(results.keys()))
-    elif output_mode == "count":
+    if output_mode == "count":
         lines = []
         for file_path in sorted(results.keys()):
             count = len(results[file_path])
             lines.append(f"{file_path}: {count}")
         return "\n".join(lines)
-    else:
-        lines = []
-        for file_path in sorted(results.keys()):
-            lines.append(f"{file_path}:")
-            for line_num, line in results[file_path]:
-                lines.append(f"  {line_num}: {line}")
-        return "\n".join(lines)
+    lines = []
+    for file_path in sorted(results.keys()):
+        lines.append(f"{file_path}:")
+        for line_num, line in results[file_path]:
+            lines.append(f"  {line_num}: {line}")
+    return "\n".join(lines)
 
 
 def _grep_search_files(
@@ -289,17 +286,17 @@ def _grep_search_files(
     output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
 ) -> str:
     """Search file contents for regex pattern.
-    
+
     Args:
         files: Dictionary of file paths to FileData.
         pattern: Regex pattern to search for.
         path: Base path to search from.
         glob: Optional glob pattern to filter files (e.g., "*.py").
         output_mode: Output format - "files_with_matches", "content", or "count".
-    
+
     Returns:
         Formatted search results. Returns "No matches found" if no results.
-    
+
     Example:
         ```python
         files = {"/file.py": FileData(content=["import os", "print('hi')"], ...)}

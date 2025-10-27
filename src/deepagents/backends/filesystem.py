@@ -7,45 +7,45 @@ Security and search upgrades:
   and optional glob include filtering, while preserving virtual path behavior
 """
 
+import json
 import os
 import re
-import json
 import subprocess
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
-from langgraph.types import Command
 
-if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
+import wcmatch.glob as wcglob
 
-from .utils import (
+from deepagents.backends.protocol import Backend, EditResult, WriteResult
+from deepagents.backends.utils import (
+    _format_grep_results,
     check_empty_content,
     format_content_with_line_numbers,
     perform_string_replacement,
-    _format_grep_results,
-    truncate_if_too_long
+    truncate_if_too_long,
 )
-import wcmatch.glob as wcglob
 
 
-
-class FilesystemBackend:
+class FilesystemBackend(Backend):
     """Backend that reads and writes files directly from the filesystem.
 
     Files are accessed using their actual filesystem paths. Relative paths are
     resolved relative to the current working directory. Content is read/written
     as plain text, and metadata (timestamps) are derived from filesystem stats.
+
+    Storage Model: External Storage
+    --------------------------------
+    This backend uses external storage (filesystem). Write and edit operations
+    persist directly to disk and return WriteResult/EditResult with files_update=None.
     """
 
     def __init__(
-        self, 
-        root_dir: Optional[str | Path] = None,
+        self,
+        root_dir: str | Path | None = None,
         virtual_mode: bool = False,
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
-        
+
         Args:
             root_dir: Optional root directory for file operations. If provided,
                      all file paths will be resolved relative to this directory.
@@ -90,7 +90,7 @@ class FilesystemBackend:
 
         Args:
             path: Absolute directory path to list files from.
-        
+
         Returns:
             List of absolute file paths.
         """
@@ -115,10 +115,10 @@ class FilesystemBackend:
                         continue
                     # Strip the cwd prefix if present
                     if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str):]
+                        relative_path = abs_path[len(cwd_str) :]
                     elif abs_path.startswith(str(self.cwd)):
                         # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)):].lstrip("/")
+                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
                     else:
                         # Path is outside cwd, return as-is or skip
                         relative_path = abs_path
@@ -128,15 +128,15 @@ class FilesystemBackend:
             pass
 
         return truncate_if_too_long(sorted(results))
-    
+
     def read(
-        self, 
+        self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers.
-        
+
         Args:
             file_path: Absolute or relative file path
             offset: Line offset to start reading from (0-indexed)
@@ -144,10 +144,10 @@ class FilesystemBackend:
             Formatted file content with line numbers, or error message.
         """
         resolved_path = self._resolve_path(file_path)
-        
+
         if not resolved_path.exists() or not resolved_path.is_file():
             return f"Error: File '{file_path}' not found"
-        
+
         try:
             # Open with O_NOFOLLOW where available to avoid symlink traversal
             try:
@@ -156,42 +156,44 @@ class FilesystemBackend:
                     content = f.read()
             except OSError:
                 # Fallback to normal open if O_NOFOLLOW unsupported or fails
-                with open(resolved_path, "r", encoding="utf-8") as f:
+                with open(resolved_path, encoding="utf-8") as f:
                     content = f.read()
-            
+
             empty_msg = check_empty_content(content)
             if empty_msg:
                 return empty_msg
-            
+
             lines = content.splitlines()
             start_idx = offset
             end_idx = min(start_idx + limit, len(lines))
-            
+
             if start_idx >= len(lines):
                 return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
-            
+
             selected_lines = lines[start_idx:end_idx]
             return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
         except (OSError, UnicodeDecodeError) as e:
             return f"Error reading file '{file_path}': {e}"
-    
+
     def write(
-        self, 
+        self,
         file_path: str,
         content: str,
-    ) -> Command | str:
+    ) -> WriteResult:
         """Create a new file with content.
-        
+
         Args:
             file_path: Absolute or relative file path
-            content: File content as a stringReturns:
-            Success message or error if file already exists.
+            content: File content as a string
+
+        Returns:
+            WriteResult with files_update=None (external storage).
         """
         resolved_path = self._resolve_path(file_path)
-        
+
         if resolved_path.exists():
-            return f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
-        
+            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+
         try:
             # Create parent directories if needed
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
@@ -203,32 +205,37 @@ class FilesystemBackend:
             fd = os.open(resolved_path, flags, 0o644)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
-            
-            return f"Updated file {file_path}"
+
+            return WriteResult(
+                path=file_path,
+                files_update=None,  # External storage: already persisted to disk
+            )
         except (OSError, UnicodeEncodeError) as e:
-            return f"Error writing file '{file_path}': {e}"
-    
+            return WriteResult(error=f"Error writing file '{file_path}': {e}")
+
     def edit(
-        self, 
+        self,
         file_path: str,
         old_string: str,
         new_string: str,
         replace_all: bool = False,
-    ) -> Command | str:
+    ) -> EditResult:
         """Edit a file by replacing string occurrences.
-        
+
         Args:
             file_path: Absolute or relative file path
             old_string: String to find and replace
             new_string: Replacement string
-            replace_all: If True, replace all occurrencesReturns:
-            Success message or error message on failure.
+            replace_all: If True, replace all occurrences
+
+        Returns:
+            EditResult with files_update=None (external storage).
         """
         resolved_path = self._resolve_path(file_path)
-        
+
         if not resolved_path.exists() or not resolved_path.is_file():
-            return f"Error: File '{file_path}' not found"
-        
+            return EditResult(error=f"Error: File '{file_path}' not found")
+
         try:
             # Read securely
             try:
@@ -236,16 +243,17 @@ class FilesystemBackend:
                 with os.fdopen(fd, "r", encoding="utf-8") as f:
                     content = f.read()
             except OSError:
-                with open(resolved_path, "r", encoding="utf-8") as f:
+                with open(resolved_path, encoding="utf-8") as f:
                     content = f.read()
-            
+
             result = perform_string_replacement(content, old_string, new_string, replace_all)
-            
+
             if isinstance(result, str):
-                return result
-            
+                # Error message from perform_string_replacement
+                return EditResult(error=result)
+
             new_content, occurrences = result
-            
+
             # Write securely
             flags = os.O_WRONLY | os.O_TRUNC
             if hasattr(os, "O_NOFOLLOW"):
@@ -253,16 +261,20 @@ class FilesystemBackend:
             fd = os.open(resolved_path, flags)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(new_content)
-            
-            return f"Successfully replaced {occurrences} instance(s) of the string in '{file_path}'"
+
+            return EditResult(
+                path=file_path,
+                files_update=None,  # External storage: already persisted to disk
+                occurrences=occurrences,
+            )
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
-            return f"Error editing file '{file_path}': {e}"
-    
+            return EditResult(error=f"Error editing file '{file_path}': {e}")
+
     def grep(
         self,
         pattern: str,
-        path: Optional[str] = None,
-        glob: Optional[str] = None,
+        path: str | None = None,
+        glob: str | None = None,
         output_mode: str = "files_with_matches",
     ) -> str:
         """Search for a pattern in files (ripgrep with Python fallback).
@@ -301,9 +313,7 @@ class FilesystemBackend:
 
         return truncate_if_too_long(_format_grep_results(results, output_mode))
 
-    def _ripgrep_search(
-        self, pattern: str, base_full: Path, include_glob: Optional[str]
-    ) -> Optional[dict[str, list[tuple[int, str]]]]:
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:
         cmd = ["rg", "--json"]
         if include_glob:
             cmd.extend(["--glob", include_glob])
@@ -348,9 +358,7 @@ class FilesystemBackend:
 
         return results
 
-    def _python_search(
-        self, pattern: str, base_full: Path, include_glob: Optional[str]
-    ) -> dict[str, list[tuple[int, str]]]:
+    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:
         try:
             regex = re.compile(pattern)
         except re.error:
@@ -385,10 +393,10 @@ class FilesystemBackend:
                     results.setdefault(virt_path, []).append((line_num, line))
 
         return results
-    
+
     def glob(self, pattern: str, path: str = "/") -> list[str]:
         """Find files matching a glob pattern.
-        
+
         Args:
             pattern: Glob pattern (e.g., "**/*.py", "*.txt", "/subdir/**/*.md")
             path: Base path to search from (default "/")Returns:
@@ -396,17 +404,17 @@ class FilesystemBackend:
         """
         if pattern.startswith("/"):
             pattern = pattern.lstrip("/")
-        
+
         if path == "/":
             search_path = self.cwd
         else:
             search_path = self._resolve_path(path)
-        
+
         if not search_path.exists() or not search_path.is_dir():
             return []
-        
+
         results = []
-        
+
         try:
             for matched_path in search_path.glob(pattern):
                 if matched_path.is_file():
@@ -414,18 +422,18 @@ class FilesystemBackend:
                     if not self.virtual_mode:
                         results.append(abs_path)
                         continue
-                    
+
                     cwd_str = str(self.cwd)
                     if not cwd_str.endswith("/"):
                         cwd_str += "/"
-                    
+
                     if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str):]
+                        relative_path = abs_path[len(cwd_str) :]
                     elif abs_path.startswith(str(self.cwd)):
-                        relative_path = abs_path[len(str(self.cwd)):].lstrip("/")
+                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
                     else:
                         relative_path = abs_path
-                    
+
                     results.append("/" + relative_path)
         except (OSError, ValueError):
             pass

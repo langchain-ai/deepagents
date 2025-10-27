@@ -1,49 +1,49 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
-import re
-from typing import Any, Literal, Optional, TYPE_CHECKING
+from typing import Literal
 
-from langchain.tools import ToolRuntime
-
-from langchain_core.messages import ToolMessage
-from langgraph.types import Command
-
-from .utils import (
+from deepagents.backends.protocol import Backend, EditResult, WriteResult
+from deepagents.backends.utils import (
+    _glob_search_files,
+    _grep_search_files,
     create_file_data,
-    update_file_data,
     file_data_to_string,
     format_read_response,
     perform_string_replacement,
     truncate_if_too_long,
-    _glob_search_files,
-    _grep_search_files,
+    update_file_data,
 )
 
 
-class StateBackend:
+class StateBackend(Backend):
     """Backend that stores files in agent state (ephemeral).
-    
+
     Uses LangGraph's state management and checkpointing. Files persist within
     a conversation thread but not across threads. State is automatically
     checkpointed after each agent step.
-    
-    Special handling: Since LangGraph state must be updated via Command objects
-    (not direct mutation), operations return Command objects instead of None.
-    This is indicated by the uses_state=True flag.
+
+    Storage Model: Checkpoint Storage
+    ---------------------------------
+    This backend stores files in LangGraph state, persisted via LangGraph's checkpoint
+    system (Postgres, Redis, in-memory, etc.). Write and edit operations return
+    WriteResult/EditResult with files_update populated, which the tool layer converts
+    into Command objects for state updates.
     """
-    
+
     def __init__(self, runtime: "ToolRuntime"):
         """Initialize StateBackend with runtime.
-        
-        Args:"""
+
+        Args:
+            runtime: Tool runtime with access to LangGraph state
+        """
         self.runtime = runtime
-    
+
     def ls(self, path: str) -> list[str]:
         """List files from state.
-        
+
         Args:
             path: Absolute path to directory.
-        
+
         Returns:
             List of file paths.
         """
@@ -51,15 +51,15 @@ class StateBackend:
         keys = list(files.keys())
         keys = [k for k in keys if k.startswith(path)]
         return truncate_if_too_long(keys)
-    
+
     def read(
-        self, 
+        self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers.
-        
+
         Args:
             file_path: Absolute file path
             offset: Line offset to start reading from (0-indexed)
@@ -68,97 +68,80 @@ class StateBackend:
         """
         files = self.runtime.state.get("files", {})
         file_data = files.get(file_path)
-        
+
         if file_data is None:
             return f"Error: File '{file_path}' not found"
-        
+
         return format_read_response(file_data, offset, limit)
-    
+
     def write(
-        self, 
+        self,
         file_path: str,
         content: str,
-    ) -> Command | str:
+    ) -> WriteResult:
         """Create a new file with content.
-        
+
         Args:
             file_path: Absolute file path
-            content: File content as a stringReturns:
-            Command object to update state, or error message if file exists.
+            content: File content as a string
+
+        Returns:
+            WriteResult with files_update populated for framework state update.
         """
         files = self.runtime.state.get("files", {})
-        
+
         if file_path in files:
-            return f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
-        
+            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+
         new_file_data = create_file_data(content)
-        tool_call_id = self.runtime.tool_call_id
-        
-        return Command(
-            update={
-                "files": {file_path: new_file_data},
-                "messages": [
-                    ToolMessage(
-                        content=f"Updated file {file_path}",
-                        tool_call_id=tool_call_id,
-                    )
-                ],
-            }
-        )
-    
+
+        return WriteResult(path=file_path, files_update={file_path: new_file_data})
+
     def edit(
-        self, 
+        self,
         file_path: str,
         old_string: str,
         new_string: str,
         replace_all: bool = False,
-    ) -> Command | str:
+    ) -> EditResult:
         """Edit a file by replacing string occurrences.
-        
+
         Args:
             file_path: Absolute file path
             old_string: String to find and replace
             new_string: Replacement string
-            replace_all: If True, replace all occurrencesReturns:
-            Command object to update state, or error message on failure.
+            replace_all: If True, replace all occurrences
+
+        Returns:
+            EditResult with files_update populated for framework state update.
         """
         files = self.runtime.state.get("files", {})
         file_data = files.get(file_path)
-        
+
         if file_data is None:
-            return f"Error: File '{file_path}' not found"
-        
+            return EditResult(error=f"Error: File '{file_path}' not found")
+
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)
-        
+
         if isinstance(result, str):
-            return result
-        
+            # Error message from perform_string_replacement
+            return EditResult(error=result)
+
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        tool_call_id = self.runtime.tool_call_id
-        
-        return Command(
-            update={
-                "files": {file_path: new_file_data},
-                "messages": [
-                    ToolMessage(
-                        content=f"Successfully replaced {occurrences} instance(s) of the string in '{file_path}'",
-                        tool_call_id=tool_call_id,
-                    )
-                ],
-            }
-        )
-    
+
+        return EditResult(path=file_path, files_update={file_path: new_file_data}, occurrences=occurrences)
+
     def grep(
         self,
         pattern: str,
         path: str = "/",
-        glob: Optional[str] = None,
+        glob: str | None = None,
         output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
     ) -> str:
         """Search for a pattern in files.
-        
+
         Args:
             pattern: String pattern to search for
             path: Path to search in (default "/")
@@ -167,25 +150,20 @@ class StateBackend:
             Formatted search results based on output_mode.
         """
         files = self.runtime.state.get("files", {})
-        
+
         return truncate_if_too_long(_grep_search_files(files, pattern, path, glob, output_mode))
-    
+
     def glob(self, pattern: str, path: str = "/") -> list[str]:
         """Find files matching a glob pattern.
-        
+
         Args:
             pattern: Glob pattern (e.g., "**/*.py", "*.txt", "/subdir/**/*.md")
             path: Base path to search from (default "/")Returns:
             List of absolute file paths matching the pattern.
         """
         files = self.runtime.state.get("files", {})
-        
+
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
             return []
         return truncate_if_too_long(result.split("\n"))
-
-class StateBackendProvider:
-
-    def get_backend(self, runtime: ToolRuntime):
-        return StateBackend(runtime)

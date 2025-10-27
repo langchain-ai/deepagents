@@ -17,7 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
-from deepagents.backends.protocol import BackendProtocol
+from deepagents.backends.protocol import BackendProvider
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
@@ -48,7 +48,7 @@ def create_deep_agent(
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
-    backend: BackendProtocol | None = None,
+    backend: BackendProvider | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     debug: bool = False,
     name: str | None = None,
@@ -80,9 +80,10 @@ def create_deep_agent(
         context_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
         store: Optional store for persistent storage (required if backend uses StoreBackend).
-        backend: Optional backend provider for file storage. Defaults to StateBackendProvider
-            (ephemeral storage in agent state). For persistent memory, use CompositeStateBackendProvider.
-            Example: CompositeStateBackendProvider(routes={"/memories/": StoreBackendProvider()})
+        backend: Optional backend factory for file storage. A callable that takes ToolRuntime
+            and returns a Backend instance. Defaults to StateBackendProvider (ephemeral storage
+            in agent state). For persistent memory with hybrid storage, use CompositeBackendProvider.
+            Example: CompositeBackendProvider(StateBackendProvider, routes={"/memories/": StoreBackendProvider})
         interrupt_on: Optional Dict[str, bool | InterruptOnConfig] mapping tool names to
             interrupt configs.
         debug: Whether to enable debug mode. Passed through to create_agent.

@@ -1,12 +1,9 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated
-from typing_extensions import NotRequired
-
 import os
-from typing import Literal, Optional
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -21,9 +18,8 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
-from deepagents.backends.protocol import BackendProtocol, StateBackendProtocol, StateBackendProvider, BackendProvider
-from deepagents.backends import StateBackend, CompositeBackend
-from deepagents.backends.state import StateBackendProvider
+from deepagents.backends.protocol import Backend, BackendProvider
+from deepagents.backends.state import StateBackend
 from deepagents.backends.utils import (
     create_file_data,
     format_content_with_line_numbers,
@@ -34,7 +30,6 @@ MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 2000
-BACKEND_TYPES = BackendProvider | BackendProtocol | StateBackendProtocol | StateBackendProtocol
 
 
 class FileData(TypedDict):
@@ -130,6 +125,7 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
 
     return normalized
 
+
 class FilesystemState(AgentState):
     """State for the filesystem middleware."""
 
@@ -221,21 +217,29 @@ All file paths must start with a /.
 - grep: search for text within files"""
 
 
-def _get_backend(backend: BACKEND_TYPES, runtime: ToolRuntime) -> StateBackendProtocol | BackendProtocol:
-    if isinstance(backend, (StateBackendProvider, BackendProvider)):
-        return backend.get_backend(runtime)
-    else:
-        return backend
+def _get_backend(backend: Backend | BackendProvider, runtime: ToolRuntime) -> Backend:
+    """Get a backend instance from a Backend or BackendProvider.
+
+    Args:
+        backend: Either a Backend instance or a BackendProvider callable
+        runtime: ToolRuntime to pass to the provider if needed
+
+    Returns:
+        Backend instance
+    """
+    if callable(backend):
+        return backend(runtime)
+    return backend
 
 
 def _ls_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
+    backend: Backend | BackendProvider,
     custom_description: str | None = None,
 ) -> BaseTool:
     """Generate the ls (list files) tool.
 
     Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
+        backend: Backend instance or BackendProvider callable
         custom_description: Optional custom description for the tool.
 
     Returns:
@@ -254,13 +258,13 @@ def _ls_tool_generator(
 
 
 def _read_file_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
+    backend: Backend | BackendProvider,
     custom_description: str | None = None,
 ) -> BaseTool:
     """Generate the read_file tool.
 
     Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
+        backend: Backend instance or BackendProvider callable
         custom_description: Optional custom description for the tool.
 
     Returns:
@@ -283,13 +287,13 @@ def _read_file_tool_generator(
 
 
 def _write_file_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
+    backend: Backend | BackendProvider,
     custom_description: str | None = None,
 ) -> BaseTool:
     """Generate the write_file tool.
 
     Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
+        backend: Backend instance or BackendProvider callable
         custom_description: Optional custom description for the tool.
 
     Returns:
@@ -305,19 +309,30 @@ def _write_file_tool_generator(
     ) -> Command | str:
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        return resolved_backend.write(file_path, content)
+        result = resolved_backend.write(file_path, content)
+
+        # Convert WriteResult to Command or string
+        if result.error:
+            return result.error
+
+        if result.files_update:
+            # Checkpoint storage: return Command to update state
+            return Command(update={"files": result.files_update})
+
+        # External storage: return success message
+        return f"Updated file {result.path}"
 
     return write_file
 
 
 def _edit_file_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
+    backend: Backend | BackendProvider,
     custom_description: str | None = None,
 ) -> BaseTool:
     """Generate the edit_file tool.
 
     Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
+        backend: Backend instance or BackendProvider callable
         custom_description: Optional custom description for the tool.
 
     Returns:
@@ -336,19 +351,30 @@ def _edit_file_tool_generator(
     ) -> Command | str:
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        return resolved_backend.edit(file_path, old_string, new_string, replace_all=replace_all)
+        result = resolved_backend.edit(file_path, old_string, new_string, replace_all=replace_all)
+
+        # Convert EditResult to Command or string
+        if result.error:
+            return result.error
+
+        if result.files_update:
+            # Checkpoint storage: return Command to update state
+            return Command(update={"files": result.files_update})
+
+        # External storage: return success message
+        return f"Successfully replaced {result.occurrences} instance(s) of the string in '{result.path}'"
 
     return edit_file
 
 
 def _glob_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
+    backend: Backend | BackendProvider,
     custom_description: str | None = None,
 ) -> BaseTool:
     """Generate the glob tool.
 
     Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
+        backend: Backend instance or BackendProvider callable
         custom_description: Optional custom description for the tool.
 
     Returns:
@@ -365,13 +391,13 @@ def _glob_tool_generator(
 
 
 def _grep_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
+    backend: Backend | BackendProvider,
     custom_description: str | None = None,
 ) -> BaseTool:
     """Generate the grep tool.
 
     Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
+        backend: Backend instance or BackendProvider callable
         custom_description: Optional custom description for the tool.
 
     Returns:
@@ -383,7 +409,7 @@ def _grep_tool_generator(
     def grep(
         pattern: str,
         runtime: ToolRuntime[None, FilesystemState],
-        path: Optional[str] = None,
+        path: str | None = None,
         glob: str | None = None,
         output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
     ) -> str:
@@ -404,13 +430,13 @@ TOOL_GENERATORS = {
 
 
 def _get_filesystem_tools(
-    backend: BackendProtocol,
+    backend: Backend | BackendProvider,
     custom_tool_descriptions: dict[str, str] | None = None,
 ) -> list[BaseTool]:
     """Get filesystem tools.
 
     Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
+        backend: Backend instance or BackendProvider callable
         custom_tool_descriptions: Optional custom descriptions for tools.
 
     Returns:
@@ -438,41 +464,32 @@ Here are the first 10 lines of the result:
 class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem tools to an agent.
 
-    This middleware adds six filesystem tools to the agent: ls, read_file, write_file,
-    edit_file, glob, and grep. Files can be stored using any backend that implements
-    the BackendProtocol.
+        This middleware adds six filesystem tools to the agent: ls, read_file, write_file,
+        edit_file, glob, and grep. Files can be stored using any backend that implements
+        the BackendProtocol.
 
     Args:
-<<<<<<< HEAD
-        memory_backend: Backend for file storage. If not provided, defaults to StateBackend
-            (ephemeral storage in agent state). For persistent storage or hybrid setups,
-            use CompositeBackend with custom routes.
-=======
-        long_term_memory: Whether to enable longterm memory support.
-<<<<<<< HEAD
->>>>>>> master
-=======
->>>>>>> master
-        system_prompt: Optional custom system prompt override.
-        custom_tool_descriptions: Optional custom tool descriptions override.
-        tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            memory_backend: Backend for file storage. If not provided, defaults to StateBackend
+                (ephemeral storage in agent state). For persistent storage or hybrid setups,
+                use CompositeBackend with custom routes.
+            long_term_memory: Whether to enable longterm memory support.
+            system_prompt: Optional custom system prompt override.
+            custom_tool_descriptions: Optional custom tool descriptions override.
+            tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
 
     Example:
-        ```python
-        from deepagents.middleware.filesystem import FilesystemMiddleware
-        from deepagents.memory.backends import StateBackend, StoreBackend, CompositeBackend
-        from langchain.agents import create_agent
+            ```python
+            from deepagents.middleware.filesystem import FilesystemMiddleware
+            from deepagents.memory.backends import StateBackend, StoreBackend, CompositeBackend
+            from langchain.agents import create_agent
 
-        # Ephemeral storage only (default)
-        agent = create_agent(middleware=[FilesystemMiddleware()])
+            # Ephemeral storage only (default)
+            agent = create_agent(middleware=[FilesystemMiddleware()])
 
-        # With hybrid storage (ephemeral + persistent /memories/)
-        backend = CompositeBackend(
-            default=StateBackend(),
-            routes={"/memories/": StoreBackend()}
-        )
-        agent = create_agent(middleware=[FilesystemMiddleware(memory_backend=backend)])
-        ```
+            # With hybrid storage (ephemeral + persistent /memories/)
+            backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+            agent = create_agent(middleware=[FilesystemMiddleware(memory_backend=backend)])
+            ```
     """
 
     state_schema = FilesystemState
@@ -480,7 +497,7 @@ class FilesystemMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES | None = None,
+        backend: Backend | BackendProvider | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
@@ -488,15 +505,18 @@ class FilesystemMiddleware(AgentMiddleware):
         """Initialize the filesystem middleware.
 
         Args:
-            memory_backend: Backend for file storage. Defaults to StateBackend if not provided.
+            backend: Backend instance or BackendProvider callable. Defaults to StateBackendProvider if not provided.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
         """
         self.tool_token_limit_before_evict = tool_token_limit_before_evict
 
-        # Use provided backend or default to StateBackend factory
-        self.backend = backend if backend is not None else StateBackendProvider()
+        def _get_state_backend(runtime: ToolRuntime) -> Backend:
+            return StateBackend(runtime)
+
+        # Use provided backend or default to StateBackendProvider function
+        self.backend = backend if backend is not None else _get_state_backend
 
         # Set system prompt (allow full override)
         self.system_prompt = system_prompt if system_prompt is not None else FILESYSTEM_SYSTEM_PROMPT

@@ -1,48 +1,55 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
-import re
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langchain.tools import ToolRuntime
 
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
-from langgraph.types import Command
 
+from deepagents.backends.protocol import Backend, EditResult, WriteResult
 from deepagents.backends.utils import (
+    _glob_search_files,
+    _grep_search_files,
     create_file_data,
-    update_file_data,
     file_data_to_string,
     format_read_response,
     perform_string_replacement,
     truncate_if_too_long,
-    _glob_search_files,
-    _grep_search_files,
+    update_file_data,
 )
 
 
-class StoreBackend:
+class StoreBackend(Backend):
     """Backend that stores files in LangGraph's BaseStore (persistent).
-    
+
     Uses LangGraph's Store for persistent, cross-conversation storage.
     Files are organized via namespaces and persist across all threads.
-    
+
     The namespace can include an optional assistant_id for multi-agent isolation.
+
+    Storage Model: External Storage
+    --------------------------------
+    This backend uses external storage (LangGraph BaseStore). Write and edit
+    operations persist directly to the store and return WriteResult/EditResult
+    with files_update=None.
     """
+
     def __init__(self, runtime: "ToolRuntime"):
         """Initialize StoreBackend with runtime.
-        
-        Args:"""
-        self.runtime = runtime
 
+        Args:
+            runtime: Tool runtime with access to LangGraph BaseStore
+        """
+        self.runtime = runtime
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
-        
+
         Args:Returns:
             BaseStore instance
-        
+
         Raises:
             ValueError: If no store is available or runtime not provided
         """
@@ -51,14 +58,14 @@ class StoreBackend:
             msg = "Store is required but not available in runtime"
             raise ValueError(msg)
         return store
-    
+
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
-        
+
         Returns a tuple for organizing files in the store. If an assistant_id is
         available in the config metadata, returns (assistant_id, "filesystem") to
         provide per-assistant isolation. Otherwise, returns ("filesystem",).
-        
+
         Returns:
             Namespace tuple for store operations.
         """
@@ -70,16 +77,16 @@ class StoreBackend:
         if assistant_id is None:
             return (namespace,)
         return (assistant_id, namespace)
-    
+
     def _convert_store_item_to_file_data(self, store_item: Item) -> dict[str, Any]:
         """Convert a store Item to FileData format.
-        
+
         Args:
             store_item: The store Item containing file data.
-        
+
         Returns:
             FileData dict with content, created_at, and modified_at fields.
-        
+
         Raises:
             ValueError: If required fields are missing or have incorrect types.
         """
@@ -97,13 +104,13 @@ class StoreBackend:
             "created_at": store_item.value["created_at"],
             "modified_at": store_item.value["modified_at"],
         }
-    
+
     def _convert_file_data_to_store_value(self, file_data: dict[str, Any]) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
-        
+
         Args:
             file_data: The FileData to convert.
-        
+
         Returns:
             Dictionary with content, created_at, and modified_at fields.
         """
@@ -159,133 +166,145 @@ class StoreBackend:
             offset += page_size
 
         return all_items
-    
+
     def ls(self, path: str) -> list[str]:
         """List files from store.
-        
+
         Args:
             path: Absolute path to directory.
-        
+
         Returns:
             List of file paths.
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        
+
         # Search store with path filter
         items = self._search_store_paginated(store, namespace, filter={"prefix": path})
-        
+
         return truncate_if_too_long([item.key for item in items])
-    
+
     def read(
-        self, 
+        self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers.
-        
+
         Args:
             file_path: Absolute file path
             offset: Line offset to start reading from (0-indexed)limit: Maximum number of lines to read
-        
+
         Returns:
             Formatted file content with line numbers, or error message.
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        item: Optional[Item] = store.get(namespace, file_path)
-        
+        item: Item | None = store.get(namespace, file_path)
+
         if item is None:
             return f"Error: File '{file_path}' not found"
-        
+
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
             return f"Error: {e}"
-        
+
         return format_read_response(file_data, offset, limit)
-    
+
     def write(
-        self, 
+        self,
         file_path: str,
         content: str,
-    ) -> Command | str:
+    ) -> WriteResult:
         """Create a new file with content.
-        
+
         Args:
             file_path: Absolute file path
-            content: File content as a stringReturns:
-            Success message or error if file already exists.
+            content: File content as a string
+
+        Returns:
+            WriteResult with files_update=None (external storage).
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        
+
         # Check if file exists
         existing = store.get(namespace, file_path)
         if existing is not None:
-            return f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
-        
-        # Create new file
+            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+
+        # Create new file and persist to store
         file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
-        
-        return f"Updated file {file_path}"
-    
+
+        return WriteResult(
+            path=file_path,
+            files_update=None,  # External storage: already persisted to store
+        )
+
     def edit(
-        self, 
+        self,
         file_path: str,
         old_string: str,
         new_string: str,
         replace_all: bool = False,
-    ) -> Command | str:
+    ) -> EditResult:
         """Edit a file by replacing string occurrences.
-        
+
         Args:
             file_path: Absolute file path
             old_string: String to find and replace
             new_string: Replacement string
-            replace_all: If True, replace all occurrencesReturns:
-            Success message or error message on failure.
+            replace_all: If True, replace all occurrences
+
+        Returns:
+            EditResult with files_update=None (external storage).
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        
+
         # Get existing file
         item = store.get(namespace, file_path)
         if item is None:
-            return f"Error: File '{file_path}' not found"
-        
+            return EditResult(error=f"Error: File '{file_path}' not found")
+
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
-            return f"Error: {e}"
-        
+            return EditResult(error=f"Error: {e}")
+
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)
-        
+
         if isinstance(result, str):
-            return result
-        
+            # Error message from perform_string_replacement
+            return EditResult(error=result)
+
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        
+
         # Update file in store
         store_value = self._convert_file_data_to_store_value(new_file_data)
         store.put(namespace, file_path, store_value)
-        
-        return f"Successfully replaced {occurrences} instance(s) of the string in '{file_path}'"
-    
+
+        return EditResult(
+            path=file_path,
+            files_update=None,  # External storage: already persisted to store
+            occurrences=occurrences,
+        )
+
     def grep(
         self,
         pattern: str,
         path: str = "/",
-        glob: Optional[str] = None,
+        glob: str | None = None,
         output_mode: str = "files_with_matches",
     ) -> str:
         """Search for a pattern in files.
-        
+
         Args:
             pattern: String pattern to search for
             path: Path to search in (default "/")
@@ -295,9 +314,9 @@ class StoreBackend:
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        
+
         items = self._search_store_paginated(store, namespace)
-        
+
         files = {}
         for item in items:
             if item is None:
@@ -307,12 +326,12 @@ class StoreBackend:
                 files[item.key] = file_data
             except ValueError:
                 continue
-        
+
         return truncate_if_too_long(_grep_search_files(files, pattern, path, glob, output_mode))
-    
+
     def glob(self, pattern: str, path: str = "/") -> list[str]:
         """Find files matching a glob pattern.
-        
+
         Args:
             pattern: Glob pattern (e.g., "**/*.py", "*.txt", "/subdir/**/*.md")
             path: Base path to search from (default "/")Returns:
@@ -320,9 +339,9 @@ class StoreBackend:
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        
+
         items = self._search_store_paginated(store, namespace)
-        
+
         files = {}
         for item in items:
             if item is None:
@@ -337,18 +356,3 @@ class StoreBackend:
         if result == "No files found":
             return []
         return truncate_if_too_long(result.split("\n"))
-
-
-class StoreBackendProvider:
-    """Provider for StoreBackend that creates instances with runtime."""
-    
-    def get_backend(self, runtime: "ToolRuntime") -> StoreBackend:
-        """Create a StoreBackend instance with the given runtime.
-        
-        Args:
-            runtime: The ToolRuntime instance to pass to StoreBackend.
-            
-        Returns:
-            Configured StoreBackend instance.
-        """
-        return StoreBackend(runtime)

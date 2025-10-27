@@ -6,14 +6,23 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
+    "tavily-python",
+    "python-dotenv",
+    "requests",
+    "rich>=13.0.0",
     "langchain-anthropic>=1.0.0,<2.0.0",
     "langchain>=1.0.0,<2.0.0",
     "langchain-core>=1.0.0,<2.0.0",
+    "wcmatch"
 ]
+
+[project.scripts]
+deepagents = "deepagents.cli:cli_main"
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-recording",
     "pytest-cov",
     "build",
     "twine",
@@ -42,6 +51,7 @@ include = ["deepagents*"]
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]
+"deepagents" = ["*.md"]
 
 [tool.ruff]
 line-length = 150
@@ -92,3 +102,9 @@ enable_error_code = ["deprecated"]
 # Optional: reduce strictness if needed
 disallow_any_generics = false
 warn_return_any = false
+
+[tool.pytest.ini_options]
+markers = [
+  "vcr: record/replay HTTP via VCR"
+]
+addopts = "--record-mode=once"

@@ -109,9 +109,7 @@ By default, `deepagents` uses `"claude-sonnet-4-5-20250929"`. You can customize 
 from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
 
-model = init_chat_model(
-    model="openai:gpt-5",  
-)
+model = init_chat_model("openai:gpt-4o")
 agent = create_deep_agent(
     model=model,
 )
@@ -296,19 +294,29 @@ agent = create_deep_agent(
 )
 ```
 
-### `use_longterm_memory`
-Deep agents come with a local filesystem to offload memory to. This filesystem is stored in state, and is therefore transient to a single thread.
+### `backend`
+Deep agents come with a local filesystem to offload memory to. By default, this filesystem is stored in state (ephemeral, transient to a single thread).
 
-You can extend deep agents with long-term memory by providing a Store and setting use_longterm_memory=True.
+You can configure persistent long-term memory using a CompositeBackend with StoreBackend:
 
 ```python
 from deepagents import create_deep_agent
+from deepagents.backends import (
+    CompositeStateBackendProvider,
+    StoreBackendProvider,
+)
 from langgraph.store.memory import InMemoryStore
 
 store = InMemoryStore()  # Or any other Store object
+
+# Create a hybrid backend: ephemeral files in / and persistent files in /memories/
+backend = CompositeStateBackendProvider(
+    routes={"/memories/": StoreBackendProvider()}
+)
+
 agent = create_deep_agent(
-    store=store,
-    use_longterm_memory=True
+    backend=backend,
+    store=store
 )
 ```
 
@@ -384,6 +392,11 @@ Context engineering is one of the main challenges in building effective agents. 
 ```python
 from langchain.agents import create_agent
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.backends import (
+    StateBackendProvider,
+    CompositeStateBackendProvider,
+    StoreBackendProvider,
+)
 
 # FilesystemMiddleware is included by default in create_deep_agent
 # You can customize it if building a custom agent
@@ -391,8 +404,12 @@ agent = create_agent(
     model="anthropic:claude-sonnet-4-20250514",
     middleware=[
         FilesystemMiddleware(
-            long_term_memory=False,  # Enables access to long-term memory, defaults to False. You must attach a store to use long-term memory.
-            system_prompt="Write to the filesystem when...",  # Optional custom addition to the system prompt
+            backend=StateBackendProvider(),  # Optional: customize storage backend (defaults to StateBackendProvider)
+            # For persistent memory, use CompositeStateBackendProvider:
+            # backend=CompositeStateBackendProvider(
+            #     routes={"/memories/": StoreBackendProvider()}
+            # )
+            system_prompt="Write to the filesystem when...",  # Optional custom system prompt override
             custom_tool_descriptions={
                 "ls": "Use the ls tool when...",
                 "read_file": "Use the read_file tool to..."

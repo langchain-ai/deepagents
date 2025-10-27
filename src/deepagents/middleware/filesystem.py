@@ -1,16 +1,13 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
-from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Annotated, Any
-from typing_extensions import NotRequired
-
-if TYPE_CHECKING:
-    from langgraph.runtime import Runtime
+from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Awaitable, Callable, Sequence
+from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing_extensions import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -23,10 +20,12 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.config import get_config
-from langgraph.runtime import Runtime
 from langgraph.store.base import BaseStore, Item
 from langgraph.types import Command
-from typing_extensions import TypedDict
+
+if TYPE_CHECKING:
+    from langgraph.runtime import Runtime
+
 
 MEMORIES_PREFIX = "/memories/"
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -908,11 +907,11 @@ def _get_filesystem_tools(custom_tool_descriptions: dict[str, str] | None = None
     """
     if custom_tool_descriptions is None:
         custom_tool_descriptions = {}
-    tools = []
+    built_tools = []
     for tool_name, tool_generator in TOOL_GENERATORS.items():
-        tool = tool_generator(custom_tool_descriptions.get(tool_name), long_term_memory=long_term_memory)
-        tools.append(tool)
-    return tools
+        built_tool = tool_generator(custom_tool_descriptions.get(tool_name), long_term_memory=long_term_memory)
+        built_tools.append(built_tool)
+    return built_tools
 
 
 TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}

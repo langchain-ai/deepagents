@@ -17,7 +17,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.backends.daytona import DaytonaSandboxProvider
+from deepagents.middleware.general_factory import GeneralizedFilesystemMiddleware, GeneralizedShellMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
@@ -95,18 +96,16 @@ def create_deep_agent(
 
     deepagent_middleware = [
         TodoListMiddleware(),
-        FilesystemMiddleware(
-            long_term_memory=use_longterm_memory,
-        ),
+        # Terminate on complete is False to allow persisting the content for a chat session.
+        # Warning that this keeps sandboxes alive until some TTL is hit
+        GeneralizedFilesystemMiddleware(sandbox_provider=DaytonaSandboxProvider(auto_delete_minutes=5), terminate_on_complete=False),
+        GeneralizedShellMiddleware(sandbox_provider=DaytonaSandboxProvider(auto_delete_minutes=5), terminate_on_complete=False),
         SubAgentMiddleware(
             default_model=model,
             default_tools=tools,
             subagents=subagents if subagents is not None else [],
             default_middleware=[
                 TodoListMiddleware(),
-                FilesystemMiddleware(
-                    long_term_memory=use_longterm_memory,
-                ),
                 SummarizationMiddleware(
                     model=model,
                     max_tokens_before_summary=170000,

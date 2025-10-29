@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.1.4"
+version = "0.2.0"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
@@ -9,6 +9,7 @@ dependencies = [
     "langchain-anthropic>=1.0.0,<2.0.0",
     "langchain>=1.0.0,<2.0.0",
     "langchain-core>=1.0.0,<2.0.0",
+    "wcmatch"
 ]
 
 [project.optional-dependencies]
@@ -17,7 +18,7 @@ dev = [
     "pytest-cov",
     "build",
     "twine",
-    "langchain-openai"
+    "langchain-openai",
 ]
 
 [dependency-groups]

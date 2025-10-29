@@ -8,7 +8,7 @@ a **planning tool**, **sub agents**, access to a **file system**, and a **detail
 
 <img src="deep_agents.png" alt="deep agent" width="600"/>
 
-`deepagents` is a Python package that implements these in a general purpose way so that you can easily create a Deep Agent for your application.
+`deepagents` is a Python package that implements these in a general purpose way so that you can easily create a Deep Agent for your application. For a full overview and quickstart of `deepagents`, the best resource is our [docs](https://docs.langchain.com/oss/python/deepagents/overview).
 
 **Acknowledgements: This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.**
 
@@ -87,7 +87,7 @@ in the same way you would any LangGraph agent.
 
 **Context Management**
 
- File system tools (`ls`, `read_file`, `write_file`, `edit_file`) allow agents to offload large context to memory, preventing context window overflow and enabling work with variable-length tool results.
+ File system tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`) allow agents to offload large context to memory, preventing context window overflow and enabling work with variable-length tool results.
 
 **Subagent Spawning**
 
@@ -109,9 +109,7 @@ By default, `deepagents` uses `"claude-sonnet-4-5-20250929"`. You can customize 
 from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
 
-model = init_chat_model(
-    model="openai:gpt-5",  
-)
+model = init_chat_model("openai:gpt-4o")
 agent = create_deep_agent(
     model=model,
 )
@@ -296,22 +294,6 @@ agent = create_deep_agent(
 )
 ```
 
-### `use_longterm_memory`
-Deep agents come with a local filesystem to offload memory to. This filesystem is stored in state, and is therefore transient to a single thread.
-
-You can extend deep agents with long-term memory by providing a Store and setting use_longterm_memory=True.
-
-```python
-from deepagents import create_deep_agent
-from langgraph.store.memory import InMemoryStore
-
-store = InMemoryStore()  # Or any other Store object
-agent = create_deep_agent(
-    store=store,
-    use_longterm_memory=True
-)
-```
-
 ### `interrupt_on`
 A common reality for agents is that some tool operations may be sensitive and require human approval before execution. Deep Agents supports human-in-the-loop workflows through LangGraph’s interrupt capabilities. You can configure which tools require approval using a checkpointer.
 
@@ -385,14 +367,15 @@ Context engineering is one of the main challenges in building effective agents. 
 from langchain.agents import create_agent
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
+
 # FilesystemMiddleware is included by default in create_deep_agent
 # You can customize it if building a custom agent
 agent = create_agent(
     model="anthropic:claude-sonnet-4-20250514",
     middleware=[
         FilesystemMiddleware(
-            long_term_memory=False,  # Enables access to long-term memory, defaults to False. You must attach a store to use long-term memory.
-            system_prompt="Write to the filesystem when...",  # Optional custom addition to the system prompt
+            backend=..., # Optional: customize storage backend
+            system_prompt="Write to the filesystem when...",  # Optional custom system prompt override
             custom_tool_descriptions={
                 "ls": "Use the ls tool when...",
                 "read_file": "Use the read_file tool to..."

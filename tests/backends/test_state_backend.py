@@ -1,8 +1,6 @@
-import pytest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import ToolMessage
-from deepagents.backends.protocol import WriteResult, EditResult
 
+from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.state import StateBackend
 
 
@@ -20,14 +18,15 @@ def make_runtime(files=None):
     )
 
 
-def test_write_read_edit_ls_grep_glob_state_backend():
+def test_write_read_edit_ls_grep_glob_state_backend() -> None:
     rt = make_runtime()
     be = StateBackend(rt)
 
     # write
     res = be.write("/notes.txt", "hello world")
     assert isinstance(res, WriteResult)
-    assert res.error is None and res.files_update is not None
+    assert res.error is None
+    assert res.files_update is not None
     # apply state update
     rt.state["files"].update(res.files_update)
 
@@ -38,7 +37,8 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     # edit unique occurrence
     res2 = be.edit("/notes.txt", "hello", "hi", replace_all=False)
     assert isinstance(res2, EditResult)
-    assert res2.error is None and res2.files_update is not None
+    assert res2.error is None
+    assert res2.files_update is not None
     rt.state["files"].update(res2.files_update)
 
     content2 = be.read("/notes.txt")
@@ -50,7 +50,8 @@ def test_write_read_edit_ls_grep_glob_state_backend():
 
     # grep_raw
     matches = be.grep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/notes.txt" for m in matches)
+    assert isinstance(matches, list)
+    assert any(m["path"] == "/notes.txt" for m in matches)
 
     # invalid regex yields string error
     err = be.grep_raw("[", path="/")
@@ -61,23 +62,28 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     assert any(i["path"] == "/notes.txt" for i in infos)
 
 
-def test_state_backend_errors():
+def test_state_backend_errors() -> None:
     rt = make_runtime()
     be = StateBackend(rt)
 
     # edit missing file
     err = be.edit("/missing.txt", "a", "b")
-    assert isinstance(err, EditResult) and err.error and "not found" in err.error
+    assert isinstance(err, EditResult)
+    assert err.error
+    assert "not found" in err.error
 
     # write duplicate
     res = be.write("/dup.txt", "x")
-    assert isinstance(res, WriteResult) and res.files_update is not None
+    assert isinstance(res, WriteResult)
+    assert res.files_update is not None
     rt.state["files"].update(res.files_update)
     dup_err = be.write("/dup.txt", "y")
-    assert isinstance(dup_err, WriteResult) and dup_err.error and "already exists" in dup_err.error
+    assert isinstance(dup_err, WriteResult)
+    assert dup_err.error
+    assert "already exists" in dup_err.error
 
 
-def test_state_backend_ls_nested_directories():
+def test_state_backend_ls_nested_directories() -> None:
     rt = make_runtime()
     be = StateBackend(rt)
 
@@ -119,7 +125,7 @@ def test_state_backend_ls_nested_directories():
     assert empty_listing == []
 
 
-def test_state_backend_ls_trailing_slash():
+def test_state_backend_ls_trailing_slash() -> None:
     rt = make_runtime()
     be = StateBackend(rt)
 

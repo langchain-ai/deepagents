@@ -1,16 +1,15 @@
-import os
 from pathlib import Path
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import WriteResult, EditResult
+from deepagents.backends.protocol import EditResult, WriteResult
 
 
-def write_file(p: Path, content: str):
+def write_file(p: Path, content: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
 
 
-def test_filesystem_backend_normal_mode(tmp_path: Path):
+def test_filesystem_backend_normal_mode(tmp_path: Path) -> None:
     root = tmp_path
     f1 = root / "a.txt"
     f2 = root / "dir" / "b.py"
@@ -30,20 +29,25 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     txt = be.read(str(f1))
     assert "hello fs" in txt
     msg = be.edit(str(f1), "fs", "filesystem", replace_all=False)
-    assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
+    assert isinstance(msg, EditResult)
+    assert msg.error is None
+    assert msg.occurrences == 1
     msg2 = be.write(str(root / "new.txt"), "new content")
-    assert isinstance(msg2, WriteResult) and msg2.error is None and msg2.path.endswith("new.txt")
+    assert isinstance(msg2, WriteResult)
+    assert msg2.error is None
+    assert msg2.path.endswith("new.txt")  # type: ignore[union-attr]
 
     # grep_raw
     matches = be.grep_raw("hello", path=str(root))
-    assert isinstance(matches, list) and any(m["path"].endswith("a.txt") for m in matches)
+    assert isinstance(matches, list)
+    assert any(m["path"].endswith("a.txt") for m in matches)
 
     # glob_info
     g = be.glob_info("*.py", path=str(root))
     assert any(i["path"] == str(f2) for i in g)
 
 
-def test_filesystem_backend_virtual_mode(tmp_path: Path):
+def test_filesystem_backend_virtual_mode(tmp_path: Path) -> None:
     root = tmp_path
     f1 = root / "a.txt"
     f2 = root / "dir" / "b.md"
@@ -63,16 +67,20 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path):
     txt = be.read("/a.txt")
     assert "hello virtual" in txt
     msg = be.edit("/a.txt", "virtual", "virt", replace_all=False)
-    assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
+    assert isinstance(msg, EditResult)
+    assert msg.error is None
+    assert msg.occurrences == 1
 
     # write new file via virtual path
     msg2 = be.write("/new.txt", "x")
-    assert isinstance(msg2, WriteResult) and msg2.error is None
+    assert isinstance(msg2, WriteResult)
+    assert msg2.error is None
     assert (root / "new.txt").exists()
 
     # grep_raw limited to path
     matches = be.grep_raw("virt", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/a.txt" for m in matches)
+    assert isinstance(matches, list)
+    assert any(m["path"] == "/a.txt" for m in matches)
 
     # glob_info
     g = be.glob_info("**/*.md", path="/")
@@ -85,12 +93,13 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path):
     # path traversal blocked
     try:
         be.read("/../a.txt")
-        assert False, "expected ValueError for traversal"
+        msg = "expected ValueError for traversal"
+        raise AssertionError(msg)
     except ValueError:
         pass
 
 
-def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
+def test_filesystem_backend_ls_nested_directories(tmp_path: Path) -> None:
     root = tmp_path
 
     files = {
@@ -131,7 +140,7 @@ def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
     assert empty_listing == []
 
 
-def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
+def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path) -> None:
     """Test ls_info with nested directories in normal (non-virtual) mode."""
     root = tmp_path
 
@@ -160,7 +169,7 @@ def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
     assert str(root / "subdir" / "nested" / "file3.txt") not in subdir_paths
 
 
-def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
+def test_filesystem_backend_ls_trailing_slash(tmp_path: Path) -> None:
     """Test ls_info edge cases for filesystem backend."""
     root = tmp_path
 

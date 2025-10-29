@@ -1,9 +1,8 @@
-import pytest
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
+from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.store import StoreBackend
-from deepagents.backends.protocol import WriteResult, EditResult
 
 
 def make_runtime():
@@ -17,13 +16,15 @@ def make_runtime():
     )
 
 
-def test_store_backend_crud_and_search():
+def test_store_backend_crud_and_search() -> None:
     rt = make_runtime()
     be = StoreBackend(rt)
 
     # write new file
     msg = be.write("/docs/readme.md", "hello store")
-    assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
+    assert isinstance(msg, WriteResult)
+    assert msg.error is None
+    assert msg.path == "/docs/readme.md"
 
     # read
     txt = be.read("/docs/readme.md")
@@ -31,7 +32,9 @@ def test_store_backend_crud_and_search():
 
     # edit
     msg2 = be.edit("/docs/readme.md", "hello", "hi", replace_all=False)
-    assert isinstance(msg2, EditResult) and msg2.error is None and msg2.occurrences == 1
+    assert isinstance(msg2, EditResult)
+    assert msg2.error is None
+    assert msg2.occurrences == 1
 
     # ls_info (path prefix filter)
     infos = be.ls_info("/docs/")
@@ -39,7 +42,8 @@ def test_store_backend_crud_and_search():
 
     # grep_raw
     matches = be.grep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
+    assert isinstance(matches, list)
+    assert any(m["path"] == "/docs/readme.md" for m in matches)
 
     # glob_info
     g = be.glob_info("*.md", path="/")
@@ -49,7 +53,7 @@ def test_store_backend_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
-def test_store_backend_ls_nested_directories():
+def test_store_backend_ls_nested_directories() -> None:
     rt = make_runtime()
     be = StoreBackend(rt)
 
@@ -92,7 +96,7 @@ def test_store_backend_ls_nested_directories():
     assert empty_listing == []
 
 
-def test_store_backend_ls_trailing_slash():
+def test_store_backend_ls_trailing_slash() -> None:
     rt = make_runtime()
     be = StoreBackend(rt)
 

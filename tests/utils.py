@@ -5,15 +5,15 @@ from langchain_core.tools import tool
 from langgraph.types import Command
 
 
-def assert_all_deepagent_qualities(agent):
+def assert_all_deepagent_qualities(agent) -> None:
     assert "todos" in agent.stream_channels
     assert "files" in agent.stream_channels
-    assert "write_todos" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "ls" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "read_file" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "write_file" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "edit_file" in agent.nodes["tools"].bound._tools_by_name.keys()
-    assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
+    assert "write_todos" in agent.nodes["tools"].bound._tools_by_name
+    assert "ls" in agent.nodes["tools"].bound._tools_by_name
+    assert "read_file" in agent.nodes["tools"].bound._tools_by_name
+    assert "write_file" in agent.nodes["tools"].bound._tools_by_name
+    assert "edit_file" in agent.nodes["tools"].bound._tools_by_name
+    assert "task" in agent.nodes["tools"].bound._tools_by_name
 
 
 ###########################
@@ -46,22 +46,22 @@ def get_la_liga_standings(runtime: ToolRuntime):
 
 
 @tool(description="Use this tool to get a comprehensive report on the NBA standings")
-def get_nba_standings():
+def get_nba_standings() -> str:
     return "Sample text that is too long to fit in the token limit\n" * 10000
 
 
 @tool(description="Use this tool to get a comprehensive report on the NBA standings")
-def get_nfl_standings():
+def get_nfl_standings() -> str:
     return "Sample text that is too long to fit in the token limit\n" * 100
 
 
 @tool(description="Use this tool to get the weather")
-def get_weather(location: str):
+def get_weather(location: str) -> str:
     return f"The weather in {location} is sunny."
 
 
 @tool(description="Use this tool to get the latest soccer scores")
-def get_soccer_scores(team: str):
+def get_soccer_scores(team: str) -> str:
     return f"The latest soccer scores for {team} are 2-1."
 
 

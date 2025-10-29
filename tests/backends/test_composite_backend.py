@@ -3,11 +3,11 @@ from pathlib import Path
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.store import StoreBackend
-from deepagents.backends.state import StateBackend
 from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import WriteResult
+from deepagents.backends.state import StateBackend
+from deepagents.backends.store import StoreBackend
 
 
 def make_runtime(tid: str = "tc"):
@@ -20,6 +20,7 @@ def make_runtime(tid: str = "tc"):
         config={},
     )
 
+
 def build_composite_state_backend(runtime: ToolRuntime, *, routes):
     built_routes = {}
     for prefix, backend_or_factory in routes.items():
@@ -31,23 +32,27 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
     return CompositeBackend(default=default_state, routes=built_routes)
 
 
-def test_composite_state_backend_routes_and_search(tmp_path: Path):
+def test_composite_state_backend_routes_and_search() -> None:
     rt = make_runtime("t3")
     # route /memories/ to store
     be = build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
 
     # write to default (state)
     res = be.write("/file.txt", "alpha")
-    assert isinstance(res, WriteResult) and res.files_update is not None
+    assert isinstance(res, WriteResult)
+    assert res.files_update is not None
 
     # write to routed (store)
     msg = be.write("/memories/readme.md", "beta")
-    assert isinstance(msg, WriteResult) and msg.error is None and msg.files_update is None
+    assert isinstance(msg, WriteResult)
+    assert msg.error is None
+    assert msg.files_update is None
 
     # ls_info at root returns both
     infos = be.ls_info("/")
     paths = {i["path"] for i in infos}
-    assert "/file.txt" in paths and "/memories/" in paths
+    assert "/file.txt" in paths
+    assert "/memories/" in paths
 
     # grep across both
     matches = be.grep_raw("alpha", path="/")
@@ -60,19 +65,23 @@ def test_composite_state_backend_routes_and_search(tmp_path: Path):
     assert any(i["path"] == "/memories/readme.md" for i in g)
 
 
-def test_composite_backend_filesystem_plus_store(tmp_path: Path):
+def test_composite_backend_filesystem_plus_store(tmp_path: Path) -> None:
     # default filesystem, route to store under /memories/
     root = tmp_path
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     rt = make_runtime("t4")
     store = StoreBackend(rt)
-    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})  # type: ignore[arg-type]
 
     # put files in both
     r1 = comp.write("/hello.txt", "hello")
-    assert isinstance(r1, WriteResult) and r1.error is None and r1.files_update is None
+    assert isinstance(r1, WriteResult)
+    assert r1.error is None
+    assert r1.files_update is None
     r2 = comp.write("/memories/notes.md", "note")
-    assert isinstance(r2, WriteResult) and r2.error is None and r2.files_update is None
+    assert isinstance(r2, WriteResult)
+    assert r2.error is None
+    assert r2.files_update is None
 
     # ls_info path routing
     infos_root = comp.ls_info("/")
@@ -82,8 +91,10 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
 
     # grep_raw merges
     gm = comp.grep_raw("hello", path="/")
+    assert isinstance(gm, list)
     assert any(m["path"] == "/hello.txt" for m in gm)
     gm2 = comp.grep_raw("note", path="/")
+    assert isinstance(gm2, list)
     assert any(m["path"] == "/memories/notes.md" for m in gm2)
 
     # glob_info
@@ -91,7 +102,7 @@ def test_composite_backend_filesystem_plus_store(tmp_path: Path):
     assert any(i["path"] == "/memories/notes.md" for i in gl)
 
 
-def test_composite_backend_store_to_store():
+def test_composite_backend_store_to_store() -> None:
     """Test composite with default store and routed store (two different stores)."""
     rt = make_runtime("t5")
 
@@ -99,15 +110,19 @@ def test_composite_backend_store_to_store():
     default_store = StoreBackend(rt)
     memories_store = StoreBackend(rt)
 
-    comp = CompositeBackend(default=default_store, routes={"/memories/": memories_store})
+    comp = CompositeBackend(default=default_store, routes={"/memories/": memories_store})  # type: ignore[arg-type]
 
     # Write to default store
     res1 = comp.write("/notes.txt", "default store content")
-    assert isinstance(res1, WriteResult) and res1.error is None and res1.path == "/notes.txt"
+    assert isinstance(res1, WriteResult)
+    assert res1.error is None
+    assert res1.path == "/notes.txt"
 
     # Write to routed store
     res2 = comp.write("/memories/important.txt", "routed store content")
-    assert isinstance(res2, WriteResult) and res2.error is None and res2.path == "/important.txt"
+    assert isinstance(res2, WriteResult)
+    assert res2.error is None
+    assert res2.path == "/important.txt"
 
     # Read from both
     content1 = comp.read("/notes.txt")
@@ -124,13 +139,15 @@ def test_composite_backend_store_to_store():
 
     # grep across both stores
     matches = comp.grep_raw("default", path="/")
+    assert isinstance(matches, list)
     assert any(m["path"] == "/notes.txt" for m in matches)
 
     matches2 = comp.grep_raw("routed", path="/")
+    assert isinstance(matches2, list)
     assert any(m["path"] == "/memories/important.txt" for m in matches2)
 
 
-def test_composite_backend_multiple_routes():
+def test_composite_backend_multiple_routes() -> None:
     """Test composite with state default and multiple store routes."""
     rt = make_runtime("t6")
 
@@ -141,7 +158,7 @@ def test_composite_backend_multiple_routes():
             "/memories/": (lambda r: StoreBackend(r)),
             "/archive/": (lambda r: StoreBackend(r)),
             "/cache/": (lambda r: StoreBackend(r)),
-        }
+        },
     )
 
     # Write to state (default)
@@ -200,7 +217,7 @@ def test_composite_backend_multiple_routes():
     assert "persistent memory" in updated_content
 
 
-def test_composite_backend_ls_nested_directories(tmp_path: Path):
+def test_composite_backend_ls_nested_directories(tmp_path: Path) -> None:
     rt = make_runtime("t7")
     root = tmp_path
 
@@ -217,7 +234,7 @@ def test_composite_backend_ls_nested_directories(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     store = StoreBackend(rt)
 
-    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})  # type: ignore[arg-type]
 
     comp.write("/memories/note1.txt", "note 1")
     comp.write("/memories/deep/note2.txt", "note 2")
@@ -250,14 +267,14 @@ def test_composite_backend_ls_nested_directories(tmp_path: Path):
     assert "/memories/deep/nested/note3.txt" not in deep_paths
 
 
-def test_composite_backend_ls_multiple_routes_nested():
+def test_composite_backend_ls_multiple_routes_nested() -> None:
     rt = make_runtime("t8")
     comp = build_composite_state_backend(
         rt,
         routes={
             "/memories/": (lambda r: StoreBackend(r)),
             "/archive/": (lambda r: StoreBackend(r)),
-        }
+        },
     )
 
     state_files = {
@@ -315,7 +332,7 @@ def test_composite_backend_ls_multiple_routes_nested():
     assert "/archive/2023/log.txt" not in arch_paths
 
 
-def test_composite_backend_ls_trailing_slash(tmp_path: Path):
+def test_composite_backend_ls_trailing_slash(tmp_path: Path) -> None:
     rt = make_runtime("t9")
     root = tmp_path
 
@@ -324,7 +341,7 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
     fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     store = StoreBackend(rt)
 
-    comp = CompositeBackend(default=fs, routes={"/store/": store})
+    comp = CompositeBackend(default=fs, routes={"/store/": store})  # type: ignore[arg-type]
 
     comp.write("/store/item.txt", "store content")
 

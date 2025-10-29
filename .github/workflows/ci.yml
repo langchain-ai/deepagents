@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  format:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    env:
+      UV_FROZEN: "true"
+      RUFF_OUTPUT_FORMAT: github
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-suffix: "format"
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --group lint
+
+      - name: Check formatting with ruff
+        run: uv run --group lint ruff format . --check
+
+  lint:
+    name: Lint code
+    runs-on: ubuntu-latest
+    env:
+      UV_FROZEN: "true"
+      RUFF_OUTPUT_FORMAT: github
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-suffix: "lint"
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --group lint
+
+      - name: Lint with ruff
+        run: uv run --group lint ruff check .
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    env:
+      UV_FROZEN: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-suffix: "typing"
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --group typing
+
+      - name: Type check with ty
+        run: uv run --group typing ty check src/deepagents
+
+  test:
+    name: Test Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    env:
+      UV_FROZEN: "true"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-suffix: "test-py${{ matrix.python-version }}"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --group test
+
+      - name: Run tests
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: uv run --group test pytest tests/ -v --cov=deepagents --cov-report=xml --cov-report=term
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false

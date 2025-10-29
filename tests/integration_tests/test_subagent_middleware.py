@@ -1,4 +1,4 @@
-import pytest
+import pytest  # type: ignore[import-untyped]
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
@@ -18,7 +18,7 @@ class WeatherMiddleware(AgentMiddleware):
     tools = [get_weather]
 
 
-def assert_expected_subgraph_actions(expected_tool_calls, agent, inputs):
+def assert_expected_subgraph_actions(expected_tool_calls, agent, inputs) -> None:
     current_idx = 0
     for update in agent.stream(
         inputs,
@@ -43,7 +43,7 @@ def assert_expected_subgraph_actions(expected_tool_calls, agent, inputs):
 class TestSubagentMiddleware:
     """Integration tests for the SubagentMiddleware class."""
 
-    def test_general_purpose_subagent(self):
+    def test_general_purpose_subagent(self) -> None:
         agent = create_agent(
             model="claude-sonnet-4-20250514",
             system_prompt="Use the general-purpose subagent to get the weather in a city.",
@@ -54,12 +54,12 @@ class TestSubagentMiddleware:
                 )
             ],
         )
-        assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "task" in agent.nodes["tools"].bound._tools_by_name  # type: ignore[union-attr]
         response = agent.invoke({"messages": [HumanMessage(content="What is the weather in Tokyo?")]})
         assert response["messages"][1].tool_calls[0]["name"] == "task"
         assert response["messages"][1].tool_calls[0]["args"]["subagent_type"] == "general-purpose"
 
-    def test_defined_subagent(self):
+    def test_defined_subagent(self) -> None:
         agent = create_agent(
             model="claude-sonnet-4-20250514",
             system_prompt="Use the task tool to call a subagent.",
@@ -78,12 +78,12 @@ class TestSubagentMiddleware:
                 )
             ],
         )
-        assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
+        assert "task" in agent.nodes["tools"].bound._tools_by_name  # type: ignore[union-attr]
         response = agent.invoke({"messages": [HumanMessage(content="What is the weather in Tokyo?")]})
         assert response["messages"][1].tool_calls[0]["name"] == "task"
         assert response["messages"][1].tool_calls[0]["args"]["subagent_type"] == "weather"
 
-    def test_defined_subagent_tool_calls(self):
+    def test_defined_subagent_tool_calls(self) -> None:
         agent = create_agent(
             model="claude-sonnet-4-20250514",
             system_prompt="Use the task tool to call a subagent.",
@@ -112,7 +112,7 @@ class TestSubagentMiddleware:
             {"messages": [HumanMessage(content="What is the weather in Tokyo?")]},
         )
 
-    def test_defined_subagent_custom_model(self):
+    def test_defined_subagent_custom_model(self) -> None:
         agent = create_agent(
             model="claude-sonnet-4-20250514",
             system_prompt="Use the task tool to call a subagent.",
@@ -146,7 +146,7 @@ class TestSubagentMiddleware:
             {"messages": [HumanMessage(content="What is the weather in Tokyo?")]},
         )
 
-    def test_defined_subagent_custom_middleware(self):
+    def test_defined_subagent_custom_middleware(self) -> None:
         agent = create_agent(
             model="claude-sonnet-4-20250514",
             system_prompt="Use the task tool to call a subagent.",
@@ -181,7 +181,7 @@ class TestSubagentMiddleware:
             {"messages": [HumanMessage(content="What is the weather in Tokyo?")]},
         )
 
-    def test_defined_subagent_custom_runnable(self):
+    def test_defined_subagent_custom_runnable(self) -> None:
         custom_subagent = create_agent(
             model="gpt-4.1-2025-04-14",
             system_prompt="Use the get_weather tool to get the weather in a city.",
@@ -218,8 +218,8 @@ class TestSubagentMiddleware:
             {"messages": [HumanMessage(content="What is the weather in Tokyo?")]},
         )
 
-    def test_multiple_subagents_with_interrupt_on_no_middleware_accumulation(self):
-        agent = create_agent(
+    def test_multiple_subagents_with_interrupt_on_no_middleware_accumulation(self) -> None:
+        create_agent(
             model="claude-sonnet-4-20250514",
             system_prompt="Use the task tool to call subagents.",
             middleware=[

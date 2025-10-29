@@ -1,12 +1,9 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated
-from typing_extensions import NotRequired
-
 import os
-from typing import Literal, Optional
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -21,11 +18,10 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
-from deepagents.backends.protocol import BackendProtocol, BackendFactory, WriteResult, EditResult
 from deepagents.backends import StateBackend
+from deepagents.backends.protocol import BackendFactory, BackendProtocol, EditResult, WriteResult
 from deepagents.backends.utils import (
     create_file_data,
-    update_file_data,
     format_content_with_line_numbers,
     format_grep_matches,
     truncate_if_too_long,
@@ -36,10 +32,7 @@ MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 2000
-BACKEND_TYPES = (
-    BackendProtocol
-    | BackendFactory
-)
+BACKEND_TYPES = BackendProtocol | BackendFactory
 
 
 class FileData(TypedDict):
@@ -134,6 +127,7 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
         raise ValueError(msg)
 
     return normalized
+
 
 class FilesystemState(AgentState):
     """State for the filesystem middleware."""
@@ -314,15 +308,17 @@ def _write_file_tool_generator(
             return res.error
         # If backend returns state update, wrap into Command with ToolMessage
         if res.files_update is not None:
-            return Command(update={
-                "files": res.files_update,
-                "messages": [
-                    ToolMessage(
-                        content=f"Updated file {res.path}",
-                        tool_call_id=runtime.tool_call_id,
-                    )
-                ],
-            })
+            return Command(
+                update={
+                    "files": res.files_update,
+                    "messages": [
+                        ToolMessage(
+                            content=f"Updated file {res.path}",
+                            tool_call_id=runtime.tool_call_id,
+                        )
+                    ],
+                }
+            )
         return f"Updated file {res.path}"
 
     return write_file
@@ -358,15 +354,17 @@ def _edit_file_tool_generator(
         if res.error:
             return res.error
         if res.files_update is not None:
-            return Command(update={
-                "files": res.files_update,
-                "messages": [
-                    ToolMessage(
-                        content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                        tool_call_id=runtime.tool_call_id,
-                    )
-                ],
-            })
+            return Command(
+                update={
+                    "files": res.files_update,
+                    "messages": [
+                        ToolMessage(
+                            content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                            tool_call_id=runtime.tool_call_id,
+                        )
+                    ],
+                }
+            )
         return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
     return edit_file
@@ -415,7 +413,7 @@ def _grep_tool_generator(
     def grep(
         pattern: str,
         runtime: ToolRuntime[None, FilesystemState],
-        path: Optional[str] = None,
+        path: str | None = None,
         glob: str | None = None,
         output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
     ) -> str:
@@ -440,7 +438,7 @@ TOOL_GENERATORS = {
 
 
 def _get_filesystem_tools(
-    backend: BackendProtocol,
+    backend: BackendProtocol | BackendFactory,
     custom_tool_descriptions: dict[str, str] | None = None,
 ) -> list[BaseTool]:
     """Get filesystem tools.
@@ -496,10 +494,7 @@ class FilesystemMiddleware(AgentMiddleware):
         agent = create_agent(middleware=[FilesystemMiddleware()])
 
         # With hybrid storage (ephemeral + persistent /memories/)
-        backend = CompositeBackend(
-            default=StateBackend(),
-            routes={"/memories/": StoreBackend()}
-        )
+        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         agent = create_agent(middleware=[FilesystemMiddleware(memory_backend=backend)])
         ```
     """
@@ -592,8 +587,8 @@ class FilesystemMiddleware(AgentMiddleware):
             update = tool_result.update
             if update is None:
                 return tool_result
-            message_updates = update.get("messages", [])
-            file_updates = update.get("files", {})
+            message_updates = update.get("messages", [])  # type: ignore[union-attr]
+            file_updates = update.get("files", {})  # type: ignore[union-attr]
 
             edited_message_updates = []
             for message in message_updates:

@@ -1,8 +1,7 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, TypedDict, cast
-from typing_extensions import NotRequired
+from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -258,19 +257,22 @@ def _get_subagents(
             custom_agent = cast("CompiledSubAgent", agent_)
             agents[custom_agent["name"]] = custom_agent["runnable"]
             continue
-        _tools = agent_.get("tools", list(default_tools))
 
-        subagent_model = agent_.get("model", default_model)
+        # After checking for "runnable", we know agent_ is a SubAgent
+        subagent = cast("SubAgent", agent_)
+        _tools = subagent.get("tools", list(default_tools))
 
-        _middleware = [*default_subagent_middleware, *agent_["middleware"]] if "middleware" in agent_ else [*default_subagent_middleware]
+        subagent_model = subagent.get("model", default_model)
 
-        interrupt_on = agent_.get("interrupt_on", default_interrupt_on)
+        _middleware = [*default_subagent_middleware, *subagent.get("middleware", [])]
+
+        interrupt_on = subagent.get("interrupt_on", default_interrupt_on)
         if interrupt_on:
             _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-        agents[agent_["name"]] = create_agent(
+        agents[subagent["name"]] = create_agent(
             subagent_model,
-            system_prompt=agent_["system_prompt"],
+            system_prompt=subagent["system_prompt"],
             tools=_tools,
             middleware=_middleware,
         )

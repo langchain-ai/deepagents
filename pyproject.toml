@@ -12,37 +12,33 @@ dependencies = [
     "wcmatch"
 ]
 
-[project.optional-dependencies]
-dev = [
+[dependency-groups]
+test = [
     "pytest",
     "pytest-cov",
-    "build",
-    "twine",
     "langchain-openai",
 ]
-
-[dependency-groups]
 lint = [
     "ruff>=0.12.2,<0.13.0",
 ]
 typing = [
-    "mypy>=1.18.1,<1.19.0",
+    "ty",
+]
+dev = [
+    { include-group = "test" },
+    { include-group = "lint" },
+    { include-group = "typing" },
 ]
 
 [build-system]
-requires = ["setuptools>=73.0.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools]
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["deepagents*"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/deepagents"]
 
-[tool.setuptools.package-dir]
-"" = "src"
-
-[tool.setuptools.package-data]
-"*" = ["py.typed"]
+[tool.hatch.build.targets.wheel.force-include]
+"src/deepagents/py.typed" = "deepagents/py.typed"
 
 [tool.ruff]
 line-length = 150
@@ -65,6 +61,9 @@ ignore = [
     "PLR0913", # Too many arguments in function definition
     "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
     "C901",    # Too complex
+    "PLR2004", # Magic values in comparisons (common in tests)
+    "DTZ",     # Datetime without timezone (not always needed)
+    "FBT",     # Boolean positional arguments (common pattern)
 ]
 unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
 
@@ -83,13 +82,14 @@ ignore-var-parameters = true
     "D1",      # Skip documentation rules in tests
     "S101",    # Allow asserts in tests
     "S311",    # Allow pseudo-random generators in tests
-    # Add more test-specific ignores
+    "ANN",     # Skip type annotations in tests
+    "RUF012",  # Allow mutable class attributes in tests
+]
+"examples/*" = [
+    "D",       # Skip documentation rules in examples
+    "INP001",  # Examples don't need __init__.py
+    "E501",    # Allow longer lines in examples
+    "FBT",     # Allow boolean positional arguments in examples
+    "ANN",     # Skip type annotations in examples
 ]
 
-[tool.mypy]
-strict = true
-ignore_missing_imports = true
-enable_error_code = ["deprecated"]
-# Optional: reduce strictness if needed
-disallow_any_generics = false
-warn_return_any = false

@@ -174,6 +174,12 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
 
         await execute_task(user_input, agent, assistant_id, session_state, token_tracker)
 
+        # Reset terminal state after agent execution to prevent prompt_toolkit desync
+        # Rich console's status spinner and ANSI manipulation can corrupt terminal state
+        sys.stdout.flush()
+        sys.stderr.flush()
+        print("\033[0m", end="", flush=True)  # Reset all ANSI attributes
+
 
 async def main(assistant_id: str, session_state):
     """Main entry point."""

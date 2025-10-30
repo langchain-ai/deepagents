@@ -205,7 +205,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         query = args.get("query", "unknown")
         max_results = args.get("max_results", 5)
 
-        return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
+        return f"Query: {query}\nMax results: {max_results}"
 
     def format_task_description(tool_call: dict) -> str:
         """Format task (subagent) tool call for approval prompt."""

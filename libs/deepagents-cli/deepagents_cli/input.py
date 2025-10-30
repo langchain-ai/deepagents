@@ -189,9 +189,12 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
     @kb.add("c-t")
     def _(event):
         """Toggle auto-approve mode."""
-        session_state.toggle_auto_approve()
-        # Force UI refresh to update toolbar
-        event.app.invalidate()
+        new_state = session_state.toggle_auto_approve()
+        # Show status message since we removed the bottom toolbar
+        if new_state:
+            console.print("\n[green]⚡ Auto-approve: ON[/green] [dim](tools run without confirmation)[/dim]")
+        else:
+            console.print("\n[yellow]⚡ Auto-approve: OFF[/yellow] [dim](you'll be asked to approve tools)[/dim]")
 
     # Bind backspace to update completions
     @kb.add("backspace")
@@ -256,17 +259,6 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         """Open the current input in an external editor (nano by default)."""
         event.current_buffer.open_in_editor()
 
-    from prompt_toolkit.styles import Style
-
-    # Define styles for the toolbar with full-width background colors
-    toolbar_style = Style.from_dict(
-        {
-            "bottom-toolbar": "noreverse",  # Disable default reverse video
-            "toolbar-green": "bg:#10b981 #000000",  # Green for auto-accept ON
-            "toolbar-orange": "bg:#f59e0b #000000",  # Orange for manual accept
-        }
-    )
-
     # Create the session
     session = PromptSession(
         message=HTML(f'<style fg="{COLORS["user"]}">></style> '),
@@ -278,8 +270,6 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         complete_while_typing=True,  # Show completions as you type
         mouse_support=False,
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
-        bottom_toolbar=get_bottom_toolbar(session_state),  # Persistent status bar at bottom
-        style=toolbar_style,  # Apply toolbar styling
     )
 
     return session

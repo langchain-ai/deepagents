@@ -655,8 +655,10 @@ async def execute_task(
         return
 
     finally:
-        # Show cursor again
-        console.print("\033[?25h", end="")
+        # Show cursor again and reset terminal to clean state
+        console.print("\033[?25h", end="")  # Show cursor
+        sys.stdout.flush()
+        sys.stderr.flush()
 
         # CRITICAL: Always restore original signal handler so asyncio can handle Ctrl+C at prompt
         if original_handler is not None:

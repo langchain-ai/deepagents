@@ -91,6 +91,9 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
 
         try:
             tty.setraw(fd)
+            # Hide cursor during menu navigation
+            sys.stdout.write("\033[?25l")
+            sys.stdout.flush()
 
             while True:
                 # Render options (2 lines)
@@ -135,6 +138,9 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
                     break
 
         finally:
+            # Show cursor again
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     except (termios.error, AttributeError):
@@ -157,6 +163,9 @@ async def execute_task(
 ):
     """Execute any task by passing it directly to the AI agent."""
     console.print()
+
+    # Hide cursor during agent execution
+    console.print("\033[?25l", end="")
 
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
@@ -646,6 +655,9 @@ async def execute_task(
         return
 
     finally:
+        # Show cursor again
+        console.print("\033[?25h", end="")
+
         # CRITICAL: Always restore original signal handler so asyncio can handle Ctrl+C at prompt
         if original_handler is not None:
             signal.signal(signal.SIGINT, original_handler)

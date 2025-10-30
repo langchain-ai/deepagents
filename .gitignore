@@ -208,3 +208,6 @@ __marimo__/
 
 # LangGraph
 .langgraph_api
+
+#claude
+.claude

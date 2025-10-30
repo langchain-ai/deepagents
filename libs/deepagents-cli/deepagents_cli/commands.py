@@ -20,6 +20,9 @@ def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bo
         # Reset agent conversation state
         agent.checkpointer = InMemorySaver()
 
+        # Reset token tracking to baseline
+        token_tracker.reset()
+
         # Clear screen and show fresh UI
         console.clear()
         console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")

@@ -165,7 +165,22 @@ class TokenTracker:
     """Track token usage across the conversation."""
 
     def __init__(self):
-        self.current_context = 0
+        self.baseline_context = 0  # Baseline system context (system + agent.md + tools)
+        self.current_context = 0   # Total context including messages
+        self.last_output = 0
+
+    def set_baseline(self, tokens: int):
+        """Set the baseline context token count.
+
+        Args:
+            tokens: The baseline token count (system prompt + agent.md + tools)
+        """
+        self.baseline_context = tokens
+        self.current_context = tokens
+
+    def reset(self):
+        """Reset to baseline (for /clear command)."""
+        self.current_context = self.baseline_context
         self.last_output = 0
 
     def add(self, input_tokens: int, output_tokens: int):
@@ -183,12 +198,31 @@ class TokenTracker:
 
     def display_session(self):
         """Display current context size."""
-        if self.current_context:
-            console.print("\n[bold]Token Usage:[/bold]", style=COLORS["primary"])
+        console.print("\n[bold]Token Usage:[/bold]", style=COLORS["primary"])
+
+        # Check if we've had any actual API calls yet (current > baseline means we have conversation)
+        has_conversation = self.current_context > self.baseline_context
+
+        if self.baseline_context > 0:
             console.print(
-                f"  Current context: {self.current_context:,} tokens", style=COLORS["dim"]
+                f"  Baseline: {self.baseline_context:,} tokens [dim](system + agent.md)[/dim]",
+                style=COLORS["dim"],
             )
-            console.print()
+
+            if not has_conversation:
+                # Before first message - warn that tools aren't counted yet
+                console.print(
+                    "  [dim]Note: Tool definitions (~5k tokens) included after first message[/dim]"
+                )
+
+        if has_conversation:
+            tools_and_conversation = self.current_context - self.baseline_context
+            console.print(
+                f"  Tools + conversation: {tools_and_conversation:,} tokens", style=COLORS["dim"]
+            )
+
+        console.print(f"  Total: {self.current_context:,} tokens", style="bold " + COLORS["dim"])
+        console.print()
 
 
 def render_todo_list(todos: list[dict]) -> None:

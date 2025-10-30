@@ -93,7 +93,7 @@ def parse_args():
     return parser.parse_args()
 
 
-async def simple_cli(agent, assistant_id: str | None, session_state):
+async def simple_cli(agent, assistant_id: str | None, session_state, baseline_tokens: int = 0):
     """Main CLI loop."""
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
@@ -131,6 +131,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state):
     # Create prompt session and token tracker
     session = create_prompt_session(assistant_id, session_state)
     token_tracker = TokenTracker()
+    token_tracker.set_baseline(baseline_tokens)
 
     while True:
         try:
@@ -181,8 +182,16 @@ async def main(assistant_id: str, session_state):
 
     agent = create_agent_with_config(model, assistant_id, tools)
 
+    # Calculate baseline token count for accurate token tracking
+    from .agent import get_system_prompt
+    from .token_utils import calculate_baseline_tokens
+
+    agent_dir = Path.home() / ".deepagents" / assistant_id
+    system_prompt = get_system_prompt()
+    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
+
     try:
-        await simple_cli(agent, assistant_id, session_state)
+        await simple_cli(agent, assistant_id, session_state, baseline_tokens)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
 

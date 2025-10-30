@@ -79,35 +79,13 @@ def reset_agent(agent_name: str, source_agent: str = None):
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def create_agent_with_config(model, assistant_id: str, tools: list):
-    """Create and configure an agent with the specified model and tools."""
-    shell_middleware = ResumableShellToolMiddleware(
-        workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
-    )
+def get_system_prompt() -> str:
+    """Get the base system prompt for the agent.
 
-    # For long-term memory, point to ~/.deepagents/AGENT_NAME/ with /memories/ prefix
-    agent_dir = Path.home() / ".deepagents" / assistant_id
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    agent_md = agent_dir / "agent.md"
-    if not agent_md.exists():
-        source_content = get_default_coding_instructions()
-        agent_md.write_text(source_content)
-
-    # Long-term backend - rooted at agent directory
-    # This handles both /memories/ files and /agent.md
-    long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
-
-    # Composite backend: current working directory for default, agent directory for /memories/
-    backend = CompositeBackend(
-        default=FilesystemBackend(), routes={"/memories/": long_term_backend}
-    )
-
-    # Use the same backend for agent memory middleware
-    agent_middleware = [
-        AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
-        shell_middleware,
-    ]
-    system_prompt = f"""### Current Working Directory
+    Returns:
+        The system prompt string (without agent.md content)
+    """
+    return f"""### Current Working Directory
 
 The filesystem backend is currently operating in: `{Path.cwd()}`
 
@@ -158,6 +136,39 @@ When using the write_todos tool:
 6. Update todo status promptly as you complete each item
 
 The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking."""
+
+
+def create_agent_with_config(model, assistant_id: str, tools: list):
+    """Create and configure an agent with the specified model and tools."""
+    shell_middleware = ResumableShellToolMiddleware(
+        workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
+    )
+
+    # For long-term memory, point to ~/.deepagents/AGENT_NAME/ with /memories/ prefix
+    agent_dir = Path.home() / ".deepagents" / assistant_id
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    agent_md = agent_dir / "agent.md"
+    if not agent_md.exists():
+        source_content = get_default_coding_instructions()
+        agent_md.write_text(source_content)
+
+    # Long-term backend - rooted at agent directory
+    # This handles both /memories/ files and /agent.md
+    long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
+
+    # Composite backend: current working directory for default, agent directory for /memories/
+    backend = CompositeBackend(
+        default=FilesystemBackend(), routes={"/memories/": long_term_backend}
+    )
+
+    # Use the same backend for agent memory middleware
+    agent_middleware = [
+        AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
+        shell_middleware,
+    ]
+
+    # Get the system prompt
+    system_prompt = get_system_prompt()
 
     # Helper functions for formatting tool descriptions in HITL prompts
     def format_write_file_description(tool_call: dict) -> str:

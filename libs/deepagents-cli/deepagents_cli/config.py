@@ -93,8 +93,7 @@ def get_default_coding_instructions() -> str:
     These are the immutable base instructions that cannot be modified by the agent.
     Long-term memory (agent.md) is handled separately by the middleware.
     """
-    # Navigate from libs/deepagents-cli/deepagents_cli/config.py to src/deepagents/default_agent_prompt.md
-    default_prompt_path = Path(__file__).parent.parent.parent.parent / "src" / "deepagents" / "default_agent_prompt.md"
+    default_prompt_path = Path(__file__).parent.parent / "default_agent_prompt.md"
     return default_prompt_path.read_text()
 
 

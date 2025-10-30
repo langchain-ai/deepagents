@@ -91,13 +91,9 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
 
         try:
             tty.setraw(fd)
-            first_render = True
 
             while True:
-                if not first_render:
-                    sys.stdout.write("\033[2A\r")  # Move up 2 lines
-
-                # Simple rendering: arrow indicator for selected option
+                # Render options (2 lines)
                 for i, option in enumerate(options):
                     sys.stdout.write("\r\033[K")  # Clear line
 
@@ -108,12 +104,9 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
                         # Not selected: dim, no arrow
                         sys.stdout.write(f"\033[2m    {option}\033[0m\n")
 
+                # Always return cursor to top of options after rendering
+                sys.stdout.write("\033[2A\r")
                 sys.stdout.flush()
-
-                if first_render:
-                    sys.stdout.write("\033[2A\r")
-                    sys.stdout.flush()
-                    first_render = False
 
                 # Read key
                 char = sys.stdin.read(1)

@@ -262,7 +262,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
     # Create the session
     session = PromptSession(
         message=HTML(f'<style fg="{COLORS["user"]}">></style> '),
-        prompt_continuation="  ",  # Two spaces for continuation lines (prevents > from repeating on resize)
+        prompt_continuation="",  # Empty continuation (no extra prompts on resize)
         multiline=True,  # Keep multiline support but Enter submits
         key_bindings=kb,
         completer=merge_completers([CommandCompleter(), BashCompleter(), FilePathCompleter()]),
@@ -270,6 +270,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         complete_while_typing=True,  # Show completions as you type
         mouse_support=False,
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
+        reserve_space_for_menu=0,  # Don't reserve extra vertical space
     )
 
     return session

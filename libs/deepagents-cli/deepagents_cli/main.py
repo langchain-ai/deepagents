@@ -95,9 +95,7 @@ def parse_args():
 
 async def simple_cli(agent, assistant_id: str | None, session_state, baseline_tokens: int = 0):
     """Main CLI loop."""
-    console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
-    console.print()
 
     if tavily_client is None:
         console.print(
@@ -113,6 +111,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
         console.print()
 
     console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
+    console.print(f"  [dim]Model: {session_state.model.model}[/dim]")
     console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
     console.print()
 
@@ -174,6 +173,10 @@ async def main(assistant_id: str, session_state):
     """Main entry point."""
     # Create the model (checks API keys)
     model = create_model()
+    session_state.model = model
+    
+    # Clear screen
+    console.clear()
 
     # Create agent with conditional tools
     tools = [http_request]

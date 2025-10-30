@@ -1,5 +1,6 @@
 """Middleware for loading agent-specific long-term memory into the system prompt."""
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -36,36 +37,27 @@ Files stored in {memory_path} persist across sessions and conversations.
 
 Your system prompt is loaded from {memory_path}agent.md at startup. You can update your own instructions by editing this file.
 
-**When to CHECK/READ memories (CRITICAL - do this FIRST):**
-- **At the start of ANY new session**: Run `ls {memory_path}` to see what you know
-- **BEFORE answering questions**: If asked "what do you know about X?" or "how do I do Y?", check `ls {memory_path}` for relevant files FIRST
-- **When user asks you to do something**: Check if you have guides, examples, or patterns in {memory_path} before proceeding
-- **When user references past work or conversations**: Search {memory_path} for related content
-- **If you're unsure**: Check your memories rather than guessing or using only general knowledge
-
-**Memory-first response pattern:**
-1. User asks a question → Run `ls {memory_path}` to check for relevant files
-2. If relevant files exist → Read them with `read_file {memory_path}[filename]`
-3. Base your answer on saved knowledge (from memories) supplemented by general knowledge
-4. If no relevant memories exist → Use general knowledge, then consider if this is worth saving
+**When to check memories:**
+- If user explicitly asks what you know about a topic (e.g., "what do you know about X?")
+- If you recall previously saving information that's relevant to the current task
+- When user references past work or conversations
+- When user asks you to remember or recall something specific
 
 **When to update memories:**
-- **IMMEDIATELY when the user describes your role or how you should behave** (e.g., "you are a web researcher", "you are an expert in X")
-- **IMMEDIATELY when the user gives feedback on your work** - Before continuing, update memories to capture what was wrong and how to do it better
+- When the user describes your role or how you should behave (e.g., "you are a web researcher")
+- When the user gives feedback on your work - update memories to capture what was wrong and how to improve
 - When the user explicitly asks you to remember something
-- When patterns or preferences emerge (coding styles, conventions, workflows)
-- After significant work where context would help in future sessions
+- When patterns or preferences emerge that would be useful long-term (coding styles, conventions, workflows)
 
 **Learning from feedback:**
 - When user says something is better/worse, capture WHY and encode it as a pattern
-- Each correction is a chance to improve permanently - don't just fix the immediate issue, update your instructions
-- When user says "you should remember X" or "be careful about Y", treat this as HIGH PRIORITY - update memories IMMEDIATELY
+- Each correction is a chance to improve permanently - update your instructions in {memory_path}agent.md
+- When user says "you should remember X" or "be careful about Y", update memories accordingly
 - Look for the underlying principle behind corrections, not just the specific mistake
-- If it's something you "should have remembered", identify where that instruction should live permanently
 
 **What to store where:**
-- **{memory_path}agent.md**: Update this to modify your core instructions and behavioral patterns
-- **Other {memory_path} files**: Use for project-specific context, reference information, or structured notes
+- **{memory_path}agent.md**: Your core instructions and behavioral patterns
+- **Other {memory_path} files**: Project-specific context, reference information, or structured notes
   - If you create additional memory files, add references to them in {memory_path}agent.md so you remember to consult them
 
 The portion of your system prompt that comes from {memory_path}agent.md is marked with `<agent_memory>` tags so you can identify what instructions come from your persistent memory.
@@ -82,6 +74,29 @@ DEFAULT_MEMORY_SNIPPET = """<agent_memory>
 {agent_memory}
 </agent_memory>
 """
+
+
+def _strip_line_numbers(content: str) -> str:
+    """Strip line numbers from backend.read() output for memory content.
+
+    Backend.read() formats content with line numbers (cat -n style):
+         1→# My Agent
+         2→You are helpful
+
+    This function removes them for memory injection into system prompt:
+        # My Agent
+        You are helpful
+
+    Args:
+        content: Content with line numbers from backend.read()
+
+    Returns:
+        Content without line numbers
+    """
+    # Match pattern: optional spaces + number + optional decimal + tab + content
+    # Line numbers format: "     1\t" or "     5.2\t" (for continuation lines)
+    return re.sub(r'^\s*\d+(?:\.\d+)?\t', '', content, flags=re.MULTILINE)
+
 
 class AgentMemoryMiddleware(AgentMiddleware):
     """Middleware for loading agent-specific long-term memory.
@@ -148,6 +163,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
         # Only load memory if it hasn't been loaded yet
         if "agent_memory" not in state or state.get("agent_memory") is None:
             file_data = self.backend.read(AGENT_MEMORY_FILE_PATH)
+            # Strip line numbers since memory is for system prompt, not editing
+            file_data = _strip_line_numbers(file_data)
             return {"agent_memory": file_data}
 
     async def abefore_agent(
@@ -167,6 +184,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
         # Only load memory if it hasn't been loaded yet
         if "agent_memory" not in state or state.get("agent_memory") is None:
             file_data = self.backend.read(AGENT_MEMORY_FILE_PATH)
+            # Strip line numbers since memory is for system prompt, not editing
+            file_data = _strip_line_numbers(file_data)
             return {"agent_memory": file_data}
 
     def wrap_model_call(

@@ -5,7 +5,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from .agent import create_agent_with_config, list_agents, reset_agent
+from .agent import create_agent_with_config, list_agents, reset_agent, pull_agent
 from .commands import execute_bash_command, handle_command
 from .config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
 from .execution import execute_task
@@ -76,6 +76,15 @@ def parse_args():
     reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
     reset_parser.add_argument(
         "--target", dest="source_agent", help="Copy prompt from another agent"
+    )
+
+    # Pull command
+    pull_parser = subparsers.add_parser("pull", help="Pull an agent from remote registry")
+    pull_parser.add_argument("agent_name", help="Name of agent to pull from remote registry")
+    pull_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing local agent without prompting"
     )
 
     # Default interactive mode
@@ -210,6 +219,8 @@ def cli_main():
             list_agents()
         elif args.command == "reset":
             reset_agent(args.agent, args.source_agent)
+        elif args.command == "pull":
+            pull_agent(args.agent_name, args.overwrite)
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve)

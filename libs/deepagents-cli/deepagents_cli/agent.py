@@ -14,6 +14,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from .config import COLORS, config, console, get_default_coding_instructions
 
+from ai_filesystem.client import FilesystemClient
+
 
 def list_agents():
     """List all available agents."""
@@ -77,6 +79,143 @@ def reset_agent(agent_name: str, source_agent: str = None):
 
     console.print(f"✓ Agent '{agent_name}' reset to {action_desc}", style=COLORS["primary"])
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
+
+
+def pull_agent(agent_name: str, overwrite: bool = False):
+    """Pull an agent configuration from the remote filesystem registry.
+
+    Args:
+        agent_name: Name of the agent to pull from remote registry
+        overwrite: If True, overwrite existing local agent without prompting
+    """
+    # Get credentials from environment
+    api_key = os.getenv("AGENT_FS_API_KEY")
+    api_url = os.getenv("AGENT_FS_URL")
+
+    if not api_key:
+        console.print(
+            "[bold red]Error:[/bold red] AGENT_FS_API_KEY environment variable not set",
+            style=COLORS["tool"]
+        )
+        console.print(
+            "[dim]Set your API key with: export AGENT_FS_API_KEY=your-key[/dim]",
+            style=COLORS["dim"]
+        )
+        return
+
+    if not api_url:
+        console.print(
+            "[bold red]Error:[/bold red] AGENT_FS_URL environment variable not set",
+            style=COLORS["tool"]
+        )
+        console.print(
+            "[dim]Set your API URL with: export AGENT_FS_URL=https://your-api-url[/dim]",
+            style=COLORS["dim"]
+        )
+        return
+
+    # Local agent directory
+    agents_dir = Path.home() / ".deepagents"
+    local_agent_dir = agents_dir / agent_name
+
+    # Check if local agent exists
+    if local_agent_dir.exists() and not overwrite:
+        console.print(
+            f"[bold yellow]Warning:[/bold yellow] Agent '{agent_name}' already exists locally",
+            style=COLORS["tool"]
+        )
+        console.print(
+            f"[dim]Use --overwrite flag to replace it[/dim]",
+            style=COLORS["dim"]
+        )
+        console.print(f"Location: {local_agent_dir}\n", style=COLORS["dim"])
+        return
+
+    try:
+        # Connect to remote filesystem
+        console.print(f"[dim]Connecting to remote agent registry...[/dim]", style=COLORS["dim"])
+        client = FilesystemClient(
+            api_key=api_key,
+            filesystem="agent-registry",
+            api_url=api_url
+        )
+
+        # Remote path for the agent
+        remote_path = f"/.deepagents/{agent_name}/"
+
+        # List all files in the remote agent directory
+        console.print(f"[dim]Fetching agent '{agent_name}' from {remote_path}...[/dim]", style=COLORS["dim"])
+        files = client.ls_info(remote_path)
+
+        if not files:
+            console.print(
+                f"[bold red]Error:[/bold red] Agent '{agent_name}' not found in remote registry",
+                style=COLORS["tool"]
+            )
+            console.print(
+                f"[dim]Remote path checked: {remote_path}[/dim]",
+                style=COLORS["dim"]
+            )
+            return
+
+        # Remove existing local agent if overwriting
+        if local_agent_dir.exists():
+            shutil.rmtree(local_agent_dir)
+            console.print(f"[dim]Removed existing local agent[/dim]", style=COLORS["dim"])
+
+        # Create local agent directory
+        local_agent_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download and write each file
+        file_count = 0
+        for file_info in files:
+            if file_info.get('is_dir'):
+                continue
+
+            remote_file_path = file_info['path']
+            console.print(f"[dim]  → Downloading {remote_file_path}...[/dim]", style=COLORS["dim"])
+
+            # Read file content from remote
+            content = client.read(remote_file_path)
+
+            if content.startswith("Error"):
+                console.print(f"[yellow]    Skipped (error reading): {remote_file_path}[/yellow]")
+                continue
+
+            # Determine local file path (strip remote prefix)
+            relative_path = remote_file_path.replace(remote_path, "")
+            local_file_path = local_agent_dir / relative_path
+
+            # Create parent directories if needed
+            local_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Write file locally
+            local_file_path.write_text(content)
+            file_count += 1
+
+        # Verify agent.md exists
+        agent_md = local_agent_dir / "agent.md"
+        if not agent_md.exists():
+            console.print(
+                f"[bold yellow]Warning:[/bold yellow] No agent.md found in pulled agent",
+                style=COLORS["tool"]
+            )
+
+        console.print(
+            f"\n✓ Successfully pulled agent '{agent_name}' ({file_count} files)",
+            style=COLORS["primary"]
+        )
+        console.print(f"Location: {local_agent_dir}", style=COLORS["dim"])
+        console.print(
+            f"\n[dim]Start using it with:[/dim] deepagents --agent {agent_name}\n",
+            style=COLORS["dim"]
+        )
+
+    except Exception as e:
+        console.print(
+            f"[bold red]Error pulling agent:[/bold red] {e}",
+            style=COLORS["tool"]
+        )
 
 
 def get_system_prompt() -> str:

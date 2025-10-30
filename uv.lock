@@ -9,6 +9,21 @@ members = [
 ]
 
 [[package]]
+name = "ai-filesystem"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4f/9e/450c4bde8e5c7d903ec12ce77fb47d1e72e1e046bef735b4393fbc35c9ab/ai_filesystem-0.2.0.tar.gz", hash = "sha256:32857624098e68efba08e29f8e7a5c1ec69190cde9cb2e07a87a5bc971e6f567", size = 10399, upload-time = "2025-10-30T22:30:20.792Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2f/8c/8ec3edbe6e805c96b397512b1795413c5701b015e63f64de1f438fd48e3b/ai_filesystem-0.2.0-py3-none-any.whl", hash = "sha256:4d68336af40a8312387397da541692e2acefb07f5cd8efc5cab4452641fe3556", size = 7376, upload-time = "2025-10-30T22:30:19.759Z" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -409,6 +424,7 @@ name = "deepagents-cli"
 version = "0.0.6"
 source = { editable = "libs/deepagents-cli" }
 dependencies = [
+    { name = "ai-filesystem" },
     { name = "deepagents" },
     { name = "langchain-openai" },
     { name = "prompt-toolkit" },
@@ -445,6 +461,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ai-filesystem", specifier = ">=0.2.0" },
     { name = "deepagents", editable = "." },
     { name = "langchain-openai", specifier = ">=0.1.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },

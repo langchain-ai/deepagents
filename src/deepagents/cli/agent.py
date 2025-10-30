@@ -185,15 +185,8 @@ The todo list is a planning tool - use it judiciously to avoid overwhelming the 
 
     def format_web_search_description(tool_call: dict) -> str:
         """Format web_search tool call for approval prompt."""
-        args = tool_call.get('args', {})
-        query = args.get('query', 'unknown')
-        max_results = args.get('max_results', 5)
-
-        return (
-            f"Query: {query}\n"
-            f"Max results: {max_results}\n\n"
-            f"⚠️  This will use Tavily API credits"
-        )
+        # Query is already shown in tool display, keep description minimal
+        return ""
 
     def format_task_description(tool_call: dict) -> str:
         """Format task (subagent) tool call for approval prompt."""

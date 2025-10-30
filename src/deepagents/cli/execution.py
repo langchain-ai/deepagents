@@ -59,27 +59,22 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
     tool_args = _extract_tool_args(action_request)
     preview = build_approval_preview(tool_name, tool_args, assistant_id) if tool_name else None
 
-    body_lines = []
-    if preview:
-        body_lines.append(f"[bold]{preview.title}[/bold]")
-        body_lines.extend(preview.details)
-        if preview.error:
-            body_lines.append(f"[red]{preview.error}[/red]")
-        if description and description != "No description available":
-            body_lines.append("")
-            body_lines.append(description)
-    else:
-        body_lines.append(description)
-
-    # Display action info first
+    # Display minimal approval prompt - tool info already shown in tool call display
     console.print()
-    console.print(Panel(
-        "[bold yellow]⚠️  Tool Action Requires Approval[/bold yellow]\n\n"
-        + "\n".join(body_lines),
-        border_style="yellow",
-        box=box.ROUNDED,
-        padding=(0, 1)
-    ))
+    console.print("⚠️  [yellow]Requires approval[/yellow]")
+
+    # Show context details only for tools that need it
+    # web_search/http_request already show details in tool display, others need context
+    if tool_name not in ("web_search", "http_request"):
+        if preview and preview.error:
+            console.print(f"    [red]{preview.error}[/red]")
+        elif description and description.strip():
+            # Indent description lines for cleaner display
+            for line in description.split('\n'):
+                if line.strip():
+                    console.print(f"    {line}")
+
+    # Show diff for edit operations
     if preview and preview.diff and not preview.error:
         console.print()
         render_diff_block(preview.diff, preview.diff_title or preview.title)
@@ -310,14 +305,20 @@ def execute_task(user_input: str, agent, assistant_id: str | None, session_state
                                 # Auto-approve all commands without prompting
                                 decisions = []
                                 for action_request in hitl_request.get("action_requests", []):
-                                    # Show what's being auto-approved (brief, dim message)
-                                    if spinner_active:
-                                        status.stop()
-                                        spinner_active = False
+                                    # Skip showing auto-approve message for tools that already have good display
+                                    # (web_search, http_request show details in tool call display)
+                                    tool_name = action_request.get("name") or action_request.get("tool")
+                                    skip_display = tool_name in ("web_search", "http_request")
 
-                                    description = action_request.get('description', 'tool action')
-                                    console.print()
-                                    console.print(f"  [dim]⚡ {description}[/dim]")
+                                    if not skip_display:
+                                        # Show what's being auto-approved (brief, dim message)
+                                        if spinner_active:
+                                            status.stop()
+                                            spinner_active = False
+
+                                        description = action_request.get('description', 'tool action')
+                                        console.print()
+                                        console.print(f"  [dim]⚡ {description}[/dim]")
 
                                     decisions.append({"type": "approve"})
 

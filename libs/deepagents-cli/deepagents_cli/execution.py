@@ -666,8 +666,6 @@ async def execute_task(
         status.stop()
 
     if has_responded:
-        console.print()
-
         # Track token usage (display only via /tokens command)
         if token_tracker and (captured_input_tokens or captured_output_tokens):
             token_tracker.add(captured_input_tokens, captured_output_tokens)

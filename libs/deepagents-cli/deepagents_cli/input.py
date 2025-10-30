@@ -270,6 +270,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
     # Create the session
     session = PromptSession(
         message=HTML(f'<style fg="{COLORS["user"]}">></style> '),
+        prompt_continuation="  ",  # Two spaces for continuation lines (prevents > from repeating on resize)
         multiline=True,  # Keep multiline support but Enter submits
         key_bindings=kb,
         completer=merge_completers([CommandCompleter(), BashCompleter(), FilePathCompleter()]),

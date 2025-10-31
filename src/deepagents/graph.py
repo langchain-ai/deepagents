@@ -53,6 +53,7 @@ def create_deep_agent(
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    preserve_message_tool_names: list[str] | None = None,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -114,6 +115,7 @@ def create_deep_agent(
             ],
             default_interrupt_on=interrupt_on,
             general_purpose_agent=True,
+            preserve_message_tool_names=preserve_message_tool_names,
         ),
         SummarizationMiddleware(
             model=model,

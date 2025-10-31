@@ -100,6 +100,7 @@ ignore-var-parameters = true
     "S311",    # Allow pseudo-random generators in tests
     "ANN201",  # Missing return type annotation
     "INP001",  # Implicit namespace package
+    "PLR2004", # Allow magic values in tests
 ]
 
 [tool.mypy]

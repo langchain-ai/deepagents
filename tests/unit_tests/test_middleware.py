@@ -15,7 +15,7 @@ from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
 from deepagents.middleware.filesystem import FILESYSTEM_SYSTEM_PROMPT, FileData, FilesystemMiddleware, FilesystemState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.subagents import DEFAULT_GENERAL_PURPOSE_DESCRIPTION, TASK_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, SubAgentMiddleware
+from deepagents.middleware.subagents import SubAgentMiddleware
 
 
 def build_composite_state_backend(runtime: ToolRuntime, *, routes):
@@ -919,39 +919,6 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         assert "/large_tool_results/test_call_id" in result.update["files"]
-
-
-@pytest.mark.requires("langchain_openai")
-class TestSubagentMiddleware:
-    """Test the SubagentMiddleware class."""
-
-    def test_subagent_middleware_init(self):
-        middleware = SubAgentMiddleware(
-            default_model="gpt-4o-mini",
-        )
-        assert middleware is not None
-        assert middleware.system_prompt is TASK_SYSTEM_PROMPT
-        assert len(middleware.tools) == 1
-        assert middleware.tools[0].name == "task"
-        expected_desc = TASK_TOOL_DESCRIPTION.format(available_agents=f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
-        assert middleware.tools[0].description == expected_desc
-
-    def test_default_subagent_with_tools(self):
-        middleware = SubAgentMiddleware(
-            default_model="gpt-4o-mini",
-            default_tools=[],
-        )
-        assert middleware is not None
-        assert middleware.system_prompt == TASK_SYSTEM_PROMPT
-
-    def test_default_subagent_custom_system_prompt(self):
-        middleware = SubAgentMiddleware(
-            default_model="gpt-4o-mini",
-            default_tools=[],
-            system_prompt="Use the task tool to call a subagent.",
-        )
-        assert middleware is not None
-        assert middleware.system_prompt == "Use the task tool to call a subagent."
 
 
 class TestPatchToolCallsMiddleware:

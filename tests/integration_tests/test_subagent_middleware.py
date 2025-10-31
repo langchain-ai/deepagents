@@ -5,7 +5,12 @@ from langchain_core.tools import tool
 
 from deepagents.graph import create_agent
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.subagents import SubAgentMiddleware
+from deepagents.middleware.subagents import (
+    DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
+    TASK_SYSTEM_PROMPT,
+    TASK_TOOL_DESCRIPTION,
+    SubAgentMiddleware,
+)
 
 
 @tool
@@ -248,3 +253,31 @@ class TestSubagentMiddleware:
         )
         # This would error if the default middleware was accumulated
         assert True
+
+    def test_subagent_middleware_init(self):
+        middleware = SubAgentMiddleware(
+            default_model="gpt-4o-mini",
+        )
+        assert middleware is not None
+        assert middleware.system_prompt is TASK_SYSTEM_PROMPT
+        assert len(middleware.tools) == 1
+        assert middleware.tools[0].name == "task"
+        expected_desc = TASK_TOOL_DESCRIPTION.format(available_agents=f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
+        assert middleware.tools[0].description == expected_desc
+
+    def test_default_subagent_with_tools(self):
+        middleware = SubAgentMiddleware(
+            default_model="gpt-4o-mini",
+            default_tools=[],
+        )
+        assert middleware is not None
+        assert middleware.system_prompt == TASK_SYSTEM_PROMPT
+
+    def test_default_subagent_custom_system_prompt(self):
+        middleware = SubAgentMiddleware(
+            default_model="gpt-4o-mini",
+            default_tools=[],
+            system_prompt="Use the task tool to call a subagent.",
+        )
+        assert middleware is not None
+        assert middleware.system_prompt == "Use the task tool to call a subagent."

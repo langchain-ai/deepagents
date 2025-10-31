@@ -5,7 +5,7 @@ from unittest.mock import Mock
 from deepagents_cli.token_utils import calculate_baseline_tokens, get_memory_system_prompt
 
 
-def test_get_memory_system_prompt_returns_string():
+def test_get_memory_system_prompt_returns_string() -> None:
     """Test that get_memory_system_prompt returns a formatted string."""
     prompt = get_memory_system_prompt()
 
@@ -15,7 +15,7 @@ def test_get_memory_system_prompt_returns_string():
     assert "/memories/" in prompt
 
 
-def test_get_memory_system_prompt_formatting():
+def test_get_memory_system_prompt_formatting() -> None:
     """Test that get_memory_system_prompt properly formats the template."""
     prompt = get_memory_system_prompt()
 
@@ -24,7 +24,7 @@ def test_get_memory_system_prompt_formatting():
     assert "{memory_path}" not in prompt
 
 
-def test_calculate_baseline_tokens_with_agent_md(tmp_path):
+def test_calculate_baseline_tokens_with_agent_md(tmp_path) -> None:
     """Test calculate_baseline_tokens with an agent.md file."""
     # Create a temporary agent directory with agent.md
     agent_dir = tmp_path / "agent"
@@ -46,7 +46,7 @@ def test_calculate_baseline_tokens_with_agent_md(tmp_path):
     mock_model.get_num_tokens_from_messages.assert_called_once()
 
 
-def test_calculate_baseline_tokens_without_agent_md(tmp_path):
+def test_calculate_baseline_tokens_without_agent_md(tmp_path) -> None:
     """Test calculate_baseline_tokens without an agent.md file."""
     # Create a temporary agent directory without agent.md
     agent_dir = tmp_path / "agent"
@@ -65,7 +65,7 @@ def test_calculate_baseline_tokens_without_agent_md(tmp_path):
     mock_model.get_num_tokens_from_messages.assert_called_once()
 
 
-def test_calculate_baseline_tokens_includes_system_components(tmp_path):
+def test_calculate_baseline_tokens_includes_system_components(tmp_path) -> None:
     """Test that calculate_baseline_tokens includes all system prompt components."""
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
@@ -95,7 +95,7 @@ def test_calculate_baseline_tokens_includes_system_components(tmp_path):
     assert "/memories/" in message_content
 
 
-def test_calculate_baseline_tokens_handles_exception(tmp_path):
+def test_calculate_baseline_tokens_handles_exception(tmp_path) -> None:
     """Test that calculate_baseline_tokens handles exceptions gracefully."""
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
@@ -111,7 +111,7 @@ def test_calculate_baseline_tokens_handles_exception(tmp_path):
     assert tokens == 0
 
 
-def test_calculate_baseline_tokens_with_empty_agent_md(tmp_path):
+def test_calculate_baseline_tokens_with_empty_agent_md(tmp_path) -> None:
     """Test calculate_baseline_tokens with an empty agent.md file."""
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
@@ -129,7 +129,7 @@ def test_calculate_baseline_tokens_with_empty_agent_md(tmp_path):
     assert tokens == 75
 
 
-def test_calculate_baseline_tokens_creates_system_message(tmp_path):
+def test_calculate_baseline_tokens_creates_system_message(tmp_path) -> None:
     """Test that calculate_baseline_tokens creates a proper SystemMessage."""
     from langchain_core.messages import SystemMessage
 

@@ -58,6 +58,6 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str) -> int
 def get_memory_system_prompt() -> str:
     """Get the long-term memory system prompt text."""
     # Import from agent_memory middleware
-    from deepagents.middleware.agent_memory import LONGTERM_MEMORY_SYSTEM_PROMPT
+    from .agent_memory import LONGTERM_MEMORY_SYSTEM_PROMPT
 
     return LONGTERM_MEMORY_SYSTEM_PROMPT.format(memory_path="/memories/")

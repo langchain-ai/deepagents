@@ -360,7 +360,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.2.3"
+version = "0.2.4"
 source = { editable = "." }
 dependencies = [
     { name = "langchain" },
@@ -369,44 +369,43 @@ dependencies = [
     { name = "wcmatch" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "build" },
     { name = "langchain-openai" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
     { name = "twine" },
 ]
-
-[package.dev-dependencies]
-lint = [
-    { name = "ruff" },
-]
-typing = [
+test = [
     { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "build", marker = "extra == 'dev'" },
     { name = "langchain", specifier = ">=1.0.2,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.0.0,<2.0.0" },
-    { name = "langchain-openai", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-cov", marker = "extra == 'dev'" },
-    { name = "twine", marker = "extra == 'dev'" },
     { name = "wcmatch" },
 ]
-provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
-lint = [{ name = "ruff", specifier = ">=0.12.2,<0.13.0" }]
-typing = [{ name = "mypy", specifier = ">=1.18.1,<1.19.0" }]
+dev = [
+    { name = "build" },
+    { name = "langchain-openai" },
+    { name = "twine" },
+]
+test = [
+    { name = "mypy", specifier = ">=1.18.1,<1.19.0" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff", specifier = ">=0.12.2,<0.13.0" },
+]
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.6"
+version = "0.0.7"
 source = { editable = "libs/deepagents-cli" }
 dependencies = [
     { name = "deepagents" },

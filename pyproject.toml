@@ -21,21 +21,19 @@ Twitter = "https://x.com/LangChainAI"
 Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-cov",
-    "build",
-    "twine",
-    "langchain-openai",
-]
 
 [dependency-groups]
-lint = [
-    "ruff>=0.12.2,<0.13.0",
+test = [
+  "pytest",
+  "pytest-cov",
+  "ruff>=0.12.2,<0.13.0",
+  "mypy>=1.18.1,<1.19.0",
 ]
-typing = [
-    "mypy>=1.18.1,<1.19.0",
+
+dev = [
+  "langchain-openai",
+  "twine",
+  "build",
 ]
 
 [build-system]

@@ -1,6 +1,5 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
-
 from langchain.tools import ToolRuntime
 
 from deepagents.backends.protocol import EditResult, WriteResult

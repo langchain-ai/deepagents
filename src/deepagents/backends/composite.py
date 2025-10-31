@@ -1,6 +1,5 @@
 """CompositeBackend: Route operations to different backends based on path prefix."""
 
-
 from deepagents.backends.protocol import BackendProtocol, EditResult, WriteResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.utils import FileInfo, GrepMatch

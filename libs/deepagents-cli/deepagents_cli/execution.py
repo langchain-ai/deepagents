@@ -331,15 +331,36 @@ async def execute_task(
                                 # Auto-approve all commands without prompting
                                 decisions = []
                                 for action_request in hitl_request.get("action_requests", []):
-                                    # Show what's being auto-approved (brief, dim message)
+                                    # Stop spinner to show preview
                                     if spinner_active:
                                         status.stop()
                                         spinner_active = False
 
-                                    description = action_request.get("description", "tool action")
-                                    console.print()
-                                    console.print(f"  [dim]⚡ {description}[/dim]")
+                                    # Build preview to show diff for file operations
+                                    tool_name = action_request.get("name") or action_request.get("tool")
+                                    tool_args = _extract_tool_args(action_request)
+                                    preview = build_approval_preview(tool_name, tool_args, assistant_id) if tool_name else None
 
+                                    console.print()
+                                    console.print("[bold green]⚡ Auto-approved:[/bold green]")
+                                    console.print()
+
+                                    if preview:
+                                        console.print(f"[bold]{preview.title}[/bold]")
+                                        for detail in preview.details:
+                                            console.print(f"[dim]{detail}[/dim]")
+                                        if preview.error:
+                                            console.print(f"[red]{preview.error}[/red]")
+
+                                        # Show diff if available
+                                        if preview.diff and not preview.error:
+                                            console.print()
+                                            render_diff_block(preview.diff, preview.diff_title or preview.title)
+                                    else:
+                                        description = action_request.get("description", "tool action")
+                                        console.print(f"  {description}")
+
+                                    console.print()
                                     decisions.append({"type": "approve"})
 
                                 hitl_response = {"decisions": decisions}

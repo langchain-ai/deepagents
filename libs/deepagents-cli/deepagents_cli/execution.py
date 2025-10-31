@@ -363,6 +363,10 @@ async def execute_task(
                                     console.print()
                                     decisions.append({"type": "approve"})
 
+                                # Flush console output before resuming to prevent terminal interference
+                                sys.stdout.flush()
+                                sys.stderr.flush()
+
                                 hitl_response = {"decisions": decisions}
                                 interrupt_occurred = True
 

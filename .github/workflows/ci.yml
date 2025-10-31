@@ -44,7 +44,6 @@ jobs:
     with:
       working-directory: ${{ matrix.working-directory }}
       python-version: ${{ matrix.python-version }}
-    secrets: inherit
 
   # Run unit tests on both packages in parallel
   test:
@@ -68,7 +67,6 @@ jobs:
     with:
       working-directory: ${{ matrix.working-directory }}
       python-version: ${{ matrix.python-version }}
-    secrets: inherit
 
   # Final status check - ensures all jobs passed
   ci_success:

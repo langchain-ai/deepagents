@@ -50,9 +50,7 @@ jobs:
     strategy:
       matrix:
         include:
-          # Root package: test on multiple Python versions
-          - working-directory: "."
-            python-version: "3.10"
+          # Root package: test on multiple Python versions (3.11 = min, 3.13 = max)
           - working-directory: "."
             python-version: "3.11"
           - working-directory: "."
@@ -61,7 +59,7 @@ jobs:
             python-version: "3.13"
           # CLI package: test on min and max Python versions
           - working-directory: "libs/deepagents-cli"
-            python-version: "3.10"
+            python-version: "3.11"
           - working-directory: "libs/deepagents-cli"
             python-version: "3.13"
       fail-fast: false

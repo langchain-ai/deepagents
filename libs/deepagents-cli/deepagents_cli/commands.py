@@ -115,8 +115,7 @@ def execute_bash_command(command: str) -> bool:
                 # Exit code -2 also indicates interrupt in some shells
                 if process.returncode == 130 or process.returncode == -2:
                     console.print("[yellow]Command interrupted[/yellow]")
-                else:
-                    console.print(f"[dim]Exit code: {process.returncode}[/dim]")
+                # Note: No exit code display - stderr message is sufficient
 
         except subprocess.TimeoutExpired:
             # Timeout - kill the process group

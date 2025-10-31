@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .agent import create_agent_with_config, list_agents, reset_agent
 from .commands import execute_bash_command, handle_command
-from .config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
+from .config import COLORS, DEEP_AGENTS_ASCII, console, create_model
 from .execution import execute_task
 from .input import create_prompt_session
 from .tools import http_request, tavily_client, web_search
@@ -84,16 +84,11 @@ def parse_args():
         default="agent",
         help="Agent identifier for separate memory stores (default: agent).",
     )
-    parser.add_argument(
-        "--auto-approve",
-        action="store_true",
-        help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
-    )
 
     return parser.parse_args()
 
 
-async def simple_cli(agent, assistant_id: str | None, session_state, baseline_tokens: int = 0):
+async def simple_cli(agent, assistant_id: str | None, baseline_tokens: int = 0):
     """Main CLI loop."""
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
@@ -116,14 +111,8 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
     console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
     console.print()
 
-    if session_state.auto_approve:
-        console.print(
-            "  [yellow]⚡ Auto-approve: ON[/yellow] [dim](tools run without confirmation)[/dim]"
-        )
-        console.print()
-
     console.print(
-        "  Tips: Enter to submit, Alt+Enter for newline, Ctrl+E for editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt",
+        "  Tips: Enter to submit, Alt+Enter for newline, Ctrl+E for editor, Ctrl+C to interrupt",
         style=f"dim {COLORS['dim']}",
     )
     console.print()
@@ -134,7 +123,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
     print("\033[0m", end="", flush=True)  # Reset all ANSI attributes
 
     # Create prompt session and token tracker
-    session = create_prompt_session(assistant_id, session_state)
+    session = create_prompt_session(assistant_id)
     token_tracker = TokenTracker()
     token_tracker.set_baseline(baseline_tokens)
 
@@ -172,7 +161,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
             console.print("\nGoodbye!", style=COLORS["primary"])
             break
 
-        await execute_task(user_input, agent, assistant_id, session_state, token_tracker)
+        await execute_task(user_input, agent, assistant_id, token_tracker)
 
         # Reset terminal state after agent execution to prevent prompt_toolkit desync
         # Rich console's status spinner and ANSI manipulation can corrupt terminal state
@@ -181,7 +170,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
         print("\033[0m", end="", flush=True)  # Reset all ANSI attributes
 
 
-async def main(assistant_id: str, session_state):
+async def main(assistant_id: str):
     """Main entry point."""
     # Create the model (checks API keys)
     model = create_model()
@@ -202,7 +191,7 @@ async def main(assistant_id: str, session_state):
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
 
     try:
-        await simple_cli(agent, assistant_id, session_state, baseline_tokens)
+        await simple_cli(agent, assistant_id, baseline_tokens)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
 
@@ -222,11 +211,8 @@ def cli_main():
         elif args.command == "reset":
             reset_agent(args.agent, args.source_agent)
         else:
-            # Create session state from args
-            session_state = SessionState(auto_approve=args.auto_approve)
-
             # API key validation happens in create_model()
-            asyncio.run(main(args.agent, session_state))
+            asyncio.run(main(args.agent))
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

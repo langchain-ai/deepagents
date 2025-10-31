@@ -100,15 +100,14 @@ Your long-term memory is stored in /memories/ and persists across sessions.
 
 Base your answers on saved knowledge (from /memories/) when available, supplemented by general knowledge.
 
-### Human-in-the-Loop Tool Approval
+### Tool Execution
 
-Some tool calls require user approval before execution. When a tool call is rejected by the user:
-1. Accept their decision immediately - do NOT retry the same command
-2. Explain that you understand they rejected the action
-3. Suggest an alternative approach or ask for clarification
-4. Never attempt the exact same rejected command again
+All tools execute immediately without requiring approval. The user sees:
+- File operations with diffs showing before/after changes
+- Shell command execution and output
+- Tool results displayed inline
 
-Respect the user's decisions and work with them collaboratively.
+Always acknowledge what actions you took after using tools. Be transparent about file changes, commands run, and data accessed.
 
 ### Web Search Tool Usage
 
@@ -170,95 +169,14 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
     # Get the system prompt
     system_prompt = get_system_prompt()
 
-    # Helper functions for formatting tool descriptions in HITL prompts
-    def format_write_file_description(tool_call: dict) -> str:
-        """Format write_file tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        file_path = args.get("file_path", "unknown")
-        content = args.get("content", "")
-
-        action = "Overwrite" if os.path.exists(file_path) else "Create"
-        line_count = len(content.splitlines())
-        size = len(content.encode("utf-8"))
-
-        return f"File: {file_path}\nAction: {action} file\nLines: {line_count} · Bytes: {size}"
-
-    def format_edit_file_description(tool_call: dict) -> str:
-        """Format edit_file tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        file_path = args.get("file_path", "unknown")
-        old_string = args.get("old_string", "")
-        new_string = args.get("new_string", "")
-        replace_all = bool(args.get("replace_all", False))
-
-        delta = len(new_string) - len(old_string)
-
-        return (
-            f"File: {file_path}\n"
-            f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})\n"
-            f"Snippet delta: {delta:+} characters"
-        )
-
-    def format_task_description(tool_call: dict) -> str:
-        """Format task (subagent) tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        description = args.get("description", "unknown")
-        prompt = args.get("prompt", "")
-
-        # Truncate prompt if too long
-        prompt_preview = prompt[:300]
-        if len(prompt) > 300:
-            prompt_preview += "..."
-
-        return (
-            f"Task: {description}\n\n"
-            f"Instructions to subagent:\n"
-            f"{'─' * 40}\n"
-            f"{prompt_preview}\n"
-            f"{'─' * 40}\n\n"
-            f"⚠️  Subagent will have access to file operations and shell commands"
-        )
-
-    # Configure human-in-the-loop for potentially destructive tools
-    from langchain.agents.middleware import InterruptOnConfig
-
-    shell_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: (
-            f"Shell Command: {tool_call['args'].get('command', 'N/A')}\n"
-            f"Working Directory: {os.getcwd()}"
-        ),
-    }
-
-    write_file_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_write_file_description(tool_call),
-    }
-
-    edit_file_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_edit_file_description(tool_call),
-    }
-
-    task_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_task_description(tool_call),
-    }
-
+    # No HITL (Human-in-the-Loop) interrupts - all tools execute immediately
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
         tools=tools,
         backend=backend,
         middleware=agent_middleware,
-        interrupt_on={
-            "shell": shell_interrupt_config,
-            "write_file": write_file_interrupt_config,
-            "edit_file": edit_file_interrupt_config,
-            "task": task_interrupt_config,
-            # Note: web_search is NOT here - it's a read-only tool like http_request
-            # and should execute automatically without requiring approval
-        },
+        interrupt_on=None,  # No interrupts - execute all tools immediately
     ).with_config(config)
 
     agent.checkpointer = InMemorySaver()

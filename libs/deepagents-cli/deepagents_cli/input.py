@@ -18,7 +18,7 @@ from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
-from .config import COLORS, COMMANDS, COMMON_BASH_COMMANDS, SessionState, console
+from .config import COLORS, COMMANDS, COMMON_BASH_COMMANDS, console
 
 
 class DirectoryAwarePathCompleter(Completer):
@@ -164,20 +164,7 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     return text, files
 
 
-def get_bottom_toolbar(session_state: SessionState):
-    """Return toolbar function that shows auto-approve status."""
-
-    def toolbar():
-        if session_state.auto_approve:
-            # Green background when auto-approve is ON
-            return [("class:toolbar-green", "auto-accept ON (CTRL+T to toggle)")]
-        # Orange background when manual accept (auto-approve OFF)
-        return [("class:toolbar-orange", "manual accept (CTRL+T to toggle)")]
-
-    return toolbar
-
-
-def create_prompt_session(assistant_id: str, session_state: SessionState) -> PromptSession:
+def create_prompt_session(assistant_id: str) -> PromptSession:
     """Create a configured PromptSession with all features."""
     # Set default editor if not already set
     if "EDITOR" not in os.environ:
@@ -185,14 +172,6 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
 
     # Create key bindings
     kb = KeyBindings()
-
-    # Bind Ctrl+T to toggle auto-approve
-    @kb.add("c-t")
-    def _(event):
-        """Toggle auto-approve mode."""
-        session_state.toggle_auto_approve()
-        # Force UI refresh to update toolbar
-        event.app.invalidate()
 
     # Bind backspace to update completions
     @kb.add("backspace")
@@ -257,17 +236,6 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         """Open the current input in an external editor (nano by default)."""
         event.current_buffer.open_in_editor()
 
-    from prompt_toolkit.styles import Style
-
-    # Define styles for the toolbar
-    toolbar_style = Style.from_dict(
-        {
-            "bottom-toolbar": "noreverse",
-            "toolbar-green": "bg:#10b981 #000000",  # Green for auto-approve ON
-            "toolbar-orange": "bg:#f59e0b #000000",  # Orange for manual approve
-        }
-    )
-
     # Calculate rows to reserve for the autocomplete menu so it stays visible.
     try:
         terminal_height = shutil.get_terminal_size().lines
@@ -288,8 +256,6 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         mouse_support=False,
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
         reserve_space_for_menu=reserve_rows,
-        bottom_toolbar=get_bottom_toolbar(session_state),  # Status toolbar
-        style=toolbar_style,
     )
 
     return session

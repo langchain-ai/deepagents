@@ -98,7 +98,14 @@ class FileOperationRecord:
 
 
 def resolve_physical_path(path_str: str | None, assistant_id: str | None) -> Path | None:
-    """Convert a virtual/relative path to a physical filesystem path."""
+    """Convert a virtual/relative path to a physical filesystem path.
+
+    The CLI treats `/` as the workspace root for tool calls, matching the default
+    FilesystemBackend configuration (virtual_mode=True). Absolute paths that don't
+    already point inside the current working directory are rebased onto the
+    workspace root so approval previews and diff rendering inspect the same file
+    location the backend writes to.
+    """
     if not path_str:
         return None
     try:
@@ -106,10 +113,18 @@ def resolve_physical_path(path_str: str | None, assistant_id: str | None) -> Pat
             agent_dir = Path.home() / ".deepagents" / assistant_id
             suffix = path_str.removeprefix("/memories/").lstrip("/")
             return (agent_dir / suffix).resolve()
+        workspace_root = Path.cwd()
         path = Path(path_str)
         if path.is_absolute():
-            return path
-        return (Path.cwd() / path).resolve()
+            try:
+                # Already an absolute path inside the workspace.
+                path.relative_to(workspace_root)
+                return path
+            except ValueError:
+                # Rebase `/foo/bar` to `<workspace>/foo/bar` to mirror backend semantics.
+                relative = Path(path.relative_to(path.anchor))
+                return (workspace_root / relative).resolve()
+        return (workspace_root / path).resolve()
     except (OSError, ValueError):
         return None
 
@@ -120,8 +135,13 @@ def format_display_path(path_str: str | None) -> str:
         return "(unknown)"
     try:
         path = Path(path_str)
+        workspace_root = Path.cwd()
         if path.is_absolute():
-            return path.name or str(path)
+            try:
+                relative = path.relative_to(workspace_root)
+                return str(relative) or "."
+            except ValueError:
+                return path.name or str(path)
         return str(path)
     except (OSError, ValueError):
         return str(path_str)

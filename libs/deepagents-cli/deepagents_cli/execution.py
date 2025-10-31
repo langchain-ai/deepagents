@@ -3,18 +3,14 @@
 import json
 import signal
 import sys
-import termios
-import threading
-import tty
 
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.types import Command
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
 
 from .config import COLORS, console
-from .file_ops import FileOpTracker, build_approval_preview
+from .file_ops import FileOpTracker
 from .input import parse_file_mentions
 from .ui import (
     TokenTracker,
@@ -42,123 +38,38 @@ def is_summary_message(content: str) -> bool:
     )
 
 
-def _extract_tool_args(action_request: dict) -> dict | None:
-    """Best-effort extraction of tool call arguments from an action request."""
-    if "tool_call" in action_request and isinstance(action_request["tool_call"], dict):
-        args = action_request["tool_call"].get("args")
-        if isinstance(args, dict):
-            return args
-    args = action_request.get("args")
-    if isinstance(args, dict):
-        return args
-    return None
+def clean_shell_output(content: str) -> str:
+    """Clean shell tool output by removing technical noise like [stderr] prefixes and exit codes."""
+    lines = content.split('\n')
+    cleaned_lines = []
+
+    for line in lines:
+        # Skip empty lines
+        if not line.strip():
+            continue
+
+        # Skip "Exit code: X" lines
+        if line.strip().startswith('Exit code:'):
+            continue
+
+        # Remove [stderr] and [stdout] prefixes
+        cleaned = line
+        if cleaned.startswith('[stderr] '):
+            cleaned = cleaned[9:]  # Remove '[stderr] ' prefix
+        elif cleaned.startswith('[stdout] '):
+            cleaned = cleaned[9:]  # Remove '[stdout] ' prefix
+
+        cleaned_lines.append(cleaned)
+
+    return '\n'.join(cleaned_lines)
 
 
-def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> dict:
-    """Prompt user to approve/reject a tool action with minimal UI."""
-    description = action_request.get("description", "No description available")
-    tool_name = action_request.get("name") or action_request.get("tool")
-    tool_args = _extract_tool_args(action_request)
-    preview = build_approval_preview(tool_name, tool_args, assistant_id) if tool_name else None
-
-    # Display tool info with header
-    console.print()
-    console.print("[bold cyan]User Approval Required:[/bold cyan]")
-    console.print()
-
-    if preview:
-        console.print(f"[bold]{preview.title}[/bold]")
-        for detail in preview.details:
-            console.print(f"[dim]{detail}[/dim]")
-        if preview.error:
-            console.print(f"[red]{preview.error}[/red]")
-    else:
-        console.print(description)
-
-    # Show diff if available
-    if preview and preview.diff and not preview.error:
-        console.print()
-        render_diff_block(preview.diff, preview.diff_title or preview.title)
-
-    console.print()
-
-    options = ["Approve", "Reject"]
-    selected = 0
-
-    try:
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-
-        try:
-            tty.setraw(fd)
-            # Hide cursor during menu navigation
-            sys.stdout.write("\033[?25l")
-            sys.stdout.flush()
-
-            while True:
-                # Render options (2 lines)
-                for i, option in enumerate(options):
-                    sys.stdout.write("\r\033[K")  # Clear line
-
-                    if i == selected:
-                        # Selected: green with arrow
-                        sys.stdout.write(f"\033[32m  → {option}\033[0m\n")
-                    else:
-                        # Not selected: dim, no arrow
-                        sys.stdout.write(f"\033[2m    {option}\033[0m\n")
-
-                # Always return cursor to top of options after rendering
-                sys.stdout.write("\033[2A\r")
-                sys.stdout.flush()
-
-                # Read key
-                char = sys.stdin.read(1)
-
-                if char == "\x1b":  # Arrow keys
-                    next1 = sys.stdin.read(1)
-                    next2 = sys.stdin.read(1)
-                    if next1 == "[":
-                        if next2 == "B":  # Down
-                            selected = (selected + 1) % len(options)
-                        elif next2 == "A":  # Up
-                            selected = (selected - 1) % len(options)
-                elif char == "\r" or char == "\n":  # Enter
-                    sys.stdout.write("\033[1B\n")
-                    break
-                elif char == "\x03":  # Ctrl+C
-                    sys.stdout.write("\033[1B\n")
-                    raise KeyboardInterrupt
-                elif char.lower() in ["y", "a"]:  # y/a for approve
-                    selected = 0
-                    sys.stdout.write("\033[1B\n")
-                    break
-                elif char.lower() in ["n", "r"]:  # n/r for reject
-                    selected = 1
-                    sys.stdout.write("\033[1B\n")
-                    break
-
-        finally:
-            # Show cursor again
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-    except (termios.error, AttributeError):
-        # Fallback for non-Unix systems
-        console.print("  (Y)es / (N)o (default=Yes): ", end="")
-        choice = input().strip().lower()
-        selected = 1 if choice in ["n", "no", "reject"] else 0
-
-    console.print()
-
-    return {"type": "approve"} if selected == 0 else {"type": "reject", "message": "User rejected"}
 
 
 async def execute_task(
     user_input: str,
     agent,
     assistant_id: str | None,
-    session_state,
     token_tracker: TokenTracker | None = None,
 ):
     """Execute any task by passing it directly to the AI agent."""
@@ -220,6 +131,9 @@ async def execute_task(
 
     # Track which tool calls we've displayed to avoid duplicates
     displayed_tool_ids = set()
+    # Track total message count to avoid displaying stale messages after resume
+    # (message IDs are None, so we use count instead)
+    last_displayed_message_count = 0
     # Buffer partial tool-call chunks keyed by streaming index
     tool_call_buffers: dict[str | int, dict] = {}
     # Buffer assistant text so we can render complete markdown segments
@@ -262,7 +176,64 @@ async def execute_task(
         summary_mode = False
         summary_buffer = ""
 
-    # Stream input - may need to loop if there are interrupts
+    def handle_tool_message(message: ToolMessage) -> None:
+        """Process and render a ToolMessage."""
+        nonlocal spinner_active, has_responded
+        tool_name = getattr(message, "name", "")
+        tool_status = getattr(message, "status", "success")
+        tool_content = format_tool_message_content(message.content)
+        record = file_op_tracker.complete_with_message(message)
+
+        if tool_name == "shell":
+            flush_summary_buffer()
+            flush_text_buffer(final=True)
+            if spinner_active:
+                status.stop()
+                spinner_active = False
+            console.print()
+            if tool_content and str(tool_content).strip():
+                # Clean shell output: remove [stderr]/[stdout] prefixes and exit codes
+                cleaned_content = clean_shell_output(str(tool_content))
+                if cleaned_content.strip():
+                    if tool_status != "success":
+                        console.print(cleaned_content, style="red", markup=False)
+                    else:
+                        console.print(cleaned_content, style=COLORS["dim"], markup=False)
+                else:
+                    console.print("[dim](command completed with no output)[/dim]")
+            else:
+                console.print("[dim](command completed with no output)[/dim]")
+            console.print()
+        elif tool_content and isinstance(tool_content, str):
+            stripped = tool_content.lstrip()
+            if stripped.lower().startswith("error"):
+                flush_summary_buffer()
+                flush_text_buffer(final=True)
+                if spinner_active:
+                    status.stop()
+                    spinner_active = False
+                console.print()
+                console.print(tool_content, style="red", markup=False)
+                console.print()
+
+        if record:
+            flush_summary_buffer()
+            flush_text_buffer(final=True)
+            if spinner_active:
+                status.stop()
+                spinner_active = False
+            console.print()
+            render_file_operation(record)
+            console.print()
+            if not spinner_active:
+                status.start()
+                spinner_active = True
+
+        if tool_name == "shell":
+            return
+
+
+    # Stream input
     stream_input = {"messages": [{"role": "user", "content": final_input}]}
 
     # Set up signal handler for Ctrl+C during streaming
@@ -279,163 +250,50 @@ async def execute_task(
     original_handler = signal.signal(signal.SIGINT, sigint_handler)
 
     try:
-        while True:
-            interrupt_occurred = False
-            hitl_response = None
-            suppress_resumed_output = False
+        async for chunk in agent.astream(
+            stream_input,
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+            config=config,
+            durability="exit",
+        ):
+            # Unpack chunk - with subgraphs=True and dual-mode, it's (namespace, stream_mode, data)
+            if not isinstance(chunk, tuple) or len(chunk) != 3:
+                continue
 
-            async for chunk in agent.astream(
-                stream_input,
-                stream_mode=["messages", "updates"],  # Dual-mode for HITL support
-                subgraphs=True,
-                config=config,
-                durability="exit",
-            ):
-                # Unpack chunk - with subgraphs=True and dual-mode, it's (namespace, stream_mode, data)
-                if not isinstance(chunk, tuple) or len(chunk) != 3:
+            namespace, current_stream_mode, data = chunk
+
+            # Check for Ctrl+C cancellation FIRST (before processing chunk)
+            if cancelled:
+                if spinner_active:
+                    status.stop()
+                console.print("\n[yellow]Interrupted by user[/yellow]\n")
+                # Partial response already saved by durability="exit" - just return
+                return
+
+            # Handle UPDATES stream - for todos
+            if current_stream_mode == "updates":
+                if not isinstance(data, dict):
                     continue
 
-                namespace, current_stream_mode, data = chunk
-
-                # Check for Ctrl+C cancellation FIRST (before processing chunk)
-                if cancelled:
-                    if spinner_active:
-                        status.stop()
-                    console.print("\n[yellow]Interrupted by user[/yellow]\n")
-
-                    # Partial response already saved by durability="exit" - just return
-                    return
-
-                # Handle UPDATES stream - for interrupts and todos
-                if current_stream_mode == "updates":
-                    if not isinstance(data, dict):
-                        continue
-
-                    # Check for interrupts
-                    if "__interrupt__" in data:
-                        interrupt_data = data["__interrupt__"]
-                        if interrupt_data:
-                            interrupt_obj = (
-                                interrupt_data[0]
-                                if isinstance(interrupt_data, tuple)
-                                else interrupt_data
-                            )
-                            hitl_request = (
-                                interrupt_obj.value
-                                if hasattr(interrupt_obj, "value")
-                                else interrupt_obj
-                            )
-
-                            # Check if auto-approve is enabled
-                            if session_state.auto_approve:
-                                # Auto-approve all commands without prompting
-                                decisions = []
-                                for action_request in hitl_request.get("action_requests", []):
-                                    # Stop spinner to show preview
-                                    if spinner_active:
-                                        status.stop()
-                                        spinner_active = False
-
-                                    # Build preview to show diff for file operations
-                                    tool_name = action_request.get("name") or action_request.get("tool")
-                                    tool_args = _extract_tool_args(action_request)
-                                    preview = build_approval_preview(tool_name, tool_args, assistant_id) if tool_name else None
-
-                                    console.print()
-                                    console.print("[bold green]⚡ Auto-approved:[/bold green]")
-                                    console.print()
-
-                                    if preview:
-                                        console.print(f"[bold]{preview.title}[/bold]")
-                                        for detail in preview.details:
-                                            console.print(f"[dim]{detail}[/dim]")
-                                        if preview.error:
-                                            console.print(f"[red]{preview.error}[/red]")
-
-                                        # Show diff if available
-                                        if preview.diff and not preview.error:
-                                            console.print()
-                                            render_diff_block(preview.diff, preview.diff_title or preview.title)
-                                    else:
-                                        description = action_request.get("description", "tool action")
-                                        console.print(f"  {description}")
-
-                                    console.print()
-                                    decisions.append({"type": "approve"})
-
-                                # Flush console output before resuming to prevent terminal interference
-                                sys.stdout.flush()
-                                sys.stderr.flush()
-
-                                hitl_response = {"decisions": decisions}
-                                interrupt_occurred = True
-
-                                # Restart spinner for continuation
-                                if not spinner_active:
-                                    status.start()
-                                    spinner_active = True
-
-                                break
-                            # Normal HITL flow - stop spinner and prompt user
+                # Extract chunk_data from updates for todo checking
+                chunk_data = list(data.values())[0] if data else None
+                if chunk_data and isinstance(chunk_data, dict):
+                    # Check for todo updates
+                    if "todos" in chunk_data:
+                        new_todos = chunk_data["todos"]
+                        if new_todos != current_todos:
+                            current_todos = new_todos
+                            # Stop spinner before rendering todos
                             if spinner_active:
                                 status.stop()
                                 spinner_active = False
+                            console.print()
+                            render_todo_list(new_todos)
+                            console.print()
 
-                            # Handle human-in-the-loop approval
-                            # Deduplicate action_requests to prevent double rendering
-                            action_requests = hitl_request.get("action_requests", [])
-                            seen = set()
-                            unique_requests = []
-                            for req in action_requests:
-                                # Create a unique key based on tool name and args
-                                tool_name = req.get("name") or req.get("tool")
-                                tool_args = _extract_tool_args(req)
-                                key = (tool_name, str(tool_args))
-                                if key not in seen:
-                                    seen.add(key)
-                                    unique_requests.append(req)
-
-                            decisions = []
-                            for action_request in unique_requests:
-                                decision = prompt_for_tool_approval(action_request, assistant_id)
-                                decisions.append(decision)
-
-                            # If we deduplicated, add the same decision for all duplicates
-                            if len(unique_requests) < len(action_requests):
-                                # Repeat decisions to match original request count
-                                decisions = decisions * (len(action_requests) // len(unique_requests))
-
-                            suppress_resumed_output = any(
-                                decision.get("type") == "reject" for decision in decisions
-                            )
-                            hitl_response = {"decisions": decisions}
-                            interrupt_occurred = True
-
-                            # Restart spinner for resumed execution (matches auto-approve behavior)
-                            if not suppress_resumed_output and not spinner_active:
-                                status.start()
-                                spinner_active = True
-
-                            break
-
-                    # Extract chunk_data from updates for todo checking
-                    chunk_data = list(data.values())[0] if data else None
-                    if chunk_data and isinstance(chunk_data, dict):
-                        # Check for todo updates
-                        if "todos" in chunk_data:
-                            new_todos = chunk_data["todos"]
-                            if new_todos != current_todos:
-                                current_todos = new_todos
-                                # Stop spinner before rendering todos
-                                if spinner_active:
-                                    status.stop()
-                                    spinner_active = False
-                                console.print()
-                                render_todo_list(new_todos)
-                                console.print()
-
-                # Handle MESSAGES stream - for content and tool calls
-                elif current_stream_mode == "messages":
+            # Handle MESSAGES stream - for content and tool calls
+            elif current_stream_mode == "messages":
                     # Messages stream returns (message, metadata) tuples
                     if not isinstance(data, tuple) or len(data) != 2:
                         continue
@@ -443,61 +301,7 @@ async def execute_task(
                     message, metadata = data
 
                     if isinstance(message, ToolMessage):
-                        # Tool results are sent to the agent, not displayed to users
-                        # Exception: show ALL shell command outputs (users want to see raw shell output)
-                        tool_name = getattr(message, "name", "")
-                        tool_status = getattr(message, "status", "success")
-                        tool_content = format_tool_message_content(message.content)
-                        record = file_op_tracker.complete_with_message(message)
-
-                        if tool_name == "shell":
-                            flush_summary_buffer()
-                            flush_text_buffer(final=True)
-
-                            # Stop spinner before showing output
-                            if spinner_active:
-                                status.stop()
-                                spinner_active = False
-
-                            # Show output even if empty (indicates command ran but produced no output)
-                            console.print()
-                            if tool_content and str(tool_content).strip():
-                                # Show errors in red, successful output in normal color
-                                if tool_status != "success":
-                                    console.print(tool_content, style="red", markup=False)
-                                else:
-                                    console.print(tool_content, style=COLORS["dim"], markup=False)
-                            else:
-                                # Command ran but no output
-                                console.print("[dim](command completed with no output)[/dim]")
-                            console.print()
-                        elif tool_content and isinstance(tool_content, str):
-                            stripped = tool_content.lstrip()
-                            if stripped.lower().startswith("error"):
-                                flush_summary_buffer()
-                                flush_text_buffer(final=True)
-                                if spinner_active:
-                                    status.stop()
-                                    spinner_active = False
-                                console.print()
-                                console.print(tool_content, style="red", markup=False)
-                                console.print()
-
-                        if record:
-                            flush_summary_buffer()
-                            flush_text_buffer(final=True)
-                            if spinner_active:
-                                status.stop()
-                                spinner_active = False
-                            console.print()
-                            render_file_operation(record)
-                            console.print()
-                            if not spinner_active:
-                                status.start()
-                                spinner_active = True
-
-                        # For all other tools (web_search, http_request, etc.),
-                        # results are hidden from user - agent will process and respond
+                        handle_tool_message(message)
                         continue
 
                     # Check if this is an AIMessageChunk
@@ -641,38 +445,12 @@ async def execute_task(
                         flush_summary_buffer()
                         flush_text_buffer(final=True)
 
-            # After streaming loop - handle interrupt if it occurred
-            flush_summary_buffer()
-            flush_text_buffer(final=True)
-            if interrupt_occurred and hitl_response:
-                if suppress_resumed_output:
-                    if spinner_active:
-                        status.stop()
-                        spinner_active = False
-
-                    console.print("\nCommand rejected. Returning to prompt.\n", style=COLORS["dim"])
-
-                    # Resume agent in background thread to properly update graph state
-                    # without blocking the user
-                    def resume_after_rejection():
-                        try:
-                            agent.invoke(Command(resume=hitl_response), config=config)
-                        except Exception:
-                            pass  # Silently ignore errors
-
-                    threading.Thread(target=resume_after_rejection, daemon=True).start()
-                    return
-
-                # Resume the agent with the human decision
-                stream_input = Command(resume=hitl_response)
-                # Continue the while loop to restream
-            else:
-                # No interrupt, break out of while loop
-                break
+        # After streaming completes, flush any remaining buffers
+        flush_summary_buffer()
+        flush_text_buffer(final=True)
 
     except KeyboardInterrupt:
-        # Catch KeyboardInterrupt from approval menu (prompt_for_tool_approval raises it)
-        # OR from asyncio if signal handling fails
+        # Fallback: catch KeyboardInterrupt if asyncio signal handling fails
         if spinner_active:
             status.stop()
         console.print("\n[yellow]Interrupted by user[/yellow]\n")

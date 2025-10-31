@@ -75,18 +75,6 @@ config = {"recursion_limit": 1000}
 console = Console(highlight=False)
 
 
-class SessionState:
-    """Holds mutable session state (auto-approve mode, etc)."""
-
-    def __init__(self, auto_approve: bool = False):
-        self.auto_approve = auto_approve
-
-    def toggle_auto_approve(self) -> bool:
-        """Toggle auto-approve and return new state."""
-        self.auto_approve = not self.auto_approve
-        return self.auto_approve
-
-
 def get_default_coding_instructions() -> str:
     """Get the default coding agent instructions.
 

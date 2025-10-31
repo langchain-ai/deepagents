@@ -126,10 +126,10 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
 
     elif tool_name == "task":
         # Task: show the task description
-        if "description" in tool_args:
-            desc = str(tool_args["description"])
-            desc = truncate_value(desc, 100)
-            return f'{tool_name}("{desc}")'
+        if "task" in tool_args:
+            task = str(tool_args["task"])
+            task = truncate_value(task, 100)
+            return f'{tool_name}("{task}")'
 
     elif tool_name == "write_todos":
         # Todos: show count of items

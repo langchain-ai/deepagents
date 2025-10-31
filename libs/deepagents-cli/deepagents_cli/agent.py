@@ -210,19 +210,12 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
     def format_task_description(tool_call: dict) -> str:
         """Format task (subagent) tool call for approval prompt."""
         args = tool_call.get("args", {})
-        description = args.get("description", "unknown")
-        prompt = args.get("prompt", "")
-
-        # Truncate prompt if too long
-        prompt_preview = prompt[:300]
-        if len(prompt) > 300:
-            prompt_preview += "..."
+        task = args.get("task", "unknown")
 
         return (
-            f"Task: {description}\n\n"
+            f"Task: {task}\n\n"
             f"Instructions to subagent:\n"
             f"{'─' * 40}\n"
-            f"{prompt_preview}\n"
             f"{'─' * 40}\n\n"
             f"⚠️  Subagent will have access to file operations and shell commands"
         )

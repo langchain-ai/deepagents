@@ -285,7 +285,7 @@ def _create_task_tool(
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
     subagents: list[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
-    task_description: str | None = None,
+    task_tool_description: str | None = None,
 ) -> BaseTool:
     """Create a task tool for invoking subagents.
 
@@ -297,7 +297,7 @@ def _create_task_tool(
             are also the fallback for any subagents that don't specify their own tool configs.
         subagents: List of subagent specifications.
         general_purpose_agent: Whether to include general-purpose agent.
-        task_description: Custom description for the task tool. If `None`,
+        task_tool_description: Custom description for the task tool. If `None`,
             uses default template. Supports `{available_agents}` placeholder.
 
     Returns:
@@ -334,18 +334,18 @@ def _create_task_tool(
         return subagent, subagent_state
 
     # Use custom description if provided, otherwise use default template
-    if task_description is None:
-        task_description = TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
-    elif "{available_agents}" in task_description:
+    if task_tool_description is None:
+        task_tool_description = TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
+    elif "{available_agents}" in task_tool_description:
         # If custom description has placeholder, format with agent descriptions
-        task_description = task_description.format(available_agents=subagent_description_str)
+        task_tool_description = task_tool_description.format(available_agents=subagent_description_str)
 
     def task(
-        description: str,
+        task: str,
         subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, task, runtime)
         result = subagent.invoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
@@ -353,11 +353,11 @@ def _create_task_tool(
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
-        description: str,
+        task: str,
         subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, task, runtime)
         result = await subagent.ainvoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
@@ -368,7 +368,7 @@ def _create_task_tool(
         name="task",
         func=task,
         coroutine=atask,
-        description=task_description,
+        description=task_tool_description,
     )
 
 
@@ -400,7 +400,7 @@ class SubAgentMiddleware(AgentMiddleware):
         system_prompt: Full system prompt override. When provided, completely replaces
             the agent's system prompt.
         general_purpose_agent: Whether to include the general-purpose agent. Defaults to `True`.
-        task_description: Custom description for the task tool. If `None`, uses the
+        task_tool_description: Custom description for the task tool. If `None`, uses the
             default description template.
 
     Example:
@@ -443,7 +443,7 @@ class SubAgentMiddleware(AgentMiddleware):
         subagents: list[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         general_purpose_agent: bool = True,
-        task_description: str | None = None,
+        task_tool_description: str | None = None,
     ) -> None:
         """Initialize the SubAgentMiddleware."""
         super().__init__()
@@ -455,7 +455,7 @@ class SubAgentMiddleware(AgentMiddleware):
             default_interrupt_on=default_interrupt_on,
             subagents=subagents or [],
             general_purpose_agent=general_purpose_agent,
-            task_description=task_description,
+            task_tool_description=task_tool_description,
         )
         self.tools = [task_tool]
 

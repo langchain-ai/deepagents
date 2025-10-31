@@ -2,7 +2,6 @@
 
 import os
 import re
-import shutil
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -21,65 +20,53 @@ from prompt_toolkit.key_binding import KeyBindings
 from .config import COLORS, COMMANDS, COMMON_BASH_COMMANDS, SessionState, console
 
 
-class DirectoryAwarePathCompleter(Completer):
-    """PathCompleter wrapper that adds trailing slashes to directories."""
+class FilePathCompleter(Completer):
+    """File path completer that triggers on @ symbol with case-insensitive matching."""
 
     def __init__(self):
         self.path_completer = PathCompleter(expanduser=True)
 
     def get_completions(self, document, complete_event):
-        """Get completions and modify directory entries to include trailing /."""
-        for completion in self.path_completer.get_completions(document, complete_event):
-            # Check if this completion represents a directory
-            # Build the full path from document text + completion text
-            base_text = document.text[: document.cursor_position]
-            completed_path = base_text + completion.text
-
-            try:
-                # Check if the completed path is a directory
-                p = Path(completed_path).expanduser()
-                if not p.is_absolute():
-                    p = Path.cwd() / p
-
-                # If it's a directory and doesn't already end with /
-                if p.is_dir() and not completion.text.endswith("/"):
-                    # Modify the completion to include trailing /
-                    yield Completion(
-                        text=completion.text + "/",
-                        start_position=completion.start_position,
-                        display=completion.display or (completion.text + "/"),
-                        display_meta=completion.display_meta,
-                    )
-                else:
-                    yield completion
-            except Exception:
-                # If path checking fails, yield original completion
-                yield completion
-
-
-class FilePathCompleter(Completer):
-    """File path completer that triggers on @ symbol."""
-
-    def __init__(self):
-        self.path_completer = DirectoryAwarePathCompleter()
-
-    def get_completions(self, document, complete_event):
         """Get file path completions when @ is detected."""
         text = document.text_before_cursor
 
-        # Find the position of the last @ symbol
-        last_at_pos = text.rfind("@")
-        if last_at_pos >= 0:
-            # Get the part after the @
-            path_part = text[last_at_pos + 1 :]
+        # Check if we're after an @ symbol
+        if "@" in text:
+            # Get the part after the last @
+            parts = text.split("@")
+            if len(parts) >= 2:
+                after_at = parts[-1]
+                # Create a document for just the path part
+                path_doc = Document(after_at, len(after_at))
 
-            # Calculate cursor position within the path part
-            cursor_in_path = document.cursor_position - last_at_pos - 1
+                # Get all completions from PathCompleter
+                all_completions = list(
+                    self.path_completer.get_completions(path_doc, complete_event)
+                )
 
-            # Let PathCompleter handle everything - it knows how to deal with paths
-            path_doc = Document(path_part, cursor_in_path)
-            for completion in self.path_completer.get_completions(path_doc, complete_event):
-                yield completion
+                # If user has typed something, filter case-insensitively
+                if after_at.strip():
+                    # Extract just the filename part for matching (not the full path)
+                    search_parts = after_at.split("/")
+                    search_term = search_parts[-1].lower() if search_parts else ""
+
+                    # Filter completions case-insensitively
+                    filtered_completions = [
+                        c for c in all_completions if search_term in c.text.lower()
+                    ]
+                else:
+                    # No search term, show all completions
+                    filtered_completions = all_completions
+
+                # Yield filtered completions
+                for completion in filtered_completions:
+                    yield Completion(
+                        text=completion.text,
+                        start_position=completion.start_position,
+                        display=completion.display,
+                        display_meta=completion.display_meta,
+                        style=completion.style,
+                    )
 
 
 class CommandCompleter(Completer):
@@ -138,15 +125,14 @@ class BashCompleter(Completer):
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     """Extract @file mentions and return cleaned text with resolved file paths."""
-    # Simple pattern: @ followed by valid filename characters
-    # Stops at whitespace and punctuation (?, !, ,, etc.)
-    pattern = r"@([A-Za-z0-9._/~-]+)"
+    pattern = r"@((?:[^\s@]|(?<=\\)\s)+)"  # Match @filename, allowing escaped spaces
     matches = re.findall(pattern, text)
 
     files = []
     for match in matches:
-        # Expand ~ to home directory
-        path = Path(match).expanduser()
+        # Remove escape characters
+        clean_path = match.replace("\\ ", " ")
+        path = Path(clean_path).expanduser()
 
         # Try to resolve relative to cwd
         if not path.is_absolute():
@@ -194,22 +180,6 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         # Force UI refresh to update toolbar
         event.app.invalidate()
 
-    # Bind backspace to update completions
-    @kb.add("backspace")
-    def _(event):
-        """Handle backspace - delete char and update completions if menu was open."""
-        buffer = event.current_buffer
-
-        # Remember if completion menu was showing
-        had_completions = buffer.complete_state is not None
-
-        # Do the actual backspace
-        buffer.delete_before_cursor(count=1)
-
-        # If we had completions showing, retrigger them for the new text
-        if had_completions:
-            buffer.start_completion(select_first=False)
-
     # Bind regular Enter to submit (intuitive behavior)
     @kb.add("enter")
     def _(event):
@@ -230,12 +200,6 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
             elif current_completion:
                 # Apply the already-selected completion
                 buffer.apply_completion(current_completion)
-
-                # If the completion ends with /, it's a directory - keep completing
-                # (DirectoryAwarePathCompleter automatically adds / to directories)
-                if current_completion.text.endswith("/"):
-                    # Trigger completions again to show directory contents
-                    buffer.start_completion(select_first=False)
             else:
                 # No completions available, close menu
                 buffer.complete_state = None
@@ -259,27 +223,18 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
 
     from prompt_toolkit.styles import Style
 
-    # Define styles for the toolbar
+    # Define styles for the toolbar with full-width background colors
     toolbar_style = Style.from_dict(
         {
-            "bottom-toolbar": "noreverse",
-            "toolbar-green": "bg:#10b981 #000000",  # Green for auto-approve ON
-            "toolbar-orange": "bg:#f59e0b #000000",  # Orange for manual approve
+            "bottom-toolbar": "noreverse",  # Disable default reverse video
+            "toolbar-green": "bg:#10b981 #000000",  # Green for auto-accept ON
+            "toolbar-orange": "bg:#f59e0b #000000",  # Orange for manual accept
         }
     )
-
-    # Calculate rows to reserve for the autocomplete menu so it stays visible.
-    try:
-        terminal_height = shutil.get_terminal_size().lines
-    except OSError:
-        terminal_height = 24
-    # Keep a small cushion and cap it to avoid eating the whole screen.
-    reserve_rows = max(4, min(10, max(terminal_height // 4, 1)))
 
     # Create the session
     session = PromptSession(
         message=HTML(f'<style fg="{COLORS["user"]}">></style> '),
-        prompt_continuation="",  # Empty continuation (no extra prompts on resize)
         multiline=True,  # Keep multiline support but Enter submits
         key_bindings=kb,
         completer=merge_completers([CommandCompleter(), BashCompleter(), FilePathCompleter()]),
@@ -287,9 +242,8 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         complete_while_typing=True,  # Show completions as you type
         mouse_support=False,
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
-        reserve_space_for_menu=reserve_rows,
-        bottom_toolbar=get_bottom_toolbar(session_state),  # Status toolbar
-        style=toolbar_style,
+        bottom_toolbar=get_bottom_toolbar(session_state),  # Persistent status bar at bottom
+        style=toolbar_style,  # Apply toolbar styling
     )
 
     return session

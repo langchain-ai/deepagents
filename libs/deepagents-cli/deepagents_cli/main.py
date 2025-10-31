@@ -128,11 +128,6 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
     )
     console.print()
 
-    # Reset terminal state to prevent prompt_toolkit rendering issues
-    sys.stdout.flush()
-    sys.stderr.flush()
-    print("\033[0m", end="", flush=True)  # Reset all ANSI attributes
-
     # Create prompt session and token tracker
     session = create_prompt_session(assistant_id, session_state)
     token_tracker = TokenTracker()
@@ -172,13 +167,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
             console.print("\nGoodbye!", style=COLORS["primary"])
             break
 
-        await execute_task(user_input, agent, assistant_id, session_state, token_tracker)
-
-        # Reset terminal state after agent execution to prevent prompt_toolkit desync
-        # Rich console's status spinner and ANSI manipulation can corrupt terminal state
-        sys.stdout.flush()
-        sys.stderr.flush()
-        print("\033[0m", end="", flush=True)  # Reset all ANSI attributes
+        execute_task(user_input, agent, assistant_id, session_state, token_tracker)
 
 
 async def main(assistant_id: str, session_state):
@@ -230,7 +219,7 @@ def cli_main():
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")
-        sys.exit(130)  # Standard Unix exit code for SIGINT (128 + 2)
+        sys.exit(0)
 
 
 if __name__ == "__main__":

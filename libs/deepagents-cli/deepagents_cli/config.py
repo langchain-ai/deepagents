@@ -48,6 +48,7 @@ COMMANDS = {
 # Common bash commands for autocomplete
 COMMON_BASH_COMMANDS = {
     "ls": "List directory contents",
+    "ls -la": "List all files with details",
     "cd": "Change directory",
     "pwd": "Print working directory",
     "cat": "Display file contents",

@@ -1,7 +1,6 @@
 """Task execution and streaming logic for the CLI."""
 
 import json
-import signal
 import sys
 import termios
 import threading
@@ -55,35 +54,42 @@ def _extract_tool_args(action_request: dict) -> dict | None:
 
 
 def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> dict:
-    """Prompt user to approve/reject a tool action with minimal UI."""
+    """Prompt user to approve/reject a tool action with arrow key navigation."""
     description = action_request.get("description", "No description available")
     tool_name = action_request.get("name") or action_request.get("tool")
     tool_args = _extract_tool_args(action_request)
     preview = build_approval_preview(tool_name, tool_args, assistant_id) if tool_name else None
 
-    # Display tool info with header
-    console.print()
-    console.print("[bold cyan]User Approval Required:[/bold cyan]")
-    console.print()
-
+    body_lines = []
     if preview:
-        console.print(f"[bold]{preview.title}[/bold]")
-        for detail in preview.details:
-            console.print(f"[dim]{detail}[/dim]")
+        body_lines.append(f"[bold]{preview.title}[/bold]")
+        body_lines.extend(preview.details)
         if preview.error:
-            console.print(f"[red]{preview.error}[/red]")
+            body_lines.append(f"[red]{preview.error}[/red]")
+        if description and description != "No description available":
+            body_lines.append("")
+            body_lines.append(description)
     else:
-        console.print(description)
+        body_lines.append(description)
 
-    # Show diff if available
+    # Display action info first
+    console.print()
+    console.print(
+        Panel(
+            "[bold yellow]⚠️  Tool Action Requires Approval[/bold yellow]\n\n"
+            + "\n".join(body_lines),
+            border_style="yellow",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+    )
     if preview and preview.diff and not preview.error:
         console.print()
         render_diff_block(preview.diff, preview.diff_title or preview.title)
-
     console.print()
 
-    options = ["Approve", "Reject"]
-    selected = 0
+    options = ["approve", "reject"]
+    selected = 0  # Start with approve selected
 
     try:
         fd = sys.stdin.fileno()
@@ -91,70 +97,85 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
 
         try:
             tty.setraw(fd)
-            # Hide cursor during menu navigation
-            sys.stdout.write("\033[?25l")
-            sys.stdout.flush()
+
+            # Initial render flag
+            first_render = True
 
             while True:
-                # Render options (2 lines)
+                if not first_render:
+                    # Move cursor back to start of menu (up 2 lines, then to start of line)
+                    sys.stdout.write("\033[2A\r")
+
+                first_render = False
+
+                # Display options vertically with ANSI color codes
                 for i, option in enumerate(options):
-                    sys.stdout.write("\r\033[K")  # Clear line
+                    sys.stdout.write("\r\033[K")  # Clear line from cursor to end
 
                     if i == selected:
-                        # Selected: green with arrow
-                        sys.stdout.write(f"\033[32m  → {option}\033[0m\n")
+                        if option == "approve":
+                            # Green bold with filled checkbox
+                            sys.stdout.write("\033[1;32m☑ Approve\033[0m\n")
+                        else:
+                            # Red bold with filled checkbox
+                            sys.stdout.write("\033[1;31m☑ Reject\033[0m\n")
+                    elif option == "approve":
+                        # Dim with empty checkbox
+                        sys.stdout.write("\033[2m☐ Approve\033[0m\n")
                     else:
-                        # Not selected: dim, no arrow
-                        sys.stdout.write(f"\033[2m    {option}\033[0m\n")
+                        # Dim with empty checkbox
+                        sys.stdout.write("\033[2m☐ Reject\033[0m\n")
 
-                # Always return cursor to top of options after rendering
-                sys.stdout.write("\033[2A\r")
                 sys.stdout.flush()
 
                 # Read key
                 char = sys.stdin.read(1)
 
-                if char == "\x1b":  # Arrow keys
+                if char == "\x1b":  # ESC sequence (arrow keys)
                     next1 = sys.stdin.read(1)
                     next2 = sys.stdin.read(1)
                     if next1 == "[":
-                        if next2 == "B":  # Down
+                        if next2 == "B":  # Down arrow
                             selected = (selected + 1) % len(options)
-                        elif next2 == "A":  # Up
+                        elif next2 == "A":  # Up arrow
                             selected = (selected - 1) % len(options)
                 elif char == "\r" or char == "\n":  # Enter
-                    sys.stdout.write("\033[1B\n")
+                    sys.stdout.write("\033[1B\n")  # Move down past the menu
                     break
                 elif char == "\x03":  # Ctrl+C
-                    sys.stdout.write("\033[1B\n")
+                    sys.stdout.write("\033[1B\n")  # Move down past the menu
                     raise KeyboardInterrupt
-                elif char.lower() in ["y", "a"]:  # y/a for approve
+                elif char.lower() == "a":
                     selected = 0
-                    sys.stdout.write("\033[1B\n")
+                    sys.stdout.write("\033[1B\n")  # Move down past the menu
                     break
-                elif char.lower() in ["n", "r"]:  # n/r for reject
+                elif char.lower() == "r":
                     selected = 1
-                    sys.stdout.write("\033[1B\n")
+                    sys.stdout.write("\033[1B\n")  # Move down past the menu
                     break
 
         finally:
-            # Show cursor again
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     except (termios.error, AttributeError):
         # Fallback for non-Unix systems
-        console.print("  (Y)es / (N)o (default=Yes): ", end="")
-        choice = input().strip().lower()
-        selected = 1 if choice in ["n", "no", "reject"] else 0
+        console.print("  ☐ (A)pprove  (default)")
+        console.print("  ☐ (R)eject")
+        choice = input("\nChoice (A/R, default=Approve): ").strip().lower()
+        if choice == "r" or choice == "reject":
+            selected = 1
+        else:
+            selected = 0
 
     console.print()
 
-    return {"type": "approve"} if selected == 0 else {"type": "reject", "message": "User rejected"}
+    # Return decision based on selection
+    if selected == 0:
+        return {"type": "approve"}
+    return {"type": "reject", "message": "User rejected the command"}
 
 
-async def execute_task(
+def execute_task(
     user_input: str,
     agent,
     assistant_id: str | None,
@@ -163,9 +184,6 @@ async def execute_task(
 ):
     """Execute any task by passing it directly to the AI agent."""
     console.print()
-
-    # Hide cursor during agent execution
-    console.print("\033[?25l", end="")
 
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
@@ -237,7 +255,7 @@ async def execute_task(
             status.stop()
             spinner_active = False
         if not has_responded:
-            console.print("● ", style=COLORS["agent"], markup=False, end="")
+            console.print("●", style=COLORS["agent"], markup=False)
             has_responded = True
         markdown = Markdown(pending_text.rstrip())
         console.print(markdown, style=COLORS["agent"])
@@ -254,7 +272,7 @@ async def execute_task(
             status.stop()
             spinner_active = False
         if not has_responded:
-            console.print("● ", style=COLORS["agent"], markup=False, end="")
+            console.print("●", style=COLORS["agent"], markup=False)
             has_responded = True
         console.print()
         render_summary_panel(summary_buffer.strip())
@@ -265,26 +283,13 @@ async def execute_task(
     # Stream input - may need to loop if there are interrupts
     stream_input = {"messages": [{"role": "user", "content": final_input}]}
 
-    # Set up signal handler for Ctrl+C during streaming
-    cancelled = False
-    original_handler = None
-
-    def sigint_handler(signum, frame):
-        """Handle Ctrl+C during agent streaming - sets flag to stop gracefully."""
-        nonlocal cancelled
-        cancelled = True
-        # Don't kill process - just set flag to break out of streaming loop
-
-    # Install our signal handler (temporarily overrides asyncio's handler)
-    original_handler = signal.signal(signal.SIGINT, sigint_handler)
-
     try:
         while True:
             interrupt_occurred = False
             hitl_response = None
             suppress_resumed_output = False
 
-            async for chunk in agent.astream(
+            for chunk in agent.stream(
                 stream_input,
                 stream_mode=["messages", "updates"],  # Dual-mode for HITL support
                 subgraphs=True,
@@ -296,15 +301,6 @@ async def execute_task(
                     continue
 
                 namespace, current_stream_mode, data = chunk
-
-                # Check for Ctrl+C cancellation FIRST (before processing chunk)
-                if cancelled:
-                    if spinner_active:
-                        status.stop()
-                    console.print("\n[yellow]Interrupted by user[/yellow]\n")
-
-                    # Partial response already saved by durability="exit" - just return
-                    return
 
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
@@ -331,41 +327,16 @@ async def execute_task(
                                 # Auto-approve all commands without prompting
                                 decisions = []
                                 for action_request in hitl_request.get("action_requests", []):
-                                    # Stop spinner to show preview
+                                    # Show what's being auto-approved (brief, dim message)
                                     if spinner_active:
                                         status.stop()
                                         spinner_active = False
 
-                                    # Build preview to show diff for file operations
-                                    tool_name = action_request.get("name") or action_request.get("tool")
-                                    tool_args = _extract_tool_args(action_request)
-                                    preview = build_approval_preview(tool_name, tool_args, assistant_id) if tool_name else None
-
+                                    description = action_request.get("description", "tool action")
                                     console.print()
-                                    console.print("[bold green]⚡ Auto-approved:[/bold green]")
-                                    console.print()
+                                    console.print(f"  [dim]⚡ {description}[/dim]")
 
-                                    if preview:
-                                        console.print(f"[bold]{preview.title}[/bold]")
-                                        for detail in preview.details:
-                                            console.print(f"[dim]{detail}[/dim]")
-                                        if preview.error:
-                                            console.print(f"[red]{preview.error}[/red]")
-
-                                        # Show diff if available
-                                        if preview.diff and not preview.error:
-                                            console.print()
-                                            render_diff_block(preview.diff, preview.diff_title or preview.title)
-                                    else:
-                                        description = action_request.get("description", "tool action")
-                                        console.print(f"  {description}")
-
-                                    console.print()
                                     decisions.append({"type": "approve"})
-
-                                # Flush console output before resuming to prevent terminal interference
-                                sys.stdout.flush()
-                                sys.stderr.flush()
 
                                 hitl_response = {"decisions": decisions}
                                 interrupt_occurred = True
@@ -382,40 +353,16 @@ async def execute_task(
                                 spinner_active = False
 
                             # Handle human-in-the-loop approval
-                            # Deduplicate action_requests to prevent double rendering
-                            action_requests = hitl_request.get("action_requests", [])
-                            seen = set()
-                            unique_requests = []
-                            for req in action_requests:
-                                # Create a unique key based on tool name and args
-                                tool_name = req.get("name") or req.get("tool")
-                                tool_args = _extract_tool_args(req)
-                                key = (tool_name, str(tool_args))
-                                if key not in seen:
-                                    seen.add(key)
-                                    unique_requests.append(req)
-
                             decisions = []
-                            for action_request in unique_requests:
+                            for action_request in hitl_request.get("action_requests", []):
                                 decision = prompt_for_tool_approval(action_request, assistant_id)
                                 decisions.append(decision)
-
-                            # If we deduplicated, add the same decision for all duplicates
-                            if len(unique_requests) < len(action_requests):
-                                # Repeat decisions to match original request count
-                                decisions = decisions * (len(action_requests) // len(unique_requests))
 
                             suppress_resumed_output = any(
                                 decision.get("type") == "reject" for decision in decisions
                             )
                             hitl_response = {"decisions": decisions}
                             interrupt_occurred = True
-
-                            # Restart spinner for resumed execution (matches auto-approve behavior)
-                            if not suppress_resumed_output and not spinner_active:
-                                status.start()
-                                spinner_active = True
-
                             break
 
                     # Extract chunk_data from updates for todo checking
@@ -444,33 +391,22 @@ async def execute_task(
 
                     if isinstance(message, ToolMessage):
                         # Tool results are sent to the agent, not displayed to users
-                        # Exception: show ALL shell command outputs (users want to see raw shell output)
+                        # Exception: show shell command errors to help with debugging
                         tool_name = getattr(message, "name", "")
                         tool_status = getattr(message, "status", "success")
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        if tool_name == "shell":
+                        if tool_name == "shell" and tool_status != "success":
                             flush_summary_buffer()
                             flush_text_buffer(final=True)
-
-                            # Stop spinner before showing output
-                            if spinner_active:
-                                status.stop()
-                                spinner_active = False
-
-                            # Show output even if empty (indicates command ran but produced no output)
-                            console.print()
-                            if tool_content and str(tool_content).strip():
-                                # Show errors in red, successful output in normal color
-                                if tool_status != "success":
-                                    console.print(tool_content, style="red", markup=False)
-                                else:
-                                    console.print(tool_content, style=COLORS["dim"], markup=False)
-                            else:
-                                # Command ran but no output
-                                console.print("[dim](command completed with no output)[/dim]")
-                            console.print()
+                            if tool_content:
+                                if spinner_active:
+                                    status.stop()
+                                    spinner_active = False
+                                console.print()
+                                console.print(tool_content, style="red", markup=False)
+                                console.print()
                         elif tool_content and isinstance(tool_content, str):
                             stripped = tool_content.lstrip()
                             if stripped.lower().startswith("error"):
@@ -671,28 +607,36 @@ async def execute_task(
                 break
 
     except KeyboardInterrupt:
-        # Catch KeyboardInterrupt from approval menu (prompt_for_tool_approval raises it)
-        # OR from asyncio if signal handling fails
+        # User pressed Ctrl+C - clean up and exit gracefully
         if spinner_active:
             status.stop()
         console.print("\n[yellow]Interrupted by user[/yellow]\n")
-        # Don't update state - partial response already saved by durability="exit"
+
+        # Inform the agent in background thread (non-blocking)
+        def notify_agent():
+            try:
+                agent.update_state(
+                    config=config,
+                    values={
+                        "messages": [
+                            HumanMessage(
+                                content="[User interrupted the previous request with Ctrl+C]"
+                            )
+                        ]
+                    },
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=notify_agent, daemon=True).start()
         return
-
-    finally:
-        # Show cursor again and reset terminal to clean state
-        console.print("\033[?25h", end="")  # Show cursor
-        sys.stdout.flush()
-        sys.stderr.flush()
-
-        # CRITICAL: Always restore original signal handler so asyncio can handle Ctrl+C at prompt
-        if original_handler is not None:
-            signal.signal(signal.SIGINT, original_handler)
 
     if spinner_active:
         status.stop()
 
     if has_responded:
+        console.print()
+
         # Track token usage (display only via /tokens command)
         if token_tracker and (captured_input_tokens or captured_output_tokens):
             token_tracker.add(captured_input_tokens, captured_output_tokens)

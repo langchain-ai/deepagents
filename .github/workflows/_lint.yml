@@ -1,0 +1,49 @@
+# Reusable workflow for running linting
+
+name: "🧹 Linting"
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        required: true
+        type: string
+        description: "From which folder this pipeline executes"
+      python-version:
+        required: true
+        type: string
+        description: "Python version to use"
+
+permissions:
+  contents: read
+
+env:
+  WORKDIR: ${{ inputs.working-directory == '' && '.' || inputs.working-directory }}
+  RUFF_OUTPUT_FORMAT: github
+  UV_FROZEN: "true"
+
+jobs:
+  build:
+    name: "Python ${{ inputs.python-version }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v5
+
+      - name: "🐍 Set up Python ${{ inputs.python-version }} + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache-suffix: lint-${{ inputs.working-directory }}
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: "📦 Install Dependencies"
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          uv sync --group lint --group typing --group test --inexact
+
+      - name: "🔍 Run Linters"
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          make lint

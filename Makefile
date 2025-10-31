@@ -13,3 +13,6 @@ lint lint_diff lint_package lint_tests:
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check --fix $(PYTHON_FILES)
+
+test:
+	uv run pytest tests/ --cov=src/deepagents --cov-report=term-missing

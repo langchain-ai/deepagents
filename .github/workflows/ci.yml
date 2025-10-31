@@ -1,0 +1,88 @@
+# Main CI workflow for DeepAgents monorepo
+#
+# Runs on every pull request:
+# - Linting for both packages (deepagents core and deepagents-cli)
+# - Unit Tests for both packages
+#
+# Tests run in parallel for optimal performance
+
+name: "🔧 CI"
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  merge_group:
+
+# Cancel redundant workflow runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_FROZEN: "true"
+  UV_NO_SYNC: "true"
+
+jobs:
+  # Run linting on both packages in parallel
+  lint:
+    strategy:
+      matrix:
+        include:
+          # Root package: deepagents core
+          - working-directory: "."
+            python-version: "3.11"
+          # CLI package
+          - working-directory: "libs/deepagents-cli"
+            python-version: "3.11"
+      fail-fast: false
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: ${{ matrix.working-directory }}
+      python-version: ${{ matrix.python-version }}
+    secrets: inherit
+
+  # Run unit tests on both packages in parallel
+  test:
+    strategy:
+      matrix:
+        include:
+          # Root package: test on multiple Python versions
+          - working-directory: "."
+            python-version: "3.10"
+          - working-directory: "."
+            python-version: "3.11"
+          - working-directory: "."
+            python-version: "3.12"
+          - working-directory: "."
+            python-version: "3.13"
+          # CLI package: test on min and max Python versions
+          - working-directory: "libs/deepagents-cli"
+            python-version: "3.10"
+          - working-directory: "libs/deepagents-cli"
+            python-version: "3.14"
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: ${{ matrix.working-directory }}
+      python-version: ${{ matrix.python-version }}
+    secrets: inherit
+
+  # Final status check - ensures all jobs passed
+  ci_success:
+    name: "✅ CI Success"
+    needs: [lint, test]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      RESULTS_JSON: ${{ toJSON(needs.*.result) }}
+      EXIT_CODE: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && '0' || '1' }}
+    steps:
+      - name: "🎉 All Checks Passed"
+        run: |
+          echo "$RESULTS_JSON"
+          echo "Exiting with $EXIT_CODE"
+          exit $EXIT_CODE

@@ -8,21 +8,15 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
-from langgraph.types import Overwrite
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Overwrite
 
-from deepagents.middleware.filesystem import (
-    FILESYSTEM_SYSTEM_PROMPT,
-    FileData,
-    FilesystemMiddleware,
-    FilesystemState
-)
-from deepagents.backends import StoreBackend, CompositeBackend, StateBackend
-
-from deepagents.backends.utils import create_file_data, update_file_data
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
+from deepagents.middleware.filesystem import FILESYSTEM_SYSTEM_PROMPT, FileData, FilesystemMiddleware, FilesystemState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import DEFAULT_GENERAL_PURPOSE_DESCRIPTION, TASK_SYSTEM_PROMPT, TASK_TOOL_DESCRIPTION, SubAgentMiddleware
-from deepagents.backends.utils import truncate_if_too_long
+
 
 def build_composite_state_backend(runtime: ToolRuntime, *, routes):
     built_routes = {}
@@ -33,6 +27,7 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
             built_routes[prefix] = backend_or_factory
     default_state = StateBackend(runtime)
     return CompositeBackend(default=default_state, routes=built_routes)
+
 
 class TestAddMiddleware:
     def test_filesystem_middleware(self):
@@ -127,10 +122,7 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = ls_tool.invoke(
-            {
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
-                "path": "/"
-            }
+            {"runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}), "path": "/"}
         )
         assert result == ["/test.txt", "/test2.txt"]
 
@@ -381,6 +373,7 @@ class TestFilesystemMiddleware:
         )
         print(glob_search_tool)
         assert result == []
+
     def test_grep_search_shortterm_files_with_matches(self):
         state = FilesystemState(
             messages=[],
@@ -793,7 +786,7 @@ class TestFilesystemMiddleware:
 
     def test_read_file_with_long_lines_shows_continuation_markers(self):
         """Test that read_file displays long lines with continuation markers."""
-        from deepagents.backends.utils import format_read_response, create_file_data
+        from deepagents.backends.utils import create_file_data, format_read_response
 
         long_line = "z" * 15000
         content = f"first line\n{long_line}\nthird line"
@@ -810,7 +803,7 @@ class TestFilesystemMiddleware:
 
     def test_read_file_with_offset_and_long_lines(self):
         """Test that read_file with offset handles long lines correctly."""
-        from deepagents.backends.utils import format_read_response, create_file_data
+        from deepagents.backends.utils import create_file_data, format_read_response
 
         long_line = "m" * 12000
         content = f"line1\nline2\n{long_line}\nline4"
@@ -896,11 +889,7 @@ class TestFilesystemMiddleware:
         large_content = "z" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         existing_file = FileData(content=["existing"], created_at="2021-01-01", modified_at="2021-01-01")
-        command = Command(update={
-            "messages": [tool_message],
-            "files": {"/existing.txt": existing_file},
-            "custom_key": "custom_value"
-        })
+        command = Command(update={"messages": [tool_message], "files": {"/existing.txt": existing_file}, "custom_key": "custom_value"})
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
@@ -1098,13 +1087,11 @@ class TestPatchToolCallsMiddleware:
 
 class TestTruncation:
     def test_truncate_list_result_no_truncation(self):
-
         items = ["/file1.py", "/file2.py", "/file3.py"]
         result = truncate_if_too_long(items)
         assert result == items
 
     def test_truncate_list_result_with_truncation(self):
-
         # Create a list that exceeds the token limit (20000 tokens * 4 chars = 80000 chars)
         large_items = [f"/very_long_file_path_{'x' * 100}_{i}.py" for i in range(1000)]
         result = truncate_if_too_long(large_items)
@@ -1116,13 +1103,11 @@ class TestTruncation:
         assert "try being more specific" in result[-1]
 
     def test_truncate_string_result_no_truncation(self):
-
         content = "short content"
         result = truncate_if_too_long(content)
         assert result == content
 
     def test_truncate_string_result_with_truncation(self):
-
         # Create string that exceeds the token limit (20000 tokens * 4 chars = 80000 chars)
         large_content = "x" * 100000
         result = truncate_if_too_long(large_content)

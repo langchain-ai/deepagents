@@ -5,22 +5,26 @@ must follow. Backends can store files in different locations (state, filesystem,
 database, etc.) and provide a uniform interface for file operations.
 """
 
-from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable, Callable, TypeAlias, Any
-from langchain.tools import ToolRuntime
-from deepagents.backends.utils import FileInfo, GrepMatch
-
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, Protocol, TypeAlias, runtime_checkable
+
+from langchain.tools import ToolRuntime
+
+from deepagents.backends.utils import FileInfo, GrepMatch
 
 
 @dataclass
 class WriteResult:
     """Result from backend write operations.
+
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of written file, None on failure.
         files_update: State update dict for checkpoint backends, None for external storage.
             Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
             External backends set None (already persisted to disk/S3/database/etc).
+
     Examples:
         >>> # Checkpoint storage
         >>> WriteResult(path="/f.txt", files_update={"/f.txt": {...}})
@@ -38,6 +42,7 @@ class WriteResult:
 @dataclass
 class EditResult:
     """Result from backend edit operations.
+
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of edited file, None on failure.
@@ -45,6 +50,7 @@ class EditResult:
             Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
             External backends set None (already persisted to disk/S3/database/etc).
         occurrences: Number of replacements made, None on failure.
+
     Examples:
         >>> # Checkpoint storage
         >>> EditResult(path="/f.txt", files_update={"/f.txt": {...}}, occurrences=1)
@@ -58,6 +64,7 @@ class EditResult:
     path: str | None = None
     files_update: dict[str, Any] | None = None
     occurrences: int | None = None
+
 
 @runtime_checkable
 class BackendProtocol(Protocol):
@@ -90,8 +97,8 @@ class BackendProtocol(Protocol):
     def grep_raw(
         self,
         pattern: str,
-        path: Optional[str] = None,
-        glob: Optional[str] = None,
+        path: str | None = None,
+        glob: str | None = None,
     ) -> list["GrepMatch"] | str:
         """Structured search results or error string for invalid input."""
         ...
@@ -101,19 +108,19 @@ class BackendProtocol(Protocol):
         ...
 
     def write(
-            self,
-            file_path: str,
-            content: str,
+        self,
+        file_path: str,
+        content: str,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
         ...
 
     def edit(
-            self,
-            file_path: str,
-            old_string: str,
-            new_string: str,
-            replace_all: bool = False,
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
         ...

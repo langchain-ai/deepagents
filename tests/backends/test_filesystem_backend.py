@@ -1,8 +1,7 @@
-import os
 from pathlib import Path
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import WriteResult, EditResult
+from deepagents.backends.protocol import EditResult, WriteResult
 
 
 def write_file(p: Path, content: str):
@@ -192,9 +191,10 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
-    from deepagents.middleware.filesystem import FilesystemMiddleware
     from langchain.tools import ToolRuntime
     from langchain_core.messages import ToolMessage
+
+    from deepagents.middleware.filesystem import FilesystemMiddleware
 
     root = tmp_path
     rt = ToolRuntime(
@@ -206,10 +206,7 @@ def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
         config={},
     )
 
-    middleware = FilesystemMiddleware(
-        backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True),
-        tool_token_limit_before_evict=1000
-    )
+    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")

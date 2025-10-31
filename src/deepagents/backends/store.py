@@ -1,48 +1,49 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
-import re
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langchain.tools import ToolRuntime
 
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
-from deepagents.backends.protocol import WriteResult, EditResult
 
+from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.utils import (
+    FileInfo,
+    GrepMatch,
+    _glob_search_files,
     create_file_data,
-    update_file_data,
     file_data_to_string,
     format_read_response,
-    perform_string_replacement,
-    _glob_search_files,
     grep_matches_from_files,
+    perform_string_replacement,
+    update_file_data,
 )
-from deepagents.backends.utils import FileInfo, GrepMatch
 
 
 class StoreBackend:
     """Backend that stores files in LangGraph's BaseStore (persistent).
-    
+
     Uses LangGraph's Store for persistent, cross-conversation storage.
     Files are organized via namespaces and persist across all threads.
-    
+
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
+
     def __init__(self, runtime: "ToolRuntime"):
         """Initialize StoreBackend with runtime.
-        
-        Args:"""
-        self.runtime = runtime
 
+        Args:
+        """
+        self.runtime = runtime
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
-        
+
         Args:Returns:
             BaseStore instance
-        
+
         Raises:
             ValueError: If no store is available or runtime not provided
         """
@@ -51,15 +52,15 @@ class StoreBackend:
             msg = "Store is required but not available in runtime"
             raise ValueError(msg)
         return store
-    
+
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
-        
+
         Preference order:
         1) Use `self.runtime.config` if present (tests pass this explicitly).
         2) Fallback to `langgraph.config.get_config()` if available.
         3) Default to ("filesystem",).
-        
+
         If an assistant_id is available in the config metadata, return
         (assistant_id, "filesystem") to provide per-assistant isolation.
         """
@@ -88,16 +89,16 @@ class StoreBackend:
         if assistant_id:
             return (assistant_id, namespace)
         return (namespace,)
-    
+
     def _convert_store_item_to_file_data(self, store_item: Item) -> dict[str, Any]:
         """Convert a store Item to FileData format.
-        
+
         Args:
             store_item: The store Item containing file data.
-        
+
         Returns:
             FileData dict with content, created_at, and modified_at fields.
-        
+
         Raises:
             ValueError: If required fields are missing or have incorrect types.
         """
@@ -115,13 +116,13 @@ class StoreBackend:
             "created_at": store_item.value["created_at"],
             "modified_at": store_item.value["modified_at"],
         }
-    
+
     def _convert_file_data_to_store_value(self, file_data: dict[str, Any]) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
-        
+
         Args:
             file_data: The FileData to convert.
-        
+
         Returns:
             Dictionary with content, created_at, and modified_at fields.
         """
@@ -177,7 +178,7 @@ class StoreBackend:
             offset += page_size
 
         return all_items
-    
+
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
 
@@ -206,7 +207,7 @@ class StoreBackend:
                 continue
 
             # Get the relative path after the directory
-            relative = str(item.key)[len(normalized_path):]
+            relative = str(item.key)[len(normalized_path) :]
 
             # If relative path contains '/', it's in a subdirectory
             if "/" in relative:
@@ -221,58 +222,62 @@ class StoreBackend:
             except ValueError:
                 continue
             size = len("\n".join(fd.get("content", [])))
-            infos.append({
-                "path": item.key,
-                "is_dir": False,
-                "size": int(size),
-                "modified_at": fd.get("modified_at", ""),
-            })
+            infos.append(
+                {
+                    "path": item.key,
+                    "is_dir": False,
+                    "size": int(size),
+                    "modified_at": fd.get("modified_at", ""),
+                }
+            )
 
         # Add directories to the results
         for subdir in sorted(subdirs):
-            infos.append({
-                "path": subdir,
-                "is_dir": True,
-                "size": 0,
-                "modified_at": "",
-            })
+            infos.append(
+                {
+                    "path": subdir,
+                    "is_dir": True,
+                    "size": 0,
+                    "modified_at": "",
+                }
+            )
 
         infos.sort(key=lambda x: x.get("path", ""))
         return infos
 
     # Removed legacy ls() convenience to keep lean surface
-    
+
     def read(
-        self, 
+        self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers.
-        
+
         Args:
             file_path: Absolute file path
             offset: Line offset to start reading from (0-indexed)limit: Maximum number of lines to read
-        
+
         Returns:
             Formatted file content with line numbers, or error message.
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        item: Optional[Item] = store.get(namespace, file_path)
-        
+        item: Item | None = store.get(namespace, file_path)
+
         if item is None:
             return f"Error: File '{file_path}' not found"
-        
+
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
             return f"Error: {e}"
-        
+
         return format_read_response(file_data, offset, limit)
-    
+
     def write(
-        self, 
+        self,
         file_path: str,
         content: str,
     ) -> WriteResult:
@@ -281,20 +286,20 @@ class StoreBackend:
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        
+
         # Check if file exists
         existing = store.get(namespace, file_path)
         if existing is not None:
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
-        
+
         # Create new file
         file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
         return WriteResult(path=file_path, files_update=None)
-    
+
     def edit(
-        self, 
+        self,
         file_path: str,
         old_string: str,
         new_string: str,
@@ -305,38 +310,38 @@ class StoreBackend:
         """
         store = self._get_store()
         namespace = self._get_namespace()
-        
+
         # Get existing file
         item = store.get(namespace, file_path)
         if item is None:
             return EditResult(error=f"Error: File '{file_path}' not found")
-        
+
         try:
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
             return EditResult(error=f"Error: {e}")
-        
+
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)
-        
+
         if isinstance(result, str):
             return EditResult(error=result)
-        
+
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        
+
         # Update file in store
         store_value = self._convert_file_data_to_store_value(new_file_data)
         store.put(namespace, file_path, store_value)
         return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
-    
+
     # Removed legacy grep() convenience to keep lean surface
 
     def grep_raw(
         self,
         pattern: str,
         path: str = "/",
-        glob: Optional[str] = None,
+        glob: str | None = None,
     ) -> list[GrepMatch] | str:
         store = self._get_store()
         namespace = self._get_namespace()
@@ -348,7 +353,7 @@ class StoreBackend:
             except ValueError:
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
-    
+
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         store = self._get_store()
         namespace = self._get_namespace()
@@ -367,12 +372,14 @@ class StoreBackend:
         for p in paths:
             fd = files.get(p)
             size = len("\n".join(fd.get("content", []))) if fd else 0
-            infos.append({
-                "path": p,
-                "is_dir": False,
-                "size": int(size),
-                "modified_at": fd.get("modified_at", "") if fd else "",
-            })
+            infos.append(
+                {
+                    "path": p,
+                    "is_dir": False,
+                    "size": int(size),
+                    "modified_at": fd.get("modified_at", "") if fd else "",
+                }
+            )
         return infos
 
 

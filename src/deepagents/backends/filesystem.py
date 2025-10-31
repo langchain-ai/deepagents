@@ -7,23 +7,23 @@ Security and search upgrades:
   and optional glob include filtering, while preserving virtual path behavior
 """
 
+import json
 import os
 import re
-import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+
+import wcmatch.glob as wcglob
+
+from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.utils import FileInfo, GrepMatch
 
 from .utils import (
     check_empty_content,
     format_content_with_line_numbers,
     perform_string_replacement,
 )
-import wcmatch.glob as wcglob
-from deepagents.backends.utils import FileInfo, GrepMatch
-from deepagents.backends.protocol import WriteResult, EditResult
-
 
 
 class FilesystemBackend:
@@ -35,13 +35,13 @@ class FilesystemBackend:
     """
 
     def __init__(
-        self, 
-        root_dir: Optional[str | Path] = None,
+        self,
+        root_dir: str | Path | None = None,
         virtual_mode: bool = False,
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
-        
+
         Args:
             root_dir: Optional root directory for file operations. If provided,
                      all file paths will be resolved relative to this directory.
@@ -118,32 +118,36 @@ class FilesystemBackend:
                     if is_file:
                         try:
                             st = child_path.stat()
-                            results.append({
-                                "path": abs_path,
-                                "is_dir": False,
-                                "size": int(st.st_size),
-                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
-                            })
+                            results.append(
+                                {
+                                    "path": abs_path,
+                                    "is_dir": False,
+                                    "size": int(st.st_size),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                }
+                            )
                         except OSError:
                             results.append({"path": abs_path, "is_dir": False})
                     elif is_dir:
                         try:
                             st = child_path.stat()
-                            results.append({
-                                "path": abs_path + "/",
-                                "is_dir": True,
-                                "size": 0,
-                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
-                            })
+                            results.append(
+                                {
+                                    "path": abs_path + "/",
+                                    "is_dir": True,
+                                    "size": 0,
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                }
+                            )
                         except OSError:
                             results.append({"path": abs_path + "/", "is_dir": True})
                 else:
                     # Virtual mode: strip cwd prefix
                     if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str):]
+                        relative_path = abs_path[len(cwd_str) :]
                     elif abs_path.startswith(str(self.cwd)):
                         # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)):].lstrip("/")
+                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
                     else:
                         # Path is outside cwd, return as-is or skip
                         relative_path = abs_path
@@ -153,23 +157,27 @@ class FilesystemBackend:
                     if is_file:
                         try:
                             st = child_path.stat()
-                            results.append({
-                                "path": virt_path,
-                                "is_dir": False,
-                                "size": int(st.st_size),
-                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
-                            })
+                            results.append(
+                                {
+                                    "path": virt_path,
+                                    "is_dir": False,
+                                    "size": int(st.st_size),
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                }
+                            )
                         except OSError:
                             results.append({"path": virt_path, "is_dir": False})
                     elif is_dir:
                         try:
                             st = child_path.stat()
-                            results.append({
-                                "path": virt_path + "/",
-                                "is_dir": True,
-                                "size": 0,
-                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
-                            })
+                            results.append(
+                                {
+                                    "path": virt_path + "/",
+                                    "is_dir": True,
+                                    "size": 0,
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                                }
+                            )
                         except OSError:
                             results.append({"path": virt_path + "/", "is_dir": True})
         except (OSError, PermissionError):
@@ -180,15 +188,15 @@ class FilesystemBackend:
         return results
 
     # Removed legacy ls() convenience to keep lean surface
-    
+
     def read(
-        self, 
+        self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers.
-        
+
         Args:
             file_path: Absolute or relative file path
             offset: Line offset to start reading from (0-indexed)
@@ -196,10 +204,10 @@ class FilesystemBackend:
             Formatted file content with line numbers, or error message.
         """
         resolved_path = self._resolve_path(file_path)
-        
+
         if not resolved_path.exists() or not resolved_path.is_file():
             return f"Error: File '{file_path}' not found"
-        
+
         try:
             # Open with O_NOFOLLOW where available to avoid symlink traversal
             try:
@@ -208,27 +216,27 @@ class FilesystemBackend:
                     content = f.read()
             except OSError:
                 # Fallback to normal open if O_NOFOLLOW unsupported or fails
-                with open(resolved_path, "r", encoding="utf-8") as f:
+                with open(resolved_path, encoding="utf-8") as f:
                     content = f.read()
-            
+
             empty_msg = check_empty_content(content)
             if empty_msg:
                 return empty_msg
-            
+
             lines = content.splitlines()
             start_idx = offset
             end_idx = min(start_idx + limit, len(lines))
-            
+
             if start_idx >= len(lines):
                 return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
-            
+
             selected_lines = lines[start_idx:end_idx]
             return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
         except (OSError, UnicodeDecodeError) as e:
             return f"Error reading file '{file_path}': {e}"
-    
+
     def write(
-        self, 
+        self,
         file_path: str,
         content: str,
     ) -> WriteResult:
@@ -236,10 +244,10 @@ class FilesystemBackend:
         Returns WriteResult. External storage sets files_update=None.
         """
         resolved_path = self._resolve_path(file_path)
-        
+
         if resolved_path.exists():
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
-        
+
         try:
             # Create parent directories if needed
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
@@ -251,13 +259,13 @@ class FilesystemBackend:
             fd = os.open(resolved_path, flags, 0o644)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
-            
+
             return WriteResult(path=file_path, files_update=None)
         except (OSError, UnicodeEncodeError) as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
-    
+
     def edit(
-        self, 
+        self,
         file_path: str,
         old_string: str,
         new_string: str,
@@ -267,10 +275,10 @@ class FilesystemBackend:
         Returns EditResult. External storage sets files_update=None.
         """
         resolved_path = self._resolve_path(file_path)
-        
+
         if not resolved_path.exists() or not resolved_path.is_file():
             return EditResult(error=f"Error: File '{file_path}' not found")
-        
+
         try:
             # Read securely
             try:
@@ -278,16 +286,16 @@ class FilesystemBackend:
                 with os.fdopen(fd, "r", encoding="utf-8") as f:
                     content = f.read()
             except OSError:
-                with open(resolved_path, "r", encoding="utf-8") as f:
+                with open(resolved_path, encoding="utf-8") as f:
                     content = f.read()
-            
+
             result = perform_string_replacement(content, old_string, new_string, replace_all)
-            
+
             if isinstance(result, str):
                 return EditResult(error=result)
-            
+
             new_content, occurrences = result
-            
+
             # Write securely
             flags = os.O_WRONLY | os.O_TRUNC
             if hasattr(os, "O_NOFOLLOW"):
@@ -295,18 +303,18 @@ class FilesystemBackend:
             fd = os.open(resolved_path, flags)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(new_content)
-            
+
             return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
-    
+
     # Removed legacy grep() convenience to keep lean surface
 
     def grep_raw(
         self,
         pattern: str,
-        path: Optional[str] = None,
-        glob: Optional[str] = None,
+        path: str | None = None,
+        glob: str | None = None,
     ) -> list[GrepMatch] | str:
         # Validate regex
         try:
@@ -334,9 +342,7 @@ class FilesystemBackend:
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return matches
 
-    def _ripgrep_search(
-        self, pattern: str, base_full: Path, include_glob: Optional[str]
-    ) -> Optional[dict[str, list[tuple[int, str]]]]:
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:
         cmd = ["rg", "--json"]
         if include_glob:
             cmd.extend(["--glob", include_glob])
@@ -381,9 +387,7 @@ class FilesystemBackend:
 
         return results
 
-    def _python_search(
-        self, pattern: str, base_full: Path, include_glob: Optional[str]
-    ) -> dict[str, list[tuple[int, str]]]:
+    def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:
         try:
             regex = re.compile(pattern)
         except re.error:
@@ -418,7 +422,7 @@ class FilesystemBackend:
                     results.setdefault(virt_path, []).append((line_num, line))
 
         return results
-    
+
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         if pattern.startswith("/"):
             pattern = pattern.lstrip("/")
@@ -441,12 +445,14 @@ class FilesystemBackend:
                 if not self.virtual_mode:
                     try:
                         st = matched_path.stat()
-                        results.append({
-                            "path": abs_path,
-                            "is_dir": False,
-                            "size": int(st.st_size),
-                            "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
-                        })
+                        results.append(
+                            {
+                                "path": abs_path,
+                                "is_dir": False,
+                                "size": int(st.st_size),
+                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                            }
+                        )
                     except OSError:
                         results.append({"path": abs_path, "is_dir": False})
                 else:
@@ -454,20 +460,22 @@ class FilesystemBackend:
                     if not cwd_str.endswith("/"):
                         cwd_str += "/"
                     if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str):]
+                        relative_path = abs_path[len(cwd_str) :]
                     elif abs_path.startswith(str(self.cwd)):
-                        relative_path = abs_path[len(str(self.cwd)):].lstrip("/")
+                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
                     else:
                         relative_path = abs_path
                     virt = "/" + relative_path
                     try:
                         st = matched_path.stat()
-                        results.append({
-                            "path": virt,
-                            "is_dir": False,
-                            "size": int(st.st_size),
-                            "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
-                        })
+                        results.append(
+                            {
+                                "path": virt,
+                                "is_dir": False,
+                                "size": int(st.st_size),
+                                "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
+                            }
+                        )
                     except OSError:
                         results.append({"path": virt, "is_dir": False})
         except (OSError, ValueError):

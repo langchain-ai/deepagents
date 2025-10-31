@@ -7,13 +7,13 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
     WRITE_FILE_TOOL_DESCRIPTION,
     FileData,
     FilesystemMiddleware,
 )
-from deepagents.backends import StateBackend, StoreBackend, CompositeBackend
 from tests.utils import ResearchMiddleware, get_la_liga_standings, get_nba_standings, get_nfl_standings, get_premier_league_standings
 
 
@@ -44,7 +44,7 @@ class TestFilesystem:
         assert "pokemon" in response["messages"][1].text.lower()
 
     def test_filesystem_system_prompt_override_with_composite_backend(self):
-        backend = (lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}))
+        backend = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
@@ -368,7 +368,9 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Write a haiku about Charmander to the memories directory in /charmander.txt, use the word 'fiery'")],
+                "messages": [
+                    HumanMessage(content="Write a haiku about Charmander to the memories directory in /charmander.txt, use the word 'fiery'")
+                ],
                 "files": {},
             },
             config=config,
@@ -473,7 +475,9 @@ class TestFilesystem:
         response = agent.invoke(
             {
                 "messages": [
-                    HumanMessage(content="Edit the file about charmander in the memories directory, to replace all instances of the word 'fire' with 'embers'")
+                    HumanMessage(
+                        content="Edit the file about charmander in the memories directory, to replace all instances of the word 'fire' with 'embers'"
+                    )
                 ],
                 "files": {},
             },
@@ -502,7 +506,7 @@ class TestFilesystem:
     def test_longterm_memory_multiple_tools_deepagent(self):
         checkpointer = MemorySaver()
         store = InMemoryStore()
-        backend = (lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}))
+        backend = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
         agent = create_deep_agent(backend=backend, checkpointer=checkpointer, store=store)
         assert_longterm_mem_tools(agent, store)
 

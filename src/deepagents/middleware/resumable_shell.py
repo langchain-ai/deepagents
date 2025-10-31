@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, cast
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 from langchain.agents.middleware.shell_tool import (
     ShellToolMiddleware,
+    ShellToolState,
     _PersistentShellTool,
     _SessionResources,
-    ShellToolState,
 )
 from langchain.agents.middleware.types import AgentState
-from langchain_core.messages import ToolMessage
 from langchain.tools.tool_node import ToolCallRequest
+from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 
@@ -78,7 +79,7 @@ class ResumableShellToolMiddleware(ShellToolMiddleware):
             return resources
 
         new_resources = self._create_resources()
-        cast(dict[str, Any], state)["shell_session_resources"] = new_resources
+        cast("dict[str, Any]", state)["shell_session_resources"] = new_resources
         return new_resources
 
 

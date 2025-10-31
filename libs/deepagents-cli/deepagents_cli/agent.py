@@ -13,6 +13,7 @@ from langchain.agents.middleware import HostExecutionPolicy
 from langgraph.checkpoint.memory import InMemorySaver
 
 from .config import COLORS, config, console, get_default_coding_instructions
+from .skills import discover_skills, format_skills_section
 
 
 def list_agents():
@@ -85,7 +86,11 @@ def get_system_prompt() -> str:
     Returns:
         The system prompt string (without agent.md content)
     """
-    return f"""### Current Working Directory
+    # Discover available skills
+    skills = discover_skills()
+    skills_section = format_skills_section(skills)
+    
+    prompt = f"""### Current Working Directory
 
 The filesystem backend is currently operating in: `{Path.cwd()}`
 
@@ -98,7 +103,13 @@ Your long-term memory is stored in /memories/ and persists across sessions.
 - When starting a task → Check if you have guides or examples in /memories/
 - At the beginning of new sessions → Consider checking `ls /memories/` to see what context you have
 
-Base your answers on saved knowledge (from /memories/) when available, supplemented by general knowledge.
+Base your answers on saved knowledge (from /memories/) when available, supplemented by general knowledge."""
+    
+    # Add skills section if any skills were found
+    if skills_section:
+        prompt += f"\n\n{skills_section}"
+    
+    return prompt + """
 
 ### Human-in-the-Loop Tool Approval
 

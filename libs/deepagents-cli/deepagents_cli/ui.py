@@ -166,7 +166,7 @@ class TokenTracker:
 
     def __init__(self):
         self.baseline_context = 0  # Baseline system context (system + agent.md + tools)
-        self.current_context = 0   # Total context including messages
+        self.current_context = 0  # Total context including messages
         self.last_output = 0
 
     def set_baseline(self, tokens: int):

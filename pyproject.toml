@@ -42,11 +42,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["libs"]
 include = ["deepagents*"]
 
 [tool.setuptools.package-dir]
-"" = "src"
+"" = "libs"
 
 [tool.setuptools.package-data]
 "*" = ["py.typed", "*.md"]

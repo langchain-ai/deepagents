@@ -4,7 +4,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from deepagents.graph import create_deep_agent
-from tests.utils import assert_all_deepagent_qualities, get_soccer_scores, get_weather, sample_tool
+
+from ..utils import assert_all_deepagent_qualities, get_soccer_scores, get_weather, sample_tool
 
 SAMPLE_TOOL_CONFIG = {
     "sample_tool": True,

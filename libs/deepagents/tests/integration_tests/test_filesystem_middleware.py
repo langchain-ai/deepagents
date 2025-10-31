@@ -14,7 +14,8 @@ from deepagents.middleware.filesystem import (
     FileData,
     FilesystemMiddleware,
 )
-from tests.utils import ResearchMiddleware, get_la_liga_standings, get_nba_standings, get_nfl_standings, get_premier_league_standings
+
+from ..utils import ResearchMiddleware, get_la_liga_standings, get_nba_standings, get_nfl_standings, get_premier_league_standings
 
 
 def build_composite_state_backend(runtime, *, routes):

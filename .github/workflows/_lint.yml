@@ -41,7 +41,7 @@ jobs:
       - name: "📦 Install Dependencies"
         working-directory: ${{ inputs.working-directory }}
         run: |
-          uv sync --group lint --group typing --group test --inexact
+          uv sync --group test --inexact
 
       - name: "🔍 Run Linters"
         working-directory: ${{ inputs.working-directory }}

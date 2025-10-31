@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -267,6 +268,14 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         }
     )
 
+    # Calculate rows to reserve for the autocomplete menu so it stays visible.
+    try:
+        terminal_height = shutil.get_terminal_size().lines
+    except OSError:
+        terminal_height = 24
+    # Keep a small cushion and cap it to avoid eating the whole screen.
+    reserve_rows = max(4, min(10, max(terminal_height // 4, 1)))
+
     # Create the session
     session = PromptSession(
         message=HTML(f'<style fg="{COLORS["user"]}">></style> '),
@@ -278,7 +287,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         complete_while_typing=True,  # Show completions as you type
         mouse_support=False,
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
-        reserve_space_for_menu=0,  # Don't reserve extra vertical space
+        reserve_space_for_menu=reserve_rows,
         bottom_toolbar=get_bottom_toolbar(session_state),  # Status toolbar
         style=toolbar_style,
     )

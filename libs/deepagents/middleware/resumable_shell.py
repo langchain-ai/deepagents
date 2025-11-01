@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -30,7 +31,17 @@ class ResumableShellToolMiddleware(ShellToolMiddleware):
     touches the shell tool again and only performs shutdown when a session is
     actually active. This keeps behaviour identical for uninterrupted runs while
     allowing HITL pauses to succeed.
+    
+    On Windows, it uses PowerShell instead of bash for better compatibility.
     """
+
+    def __init__(self, *args, **kwargs):
+        """Initialize with platform-appropriate shell."""
+        # On Windows, use PowerShell; on Unix, use bash (default)
+        if sys.platform == 'win32' and 'shell_command' not in kwargs:
+            # Use PowerShell on Windows
+            kwargs['shell_command'] = 'powershell.exe'
+        super().__init__(*args, **kwargs)
 
     def wrap_tool_call(
         self,

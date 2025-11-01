@@ -25,6 +25,21 @@ uv add deepagents
 poetry add deepagents
 ```
 
+### Windows Installation
+
+DeepAgents is fully compatible with Windows 11. The CLI uses platform-specific terminal handling:
+
+- **Windows**: Uses `msvcrt` module for keyboard input (built-in)
+- **Unix/Linux/macOS**: Uses `termios` and `tty` modules
+
+No additional dependencies are required for Windows support.
+
+**Note**: If you encounter issues with the `langchain` package versions, ensure you have the latest versions:
+
+```bash
+pip install --upgrade langchain langchain-anthropic langchain-core
+```
+
 ## Usage
 
 (To run the example below, you will need to `pip install tavily-python`).

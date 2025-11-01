@@ -39,7 +39,6 @@ class ResumableShellToolMiddleware(ShellToolMiddleware):
         """Initialize with platform-appropriate shell."""
         # On Windows, use PowerShell; on Unix, use bash (default)
         if sys.platform == 'win32' and 'shell_command' not in kwargs:
-            # Use PowerShell on Windows
             kwargs['shell_command'] = 'powershell.exe'
         super().__init__(*args, **kwargs)
 

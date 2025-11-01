@@ -6,6 +6,7 @@ from pathlib import Path
 
 import dotenv
 from rich.console import Console
+from langchain_core.language_models import BaseChatModel
 
 dotenv.load_dotenv()
 
@@ -21,19 +22,14 @@ COLORS = {
 
 # ASCII art banner
 DEEP_AGENTS_ASCII = """
- ██████╗  ███████╗ ███████╗ ██████╗
- ██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
- ██║  ██║ █████╗   █████╗   ██████╔╝
- ██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝
- ██████╔╝ ███████╗ ███████╗ ██║
- ╚═════╝  ╚══════╝ ╚══════╝ ╚═╝
-
-  █████╗   ██████╗  ███████╗ ███╗   ██╗ ████████╗ ███████╗
- ██╔══██╗ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝ ██╔════╝
- ███████║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║    ███████╗
- ██╔══██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║    ╚════██║
- ██║  ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║    ███████║
- ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
+▖       ▄▖▌   ▘                                                     ▄▓▓▄ 
+▌ ▀▌▛▌▛▌▌ ▛▌▀▌▌▛▌                                                  ▓•███▙ 
+▙▖█▌▌▌▙▌▙▖▌▌█▌▌▌▌                                                  ░▀▀████▙▖
+▄▄▄▄  ▄▌▄▄▄▄▄ ▗▄▄▄▄▄ ▄▄▄▄▄     ▄▄    ▄▄▄  ▗▄▄▄▄▄ ▄▄   ▄▄▄▄▄▄▄▄ ▄▄▄▄   █▓████▙▖
+█   ▀▄ █      █      █   ▀█    ██  ▄▀   ▀ █      █▀▄  █   █   █▀   ▀  ▝█▓█████▙
+█    █ █▄▄▄▄▄ █▄▄▄▄▄ █▄▄▄█▀   █  █ █   ▄▄ █▄▄▄▄▄ █ █▄ █   █   ▀█▄▄▄    ░▜█▓████▙ 
+█    █ █      █      █        █▄▄█ █    █ █      █  █ █   █       ▀█    ░█▀█▛▀▀▜▙▄ 
+█▄▄▄▀  ▜▄▄▄▄▄ ▜▄▄▄▄▄ █       █    █ ▀▄▄▄▀ ▜▄▄▄▄▄ █   ██   █   ▀▄▄▄█▀  ░▀░▀▒▛░░  ▝▀▘
 """
 
 # Interactive commands
@@ -79,7 +75,8 @@ console = Console(highlight=False)
 class SessionState:
     """Holds mutable session state (auto-approve mode, etc)."""
 
-    def __init__(self, auto_approve: bool = False):
+    def __init__(self, model: BaseChatModel | None = None, auto_approve: bool = False):
+        self.model = model
         self.auto_approve = auto_approve
 
     def toggle_auto_approve(self) -> bool:
@@ -114,7 +111,6 @@ def create_model():
         from langchain_openai import ChatOpenAI
 
         model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-        console.print(f"[dim]Using OpenAI model: {model_name}[/dim]")
         return ChatOpenAI(
             model=model_name,
             temperature=0.7,
@@ -123,7 +119,6 @@ def create_model():
         from langchain_anthropic import ChatAnthropic
 
         model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        console.print(f"[dim]Using Anthropic model: {model_name}[/dim]")
         return ChatAnthropic(
             model_name=model_name,
             max_tokens=20000,

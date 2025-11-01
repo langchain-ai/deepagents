@@ -244,6 +244,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
         bottom_toolbar=get_bottom_toolbar(session_state),  # Persistent status bar at bottom
         style=toolbar_style,  # Apply toolbar styling
+        reserve_space_for_menu=0,  # Prevent extra vertical space
     )
 
     return session

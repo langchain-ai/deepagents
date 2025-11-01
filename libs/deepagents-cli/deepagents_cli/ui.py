@@ -375,8 +375,12 @@ def show_interactive_help():
         "  Alt+Enter       Insert newline (Option+Enter on Mac, or ESC then Enter)",
         style=COLORS["dim"],
     )
+    
+    # Platform-appropriate editor name
+    import sys
+    default_editor = "notepad" if sys.platform == 'win32' else "nano"
     console.print(
-        "  Ctrl+E          Open in external editor (nano by default)", style=COLORS["dim"]
+        f"  Ctrl+E          Open in external editor ({default_editor} by default)", style=COLORS["dim"]
     )
     console.print("  Ctrl+T          Toggle auto-approve mode", style=COLORS["dim"])
     console.print("  Arrow keys      Navigate input", style=COLORS["dim"])

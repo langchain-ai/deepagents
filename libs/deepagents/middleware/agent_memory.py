@@ -95,7 +95,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
     Example:
         ```python
         from deepagents.middleware.agent_memory import AgentMemoryMiddleware
-        from deepagents.memory.backends import FilesystemBackend
+        from deepagents.backends.filesystem import FilesystemBackend
         from pathlib import Path
 
         # Set up backend pointing to agent's directory
@@ -103,7 +103,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
         backend = FilesystemBackend(root_dir=agent_dir)
 
         # Create middleware
-        middleware = AgentMemoryMiddleware(backend=backend)
+        middleware = AgentMemoryMiddleware(backend=backend, memory_path="/memory/")
         ```
     """
 
@@ -120,6 +120,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
 
         Args:
             backend: Backend to use for loading the agent memory file.
+            memory_path: Path prefix for memory files.
             system_prompt_template: Optional custom template for injecting
                 agent memory into system prompt.
         """
@@ -136,7 +137,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
 
         Args:
             state: Current agent state.
-            handler: Handler function to call after loading memory.
+            runtime: Runtime context.
 
         Returns:
             Updated state with agent_memory populated.
@@ -155,7 +156,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
 
         Args:
             state: Current agent state.
-            handler: Handler function to call after loading memory.
+            runtime: Runtime context.
 
         Returns:
             Updated state with agent_memory populated.
@@ -224,3 +225,4 @@ class AgentMemoryMiddleware(AgentMiddleware):
         )
 
         return await handler(request)
+

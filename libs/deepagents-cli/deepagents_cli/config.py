@@ -102,13 +102,14 @@ def create_model():
     """Create the appropriate model based on available API keys.
 
     Returns:
-        ChatModel instance (OpenAI or Anthropic)
+        ChatModel instance (OpenAI, Anthropic, or Ollama)
 
     Raises:
-        SystemExit if no API key is configured
+        SystemExit if no API key or Ollama configuration is set
     """
     openai_key = os.environ.get("OPENAI_API_KEY")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    ollama_base_url = os.environ.get("OLLAMA_BASE_URL")
 
     if openai_key:
         from langchain_openai import ChatOpenAI
@@ -128,11 +129,27 @@ def create_model():
             model_name=model_name,
             max_tokens=20000,
         )
-    console.print("[bold red]Error:[/bold red] No API key configured.")
+    if ollama_base_url:
+        from langchain_ollama import ChatOllama
+
+        model_name = os.environ.get("OLLAMA_MODEL", "llama2")
+        console.print(f"[dim]Using Ollama model: {model_name} at {ollama_base_url}[/dim]")
+        return ChatOllama(
+            model=model_name,
+            base_url=ollama_base_url,
+            temperature=0.7,
+        )
+    console.print("[bold red]Error:[/bold red] No API key or Ollama configuration found.")
     console.print("\nPlease set one of the following environment variables:")
     console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
     console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
+    console.print("  - OLLAMA_BASE_URL    (for local Ollama models, e.g., http://localhost:11434)")
+    console.print("\nFor Ollama, also set:")
+    console.print("  - OLLAMA_MODEL       (optional, defaults to llama2)")
     console.print("\nExample:")
     console.print("  export OPENAI_API_KEY=your_api_key_here")
+    console.print("  # or for Ollama:")
+    console.print("  export OLLAMA_BASE_URL=http://localhost:11434")
+    console.print("  export OLLAMA_MODEL=qwen2.5-coder:14b")
     console.print("\nOr add it to your .env file.")
     sys.exit(1)

@@ -115,6 +115,21 @@ agent = create_deep_agent(
 )
 ```
 
+#### Using Local Models with Ollama
+
+Deep Agents supports local LLM models via [Ollama](https://ollama.ai/). See [OLLAMA.md](OLLAMA.md) for detailed setup instructions.
+
+```python
+from langchain_ollama import ChatOllama
+from deepagents import create_deep_agent
+
+model = ChatOllama(
+    model="qwen2.5-coder:14b",
+    base_url="http://localhost:11434",
+)
+agent = create_deep_agent(model=model)
+```
+
 ### `system_prompt`
 Deep Agents come with a built-in system prompt. This is relatively detailed prompt that is heavily based on and inspired by [attempts](https://github.com/kn1026/cc/blob/main/claudecode.md) to [replicate](https://github.com/asgeirtj/system_prompts_leaks/blob/main/Anthropic/claude-code.md)
 Claude Code's system prompt. It was made more general purpose than Claude Code's system prompt. The default prompt contains detailed instructions for how to use the built-in planning tool, file system tools, and sub agents.

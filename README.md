@@ -163,6 +163,31 @@ agent = create_deep_agent(
 )
 ```
 
+### `use_claude_native_text_editor`
+
+By default, deepagents provides six separate file tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, and `grep`. If you prefer to use Claude's native `text_editor_20250728` tool instead, you can set `use_claude_native_text_editor=True`.
+
+Claude's native text editor provides a single command-based tool `str_replace_based_edit_tool` with four commands:
+- **view** - View file contents or directory listings (with optional line ranges)
+- **str_replace** - Replace all occurrences of text
+- **create** - Create or overwrite files
+- **insert** - Insert text at specific line numbers
+
+This matches Claude's official specification exactly, which can be beneficial for consistency with Claude's training. However, note that the native tool does not include the advanced search capabilities (`glob` and `grep`) that the default FilesystemMiddleware provides.
+
+```python
+from deepagents import create_deep_agent
+
+# Use Claude's native text editor
+agent = create_deep_agent(
+    use_claude_native_text_editor=True,
+)
+```
+
+**When to use each:**
+- **Default (False)**: Best for general purpose use, especially when the agent needs to search and explore codebases. Provides more granular control and advanced search.
+- **Native (True)**: Best for compatibility with Claude's native tool training and when you want the exact Claude text editor experience.
+
 ### `middleware`
 `create_deep_agent` is implemented with middleware that can be customized. You can provide additional middleware to extend functionality, add tools, or implement custom hooks. 
 

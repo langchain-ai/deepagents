@@ -18,6 +18,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware.claude_text_editor import ClaudeTextEditorMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
@@ -53,11 +54,12 @@ def create_deep_agent(
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    use_claude_native_text_editor: bool = False,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
     This agent will by default have access to a tool to write todos (write_todos),
-    six file editing tools: write_file, ls, read_file, edit_file, glob_search, grep_search,
+    file editing tools (either six separate tools or Claude's native text editor),
     and a tool to call subagents.
 
     Args:
@@ -87,6 +89,10 @@ def create_deep_agent(
         debug: Whether to enable debug mode. Passed through to create_agent.
         name: The name of the agent. Passed through to create_agent.
         cache: The cache to use for the agent. Passed through to create_agent.
+        use_claude_native_text_editor: If True, uses Claude's native str_replace_based_edit_tool
+            instead of the standard six file tools (ls, read_file, write_file, edit_file,
+            glob, grep). The native tool provides a command-based interface matching Claude's
+            official text_editor_20250728 specification. Default is False.
 
     Returns:
         A configured deep agent.
@@ -94,16 +100,26 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
 
+    # Choose file middleware based on use_claude_native_text_editor flag
+    file_middleware = (
+        ClaudeTextEditorMiddleware(backend=backend) if use_claude_native_text_editor else FilesystemMiddleware(backend=backend)
+    )
+
+    # Subagents should use the same file middleware as the parent
+    subagent_file_middleware = (
+        ClaudeTextEditorMiddleware(backend=backend) if use_claude_native_text_editor else FilesystemMiddleware(backend=backend)
+    )
+
     deepagent_middleware = [
         TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
+        file_middleware,
         SubAgentMiddleware(
             default_model=model,
             default_tools=tools,
             subagents=subagents if subagents is not None else [],
             default_middleware=[
                 TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend),
+                subagent_file_middleware,
                 SummarizationMiddleware(
                     model=model,
                     max_tokens_before_summary=170000,

@@ -25,10 +25,10 @@ cli/
 ### `main.py` - Entry Point & Main Loop
 - **Purpose**: CLI entry point, argument parsing, main interactive loop
 - **Key Functions**:
-  - `cli_main()` - Console script entry point (called when you run `deepagents`)
-  - `main()` - Async main function that orchestrates agent creation and CLI
-  - `simple_cli()` - Main interactive loop handling user input
-  - `parse_args()` - Command-line argument parsing
+  - `cli_main()` - Console script entry point with model switching loop (called when you run `deepagents`)
+  - `main()` - Async main function that orchestrates agent creation and CLI (returns dict for special actions)
+  - `simple_cli()` - Main interactive loop handling user input (returns dict for model switching)
+  - `parse_args()` - Command-line argument parsing (dual parser for prompts vs commands)
   - `check_cli_dependencies()` - Validates required packages are installed
 
 ### `config.py` - Configuration & Constants
@@ -36,11 +36,14 @@ cli/
 - **Key Exports**:
   - `COLORS` - Color scheme for terminal output
   - `DEEP_AGENTS_ASCII` - ASCII art banner
-  - `COMMANDS` - Available slash commands
+  - `COMMANDS` - Available slash commands (including `/model`)
   - `COMMON_BASH_COMMANDS` - Autocomplete options for bash commands
   - `console` - Rich Console instance
-  - `create_model()` - Creates OpenAI or Anthropic model based on API keys
+  - `SessionState` - Holds mutable session state including `preferred_provider`
+  - `create_model(force_provider)` - Creates OpenAI or Anthropic model with optional provider override
   - `get_default_coding_instructions()` - Loads default agent prompt
+  - `load_agent_config(agent_name)` - Load agent configuration from config.json
+  - `save_agent_config(agent_name, config_data)` - Save agent configuration to config.json
 
 ### `tools.py` - Custom Agent Tools
 - **Purpose**: Additional tools for the agent beyond built-in filesystem operations
@@ -73,9 +76,9 @@ cli/
     - External editor support (Ctrl+E)
 
 ### `commands.py` - Command Handlers
-- **Purpose**: Handle slash commands (`/help`, `/clear`, etc.) and bash execution
+- **Purpose**: Handle slash commands (`/help`, `/clear`, `/model`, etc.) and bash execution
 - **Key Functions**:
-  - `handle_command()` - Route and execute slash commands
+  - `handle_command()` - Route and execute slash commands (returns dict for model switching)
   - `execute_bash_command()` - Execute bash commands prefixed with `!`
 
 ### `execution.py` - Task Execution & Streaming
@@ -133,11 +136,22 @@ Type `@filename` and press Tab to autocomplete and inject file content into your
 ### Interactive Commands
 - `/help` - Show help
 - `/clear` - Clear screen and reset conversation
+- `/model [openai|anthropic]` - Switch between OpenAI and Anthropic models
 - `/tokens` - Show token usage
 - `/quit` or `/exit` - Exit the CLI
 
 ### Bash Commands
 Type `!command` to execute bash commands directly (e.g., `!ls`, `!git status`)
+
+### Model Switching
+Switch between OpenAI and Anthropic models during your session:
+- Use `/model openai` to switch to OpenAI (gpt-5-mini by default)
+- Use `/model anthropic` to switch to Anthropic (claude-sonnet-4-5 by default)
+- The agent will be recreated with the new model, clearing the conversation history
+- Your model choice is persisted in `~/.deepagents/AGENT_NAME/config.json` and will be used in future sessions
+- Override default models with environment variables:
+  - `OPENAI_MODEL` - Set custom OpenAI model (default: gpt-5-mini)
+  - `ANTHROPIC_MODEL` - Set custom Anthropic model (default: claude-sonnet-4-5-20250929)
 
 ### Todo List Tracking
 The agent can create and update a visual todo list for multi-step tasks.
@@ -163,6 +177,7 @@ Each agent stores its state in `~/.deepagents/AGENT_NAME/`:
 - `agent.md` - Agent's custom instructions (long-term memory)
 - `memories/` - Additional context files
 - `history` - Command history
+- `config.json` - Agent configuration (preferred model provider, etc.)
 
 ## Development
 

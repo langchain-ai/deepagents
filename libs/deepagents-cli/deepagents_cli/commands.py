@@ -9,9 +9,10 @@ from .config import COLORS, DEEP_AGENTS_ASCII, console
 from .ui import TokenTracker, show_interactive_help
 
 
-def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bool:
-    """Handle slash commands. Returns 'exit' to exit, True if handled, False to pass to agent."""
-    cmd = command.lower().strip().lstrip("/")
+def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bool | dict:
+    """Handle slash commands. Returns 'exit' to exit, True if handled, dict for special actions."""
+    cmd_parts = command.lower().strip().lstrip("/").split()
+    cmd = cmd_parts[0] if cmd_parts else ""
 
     if cmd in ["quit", "exit", "q"]:
         return "exit"
@@ -41,13 +42,30 @@ def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bo
         token_tracker.display_session()
         return True
 
+    if cmd == "model":
+        if len(cmd_parts) < 2:
+            console.print()
+            console.print("[yellow]Usage: /model [openai|anthropic][/yellow]")
+            console.print("[dim]Switch between OpenAI and Anthropic models.[/dim]")
+            console.print()
+            return True
+
+        provider = cmd_parts[1].lower()
+        if provider not in ["openai", "anthropic"]:
+            console.print()
+            console.print(f"[yellow]Invalid provider: {provider}[/yellow]")
+            console.print("[dim]Valid options: openai, anthropic[/dim]")
+            console.print()
+            return True
+
+        # Signal to recreate agent with new provider
+        return {"action": "recreate", "provider": provider}
+
     console.print()
     console.print(f"[yellow]Unknown command: /{cmd}[/yellow]")
     console.print("[dim]Type /help for available commands.[/dim]")
     console.print()
     return True
-
-    return False
 
 
 def execute_bash_command(command: str) -> bool:

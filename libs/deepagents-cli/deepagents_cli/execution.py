@@ -288,6 +288,7 @@ def execute_task(
             interrupt_occurred = False
             hitl_response = None
             suppress_resumed_output = False
+            hitl_request = None
 
             for chunk in agent.stream(
                 stream_input,
@@ -307,7 +308,7 @@ def execute_task(
                     if not isinstance(data, dict):
                         continue
 
-                    # Check for interrupts
+                    # Check for interrupts - just capture the data, don't handle yet
                     if "__interrupt__" in data:
                         interrupt_data = data["__interrupt__"]
                         if interrupt_data:
@@ -321,49 +322,7 @@ def execute_task(
                                 if hasattr(interrupt_obj, "value")
                                 else interrupt_obj
                             )
-
-                            # Check if auto-approve is enabled
-                            if session_state.auto_approve:
-                                # Auto-approve all commands without prompting
-                                decisions = []
-                                for action_request in hitl_request.get("action_requests", []):
-                                    # Show what's being auto-approved (brief, dim message)
-                                    if spinner_active:
-                                        status.stop()
-                                        spinner_active = False
-
-                                    description = action_request.get("description", "tool action")
-                                    console.print()
-                                    console.print(f"  [dim]⚡ {description}[/dim]")
-
-                                    decisions.append({"type": "approve"})
-
-                                hitl_response = {"decisions": decisions}
-                                interrupt_occurred = True
-
-                                # Restart spinner for continuation
-                                if not spinner_active:
-                                    status.start()
-                                    spinner_active = True
-
-                                break
-                            # Normal HITL flow - stop spinner and prompt user
-                            if spinner_active:
-                                status.stop()
-                                spinner_active = False
-
-                            # Handle human-in-the-loop approval
-                            decisions = []
-                            for action_request in hitl_request.get("action_requests", []):
-                                decision = prompt_for_tool_approval(action_request, assistant_id)
-                                decisions.append(decision)
-
-                            suppress_resumed_output = any(
-                                decision.get("type") == "reject" for decision in decisions
-                            )
-                            hitl_response = {"decisions": decisions}
                             interrupt_occurred = True
-                            break
 
                     # Extract chunk_data from updates for todo checking
                     chunk_data = list(data.values())[0] if data else None
@@ -580,6 +539,48 @@ def execute_task(
             # After streaming loop - handle interrupt if it occurred
             flush_summary_buffer()
             flush_text_buffer(final=True)
+            
+            # Handle human-in-the-loop after stream completes
+            if interrupt_occurred and hitl_request:
+                # Check if auto-approve is enabled
+                if session_state.auto_approve:
+                    # Auto-approve all commands without prompting
+                    decisions = []
+                    for action_request in hitl_request.get("action_requests", []):
+                        # Show what's being auto-approved (brief, dim message)
+                        if spinner_active:
+                            status.stop()
+                            spinner_active = False
+
+                        description = action_request.get("description", "tool action")
+                        console.print()
+                        console.print(f"  [dim]⚡ {description}[/dim]")
+
+                        decisions.append({"type": "approve"})
+
+                    hitl_response = {"decisions": decisions}
+
+                    # Restart spinner for continuation
+                    if not spinner_active:
+                        status.start()
+                        spinner_active = True
+                else:
+                    # Normal HITL flow - stop spinner and prompt user
+                    if spinner_active:
+                        status.stop()
+                        spinner_active = False
+
+                    # Handle human-in-the-loop approval
+                    decisions = []
+                    for action_request in hitl_request.get("action_requests", []):
+                        decision = prompt_for_tool_approval(action_request, assistant_id)
+                        decisions.append(decision)
+
+                    suppress_resumed_output = any(
+                        decision.get("type") == "reject" for decision in decisions
+                    )
+                    hitl_response = {"decisions": decisions}
+            
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:
                     if spinner_active:

@@ -163,31 +163,6 @@ agent = create_deep_agent(
 )
 ```
 
-### `use_claude_native_text_editor`
-
-By default, deepagents provides six separate file tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, and `grep`. If you prefer to use Claude's native `text_editor_20250728` tool instead, you can set `use_claude_native_text_editor=True`.
-
-Claude's native text editor provides a single command-based tool `str_replace_based_edit_tool` with four commands:
-- **view** - View file contents or directory listings (with optional line ranges)
-- **str_replace** - Replace all occurrences of text
-- **create** - Create or overwrite files
-- **insert** - Insert text at specific line numbers
-
-This matches Claude's official specification exactly, which can be beneficial for consistency with Claude's training. However, note that the native tool does not include the advanced search capabilities (`glob` and `grep`) that the default FilesystemMiddleware provides.
-
-```python
-from deepagents import create_deep_agent
-
-# Use Claude's native text editor
-agent = create_deep_agent(
-    use_claude_native_text_editor=True,
-)
-```
-
-**When to use each:**
-- **Default (False)**: Best for general purpose use, especially when the agent needs to search and explore codebases. Provides more granular control and advanced search.
-- **Native (True)**: Best for compatibility with Claude's native tool training and when you want the exact Claude text editor experience.
-
 ### `middleware`
 `create_deep_agent` is implemented with middleware that can be customized. You can provide additional middleware to extend functionality, add tools, or implement custom hooks. 
 
@@ -477,6 +452,88 @@ agent = create_agent(
     ],
 )
 ```
+
+### Middleware for Claude's Native Tools
+
+Deep Agents supports Claude's native tool specifications, which can provide better performance due to Claude's specific training on these tools.
+
+#### Claude's Native Text Editor (`text_editor_20250728`)
+
+By default, deepagents provides six separate file tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, and `grep`. 
+
+If you prefer to use Claude's native `text_editor_20250728` tool instead, pass it via the `tools` parameter and use `ClaudeTextEditorMiddleware`:
+
+```python
+from langchain_anthropic import ChatAnthropic
+from deepagents import create_deep_agent
+from deepagents.middleware.claude_text_editor import ClaudeTextEditorMiddleware
+from deepagents.backends import FilesystemBackend
+
+# Define the model
+model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
+
+# Define Claude's native text editor tool
+tools = [{
+    "type": "text_editor_20250728",
+    "name": "str_replace_based_edit_tool",
+}]
+
+# Create backend for file storage
+backend = FilesystemBackend(root_dir="./workspace", virtual_mode=True)
+
+# Create agent with Claude's native text editor
+agent = create_deep_agent(
+    model=model,
+    tools=tools,
+    middleware=[ClaudeTextEditorMiddleware(backend=backend)],
+)
+```
+
+Claude's native text editor provides a single command-based tool `str_replace_based_edit_tool` with four commands:
+- **view** - View file contents or directory listings (with optional line ranges)
+- **str_replace** - Replace all occurrences of text
+- **create** - Create or overwrite files
+- **insert** - Insert text at specific line numbers
+
+**When to use:**
+- **Default (FilesystemMiddleware)**: Best for general purpose use, especially when the agent needs to search and explore codebases. Provides more granular control and advanced search capabilities (`glob` and `grep`).
+- **Native (ClaudeTextEditorMiddleware)**: Best for compatibility with Claude's native tool training and when you want the exact Claude text editor experience.
+
+You can find more information about Claude's native text editor tool [here](https://docs.claude.com/en/docs/agents-and-tools/tool-use/text-editor-tool).
+
+#### Claude's Native Bash Tool (`bash_20250124`)
+
+You can also use Claude's native bash tool instead of the default shell tool:
+
+```python
+from langchain_anthropic import ChatAnthropic
+from deepagents import create_deep_agent
+from deepagents.middleware.resumable_shell import ResumableShellToolMiddleware
+from langchain.agents.middleware import HostExecutionPolicy
+import os
+
+# Define the model
+model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
+
+# Define Claude's native bash tool
+tools = [{"type": "bash_20250124", "name": "bash"}]
+
+# Create shell middleware without adding the langchain 'shell' tool
+shell_middleware = ResumableShellToolMiddleware(
+    workspace_root=os.getcwd(),
+    execution_policy=HostExecutionPolicy(),
+    add_shell_tool=False  # Don't add langchain's 'shell' tool
+)
+
+# Create agent with Claude's native bash tool
+agent = create_deep_agent(
+    model=model,
+    tools=tools,
+    middleware=[shell_middleware]
+)
+```
+
+You can find more information about Claude's native bash tool [here](https://docs.claude.com/en/docs/agents-and-tools/tool-use/bash-tool).
 
 ## Sync vs Async
 

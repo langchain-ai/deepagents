@@ -7,6 +7,22 @@ from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Overwrite
 
+_rejected_tool_call_messages: dict[str, str] = {}
+
+
+def register_tool_call_rejection(tool_call_id: str, message: str) -> None:
+    """Store a rejection message for a specific tool call."""
+    if not tool_call_id:
+        return
+    _rejected_tool_call_messages[tool_call_id] = message
+
+
+def consume_tool_call_rejection(tool_call_id: str) -> str | None:
+    """Pop a stored rejection message if one exists."""
+    if not tool_call_id:
+        return None
+    return _rejected_tool_call_messages.pop(tool_call_id, None)
+
 
 class PatchToolCallsMiddleware(AgentMiddleware):
     """Middleware to patch dangling tool calls in the messages history."""
@@ -29,9 +45,13 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                     )
                     if corresponding_tool_msg is None:
                         # We have a dangling tool call which needs a ToolMessage
+                        rejection_message = consume_tool_call_rejection(tool_call["id"])
                         tool_msg = (
-                            f"Tool call {tool_call['name']} with id {tool_call['id']} was "
-                            "cancelled - another message came in before it could be completed."
+                            rejection_message if rejection_message
+                            else (
+                                f"Tool call {tool_call['name']} with id {tool_call['id']} was "
+                                "cancelled before completion."
+                            )
                         )
                         patched_messages.append(
                             ToolMessage(

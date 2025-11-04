@@ -11,6 +11,9 @@ from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
 
+import threading
+from deepagents.middleware.patch_tool_calls import register_tool_call_rejection
+
 from .config import COLORS, console
 from .file_ops import FileOpTracker, build_approval_preview
 from .input import parse_file_mentions
@@ -360,9 +363,14 @@ def execute_task(
                                 decision = prompt_for_tool_approval(action_request, assistant_id)
                                 decisions.append(decision)
 
-                            # Hide cursor after approval menu to avoid blinking during execution
-                            sys.stdout.write("\033[?25l")
-                            sys.stdout.flush()
+                                if decision.get("type") == "reject":
+                                    tool_call = action_request.get("tool_call") or {}
+                                    tool_call_id = tool_call.get("id")
+                                    if tool_call_id:
+                                        register_tool_call_rejection(
+                                            tool_call_id,
+                                            "User rejected the command.",
+                                        )
 
                             suppress_resumed_output = any(
                                 decision.get("type") == "reject" for decision in decisions
@@ -592,28 +600,8 @@ def execute_task(
                         status.stop()
                         spinner_active = False
 
-                    console.print("[bold yellow]Tool Rejected[/bold yellow]\n")
-
-                    # Update agent state to handle the rejection
-                    # Agent may generate response internally, but we don't show it to user
-                    try:
-                        agent.invoke(Command(resume=hitl_response), config=config)
-                    except KeyboardInterrupt:
-                        raise  # Don't catch user interrupts
-                    except Exception as e:
-                        console.print(f"[dim red]Warning: Error updating state after rejection: {e}[/dim red]")
-
-                    # Show cursor before returning to prompt
-                    sys.stdout.write("\033[?25h")
-                    sys.stdout.flush()
+                    console.print("\n[yellow]Command rejected.[/yellow]\n")
                     return
-                else:
-                    # Tool was approved
-                    if spinner_active:
-                        status.stop()
-                        spinner_active = False
-
-                    console.print("[bold green]Tool Approved[/bold green]\n")
 
                 # Resume the agent with the human decision
                 stream_input = Command(resume=hitl_response)
@@ -621,15 +609,31 @@ def execute_task(
             else:
                 # No interrupt, break out of while loop
                 break
-
+    
+    #ToDo: remove this in larger abort handling work
     except KeyboardInterrupt:
         # User pressed Ctrl+C - clean up and exit gracefully
         if spinner_active:
             status.stop()
-        console.print("\n[yellow]Interrupted[/yellow]\n")
-        # Show cursor before returning to prompt
-        sys.stdout.write("\033[?25h")
-        sys.stdout.flush()
+        console.print("\n[yellow]Interrupted by user[/yellow]\n")
+
+        # Inform the agent in background thread (non-blocking)
+        def notify_agent():
+            try:
+                agent.update_state(
+                    config=config,
+                    values={
+                        "messages": [
+                            HumanMessage(
+                                content="[User interrupted the previous request with Ctrl+C]"
+                            )
+                        ]
+                    },
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=notify_agent, daemon=True).start()
         return
 
     if spinner_active:
@@ -643,7 +647,3 @@ def execute_task(
             token_tracker.add(captured_input_tokens, captured_output_tokens)
 
         console.print()
-
-    # Show cursor before returning to prompt
-    sys.stdout.write("\033[?25h")
-    sys.stdout.flush()

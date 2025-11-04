@@ -3,7 +3,6 @@
 import json
 import sys
 import termios
-import threading
 import tty
 
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -586,17 +585,16 @@ def execute_task(
                         status.stop()
                         spinner_active = False
 
-                    console.print("\nCommand rejected. Returning to prompt.\n", style=COLORS["dim"])
+                    console.print("\n[yellow]Interrupted[/yellow]\n")
 
-                    # Resume agent in background thread to properly update graph state
-                    # without blocking the user
-                    def resume_after_rejection():
-                        try:
-                            agent.invoke(Command(resume=hitl_response), config=config)
-                        except Exception:
-                            pass  # Silently ignore errors
+                    # Update agent state to handle the rejection
+                    # Agent may generate response internally, but we don't show it to user
+                    try:
+                        agent.invoke(Command(resume=hitl_response), config=config)
+                    except Exception:
+                        # Ignore errors during state update
+                        pass
 
-                    threading.Thread(target=resume_after_rejection, daemon=True).start()
                     return
 
                 # Resume the agent with the human decision
@@ -610,25 +608,7 @@ def execute_task(
         # User pressed Ctrl+C - clean up and exit gracefully
         if spinner_active:
             status.stop()
-        console.print("\n[yellow]Interrupted by user[/yellow]\n")
-
-        # Inform the agent in background thread (non-blocking)
-        def notify_agent():
-            try:
-                agent.update_state(
-                    config=config,
-                    values={
-                        "messages": [
-                            HumanMessage(
-                                content="[User interrupted the previous request with Ctrl+C]"
-                            )
-                        ]
-                    },
-                )
-            except Exception:
-                pass
-
-        threading.Thread(target=notify_agent, daemon=True).start()
+        console.print("\n[yellow]Interrupted[/yellow]\n")
         return
 
     if spinner_active:

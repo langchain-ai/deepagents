@@ -10,6 +10,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.resumable_shell import ResumableShellToolMiddleware
 from langchain.agents.middleware import HostExecutionPolicy
 from langgraph.checkpoint.memory import InMemorySaver
+from langchain.agents.middleware import InterruptOnConfig
 
 from .agent_memory import AgentMemoryMiddleware
 from .config import COLORS, config, console, get_default_coding_instructions
@@ -222,8 +223,6 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         )
 
     # Configure human-in-the-loop for potentially destructive tools
-    from langchain.agents.middleware import InterruptOnConfig
-
     shell_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": lambda tool_call, state, runtime: (

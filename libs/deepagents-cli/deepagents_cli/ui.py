@@ -8,6 +8,10 @@ from rich import box
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
+from rich.markup import escape
+
+import re
+import shutil
 
 from .config import COLORS, COMMANDS, DEEP_AGENTS_ASCII, MAX_ARG_LENGTH, console
 from .file_ops import FileOperationRecord
@@ -370,7 +374,6 @@ def _wrap_diff_line(
     Returns:
         List of formatted lines (may be multiple if wrapped)
     """
-    from rich.markup import escape
 
     # Escape Rich markup in code content
     code = escape(code)
@@ -428,8 +431,6 @@ def format_diff_rich(diff_lines: list[str]) -> str:
     Returns:
         Rich-formatted diff string with line numbers
     """
-    import re
-    import shutil
 
     if not diff_lines:
         return "[dim]No changes detected[/dim]"
@@ -503,7 +504,7 @@ def render_diff_block(diff: str, title: str) -> None:
         console.print(f"[bold {COLORS['primary']}]═══ {title} ═══[/bold {COLORS['primary']}]")
         console.print(formatted_diff)
         console.print()
-    except Exception as e:
+    except (ValueError, AttributeError, IndexError, OSError):
         # Fallback to simple rendering if formatting fails
         console.print()
         console.print(f"[bold {COLORS['primary']}]{title}[/bold {COLORS['primary']}]")

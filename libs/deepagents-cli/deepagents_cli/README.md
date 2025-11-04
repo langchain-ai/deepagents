@@ -28,7 +28,9 @@ cli/
   - `cli_main()` - Console script entry point (called when you run `deepagents`)
   - `main()` - Async main function that orchestrates agent creation and CLI
   - `simple_cli()` - Main interactive loop handling user input
+    - Executes optional initial prompt before entering interactive mode
   - `parse_args()` - Command-line argument parsing
+    - Accepts optional positional `prompt` argument for piping prompts
   - `check_cli_dependencies()` - Validates required packages are installed
 
 ### `config.py` - Configuration & Constants
@@ -127,6 +129,18 @@ Display output via ui.py (TokenTracker, console)
 
 ## Key Features
 
+### Command-Line Prompt Execution
+Pass a prompt as a command-line argument to execute it and then enter interactive mode:
+```bash
+deepagents "create a hello.py file"
+deepagents --agent mybot "review the last commit"
+```
+
+This is useful for:
+- Quick tasks that you want to follow up on
+- Starting a session with initial context
+- Automating the first step of a workflow
+
 ### File Context Injection
 Type `@filename` and press Tab to autocomplete and inject file content into your prompt.
 
@@ -181,9 +195,13 @@ To modify the CLI:
 # From project root
 uv run python -m deepagents.cli
 
+# With initial prompt
+uv run python -m deepagents.cli "analyze this codebase"
+
 # Or install in editable mode
 uv pip install -e .
 deepagents
+deepagents "create a test file"
 ```
 
 ## Entry Point

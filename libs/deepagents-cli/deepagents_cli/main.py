@@ -57,6 +57,58 @@ def check_cli_dependencies():
 
 def parse_args():
     """Parse command line arguments."""
+    # Check if we have a subcommand or interactive mode with prompt
+    # Strategy: Look at the arguments to determine which parser to use
+    known_commands = {"list", "help", "reset"}
+
+    # Scan through argv to find first argument that's not an option or option value
+    # We need to skip --option value pairs
+    skip_next = False
+    first_positional = None
+
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+
+        if arg.startswith("-"):
+            # Check if this option takes a value (--agent, but not --auto-approve)
+            if arg in ["--agent", "--target"]:
+                skip_next = True
+            continue
+
+        # Found first positional argument
+        first_positional = arg
+        break
+
+    # Determine which parser to use
+    use_subparser = first_positional is None or first_positional in known_commands
+
+    if not use_subparser:
+        # Interactive mode with prompt - use simple parser
+        parser = argparse.ArgumentParser(
+            description="DeepAgents - AI Coding Assistant",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            add_help=False,
+        )
+        parser.add_argument(
+            "--agent",
+            default="agent",
+            help="Agent identifier for separate memory stores (default: agent).",
+        )
+        parser.add_argument(
+            "--auto-approve",
+            action="store_true",
+            help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
+        )
+        parser.add_argument(
+            "prompt",
+            nargs="?",
+            help="Optional prompt to execute before entering interactive mode",
+        )
+        return parser.parse_args()
+
+    # Use parser with subcommands
     parser = argparse.ArgumentParser(
         description="DeepAgents - AI Coding Assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -78,7 +130,7 @@ def parse_args():
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
-    # Default interactive mode
+    # Default interactive mode arguments (for when no subcommand is given)
     parser.add_argument(
         "--agent",
         default="agent",
@@ -89,11 +141,18 @@ def parse_args():
         action="store_true",
         help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
     )
+    parser.add_argument(
+        "prompt",
+        nargs="?",
+        help="Optional prompt to execute before entering interactive mode",
+    )
 
     return parser.parse_args()
 
 
-async def simple_cli(agent, assistant_id: str | None, session_state, baseline_tokens: int = 0):
+async def simple_cli(
+    agent, assistant_id: str | None, session_state, baseline_tokens: int = 0, initial_prompt: str | None = None
+):
     """Main CLI loop."""
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
@@ -133,6 +192,11 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
     token_tracker = TokenTracker()
     token_tracker.set_baseline(baseline_tokens)
 
+    # Execute initial prompt if provided
+    if initial_prompt:
+        console.print(f"[bold {COLORS['user']}]>[/bold {COLORS['user']}] {initial_prompt}")
+        execute_task(initial_prompt, agent, assistant_id, session_state, token_tracker)
+
     while True:
         try:
             user_input = await session.prompt_async()
@@ -170,7 +234,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
         execute_task(user_input, agent, assistant_id, session_state, token_tracker)
 
 
-async def main(assistant_id: str, session_state):
+async def main(assistant_id: str, session_state, initial_prompt: str | None = None):
     """Main entry point."""
     # Create the model (checks API keys)
     model = create_model()
@@ -191,7 +255,7 @@ async def main(assistant_id: str, session_state):
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
 
     try:
-        await simple_cli(agent, assistant_id, session_state, baseline_tokens)
+        await simple_cli(agent, assistant_id, session_state, baseline_tokens, initial_prompt)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
 
@@ -204,18 +268,24 @@ def cli_main():
     try:
         args = parse_args()
 
-        if args.command == "help":
+        # Check if we have a subcommand (command attribute only exists when using subparser)
+        command = getattr(args, "command", None)
+
+        if command == "help":
             show_help()
-        elif args.command == "list":
+        elif command == "list":
             list_agents()
-        elif args.command == "reset":
+        elif command == "reset":
             reset_agent(args.agent, args.source_agent)
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve)
 
+            # Get initial prompt if provided
+            initial_prompt = getattr(args, "prompt", None)
+
             # API key validation happens in create_model()
-            asyncio.run(main(args.agent, session_state))
+            asyncio.run(main(args.agent, session_state, initial_prompt))
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

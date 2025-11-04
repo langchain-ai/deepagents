@@ -16,17 +16,15 @@ from pathlib import Path
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import EditResult, WriteResult
-from deepagents.backends.utils import FileInfo, GrepMatch
-
-from .utils import (
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.utils import (
     check_empty_content,
     format_content_with_line_numbers,
     perform_string_replacement,
 )
 
 
-class FilesystemBackend:
+class FilesystemBackend(BackendProtocol):
     """Backend that reads and writes files directly from the filesystem.
 
     Files are accessed using their actual filesystem paths. Relative paths are

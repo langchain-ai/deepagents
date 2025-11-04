@@ -1,11 +1,9 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
-from langchain.tools import ToolRuntime
+from typing import TYPE_CHECKING
 
-from deepagents.backends.protocol import EditResult, WriteResult
-from deepagents.backends.utils import FileInfo, GrepMatch
-
-from .utils import (
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.utils import (
     _glob_search_files,
     create_file_data,
     file_data_to_string,
@@ -15,8 +13,11 @@ from .utils import (
     update_file_data,
 )
 
+if TYPE_CHECKING:
+    from langchain.tools import ToolRuntime
 
-class StateBackend:
+
+class StateBackend(BackendProtocol):
     """Backend that stores files in agent state (ephemeral).
 
     Uses LangGraph's state management and checkpointing. Files persist within
@@ -29,10 +30,7 @@ class StateBackend:
     """
 
     def __init__(self, runtime: "ToolRuntime"):
-        """Initialize StateBackend with runtime.
-
-        Args:
-        """
+        """Initialize StateBackend with runtime."""
         self.runtime = runtime
 
     def ls_info(self, path: str) -> list[FileInfo]:

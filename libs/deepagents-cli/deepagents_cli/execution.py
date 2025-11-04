@@ -72,7 +72,6 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
         body_lines.append(description)
 
     # Display action info first
-    console.print()
     console.print(
         Panel(
             "[bold yellow]⚠️  Tool Action Requires Approval[/bold yellow]\n\n"
@@ -85,7 +84,6 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
     if preview and preview.diff and not preview.error:
         console.print()
         render_diff_block(preview.diff, preview.diff_title or preview.title)
-    console.print()
 
     options = ["approve", "reject"]
     selected = 0  # Start with approve selected
@@ -96,6 +94,10 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
 
         try:
             tty.setraw(fd)
+
+            # Hide cursor for cleaner menu display
+            sys.stdout.write("\033[?25l")
+            sys.stdout.flush()
 
             # Initial render flag
             first_render = True
@@ -139,21 +141,24 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
                         elif next2 == "A":  # Up arrow
                             selected = (selected - 1) % len(options)
                 elif char == "\r" or char == "\n":  # Enter
-                    sys.stdout.write("\033[1B\n")  # Move down past the menu
+                    sys.stdout.write("\r\033[K\n")  # Clear line, new line at column 0
                     break
                 elif char == "\x03":  # Ctrl+C
-                    sys.stdout.write("\033[1B\n")  # Move down past the menu
+                    sys.stdout.write("\r\033[K\n")  # Clear line, new line at column 0
                     raise KeyboardInterrupt
                 elif char.lower() == "a":
                     selected = 0
-                    sys.stdout.write("\033[1B\n")  # Move down past the menu
+                    sys.stdout.write("\r\033[K\n")  # Clear line, new line at column 0
                     break
                 elif char.lower() == "r":
                     selected = 1
-                    sys.stdout.write("\033[1B\n")  # Move down past the menu
+                    sys.stdout.write("\r\033[K\n")  # Clear line, new line at column 0
                     break
 
         finally:
+            # Show cursor again
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     except (termios.error, AttributeError):
@@ -165,8 +170,6 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
             selected = 1
         else:
             selected = 0
-
-    console.print()
 
     # Return decision based on selection
     if selected == 0:
@@ -254,7 +257,7 @@ def execute_task(
             status.stop()
             spinner_active = False
         if not has_responded:
-            console.print("●", style=COLORS["agent"], markup=False)
+            console.print("● ", style=COLORS["agent"], markup=False, end="")
             has_responded = True
         markdown = Markdown(pending_text.rstrip())
         console.print(markdown, style=COLORS["agent"])
@@ -356,6 +359,10 @@ def execute_task(
                             for action_request in hitl_request.get("action_requests", []):
                                 decision = prompt_for_tool_approval(action_request, assistant_id)
                                 decisions.append(decision)
+
+                            # Hide cursor after approval menu to avoid blinking during execution
+                            sys.stdout.write("\033[?25l")
+                            sys.stdout.flush()
 
                             suppress_resumed_output = any(
                                 decision.get("type") == "reject" for decision in decisions
@@ -585,17 +592,28 @@ def execute_task(
                         status.stop()
                         spinner_active = False
 
-                    console.print("\n[yellow]Interrupted[/yellow]\n")
+                    console.print("[bold yellow]Tool Rejected[/bold yellow]\n")
 
                     # Update agent state to handle the rejection
                     # Agent may generate response internally, but we don't show it to user
                     try:
                         agent.invoke(Command(resume=hitl_response), config=config)
-                    except Exception:
-                        # Ignore errors during state update
-                        pass
+                    except KeyboardInterrupt:
+                        raise  # Don't catch user interrupts
+                    except Exception as e:
+                        console.print(f"[dim red]Warning: Error updating state after rejection: {e}[/dim red]")
 
+                    # Show cursor before returning to prompt
+                    sys.stdout.write("\033[?25h")
+                    sys.stdout.flush()
                     return
+                else:
+                    # Tool was approved
+                    if spinner_active:
+                        status.stop()
+                        spinner_active = False
+
+                    console.print("[bold green]Tool Approved[/bold green]\n")
 
                 # Resume the agent with the human decision
                 stream_input = Command(resume=hitl_response)
@@ -609,6 +627,9 @@ def execute_task(
         if spinner_active:
             status.stop()
         console.print("\n[yellow]Interrupted[/yellow]\n")
+        # Show cursor before returning to prompt
+        sys.stdout.write("\033[?25h")
+        sys.stdout.flush()
         return
 
     if spinner_active:
@@ -622,3 +643,7 @@ def execute_task(
             token_tracker.add(captured_input_tokens, captured_output_tokens)
 
         console.print()
+
+    # Show cursor before returning to prompt
+    sys.stdout.write("\033[?25h")
+    sys.stdout.flush()

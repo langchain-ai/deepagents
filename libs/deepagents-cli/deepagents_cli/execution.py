@@ -73,7 +73,6 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
         body_lines.append(description)
 
     # Display action info first
-    console.print()
     console.print(
         Panel(
             "[bold yellow]⚠️  Tool Action Requires Approval[/bold yellow]\n\n"
@@ -86,7 +85,6 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
     if preview and preview.diff and not preview.error:
         console.print()
         render_diff_block(preview.diff, preview.diff_title or preview.title)
-    console.print()
 
     options = ["approve", "reject"]
     selected = 0  # Start with approve selected
@@ -97,6 +95,9 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
 
         try:
             tty.setraw(fd)
+            # Hide cursor during menu interaction
+            sys.stdout.write("\033[?25l")
+            sys.stdout.flush()
 
             # Initial render flag
             first_render = True
@@ -140,21 +141,24 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
                         elif next2 == "A":  # Up arrow
                             selected = (selected - 1) % len(options)
                 elif char == "\r" or char == "\n":  # Enter
-                    sys.stdout.write("\033[1B\n")  # Move down past the menu
+                    sys.stdout.write("\r\n")  # Move to start of line and add newline
                     break
                 elif char == "\x03":  # Ctrl+C
-                    sys.stdout.write("\033[1B\n")  # Move down past the menu
+                    sys.stdout.write("\r\n")  # Move to start of line and add newline
                     raise KeyboardInterrupt
                 elif char.lower() == "a":
                     selected = 0
-                    sys.stdout.write("\033[1B\n")  # Move down past the menu
+                    sys.stdout.write("\r\n")  # Move to start of line and add newline
                     break
                 elif char.lower() == "r":
                     selected = 1
-                    sys.stdout.write("\033[1B\n")  # Move down past the menu
+                    sys.stdout.write("\r\n")  # Move to start of line and add newline
                     break
 
         finally:
+            # Show cursor again
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     except (termios.error, AttributeError):
@@ -166,8 +170,6 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
             selected = 1
         else:
             selected = 0
-
-    console.print()
 
     # Return decision based on selection
     if selected == 0:
@@ -183,8 +185,6 @@ def execute_task(
     token_tracker: TokenTracker | None = None,
 ):
     """Execute any task by passing it directly to the AI agent."""
-    console.print()
-
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
 
@@ -587,8 +587,9 @@ def execute_task(
                         status.stop()
                         spinner_active = False
 
-                    console.print("\n[yellow]Command rejected.[/yellow]", style="bold")
-                    console.print("Tell the agent what you'd like to do differently.\n")
+                    console.print("[yellow]Command rejected.[/yellow]", style="bold")
+                    console.print("Tell the agent what you'd like to do differently.")
+                    console.print()
                     return
 
                 # Resume the agent with the human decision
@@ -628,9 +629,6 @@ def execute_task(
 
     if has_responded:
         console.print()
-
         # Track token usage (display only via /tokens command)
         if token_tracker and (captured_input_tokens or captured_output_tokens):
             token_tracker.add(captured_input_tokens, captured_output_tokens)
-
-        console.print()

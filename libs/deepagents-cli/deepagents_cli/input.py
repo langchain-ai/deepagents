@@ -19,10 +19,9 @@ from prompt_toolkit.key_binding import KeyBindings
 
 from .config import COLORS, COMMANDS, SessionState, console
 
-
 # Regex patterns for context-aware completion
-AT_MENTION_RE = re.compile(r'@(?P<path>(?:[^\s@]|(?<=\\)\s)*)$')
-SLASH_COMMAND_RE = re.compile(r'^/(?P<command>[a-z]*)$')
+AT_MENTION_RE = re.compile(r"@(?P<path>(?:[^\s@]|(?<=\\)\s)*)$")
+SLASH_COMMAND_RE = re.compile(r"^/(?P<command>[a-z]*)$")
 
 
 class FilePathCompleter(Completer):
@@ -50,8 +49,7 @@ class FilePathCompleter(Completer):
         unescaped_fragment = path_fragment.replace("\\ ", " ")
 
         # Strip trailing backslash if present (user is in the process of typing an escape)
-        if unescaped_fragment.endswith("\\"):
-            unescaped_fragment = unescaped_fragment[:-1]
+        unescaped_fragment = unescaped_fragment.removesuffix("\\")
 
         # Create temporary document for the unescaped path fragment
         temp_doc = Document(text=unescaped_fragment, cursor_position=len(unescaped_fragment))
@@ -63,8 +61,8 @@ class FilePathCompleter(Completer):
             completed_path = Path(unescaped_fragment + comp.text).expanduser()
             # Re-escape spaces in the completion text for the command line
             completion_text = comp.text.replace(" ", "\\ ")
-            if completed_path.is_dir() and not completion_text.endswith('/'):
-                completion_text += '/'
+            if completed_path.is_dir() and not completion_text.endswith("/"):
+                completion_text += "/"
 
             yield Completion(
                 text=completion_text,
@@ -126,7 +124,9 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     return text, files
 
 
-def get_bottom_toolbar(session_state: SessionState, session_ref: dict) -> Callable[[], list[tuple[str, str]]]:
+def get_bottom_toolbar(
+    session_state: SessionState, session_ref: dict
+) -> Callable[[], list[tuple[str, str]]]:
     """Return toolbar function that shows auto-approve status and BASH MODE."""
 
     def toolbar() -> list[tuple[str, str]]:
@@ -134,7 +134,7 @@ def get_bottom_toolbar(session_state: SessionState, session_ref: dict) -> Callab
 
         # Check if we're in BASH mode (input starts with !)
         try:
-            session = session_ref.get('session')
+            session = session_ref.get("session")
             if session:
                 current_text = session.default_buffer.text
                 if current_text.startswith("!"):
@@ -257,12 +257,14 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         complete_in_thread=True,  # Async completion prevents menu freezing
         mouse_support=False,
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
-        bottom_toolbar=get_bottom_toolbar(session_state, session_ref),  # Persistent status bar at bottom
+        bottom_toolbar=get_bottom_toolbar(
+            session_state, session_ref
+        ),  # Persistent status bar at bottom
         style=toolbar_style,  # Apply toolbar styling
         reserve_space_for_menu=7,  # Reserve space for completion menu to show 5-6 results
     )
 
     # Store session reference for toolbar to access
-    session_ref['session'] = session
+    session_ref["session"] = session
 
     return session

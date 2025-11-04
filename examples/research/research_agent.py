@@ -1,9 +1,8 @@
 import os
 from typing import Literal
 
-from tavily import TavilyClient
-
 from deepagents import create_deep_agent
+from tavily import TavilyClient
 
 # It's best practice to initialize the client once and reuse it.
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])

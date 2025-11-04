@@ -539,7 +539,7 @@ def execute_task(
             # After streaming loop - handle interrupt if it occurred
             flush_summary_buffer()
             flush_text_buffer(final=True)
-            
+
             # Handle human-in-the-loop after stream completes
             if interrupt_occurred and hitl_request:
                 # Check if auto-approve is enabled
@@ -580,7 +580,7 @@ def execute_task(
                         decision.get("type") == "reject" for decision in decisions
                     )
                     hitl_response = {"decisions": decisions}
-            
+
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:
                     if spinner_active:

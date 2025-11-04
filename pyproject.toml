@@ -45,6 +45,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["libs"]
 include = ["deepagents*"]
+exclude = ["deepagents.tests*", "deepagents.tests.*", "tests*", "tests.*"]
 
 [tool.setuptools.package-dir]
 "" = "libs"

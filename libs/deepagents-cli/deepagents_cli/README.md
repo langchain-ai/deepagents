@@ -37,7 +37,6 @@ cli/
   - `COLORS` - Color scheme for terminal output
   - `DEEP_AGENTS_ASCII` - ASCII art banner
   - `COMMANDS` - Available slash commands
-  - `COMMON_BASH_COMMANDS` - Autocomplete options for bash commands
   - `console` - Rich Console instance
   - `create_model()` - Creates OpenAI or Anthropic model based on API keys
   - `get_default_coding_instructions()` - Loads default agent prompt

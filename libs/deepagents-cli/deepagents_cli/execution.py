@@ -66,9 +66,6 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
         body_lines.extend(preview.details)
         if preview.error:
             body_lines.append(f"[red]{preview.error}[/red]")
-        if description and description != "No description available":
-            body_lines.append("")
-            body_lines.append(description)
     else:
         body_lines.append(description)
 

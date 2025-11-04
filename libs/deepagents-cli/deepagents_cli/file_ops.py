@@ -44,8 +44,20 @@ def compute_unified_diff(
     display_path: str,
     *,
     max_lines: int | None = 800,
+    context_lines: int = 3,
 ) -> str | None:
-    """Compute a unified diff between before and after content."""
+    """Compute a unified diff between before and after content.
+
+    Args:
+        before: Original content
+        after: New content
+        display_path: Path for display in diff headers
+        max_lines: Maximum number of diff lines (None for unlimited)
+        context_lines: Number of context lines around changes (default 3)
+
+    Returns:
+        Unified diff string or None if no changes
+    """
     before_lines = before.splitlines()
     after_lines = after.splitlines()
     diff_lines = list(
@@ -55,13 +67,14 @@ def compute_unified_diff(
             fromfile=f"{display_path} (before)",
             tofile=f"{display_path} (after)",
             lineterm="",
+            n=context_lines,
         )
     )
     if not diff_lines:
         return None
     if max_lines is not None and len(diff_lines) > max_lines:
         truncated = diff_lines[: max_lines - 1]
-        truncated.append("... (diff truncated)")
+        truncated.append("...")
         return "\n".join(truncated)
     return "\n".join(diff_lines)
 
@@ -157,7 +170,6 @@ def build_approval_preview(
             f"File: {path_str}",
             "Action: Create new file" + (" (overwrites existing content)" if before else ""),
             f"Lines to write: {additions or total_lines}",
-            f"Bytes to write: {len(after.encode('utf-8'))}",
         ]
         return ApprovalPreview(
             title=f"Write {display_path}",

@@ -323,20 +323,19 @@ def render_file_operation(record: FileOperationRecord) -> None:
             detail = f"{detail} {span}"
         _print_detail(detail)
     else:
-        bytes_written = record.metrics.bytes_written
         if record.tool_name == "write_file":
+            added = record.metrics.lines_added
+            removed = record.metrics.lines_removed
             lines = record.metrics.lines_written
             detail = f"Wrote {lines} line{'s' if lines != 1 else ''}"
-            if record.metrics.lines_added:
-                detail = f"{detail} (+{record.metrics.lines_added})"
+            if added or removed:
+                detail = f"{detail} (+{added} / -{removed})"
         else:
             added = record.metrics.lines_added
             removed = record.metrics.lines_removed
             detail = f"Edited {record.metrics.lines_written} total line{'s' if record.metrics.lines_written != 1 else ''}"
             if added or removed:
                 detail = f"{detail} (+{added} / -{removed})"
-        if bytes_written:
-            detail = f"{detail} · {bytes_written} bytes"
         _print_detail(detail)
 
     if record.diff:
@@ -350,13 +349,166 @@ def render_diff(record: FileOperationRecord) -> None:
     render_diff_block(record.diff, f"Diff {record.display_path}")
 
 
-def render_diff_block(diff: str, title: str) -> None:
-    """Render a diff string inside a Rich panel."""
-    syntax = Syntax(diff, "diff", theme="monokai", line_numbers=False)
-    panel = Panel(
-        syntax, title=title, border_style=COLORS["primary"], box=box.ROUNDED, padding=(0, 1)
+def _wrap_diff_line(
+    code: str,
+    marker: str,
+    color: str,
+    line_num: int | None,
+    width: int,
+    term_width: int,
+) -> list[str]:
+    """Wrap long diff lines with proper indentation.
+
+    Args:
+        code: Code content to wrap
+        marker: Diff marker ('+', '-', ' ')
+        color: Color for the line
+        line_num: Line number to display (None for continuation lines)
+        width: Width for line number column
+        term_width: Terminal width
+
+    Returns:
+        List of formatted lines (may be multiple if wrapped)
+    """
+    from rich.markup import escape
+
+    # Escape Rich markup in code content
+    code = escape(code)
+
+    prefix_len = width + 4  # line_num + space + marker + 2 spaces
+    available_width = term_width - prefix_len
+
+    if len(code) <= available_width:
+        if line_num is not None:
+            return [f"[dim]{line_num:>{width}}[/dim] [{color}]{marker}  {code}[/{color}]"]
+        return [f"{' ' * width} [{color}]{marker}  {code}[/{color}]"]
+
+    lines = []
+    remaining = code
+    first = True
+
+    while remaining:
+        if len(remaining) <= available_width:
+            chunk = remaining
+            remaining = ""
+        else:
+            # Try to break at a good point (space, comma, etc.)
+            chunk = remaining[:available_width]
+            # Look for a good break point in the last 20 chars
+            break_point = max(
+                chunk.rfind(' '),
+                chunk.rfind(','),
+                chunk.rfind('('),
+                chunk.rfind(')'),
+            )
+            if break_point > available_width - 20:
+                # Found a good break point
+                chunk = remaining[:break_point + 1]
+                remaining = remaining[break_point + 1:]
+            else:
+                # No good break point, just split
+                chunk = remaining[:available_width]
+                remaining = remaining[available_width:]
+
+        if first and line_num is not None:
+            lines.append(f"[dim]{line_num:>{width}}[/dim] [{color}]{marker}  {chunk}[/{color}]")
+            first = False
+        else:
+            lines.append(f"{' ' * width} [{color}]{marker}  {chunk}[/{color}]")
+
+    return lines
+
+
+def format_diff_rich(diff_lines: list[str]) -> str:
+    """Format diff lines with line numbers and colors.
+
+    Args:
+        diff_lines: Diff lines from unified diff
+
+    Returns:
+        Rich-formatted diff string with line numbers
+    """
+    import re
+    import shutil
+
+    if not diff_lines:
+        return "[dim]No changes detected[/dim]"
+
+    # Get terminal width
+    term_width = shutil.get_terminal_size().columns
+
+    # Find max line number for width calculation
+    max_line = max(
+        (
+            int(m.group(i))
+            for line in diff_lines
+            if (m := re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line))
+            for i in (1, 2)
+        ),
+        default=0,
     )
-    console.print(panel)
+    width = max(3, len(str(max_line)))
+
+    formatted_lines = []
+    old_num = new_num = 0
+
+    # Rich colors with backgrounds for better visibility
+    # White text on dark backgrounds for additions/deletions
+    addition_color = "white on dark_green"
+    deletion_color = "white on dark_red"
+    context_color = "dim"
+
+    for line in diff_lines:
+        if line.strip() == "...":
+            formatted_lines.append(f"[{context_color}]...[/{context_color}]")
+        elif line.startswith(("---", "+++")):
+            continue
+        elif m := re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line):
+            old_num, new_num = int(m.group(1)), int(m.group(2))
+        elif line.startswith("-"):
+            formatted_lines.extend(
+                _wrap_diff_line(
+                    line[1:], "-", deletion_color, old_num, width, term_width
+                )
+            )
+            old_num += 1
+        elif line.startswith("+"):
+            formatted_lines.extend(
+                _wrap_diff_line(
+                    line[1:], "+", addition_color, new_num, width, term_width
+                )
+            )
+            new_num += 1
+        elif line.startswith(" "):
+            formatted_lines.extend(
+                _wrap_diff_line(
+                    line[1:], " ", context_color, old_num, width, term_width
+                )
+            )
+            old_num += 1
+            new_num += 1
+
+    return "\n".join(formatted_lines)
+
+
+def render_diff_block(diff: str, title: str) -> None:
+    """Render a diff string with line numbers and colors."""
+    try:
+        # Parse diff into lines and format with line numbers
+        diff_lines = diff.splitlines()
+        formatted_diff = format_diff_rich(diff_lines)
+
+        # Print with a simple header
+        console.print()
+        console.print(f"[bold {COLORS['primary']}]═══ {title} ═══[/bold {COLORS['primary']}]")
+        console.print(formatted_diff)
+        console.print()
+    except Exception as e:
+        # Fallback to simple rendering if formatting fails
+        console.print()
+        console.print(f"[bold {COLORS['primary']}]{title}[/bold {COLORS['primary']}]")
+        console.print(diff)
+        console.print()
 
 
 def show_interactive_help():

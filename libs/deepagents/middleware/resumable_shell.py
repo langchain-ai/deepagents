@@ -30,14 +30,39 @@ class ResumableShellToolMiddleware(ShellToolMiddleware):
     touches the shell tool again and only performs shutdown when a session is
     actually active. This keeps behaviour identical for uninterrupted runs while
     allowing HITL pauses to succeed.
+
+    Supports both langchain's ``_PersistentShellTool`` and Claude's native
+    ``bash_20250124`` tool (when model is bound with bash tool type).
+
+    Args:
+        add_shell_tool: If False, does not add the langchain 'shell' tool to the agent.
+            Use this when you've manually bound Claude's native bash tool to the model.
+            Default is True.
     """
+
+    def __init__(self, *args, add_shell_tool: bool = True, **kwargs):
+        """Initialize the middleware.
+
+        Args:
+            add_shell_tool: If False, does not add the langchain 'shell' tool.
+            *args, **kwargs: Passed to ShellToolMiddleware.__init__
+        """
+        super().__init__(*args, **kwargs)
+
+        # If user wants to use Claude's native bash tool, remove the langchain shell tool
+        if not add_shell_tool:
+            self.tools = []
 
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        if isinstance(request.tool, _PersistentShellTool):
+        # Handle both langchain's _PersistentShellTool and Claude's native bash tool
+        is_langchain_shell = isinstance(request.tool, _PersistentShellTool)
+        is_claude_bash = request.tool_call.get("name") == "bash"
+
+        if is_langchain_shell or is_claude_bash:
             resources = self._get_or_create_resources(request.state)
             return self._run_shell_tool(
                 resources,
@@ -51,7 +76,11 @@ class ResumableShellToolMiddleware(ShellToolMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        if isinstance(request.tool, _PersistentShellTool):
+        # Handle both langchain's _PersistentShellTool and Claude's native bash tool
+        is_langchain_shell = isinstance(request.tool, _PersistentShellTool)
+        is_claude_bash = request.tool_call.get("name") == "bash"
+
+        if is_langchain_shell or is_claude_bash:
             resources = self._get_or_create_resources(request.state)
             return self._run_shell_tool(
                 resources,

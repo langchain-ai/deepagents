@@ -10,7 +10,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 from langchain.tools import ToolRuntime
-from langchain_core.tools import BaseTool, tool
+from langchain.tools.tool_node import ToolCallRequest
+from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from deepagents.backends import StateBackend
@@ -75,76 +76,6 @@ def _get_backend(backend: BACKEND_TYPES, runtime: ToolRuntime) -> BackendProtoco
     if callable(backend):
         return backend(runtime)
     return backend
-
-
-def _claude_text_editor_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
-) -> BaseTool:
-    """Generate Claude's native str_replace_based_edit_tool.
-
-    Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
-
-    Returns:
-        Configured str_replace_based_edit_tool that implements Claude's text_editor_20250728 interface.
-    """
-
-    @tool(
-        description="Claude's native text editor tool. Supports four commands: 'view' (read files/directories), "
-        "'str_replace' (replace text), 'create' (create/overwrite files), and 'insert' (insert at line number)."
-    )
-    def str_replace_based_edit_tool(
-        command: Literal["view", "str_replace", "create", "insert"],
-        path: str,
-        runtime: ToolRuntime[None, ClaudeTextEditorState],
-        view_range: list[int] | None = None,
-        old_str: str | None = None,
-        new_str: str | None = None,
-        file_text: str | None = None,
-        insert_line: int | None = None,
-    ) -> str | Command:
-        """Claude's native text editor tool with command-based interface.
-
-        Args:
-            command: The command to execute (view, str_replace, create, insert).
-            path: The file path (must be absolute, starting with /).
-            runtime: The tool runtime context.
-            view_range: Optional [start_line, end_line] for view command (1-indexed, -1 for end).
-            old_str: The string to replace (required for str_replace command).
-            new_str: The replacement string (required for str_replace and insert commands).
-            file_text: The file content (required for create command).
-            insert_line: The line number to insert at (required for insert command, 1-indexed).
-
-        Returns:
-            Result message or Command with state updates.
-        """
-        resolved_backend = _get_backend(backend, runtime)
-
-        # For view command, preserve trailing slash for directory detection
-        is_directory_request = command == "view" and path.endswith("/")
-        validated_path = _validate_path(path)
-
-        # Restore trailing slash if needed
-        if is_directory_request and not validated_path.endswith("/"):
-            validated_path = validated_path + "/"
-
-        if command == "view":
-            return _handle_view(resolved_backend, validated_path, view_range)
-        if command == "str_replace":
-            if old_str is None or new_str is None:
-                return "Error: str_replace command requires both 'old_str' and 'new_str' parameters"
-            return _handle_str_replace(resolved_backend, validated_path, old_str, new_str, runtime)
-        if command == "create":
-            if file_text is None:
-                return "Error: create command requires 'file_text' parameter"
-            return _handle_create(resolved_backend, validated_path, file_text, runtime)
-        if command == "insert":
-            if insert_line is None or new_str is None:
-                return "Error: insert command requires both 'insert_line' and 'new_str' parameters"
-            return _handle_insert(resolved_backend, validated_path, insert_line, new_str, runtime)
-        return f"Error: Unknown command '{command}'. Supported commands: view, str_replace, create, insert"
-
-    return str_replace_based_edit_tool
 
 
 def _handle_view(backend: BackendProtocol, path: str, view_range: list[int] | None) -> str:
@@ -360,11 +291,18 @@ def _handle_insert(
 
 
 class ClaudeTextEditorMiddleware(AgentMiddleware):
-    """Middleware for providing Claude's native text_editor_20250728 tool to an agent.
+    """Middleware for handling Claude's native text_editor_20250728 tool.
 
-    This middleware adds a single tool `str_replace_based_edit_tool` that implements
-    Claude's native text editor interface with four commands: view, str_replace, create,
-    and insert. Files are stored using any backend that implements the BackendProtocol.
+    This middleware handles Claude's native text editor tool with four commands: view,
+    str_replace, create, and insert. Files are stored using any backend that implements
+    the BackendProtocol.
+
+    The user must manually bind Claude's native tool to the model before creating the agent:
+        model = model.bind_tools([{
+            "type": "text_editor_20250728",
+            "name": "str_replace_based_edit_tool",
+            "max_characters": 10000
+        }])
 
     This is a pure implementation of Claude's native tool without additional search
     capabilities (no glob/grep). For extended search functionality, use FilesystemMiddleware instead.
@@ -377,11 +315,21 @@ class ClaudeTextEditorMiddleware(AgentMiddleware):
 
     Example:
         ```python
+        from langchain_anthropic import ChatAnthropic
         from deepagents.middleware.claude_text_editor import ClaudeTextEditorMiddleware
         from deepagents import create_deep_agent
 
-        # Create agent with Claude's native text editor
+        # Manually bind Claude's native text editor tool
+        model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
+        model = model.bind_tools([{
+            "type": "text_editor_20250728",
+            "name": "str_replace_based_edit_tool",
+            "max_characters": 10000
+        }])
+
+        # Create agent - middleware will handle the native tool
         agent = create_deep_agent(
+            model=model,
             use_claude_native_text_editor=True
         )
         ```
@@ -407,8 +355,169 @@ class ClaudeTextEditorMiddleware(AgentMiddleware):
         # Set system prompt (allow full override)
         self.system_prompt = system_prompt if system_prompt is not None else CLAUDE_TEXT_EDITOR_SYSTEM_PROMPT
 
-        # Generate the single Claude text editor tool
-        self.tools = [_claude_text_editor_tool_generator(self.backend)]
+        # Don't add any tools - we handle the native tool that user binds to the model
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        """Handle Claude's native str_replace_based_edit_tool calls."""
+        # Check if this is Claude's native text editor tool
+        if request.tool_call.get("name") == "str_replace_based_edit_tool":
+            return self._handle_native_tool_call(request)
+        return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Handle Claude's native str_replace_based_edit_tool calls (async)."""
+        # Check if this is Claude's native text editor tool
+        if request.tool_call.get("name") == "str_replace_based_edit_tool":
+            return self._handle_native_tool_call(request)
+        return await handler(request)
+
+    def _handle_native_tool_call(self, request: ToolCallRequest) -> ToolMessage | Command:
+        """Execute the native tool call."""
+        # Resolve backend (can't use _get_backend without runtime, so handle both cases)
+        if callable(self.backend):
+            # For factory backends, we need runtime which we don't have here
+            # So we'll use StateBackend as fallback
+            from deepagents.backends import StateBackend
+            resolved_backend: BackendProtocol = StateBackend(request.state)
+        else:
+            resolved_backend = self.backend
+
+        args = request.tool_call.get("args", {})
+        command = args.get("command")
+        path = args.get("path", "")
+
+        # For view command, preserve trailing slash for directory detection
+        is_directory_request = command == "view" and path.endswith("/")
+        validated_path = _validate_path(path)
+
+        # Restore trailing slash if needed
+        if is_directory_request and not validated_path.endswith("/"):
+            validated_path = validated_path + "/"
+
+        if command == "view":
+            view_range = args.get("view_range")
+            result = _handle_view(resolved_backend, validated_path, view_range)
+            return ToolMessage(content=result, tool_call_id=request.tool_call.get("id"))
+
+        if command == "str_replace":
+            old_str = args.get("old_str")
+            new_str = args.get("new_str")
+            if old_str is None or new_str is None:
+                return ToolMessage(
+                    content="Error: str_replace command requires both 'old_str' and 'new_str' parameters",
+                    tool_call_id=request.tool_call.get("id")
+                )
+            result = resolved_backend.edit(validated_path, old_str, new_str, replace_all=True)
+            if result.error:
+                return ToolMessage(content=result.error, tool_call_id=request.tool_call.get("id"))
+
+            message = f"Successfully replaced {result.occurrences} occurrence(s) in '{result.path}'"
+            if result.files_update is not None:
+                return Command(
+                    update={
+                        "files": result.files_update,
+                        "messages": [ToolMessage(content=message, tool_call_id=request.tool_call.get("id"))],
+                    }
+                )
+            return ToolMessage(content=message, tool_call_id=request.tool_call.get("id"))
+
+        if command == "create":
+            file_text = args.get("file_text")
+            if file_text is None:
+                return ToolMessage(
+                    content="Error: create command requires 'file_text' parameter",
+                    tool_call_id=request.tool_call.get("id")
+                )
+            result = resolved_backend.write(validated_path, file_text)
+            if result.error:
+                return ToolMessage(content=result.error, tool_call_id=request.tool_call.get("id"))
+
+            message = f"Created file '{result.path}'"
+            if result.files_update is not None:
+                return Command(
+                    update={
+                        "files": result.files_update,
+                        "messages": [ToolMessage(content=message, tool_call_id=request.tool_call.get("id"))],
+                    }
+                )
+            return ToolMessage(content=message, tool_call_id=request.tool_call.get("id"))
+
+        if command == "insert":
+            insert_line = args.get("insert_line")
+            new_str = args.get("new_str")
+            if insert_line is None or new_str is None:
+                return ToolMessage(
+                    content="Error: insert command requires both 'insert_line' and 'new_str' parameters",
+                    tool_call_id=request.tool_call.get("id")
+                )
+
+            # Handle insert command
+            if insert_line < 1:
+                return ToolMessage(
+                    content=f"Error: insert_line must be >= 1, got {insert_line}",
+                    tool_call_id=request.tool_call.get("id")
+                )
+
+            try:
+                files = request.state.get("files", {})
+                file_data = files.get(validated_path)
+                if file_data is None:
+                    return ToolMessage(
+                        content=f"Error: File '{validated_path}' not found",
+                        tool_call_id=request.tool_call.get("id")
+                    )
+
+                lines = file_data.get("content", [])
+                insert_index = insert_line - 1
+                if insert_index < 0:
+                    insert_index = 0
+                elif insert_index > len(lines):
+                    insert_index = len(lines)
+
+                new_lines = lines.copy()
+                new_lines.insert(insert_index, new_str)
+                new_content = "\n".join(new_lines)
+
+                result = resolved_backend.write(validated_path, new_content)
+                if result.error:
+                    from deepagents.backends.utils import create_file_data
+                    new_file_data = create_file_data(new_content)
+                    message = f"Inserted text at line {insert_line} in '{validated_path}'"
+                    return Command(
+                        update={
+                            "files": {validated_path: new_file_data},
+                            "messages": [ToolMessage(content=message, tool_call_id=request.tool_call.get("id"))],
+                        }
+                    )
+
+                message = f"Inserted text at line {insert_line} in '{result.path}'"
+                if result.files_update is not None:
+                    return Command(
+                        update={
+                            "files": result.files_update,
+                            "messages": [ToolMessage(content=message, tool_call_id=request.tool_call.get("id"))],
+                        }
+                    )
+                return ToolMessage(content=message, tool_call_id=request.tool_call.get("id"))
+
+            except Exception as e:
+                return ToolMessage(
+                    content=f"Error inserting into {validated_path}: {e}",
+                    tool_call_id=request.tool_call.get("id")
+                )
+
+        return ToolMessage(
+            content=f"Error: Unknown command '{command}'. Supported commands: view, str_replace, create, insert",
+            tool_call_id=request.tool_call.get("id")
+        )
 
     def wrap_model_call(
         self,

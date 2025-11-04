@@ -54,7 +54,6 @@ def create_deep_agent(
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-    use_claude_native_text_editor: bool = False,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -89,10 +88,6 @@ def create_deep_agent(
         debug: Whether to enable debug mode. Passed through to create_agent.
         name: The name of the agent. Passed through to create_agent.
         cache: The cache to use for the agent. Passed through to create_agent.
-        use_claude_native_text_editor: If True, uses Claude's native str_replace_based_edit_tool
-            instead of the standard six file tools (ls, read_file, write_file, edit_file,
-            glob, grep). The native tool provides a command-based interface matching Claude's
-            official text_editor_20250728 specification. Default is False.
 
     Returns:
         A configured deep agent.
@@ -100,15 +95,21 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
 
-    # Choose file middleware based on use_claude_native_text_editor flag
-    file_middleware = (
-        ClaudeTextEditorMiddleware(backend=backend) if use_claude_native_text_editor else FilesystemMiddleware(backend=backend)
-    )
+    # Check if user provided a file middleware (FilesystemMiddleware or ClaudeTextEditorMiddleware)
+    user_file_middleware = None
+    for mw in middleware:
+        if isinstance(mw, (FilesystemMiddleware, ClaudeTextEditorMiddleware)):
+            user_file_middleware = mw
+            break
 
-    # Subagents should use the same file middleware as the parent
-    subagent_file_middleware = (
-        ClaudeTextEditorMiddleware(backend=backend) if use_claude_native_text_editor else FilesystemMiddleware(backend=backend)
-    )
+    # Use user's file middleware if provided, otherwise default to FilesystemMiddleware
+    file_middleware = user_file_middleware if user_file_middleware is not None else FilesystemMiddleware(backend=backend)
+
+    # Subagents use the same file middleware (but create a new instance)
+    if isinstance(file_middleware, ClaudeTextEditorMiddleware):
+        subagent_file_middleware = ClaudeTextEditorMiddleware(backend=backend)
+    else:
+        subagent_file_middleware = FilesystemMiddleware(backend=backend)
 
     deepagent_middleware = [
         TodoListMiddleware(),
@@ -139,8 +140,12 @@ def create_deep_agent(
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),
     ]
+    # Add user's additional middleware, but skip the file middleware if they provided one
+    # (it's already in deepagent_middleware)
     if middleware:
-        deepagent_middleware.extend(middleware)
+        for mw in middleware:
+            if mw is not user_file_middleware:  # Skip the file middleware we already added
+                deepagent_middleware.append(mw)
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 

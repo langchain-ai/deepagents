@@ -70,9 +70,44 @@ Located in `libs/deepagents/graph.py`. This is the main entry point that creates
 5. **AnthropicPromptCachingMiddleware** - Optimizes prompt caching for Anthropic models
 6. **PatchToolCallsMiddleware** - Internal tool call handling
 7. **HumanInTheLoopMiddleware** - Optional, added if `interrupt_on` is provided
+8. **ResumableShellToolMiddleware** - Optional, provides `shell`/`bash` tool for command execution
 
-**File Middleware Selection:**
-Use `use_claude_native_text_editor=True` to switch from FilesystemMiddleware to ClaudeTextEditorMiddleware. The native tool provides exact compatibility with Claude's training but lacks glob/grep search capabilities.
+**File Middleware:**
+- **Default**: `FilesystemMiddleware` is used automatically if no file middleware is provided
+  - Provides 6 tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+- **Claude Native**: Pass `ClaudeTextEditorMiddleware(backend=backend)` in `middleware` parameter
+  - User must manually bind the native tool first: `model.bind_tools([{"type": "text_editor_20250728", "name": "str_replace_based_edit_tool", "max_characters": 10000}])`
+  - Provides exact compatibility with Claude's training but lacks glob/grep search capabilities
+  - Example:
+    ```python
+    agent = create_deep_agent(
+        model=model_with_tools,
+        middleware=[ClaudeTextEditorMiddleware(backend=backend)]
+    )
+    ```
+
+**Shell Middleware:**
+Shell access is opt-in. Pass `ResumableShellToolMiddleware` in `middleware` parameter.
+- **Langchain shell**: Middleware provides the `shell` tool automatically
+  - Example:
+    ```python
+    shell_middleware = ResumableShellToolMiddleware(workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy())
+    agent = create_deep_agent(middleware=[shell_middleware])
+    ```
+- **Claude native bash**: Manually bind the native tool first, then use `add_shell_tool=False`
+  - Bind: `model.bind_tools([{"type": "bash_20250124", "name": "bash"}])`
+  - Set `add_shell_tool=False` to prevent adding the langchain `shell` tool
+  - Middleware automatically detects and handles both langchain and Claude's native bash tool
+  - Example:
+    ```python
+    model = model.bind_tools([{"type": "bash_20250124", "name": "bash"}])
+    shell_middleware = ResumableShellToolMiddleware(
+        workspace_root=os.getcwd(),
+        execution_policy=HostExecutionPolicy(),
+        add_shell_tool=False  # Don't add langchain's shell tool
+    )
+    agent = create_deep_agent(model=model, middleware=[shell_middleware])
+    ```
 
 **Default model:** `claude-sonnet-4-5-20250929` with 20k max tokens
 **Recursion limit:** 1000
@@ -84,7 +119,7 @@ Middleware is composable and can be used independently. Each middleware adds too
 - `FilesystemMiddleware` (`libs/deepagents/middleware/filesystem.py`) - Six separate file tools with glob/grep
 - `ClaudeTextEditorMiddleware` (`libs/deepagents/middleware/claude_text_editor.py`) - Claude's native text editor tool
 - `SubAgentMiddleware` (`libs/deepagents/middleware/subagents.py`) - Subagent spawning
-- `ResumableShellToolMiddleware` (`libs/deepagents/middleware/resumable_shell.py`) - Shell access
+- `ResumableShellToolMiddleware` (`libs/deepagents/middleware/resumable_shell.py`) - Shell access, handles both langchain's shell tool and Claude's native `bash_20250124` tool
 
 ### Backend System
 

@@ -586,17 +586,8 @@ def execute_task(
                         status.stop()
                         spinner_active = False
 
-                    console.print("\nCommand rejected. Returning to prompt.\n", style=COLORS["dim"])
-
-                    # Resume agent in background thread to properly update graph state
-                    # without blocking the user
-                    def resume_after_rejection():
-                        try:
-                            agent.invoke(Command(resume=hitl_response), config=config)
-                        except Exception:
-                            pass  # Silently ignore errors
-
-                    threading.Thread(target=resume_after_rejection, daemon=True).start()
+                    console.print("\n[yellow]Command rejected.[/yellow]", style="bold")
+                    console.print("Tell the agent what you'd like to do differently.\n")
                     return
 
                 # Resume the agent with the human decision

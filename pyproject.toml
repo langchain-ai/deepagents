@@ -26,6 +26,7 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 test = [
   "pytest",
   "pytest-cov",
+  "pytest-xdist",
   "ruff>=0.12.2,<0.13.0",
   "mypy>=1.18.1,<1.19.0",
 ]

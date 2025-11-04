@@ -141,7 +141,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
             break
         except KeyboardInterrupt:
             # Ctrl+C at prompt - exit the program
-            console.print("\n\nGoodbye!", style=COLORS["primary"])
+            console.print("\nGoodbye!", style=COLORS["primary"])
             break
 
         if not user_input:

@@ -2,6 +2,7 @@
 
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -20,7 +21,7 @@ from .config import COLORS, COMMANDS, SessionState, console
 
 
 # Regex patterns for context-aware completion
-AT_MENTION_RE = re.compile(r'@(?P<path>[A-Za-z0-9._~/-]*)$')
+AT_MENTION_RE = re.compile(r'@(?P<path>(?:[^\s@]|(?<=\\)\s)*)$')
 SLASH_COMMAND_RE = re.compile(r'^/(?P<command>[a-z]*)$')
 
 
@@ -54,8 +55,8 @@ class FilePathCompleter(Completer):
             # Add trailing / for directories so users can continue navigating
             completed_path = Path(path_fragment + comp.text).expanduser()
             completion_text = comp.text
-            if completed_path.is_dir() and not completion_text.endswith('/'):
-                completion_text += '/'
+            if completed_path.is_dir() and not completion_text.endswith(os.sep):
+                completion_text += os.sep
 
             yield Completion(
                 text=completion_text,
@@ -117,21 +118,22 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     return text, files
 
 
-def get_bottom_toolbar(session_state: SessionState, session_ref: dict):
+def get_bottom_toolbar(session_state: SessionState, session_ref: dict) -> Callable[[], list[tuple[str, str]]]:
     """Return toolbar function that shows auto-approve status and BASH MODE."""
 
-    def toolbar():
+    def toolbar() -> list[tuple[str, str]]:
         parts = []
 
         # Check if we're in BASH mode (input starts with !)
         try:
             session = session_ref.get('session')
-            if session and hasattr(session, 'default_buffer'):
+            if session:
                 current_text = session.default_buffer.text
                 if current_text.startswith("!"):
                     parts.append(("bg:#ff1493 fg:#ffffff bold", " BASH MODE "))
                     parts.append(("", " | "))
-        except:
+        except (AttributeError, TypeError):
+            # Silently ignore - toolbar is non-critical and called frequently
             pass
 
         # Base status message

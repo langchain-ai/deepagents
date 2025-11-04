@@ -255,7 +255,7 @@ def execute_task(
             status.stop()
             spinner_active = False
         if not has_responded:
-            console.print("●", style=COLORS["agent"], markup=False)
+            console.print("●", style=COLORS["agent"], markup=False, end=" ")
             has_responded = True
         markdown = Markdown(pending_text.rstrip())
         console.print(markdown, style=COLORS["agent"])
@@ -272,7 +272,7 @@ def execute_task(
             status.stop()
             spinner_active = False
         if not has_responded:
-            console.print("●", style=COLORS["agent"], markup=False)
+            console.print("●", style=COLORS["agent"], markup=False, end=" ")
             has_responded = True
         console.print()
         render_summary_panel(summary_buffer.strip())

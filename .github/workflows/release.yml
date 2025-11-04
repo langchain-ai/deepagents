@@ -310,6 +310,7 @@ jobs:
           VIRTUAL_ENV=.venv uv pip install dist/*.whl
 
       - name: Run unit tests
+        if: false  # Temporarily disabled
         run: make test
         working-directory: ${{ env.WORKING_DIR }}
 

@@ -8,9 +8,8 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.resumable_shell import ResumableShellToolMiddleware
-from langchain.agents.middleware import HostExecutionPolicy
+from langchain.agents.middleware import HostExecutionPolicy, InterruptOnConfig
 from langgraph.checkpoint.memory import InMemorySaver
-from langchain.agents.middleware import InterruptOnConfig
 
 from .agent_memory import AgentMemoryMiddleware
 from .config import COLORS, config, console, get_default_coding_instructions

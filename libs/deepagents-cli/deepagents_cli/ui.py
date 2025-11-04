@@ -1,17 +1,15 @@
 """UI rendering and display utilities for the CLI."""
 
 import json
+import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 from rich import box
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.text import Text
 from rich.markup import escape
-
-import re
-import shutil
+from rich.panel import Panel
+from rich.text import Text
 
 from .config import COLORS, COMMANDS, DEEP_AGENTS_ASCII, MAX_ARG_LENGTH, console
 from .file_ops import FileOperationRecord
@@ -374,7 +372,6 @@ def _wrap_diff_line(
     Returns:
         List of formatted lines (may be multiple if wrapped)
     """
-
     # Escape Rich markup in code content
     code = escape(code)
 
@@ -399,15 +396,15 @@ def _wrap_diff_line(
             chunk = remaining[:available_width]
             # Look for a good break point in the last 20 chars
             break_point = max(
-                chunk.rfind(' '),
-                chunk.rfind(','),
-                chunk.rfind('('),
-                chunk.rfind(')'),
+                chunk.rfind(" "),
+                chunk.rfind(","),
+                chunk.rfind("("),
+                chunk.rfind(")"),
             )
             if break_point > available_width - 20:
                 # Found a good break point
-                chunk = remaining[:break_point + 1]
-                remaining = remaining[break_point + 1:]
+                chunk = remaining[: break_point + 1]
+                remaining = remaining[break_point + 1 :]
             else:
                 # No good break point, just split
                 chunk = remaining[:available_width]
@@ -431,7 +428,6 @@ def format_diff_rich(diff_lines: list[str]) -> str:
     Returns:
         Rich-formatted diff string with line numbers
     """
-
     if not diff_lines:
         return "[dim]No changes detected[/dim]"
 
@@ -468,23 +464,17 @@ def format_diff_rich(diff_lines: list[str]) -> str:
             old_num, new_num = int(m.group(1)), int(m.group(2))
         elif line.startswith("-"):
             formatted_lines.extend(
-                _wrap_diff_line(
-                    line[1:], "-", deletion_color, old_num, width, term_width
-                )
+                _wrap_diff_line(line[1:], "-", deletion_color, old_num, width, term_width)
             )
             old_num += 1
         elif line.startswith("+"):
             formatted_lines.extend(
-                _wrap_diff_line(
-                    line[1:], "+", addition_color, new_num, width, term_width
-                )
+                _wrap_diff_line(line[1:], "+", addition_color, new_num, width, term_width)
             )
             new_num += 1
         elif line.startswith(" "):
             formatted_lines.extend(
-                _wrap_diff_line(
-                    line[1:], " ", context_color, old_num, width, term_width
-                )
+                _wrap_diff_line(line[1:], " ", context_color, old_num, width, term_width)
             )
             old_num += 1
             new_num += 1

@@ -211,3 +211,8 @@ __marimo__/
 
 #claude
 .claude
+
+# planning files
+IMPLEMENTATION_GUIDE.md
+pr_251_edits.md
+improvements.md

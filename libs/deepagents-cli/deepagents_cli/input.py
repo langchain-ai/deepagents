@@ -1,7 +1,9 @@
 """Input handling, completers, and prompt session for the CLI."""
 
+import asyncio
 import os
 import re
+import time
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -18,6 +20,25 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
 from .config import COLORS, COMMANDS, COMMON_BASH_COMMANDS, SessionState, console
+
+
+# Module-level state for tracking Ctrl+C double-press to exit
+_last_ctrl_c_time = None
+_ctrl_c_timeout = 2.0  # seconds
+_show_quit_message = False
+_quit_message_task = None
+_prompt_app = None  # Reference to the app for UI invalidation
+
+
+async def _hide_quit_message_after_timeout():
+    """Hide the quit message after timeout expires."""
+    global _show_quit_message, _last_ctrl_c_time, _prompt_app
+    await asyncio.sleep(_ctrl_c_timeout)
+    _show_quit_message = False
+    _last_ctrl_c_time = None
+    # Force UI refresh to hide the message
+    if _prompt_app:
+        _prompt_app.invalidate()
 
 
 class FilePathCompleter(Completer):
@@ -151,14 +172,22 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
 
 
 def get_bottom_toolbar(session_state: SessionState):
-    """Return toolbar function that shows auto-approve status."""
+    """Return toolbar function that shows auto-approve status with optional quit message."""
 
     def toolbar():
+        # Base status message
         if session_state.auto_approve:
-            # Green background when auto-approve is ON
-            return [("class:toolbar-green", "auto-accept ON (CTRL+T to toggle)")]
-        # Orange background when manual accept (auto-approve OFF)
-        return [("class:toolbar-orange", "manual accept (CTRL+T to toggle)")]
+            base_msg = "auto-accept ON (CTRL+T to toggle)"
+            base_class = "class:toolbar-green"
+        else:
+            base_msg = "manual accept (CTRL+T to toggle)"
+            base_class = "class:toolbar-orange"
+
+        # Add quit warning if Ctrl+C was pressed
+        if _show_quit_message:
+            return [(base_class, base_msg), ("class:warning", " | Ctrl+C again to exit")]
+
+        return [(base_class, base_msg)]
 
     return toolbar
 
@@ -171,6 +200,38 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
 
     # Create key bindings
     kb = KeyBindings()
+
+    # Bind Ctrl+C for exiting on double-press
+    @kb.add("c-c")
+    def _(event):
+        """Ctrl+C: Exit on double-press within timeout."""
+        global _last_ctrl_c_time, _show_quit_message, _quit_message_task, _prompt_app
+
+        current_time = time.time()
+
+        # Store app reference for async UI updates
+        _prompt_app = event.app
+
+        # Check for double-press
+        if _last_ctrl_c_time is not None:
+            time_since_last = current_time - _last_ctrl_c_time
+            if time_since_last < _ctrl_c_timeout:
+                # Double-press detected - exit
+                raise KeyboardInterrupt()
+
+        # First press or timeout expired - show quit message in toolbar
+        _last_ctrl_c_time = current_time
+        _show_quit_message = True
+
+        # Cancel any existing hide task
+        if _quit_message_task and not _quit_message_task.done():
+            _quit_message_task.cancel()
+
+        # Schedule message to hide after timeout
+        _quit_message_task = asyncio.create_task(_hide_quit_message_after_timeout())
+
+        # Refresh UI to show the message
+        event.app.invalidate()
 
     # Bind Ctrl+T to toggle auto-approve
     @kb.add("c-t")

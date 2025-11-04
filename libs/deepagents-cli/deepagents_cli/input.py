@@ -46,17 +46,25 @@ class FilePathCompleter(Completer):
 
         path_fragment = m.group("path")
 
-        # Create temporary document for just the path fragment
-        temp_doc = Document(text=path_fragment, cursor_position=len(path_fragment))
+        # Unescape the path for PathCompleter (it doesn't understand escape sequences)
+        unescaped_fragment = path_fragment.replace("\\ ", " ")
+
+        # Strip trailing backslash if present (user is in the process of typing an escape)
+        if unescaped_fragment.endswith("\\"):
+            unescaped_fragment = unescaped_fragment[:-1]
+
+        # Create temporary document for the unescaped path fragment
+        temp_doc = Document(text=unescaped_fragment, cursor_position=len(unescaped_fragment))
 
         # Get completions from PathCompleter and use its start_position
         # PathCompleter returns suffix text with start_position=0 (insert at cursor)
         for comp in self.path_completer.get_completions(temp_doc, complete_event):
             # Add trailing / for directories so users can continue navigating
-            completed_path = Path(path_fragment + comp.text).expanduser()
-            completion_text = comp.text
-            if completed_path.is_dir() and not completion_text.endswith(os.sep):
-                completion_text += os.sep
+            completed_path = Path(unescaped_fragment + comp.text).expanduser()
+            # Re-escape spaces in the completion text for the command line
+            completion_text = comp.text.replace(" ", "\\ ")
+            if completed_path.is_dir() and not completion_text.endswith('/'):
+                completion_text += '/'
 
             yield Completion(
                 text=completion_text,

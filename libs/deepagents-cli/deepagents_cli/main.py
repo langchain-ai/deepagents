@@ -7,7 +7,15 @@ from pathlib import Path
 
 from .agent import create_agent_with_config, list_agents, reset_agent
 from .commands import execute_bash_command, handle_command
-from .config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
+from .config import (
+    COLORS,
+    DEEP_AGENTS_ASCII,
+    SessionState,
+    console,
+    create_model,
+    load_agent_config,
+    save_agent_config,
+)
 from .execution import execute_task
 from .input import create_prompt_session
 from .tools import http_request, tavily_client, web_search
@@ -93,8 +101,10 @@ def parse_args():
     return parser.parse_args()
 
 
-async def simple_cli(agent, assistant_id: str | None, session_state, baseline_tokens: int = 0):
-    """Main CLI loop."""
+async def simple_cli(
+    agent, assistant_id: str | None, session_state, baseline_tokens: int = 0
+) -> dict | None:
+    """Main CLI loop. Returns dict for special actions like model switching."""
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
@@ -153,6 +163,9 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
             if result == "exit":
                 console.print("\nGoodbye!", style=COLORS["primary"])
                 break
+            if isinstance(result, dict):
+                # Special action like model switching
+                return result
             if result:
                 # Command was handled, continue to next input
                 continue
@@ -170,10 +183,10 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
         execute_task(user_input, agent, assistant_id, session_state, token_tracker)
 
 
-async def main(assistant_id: str, session_state):
-    """Main entry point."""
+async def main(assistant_id: str, session_state) -> dict | None:
+    """Main entry point. Returns dict for special actions like model switching."""
     # Create the model (checks API keys)
-    model = create_model()
+    model = create_model(session_state.preferred_provider)
 
     # Create agent with conditional tools
     tools = [http_request]
@@ -191,9 +204,10 @@ async def main(assistant_id: str, session_state):
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
 
     try:
-        await simple_cli(agent, assistant_id, session_state, baseline_tokens)
+        return await simple_cli(agent, assistant_id, session_state, baseline_tokens)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
+        return None
 
 
 def cli_main():
@@ -211,11 +225,40 @@ def cli_main():
         elif args.command == "reset":
             reset_agent(args.agent, args.source_agent)
         else:
-            # Create session state from args
-            session_state = SessionState(auto_approve=args.auto_approve)
+            # Load agent config to get preferred provider
+            agent_config = load_agent_config(args.agent)
+
+            # Create session state from args and config
+            session_state = SessionState(
+                auto_approve=args.auto_approve,
+                preferred_provider=agent_config.get("preferred_provider"),
+            )
 
             # API key validation happens in create_model()
-            asyncio.run(main(args.agent, session_state))
+            # Loop to handle model switching
+            while True:
+                result = asyncio.run(main(args.agent, session_state))
+
+                # Check if we need to recreate with different provider
+                if isinstance(result, dict) and result.get("action") == "recreate":
+                    provider = result.get("provider")
+                    console.print()
+                    console.print(
+                        f"[{COLORS['primary']}]Switching to {provider.upper()}...[/{COLORS['primary']}]"
+                    )
+                    console.print()
+
+                    # Update session state
+                    session_state.preferred_provider = provider
+
+                    # Save to config for next session
+                    save_agent_config(args.agent, {"preferred_provider": provider})
+
+                    # Continue loop to recreate agent
+                    continue
+
+                # Normal exit
+                break
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

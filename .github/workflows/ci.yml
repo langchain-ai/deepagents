@@ -29,7 +29,6 @@ env:
 jobs:
   # Run linting on both packages in parallel
   lint:
-    if: false  # Temporarily disabled - change to 'true' to re-enable
     strategy:
       matrix:
         include:
@@ -71,7 +70,7 @@ jobs:
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
-    needs: [test]
+    needs: [lint, test]
     if: always()
     runs-on: ubuntu-latest
     env:

@@ -603,7 +603,7 @@ class FilesystemMiddleware(AgentMiddleware):
         result = resolved_backend.write(file_path, content)
         if result.error:
             return message, None
-        content_sample = format_content_with_line_numbers(content.splitlines()[:10], start_line=1)
+        content_sample = format_content_with_line_numbers([line[:1000] for line in content.splitlines()[:10]], start_line=1)
         processed_message = ToolMessage(
             TOO_LARGE_TOOL_MSG.format(
                 tool_call_id=message.tool_call_id,

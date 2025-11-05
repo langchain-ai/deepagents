@@ -37,7 +37,6 @@ cli/
   - `COLORS` - Color scheme for terminal output
   - `DEEP_AGENTS_ASCII` - ASCII art banner
   - `COMMANDS` - Available slash commands (including `/provider`)
-  - `COMMON_BASH_COMMANDS` - Autocomplete options for bash commands
   - `console` - Rich Console instance
   - `SessionState` - Holds mutable session state including `preferred_provider`
   - `create_model(force_provider)` - Creates OpenAI or Anthropic model with optional provider override

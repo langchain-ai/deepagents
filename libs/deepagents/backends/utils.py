@@ -8,9 +8,12 @@ enable composition without fragile string parsing.
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
 
 import wcmatch.glob as wcglob
+
+from deepagents.backends.protocol import FileInfo as _FileInfo
+from deepagents.backends.protocol import GrepMatch as _GrepMatch
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 10000
@@ -18,26 +21,9 @@ LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
 TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your parameters]"
 
-
-class FileInfo(TypedDict, total=False):
-    """Structured file listing info.
-
-    Minimal contract used across backends. Only "path" is required.
-    Other fields are best-effort and may be absent depending on backend.
-    """
-
-    path: str
-    is_dir: bool
-    size: int  # bytes (approx)
-    modified_at: str  # ISO timestamp if known
-
-
-class GrepMatch(TypedDict):
-    """Structured grep match entry."""
-
-    path: str
-    line: int
-    text: str
+# Re-export protocol types for backwards compatibility
+FileInfo = _FileInfo
+GrepMatch = _GrepMatch
 
 
 def sanitize_tool_call_id(tool_call_id: str) -> str:

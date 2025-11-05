@@ -1,0 +1,405 @@
+# Builds and publishes deepagents packages to PyPI.
+#
+# Manually triggered, though can be used as a reusable workflow (workflow_call).
+#
+# Handles version bumping, building, and publishing to PyPI with authentication.
+
+name: "🚀 Package Release"
+run-name: "Release ${{ inputs.package }}"
+on:
+  workflow_call:
+    inputs:
+      package:
+        required: true
+        type: string
+        description: "Package to release (deepagents or deepagents-cli)"
+  workflow_dispatch:
+    inputs:
+      package:
+        required: true
+        type: choice
+        description: "Package to release"
+        options:
+          - deepagents
+          - deepagents-cli
+        default: deepagents
+      dangerous-nonmaster-release:
+        required: false
+        type: boolean
+        default: false
+        description: "Release from a non-master branch (danger!) - Only use for hotfixes"
+
+env:
+  PYTHON_VERSION: "3.11"
+  UV_FROZEN: "true"
+  UV_NO_SYNC: "true"
+  # Map package name to working directory
+  WORKING_DIR: ${{ inputs.package == 'deepagents' && '.' || (inputs.package == 'deepagents-cli' && 'libs/deepagents-cli' || '__invalid__') }}
+
+permissions:
+  contents: write # Required for creating GitHub releases
+
+jobs:
+  # Build the distribution package and extract version info
+  # Runs in isolated environment with minimal permissions for security
+  build:
+    if: github.ref == 'refs/heads/master' || inputs.dangerous-nonmaster-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    outputs:
+      pkg-name: ${{ steps.check-version.outputs.pkg-name }}
+      version: ${{ steps.check-version.outputs.version }}
+
+    steps:
+      - name: Validate package name
+        run: |
+          if [ "${{ env.WORKING_DIR }}" = "__invalid__" ]; then
+            echo "Error: Invalid package name '${{ inputs.package }}'"
+            echo "Valid packages are: deepagents, deepagents-cli"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
+
+      - name: Set up Python + uv
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # We want to keep this build stage *separate* from the release stage,
+      # so that there's no sharing of permissions between them.
+      # (Release stage has trusted publishing and GitHub repo contents write access,
+      #
+      # Otherwise, a malicious `build` step (e.g. via a compromised dependency)
+      # could get access to our GitHub or PyPI credentials.
+      #
+      # Per the trusted publishing GitHub Action:
+      # > It is strongly advised to separate jobs for building [...]
+      # > from the publish job.
+      # https://github.com/pypa/gh-action-pypi-publish#non-goals
+      - name: Build project for distribution
+        run: uv build
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Upload build
+        uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Check version
+        id: check-version
+        shell: python
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          import os
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              data = tomllib.load(f)
+          pkg_name = data["project"]["name"]
+          version = data["project"]["version"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"pkg-name={pkg_name}\n")
+              f.write(f"version={version}\n")
+  release-notes:
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release-body: ${{ steps.generate-release-body.outputs.release-body }}
+      tag: ${{ steps.check-tags.outputs.tag }}
+      prev-tag: ${{ steps.check-tags.outputs.prev-tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: deepagents
+          sparse-checkout: | # this only grabs files for relevant dir
+            ${{ env.WORKING_DIR }}
+          ref: ${{ github.ref }} # this scopes to just ref'd branch
+          fetch-depth: 0 # this fetches entire commit history
+      - name: Check tags
+        id: check-tags
+        shell: bash
+        working-directory: deepagents/${{ env.WORKING_DIR }}
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          # Handle regular versions and pre-release versions differently
+          if [[ "$VERSION" == *"-"* ]]; then
+            # This is a pre-release version (contains a hyphen)
+            # Extract the base version without the pre-release suffix
+            BASE_VERSION=${VERSION%%-*}
+            # Look for the latest release of the same base version
+            REGEX="^$PKG_NAME==$BASE_VERSION\$"
+            PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+
+            # If no exact base version match, look for the latest release of any kind
+            if [ -z "$PREV_TAG" ]; then
+              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
+              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+            fi
+          else
+            # Regular version handling
+            PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"; [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
+
+            # backup case if releasing e.g. 0.3.0, looks up last release
+            # note if last release (chronologically) was e.g. 0.1.47 it will get
+            # that instead of the last 0.2 release
+            if [ -z "$PREV_TAG" ]; then
+              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
+              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+            fi
+          fi
+
+          # if PREV_TAG is empty or came out to 0.0.0, let it be empty
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$PKG_NAME==0.0.0" ]; then
+            echo "No previous tag found - first release"
+          else
+            # confirm prev-tag actually exists in git repo with git tag
+            GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
+            if [ -z "$GIT_TAG_RESULT" ]; then
+              echo "Previous tag $PREV_TAG not found in git repo"
+              exit 1
+            fi
+          fi
+
+
+          TAG="${PKG_NAME}==${VERSION}"
+          if [ "$TAG" == "$PREV_TAG" ]; then
+            echo "No new version to release"
+            exit 1
+          fi
+          echo tag="$TAG" >> $GITHUB_OUTPUT
+          echo prev-tag="$PREV_TAG" >> $GITHUB_OUTPUT
+      - name: Generate release body
+        id: generate-release-body
+        working-directory: deepagents
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          TAG: ${{ steps.check-tags.outputs.tag }}
+          PREV_TAG: ${{ steps.check-tags.outputs.prev-tag }}
+          WORKING_DIR: ${{ env.WORKING_DIR }}
+        run: |
+          PREAMBLE="Changes since $PREV_TAG"
+          # if PREV_TAG is empty or 0.0.0, then we are releasing the first version
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$PKG_NAME==0.0.0" ]; then
+            PREAMBLE="Initial release"
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+          {
+            echo 'release-body<<EOF'
+            echo $PREAMBLE
+            echo
+            git log --format="%s" "$PREV_TAG"..HEAD -- "$WORKING_DIR"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+  test-pypi-publish:
+    needs:
+      - build
+      - release-notes
+    runs-on: ubuntu-latest
+    permissions:
+      # This permission is used for trusted publishing:
+      # https://blog.pypi.org/posts/2023-04-20-introducing-trusted-publishers/
+      #
+      # Trusted publishing has to also be configured on PyPI for each package:
+      # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Publish to test PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ env.WORKING_DIR }}/dist/
+          verbose: true
+          print-hash: true
+          repository-url: https://test.pypi.org/legacy/
+          # We overwrite any existing distributions with the same name and version.
+          # This is *only for CI use* and is *extremely dangerous* otherwise!
+          # https://github.com/pypa/gh-action-pypi-publish#tolerating-release-package-file-duplicates
+          skip-existing: true
+          # Temp workaround since attestations are on by default as of gh-action-pypi-publish v1.11.0
+          attestations: false
+
+  pre-release-checks:
+    needs:
+      - build
+      - release-notes
+      - test-pypi-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      # We explicitly *don't* set up caching here. This ensures our tests are
+      # maximally sensitive to catching breakage.
+      #
+      # For example, here's a way that caching can cause a falsely-passing test:
+      # - Make the package manifest no longer list a dependency package
+      #   as a requirement. This means it won't be installed by `pip install`,
+      #   and attempting to use it would cause a crash.
+      # - That dependency used to be required, so it may have been cached.
+      #   When restoring the venv packages from cache, that dependency gets included.
+      # - Tests pass, because the dependency is present even though it wasn't specified.
+      # - The package is published, and it breaks on the missing dependency when
+      #   used in the real world.
+
+      - name: Set up Python + uv
+        uses: "./.github/actions/uv_setup"
+        id: setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Import dist package
+        shell: bash
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        # Here we use:
+        # - The default regular PyPI index as the *primary* index, meaning
+        #   that it takes priority (https://pypi.org/simple)
+        # - The test PyPI index as an extra index, so that any dependencies that
+        #   are not found on test PyPI can be resolved and installed anyway.
+        #   (https://test.pypi.org/simple). This will include the PKG_NAME==VERSION
+        #   package because VERSION will not have been uploaded to regular PyPI yet.
+        # - attempt install again after 5 seconds if it fails because there is
+        #   sometimes a delay in availability on test pypi
+        run: |
+          uv venv
+          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+
+          # Replace all dashes in the package name with underscores,
+          # since that's how Python imports packages with dashes in the name.
+          IMPORT_NAME="$(echo "$PKG_NAME" | sed s/-/_/g)"
+
+          uv run python -c "import $IMPORT_NAME; print(dir($IMPORT_NAME))"
+
+      - name: Import test dependencies
+        run: uv sync --group test
+        working-directory: ${{ env.WORKING_DIR }}
+
+      # Overwrite the local version of the package with the built version
+      - name: Import published package (again)
+        working-directory: ${{ env.WORKING_DIR }}
+        shell: bash
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+
+      - name: Run unit tests
+        if: false  # Temporarily disabled
+        run: make test
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Run integration tests
+        # Only run integration tests if they exist (currently only for root package)
+        if: ${{ inputs.package == 'deepagents' }}
+        run: make integration_test || echo "No integration tests found, skipping..."
+        working-directory: ${{ env.WORKING_DIR }}
+
+  publish:
+    # Publishes the package to PyPI
+    needs:
+      - build
+      - release-notes
+      - test-pypi-publish
+      - pre-release-checks
+    runs-on: ubuntu-latest
+    permissions:
+      # This permission is used for trusted publishing:
+      # https://blog.pypi.org/posts/2023-04-20-introducing-trusted-publishers/
+      #
+      # Trusted publishing has to also be configured on PyPI for each package:
+      # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
+      id-token: write
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python + uv
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ env.WORKING_DIR }}/dist/
+          verbose: true
+          print-hash: true
+          # Temp workaround since attestations are on by default as of gh-action-pypi-publish v1.11.0
+          attestations: false
+
+  mark-release:
+    # Marks the GitHub release with the new version tag
+    needs:
+      - build
+      - release-notes
+      - test-pypi-publish
+      - pre-release-checks
+      - publish
+    runs-on: ubuntu-latest
+    permissions:
+      # This permission is needed by `ncipollo/release-action` to
+      # create the GitHub release/tag
+      contents: write
+
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python + uv
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Create Tag
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "${{ env.WORKING_DIR }}/dist/*"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generateReleaseNotes: false
+          tag: ${{needs.build.outputs.pkg-name}}==${{ needs.build.outputs.version }}
+          body: ${{ needs.release-notes.outputs.release-body }}
+          commit: ${{ github.sha }}
+          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents'}}

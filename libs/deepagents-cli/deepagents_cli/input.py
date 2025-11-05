@@ -2,6 +2,7 @@
 
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -9,7 +10,6 @@ from prompt_toolkit.completion import (
     Completer,
     Completion,
     PathCompleter,
-    WordCompleter,
     merge_completers,
 )
 from prompt_toolkit.document import Document
@@ -17,110 +17,84 @@ from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
-from .config import COLORS, COMMANDS, COMMON_BASH_COMMANDS, SessionState, console
+from .config import COLORS, COMMANDS, SessionState, console
+
+# Regex patterns for context-aware completion
+AT_MENTION_RE = re.compile(r"@(?P<path>(?:[^\s@]|(?<=\\)\s)*)$")
+SLASH_COMMAND_RE = re.compile(r"^/(?P<command>[a-z]*)$")
 
 
 class FilePathCompleter(Completer):
-    """File path completer that triggers on @ symbol with case-insensitive matching."""
+    """Activate filesystem completion only when cursor is after '@'."""
 
     def __init__(self):
-        self.path_completer = PathCompleter(expanduser=True)
+        self.path_completer = PathCompleter(
+            expanduser=True,
+            min_input_len=0,
+            only_directories=False,
+        )
 
     def get_completions(self, document, complete_event):
         """Get file path completions when @ is detected."""
         text = document.text_before_cursor
 
-        # Check if we're after an @ symbol
-        if "@" in text:
-            # Get the part after the last @
-            parts = text.split("@")
-            if len(parts) >= 2:
-                after_at = parts[-1]
-                # Create a document for just the path part
-                path_doc = Document(after_at, len(after_at))
+        # Use regex to detect @path pattern at end of line
+        m = AT_MENTION_RE.search(text)
+        if not m:
+            return  # Not in an @path context
 
-                # Get all completions from PathCompleter
-                all_completions = list(
-                    self.path_completer.get_completions(path_doc, complete_event)
-                )
+        path_fragment = m.group("path")
 
-                # If user has typed something, filter case-insensitively
-                if after_at.strip():
-                    # Extract just the filename part for matching (not the full path)
-                    search_parts = after_at.split("/")
-                    search_term = search_parts[-1].lower() if search_parts else ""
+        # Unescape the path for PathCompleter (it doesn't understand escape sequences)
+        unescaped_fragment = path_fragment.replace("\\ ", " ")
 
-                    # Filter completions case-insensitively
-                    filtered_completions = [
-                        c for c in all_completions if search_term in c.text.lower()
-                    ]
-                else:
-                    # No search term, show all completions
-                    filtered_completions = all_completions
+        # Strip trailing backslash if present (user is in the process of typing an escape)
+        unescaped_fragment = unescaped_fragment.removesuffix("\\")
 
-                # Yield filtered completions
-                for completion in filtered_completions:
-                    yield Completion(
-                        text=completion.text,
-                        start_position=completion.start_position,
-                        display=completion.display,
-                        display_meta=completion.display_meta,
-                        style=completion.style,
-                    )
+        # Create temporary document for the unescaped path fragment
+        temp_doc = Document(text=unescaped_fragment, cursor_position=len(unescaped_fragment))
+
+        # Get completions from PathCompleter and use its start_position
+        # PathCompleter returns suffix text with start_position=0 (insert at cursor)
+        for comp in self.path_completer.get_completions(temp_doc, complete_event):
+            # Add trailing / for directories so users can continue navigating
+            completed_path = Path(unescaped_fragment + comp.text).expanduser()
+            # Re-escape spaces in the completion text for the command line
+            completion_text = comp.text.replace(" ", "\\ ")
+            if completed_path.is_dir() and not completion_text.endswith("/"):
+                completion_text += "/"
+
+            yield Completion(
+                text=completion_text,
+                start_position=comp.start_position,  # Use PathCompleter's position (usually 0)
+                display=comp.display,
+                display_meta=comp.display_meta,
+            )
 
 
 class CommandCompleter(Completer):
-    """Command completer for / commands."""
-
-    def __init__(self):
-        self.word_completer = WordCompleter(
-            list(COMMANDS.keys()),
-            meta_dict=COMMANDS,
-            sentence=True,
-            ignore_case=True,
-        )
+    """Activate command completion only when line starts with '/'."""
 
     def get_completions(self, document, complete_event):
         """Get command completions when / is at the start."""
-        text = document.text
+        text = document.text_before_cursor
 
-        # Only complete if line starts with /
-        if text.startswith("/"):
-            # Remove / for word completion
-            cmd_text = text[1:]
-            adjusted_doc = Document(
-                cmd_text, document.cursor_position - 1 if document.cursor_position > 0 else 0
-            )
+        # Use regex to detect /command pattern at start of line
+        m = SLASH_COMMAND_RE.match(text)
+        if not m:
+            return  # Not in a /command context
 
-            for completion in self.word_completer.get_completions(adjusted_doc, complete_event):
-                yield completion
+        command_fragment = m.group("command")
 
-
-class BashCompleter(Completer):
-    """Bash command completer for ! commands."""
-
-    def __init__(self):
-        self.word_completer = WordCompleter(
-            list(COMMON_BASH_COMMANDS.keys()),
-            meta_dict=COMMON_BASH_COMMANDS,
-            sentence=True,
-            ignore_case=True,
-        )
-
-    def get_completions(self, document, complete_event):
-        """Get bash command completions when ! is at the start."""
-        text = document.text
-
-        # Only complete if line starts with !
-        if text.startswith("!"):
-            # Remove ! for word completion
-            cmd_text = text[1:]
-            adjusted_doc = Document(
-                cmd_text, document.cursor_position - 1 if document.cursor_position > 0 else 0
-            )
-
-            for completion in self.word_completer.get_completions(adjusted_doc, complete_event):
-                yield completion
+        # Match commands that start with the fragment (case-insensitive)
+        for cmd_name, cmd_desc in COMMANDS.items():
+            if cmd_name.startswith(command_fragment.lower()):
+                yield Completion(
+                    text=cmd_name,
+                    start_position=-len(command_fragment),  # Fixed position for original document
+                    display=cmd_name,
+                    display_meta=cmd_desc,
+                )
 
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
@@ -150,15 +124,37 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     return text, files
 
 
-def get_bottom_toolbar(session_state: SessionState):
-    """Return toolbar function that shows auto-approve status."""
+def get_bottom_toolbar(
+    session_state: SessionState, session_ref: dict
+) -> Callable[[], list[tuple[str, str]]]:
+    """Return toolbar function that shows auto-approve status and BASH MODE."""
 
-    def toolbar():
+    def toolbar() -> list[tuple[str, str]]:
+        parts = []
+
+        # Check if we're in BASH mode (input starts with !)
+        try:
+            session = session_ref.get("session")
+            if session:
+                current_text = session.default_buffer.text
+                if current_text.startswith("!"):
+                    parts.append(("bg:#ff1493 fg:#ffffff bold", " BASH MODE "))
+                    parts.append(("", " | "))
+        except (AttributeError, TypeError):
+            # Silently ignore - toolbar is non-critical and called frequently
+            pass
+
+        # Base status message
         if session_state.auto_approve:
-            # Green background when auto-approve is ON
-            return [("class:toolbar-green", "auto-accept ON (CTRL+T to toggle)")]
-        # Orange background when manual accept (auto-approve OFF)
-        return [("class:toolbar-orange", "manual accept (CTRL+T to toggle)")]
+            base_msg = "auto-accept ON (CTRL+T to toggle)"
+            base_class = "class:toolbar-green"
+        else:
+            base_msg = "manual accept (CTRL+T to toggle)"
+            base_class = "class:toolbar-orange"
+
+        parts.append((base_class, base_msg))
+
+        return parts
 
     return toolbar
 
@@ -221,6 +217,21 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         """Open the current input in an external editor (nano by default)."""
         event.current_buffer.open_in_editor()
 
+    # Backspace handler to retrigger completions after deletion
+    @kb.add("backspace")
+    def _(event):
+        """Handle backspace and retrigger completion if in @ or / context."""
+        buffer = event.current_buffer
+
+        # Perform the normal backspace action
+        buffer.delete_before_cursor(count=1)
+
+        # Check if we're in a completion context (@ or /)
+        text = buffer.document.text_before_cursor
+        if AT_MENTION_RE.search(text) or SLASH_COMMAND_RE.match(text):
+            # Retrigger completion
+            buffer.start_completion(select_first=False)
+
     from prompt_toolkit.styles import Style
 
     # Define styles for the toolbar with full-width background colors
@@ -232,18 +243,28 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         }
     )
 
+    # Create session reference dict for toolbar to access session
+    session_ref = {}
+
     # Create the session
     session = PromptSession(
         message=HTML(f'<style fg="{COLORS["user"]}">></style> '),
         multiline=True,  # Keep multiline support but Enter submits
         key_bindings=kb,
-        completer=merge_completers([CommandCompleter(), BashCompleter(), FilePathCompleter()]),
+        completer=merge_completers([CommandCompleter(), FilePathCompleter()]),
         editing_mode=EditingMode.EMACS,
         complete_while_typing=True,  # Show completions as you type
+        complete_in_thread=True,  # Async completion prevents menu freezing
         mouse_support=False,
         enable_open_in_editor=True,  # Allow Ctrl+X Ctrl+E to open external editor
-        bottom_toolbar=get_bottom_toolbar(session_state),  # Persistent status bar at bottom
+        bottom_toolbar=get_bottom_toolbar(
+            session_state, session_ref
+        ),  # Persistent status bar at bottom
         style=toolbar_style,  # Apply toolbar styling
+        reserve_space_for_menu=7,  # Reserve space for completion menu to show 5-6 results
     )
+
+    # Store session reference for toolbar to access
+    session_ref["session"] = session
 
     return session

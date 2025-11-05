@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.2.4"
+version = "0.2.5"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,6 +26,7 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 test = [
   "pytest",
   "pytest-cov",
+  "pytest-xdist",
   "ruff>=0.12.2,<0.13.0",
   "mypy>=1.18.1,<1.19.0",
 ]
@@ -44,6 +45,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["libs"]
 include = ["deepagents*"]
+exclude = ["deepagents.tests*", "deepagents.tests.*", "tests*", "tests.*"]
 
 [tool.setuptools.package-dir]
 "" = "libs"

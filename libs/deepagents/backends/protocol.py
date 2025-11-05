@@ -7,11 +7,30 @@ database, etc.) and provide a uniform interface for file operations.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeAlias, runtime_checkable
+from typing import Any, Protocol, TypeAlias, TypedDict, runtime_checkable
 
 from langchain.tools import ToolRuntime
 
-from deepagents.backends.utils import FileInfo, GrepMatch
+
+class FileInfo(TypedDict, total=False):
+    """Structured file listing info.
+
+    Minimal contract used across backends. Only "path" is required.
+    Other fields are best-effort and may be absent depending on backend.
+    """
+
+    path: str
+    is_dir: bool
+    size: int  # bytes (approx)
+    modified_at: str  # ISO timestamp if known
+
+
+class GrepMatch(TypedDict):
+    """Structured grep match entry."""
+
+    path: str
+    line: int
+    text: str
 
 
 @dataclass

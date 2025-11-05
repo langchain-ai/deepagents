@@ -48,26 +48,6 @@ COMMANDS = {
     "exit": "Exit the CLI",
 }
 
-# Common bash commands for autocomplete
-COMMON_BASH_COMMANDS = {
-    "ls": "List directory contents",
-    "ls -la": "List all files with details",
-    "cd": "Change directory",
-    "pwd": "Print working directory",
-    "cat": "Display file contents",
-    "grep": "Search text patterns",
-    "find": "Find files",
-    "mkdir": "Make directory",
-    "rm": "Remove file",
-    "cp": "Copy file",
-    "mv": "Move/rename file",
-    "echo": "Print text",
-    "touch": "Create empty file",
-    "head": "Show first lines",
-    "tail": "Show last lines",
-    "wc": "Count lines/words",
-    "chmod": "Change permissions",
-}
 
 # Maximum argument length for display
 MAX_ARG_LENGTH = 150

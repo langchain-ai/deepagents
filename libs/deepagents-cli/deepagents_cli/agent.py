@@ -8,7 +8,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.resumable_shell import ResumableShellToolMiddleware
-from langchain.agents.middleware import HostExecutionPolicy
+from langchain.agents.middleware import HostExecutionPolicy, InterruptOnConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
 from .agent_memory import AgentMemoryMiddleware
@@ -179,24 +179,18 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
 
         action = "Overwrite" if os.path.exists(file_path) else "Create"
         line_count = len(content.splitlines())
-        size = len(content.encode("utf-8"))
 
-        return f"File: {file_path}\nAction: {action} file\nLines: {line_count} · Bytes: {size}"
+        return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
 
     def format_edit_file_description(tool_call: dict) -> str:
         """Format edit_file tool call for approval prompt."""
         args = tool_call.get("args", {})
         file_path = args.get("file_path", "unknown")
-        old_string = args.get("old_string", "")
-        new_string = args.get("new_string", "")
         replace_all = bool(args.get("replace_all", False))
-
-        delta = len(new_string) - len(old_string)
 
         return (
             f"File: {file_path}\n"
-            f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})\n"
-            f"Snippet delta: {delta:+} characters"
+            f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})"
         )
 
     def format_web_search_description(tool_call: dict) -> str:
@@ -228,8 +222,6 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         )
 
     # Configure human-in-the-loop for potentially destructive tools
-    from langchain.agents.middleware import InterruptOnConfig
-
     shell_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": lambda tool_call, state, runtime: (

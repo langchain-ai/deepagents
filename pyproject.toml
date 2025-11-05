@@ -9,7 +9,9 @@ dependencies = [
     "langchain-anthropic>=1.0.0,<2.0.0",
     "langchain>=1.0.2,<2.0.0",
     "langchain-core>=1.0.0,<2.0.0",
-    "wcmatch"
+    "wcmatch",
+    "runloop-api-client>=0.66.1",
+    "daytona>=0.112.2",
 ]
 
 

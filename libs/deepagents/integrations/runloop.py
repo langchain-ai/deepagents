@@ -4,15 +4,20 @@ import datetime
 import os
 from typing import Optional
 
-from deepagents.backends.protocol import BackendProtocol, WriteResult, EditResult
-from deepagents.backends.utils import (
+from runloop_api_client import Runloop
+
+from deepagents.backends.protocol import (
+    BackendProtocol,
     FileInfo,
     GrepMatch,
+    WriteResult,
+    EditResult,
+)
+from deepagents.backends.utils import (
     check_empty_content,
     format_content_with_line_numbers,
     perform_string_replacement,
 )
-from runloop_api_client import Runloop
 
 
 class RunloopBackend:
@@ -27,10 +32,10 @@ class RunloopBackend:
     # run one or more commands, and then clean up when finished.
 
     def __init__(
-            self,
-            devbox_id: str,
-            client: Optional[Runloop] = None,
-            bearer_token: Optional[str] = None,
+        self,
+        devbox_id: str,
+        client: Optional[Runloop] = None,
+        bearer_token: Optional[str] = None,
     ) -> None:
         """Initialize Runloop backend.
 
@@ -55,7 +60,7 @@ class RunloopBackend:
     def exec(self, command: str) -> tuple[str, int]:
         """Execute a command in the devbox and return (stdout, exit_status)."""
         result = self._client.devboxes.execute_and_await_completion(
-            id=self._devbox_id,
+            devbox_id=self._devbox_id,
             command=command,
         )
         # NOTE: could check exit status for error (non-zero) and
@@ -99,9 +104,7 @@ class RunloopProtocol(BackendProtocol):
             file_info: FileInfo = {
                 "path": path + "/" if filetype == "d" else path,
                 "is_dir": filetype == "d",
-                "is_file": filetype == "f",
-                "is_link": filetype == "l",
-                "size": size if filetype == "f" else 0,
+                "size": int(size) if filetype == "f" else 0,
                 "modified_at": modtime,
             }
             results.append(file_info)
@@ -110,10 +113,10 @@ class RunloopProtocol(BackendProtocol):
         return results
 
     def read(
-            self,
-            file_path: str,
-            offset: int = 0,
-            limit: int = 2000,
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
     ) -> str:
         """Read file content with line numbers.
 
@@ -127,13 +130,7 @@ class RunloopProtocol(BackendProtocol):
         """
         # Check if file exists and get content
         start_line = offset + 1
-        cmd = (
-            f"if [ ! -f '{file_path}' ]; then "
-            f"echo 'Error: File not found'; exit 1; "
-            f"else "
-            f"tail -n +{start_line} '{file_path}' | head -n {limit}; "
-            f"fi"
-        )
+        cmd = f"if [ ! -f '{file_path}' ]; then echo 'Error: File not found'; exit 1; else tail -n +{start_line} '{file_path}' | head -n {limit}; fi"
         stdout, exit_code = self._backend.exec(cmd)
 
         if exit_code != 0 or "Error: File not found" in stdout:
@@ -146,9 +143,9 @@ class RunloopProtocol(BackendProtocol):
         return format_content_with_line_numbers(stdout, start_line=start_line)
 
     def write(
-            self,
-            file_path: str,
-            content: str,
+        self,
+        file_path: str,
+        content: str,
     ) -> WriteResult:
         """Create a new file with content.
 
@@ -168,9 +165,7 @@ class RunloopProtocol(BackendProtocol):
         stdout, _ = self._backend.exec(check_cmd)
 
         if "exists" in stdout:
-            return WriteResult(
-                error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
-            )
+            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         # Use the upload_file() method from the Runloop API client.
         try:
@@ -183,14 +178,15 @@ class RunloopProtocol(BackendProtocol):
             # TODO: catch specific exception
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
-        return WriteResult(path=file_path)
+        # External storage - no files_update needed
+        return WriteResult(path=file_path, files_update=None)
 
     def edit(
-            self,
-            file_path: str,
-            old_string: str,
-            new_string: str,
-            replace_all: bool = False,
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
@@ -209,15 +205,10 @@ class RunloopProtocol(BackendProtocol):
 
         try:
             # fetch the file
-            response = self._backend._client.devboxes.download_file(
-                id=self._backend._devbox_id,
-                path=file_path
-            )
+            response = self._backend._client.devboxes.download_file(id=self._backend._devbox_id, path=file_path)
 
             # do the replacements
-            new_text, occurrences = perform_string_replacement(
-                response.text(), old_string, new_string, replace_all
-            )
+            new_text, occurrences = perform_string_replacement(response.text(), old_string, new_string, replace_all)
 
             # write back
             self._backend._client.devboxes.upload_file(
@@ -225,17 +216,18 @@ class RunloopProtocol(BackendProtocol):
                 path=file_path,
                 file=new_text.encode("utf-8"),  # NOTE: might want a different type?
             )
-            return EditResult(path=file_path, occurrences=occurrences)
+            # External storage - no files_update needed
+            return EditResult(path=file_path, files_update=None, occurrences=occurrences)
 
         except Exception as e:
             # TODO: catch specific exception
             return EditResult(error=f"Error writing file '{file_path}': {e}")
 
     def grep_raw(
-            self,
-            pattern: str,
-            path: Optional[str] = None,
-            glob: Optional[str] = None,
+        self,
+        pattern: str,
+        path: Optional[str] = None,
+        glob: Optional[str] = None,
     ) -> list[GrepMatch] | str:
         """Search for a pattern in files.
 
@@ -308,7 +300,7 @@ class RunloopProtocol(BackendProtocol):
         # Use a more complicated command, to grab stat output from the
         # matching files.  Could be simplified if this isn't needed.
         python_cmd = (
-            f"python3 -c \""
+            f'python3 -c "'
             f"import glob, os, json; "
             f"os.chdir('{path_escaped}'); "
             f"matches = glob.glob('{pattern_escaped}', recursive=True); "
@@ -316,7 +308,7 @@ class RunloopProtocol(BackendProtocol):
             f"  if os.path.isfile(m): "
             f"    s = os.stat(m); "
             f"    print(json.dumps({{'path': m, 'size': s.st_size, 'mtime': s.st_mtime}})); "
-            f"\" 2>/dev/null"
+            f'" 2>/dev/null'
         )
 
         stdout, exit_code = self._backend.exec(python_cmd)
@@ -354,3 +346,7 @@ class RunloopProtocol(BackendProtocol):
 
         results.sort(key=lambda x: x.get("path", ""))
         return results
+
+    def exec(self, command: str) -> tuple[str, int]:
+        """Execute a command in the devbox and return (stdout, exit_status)."""
+        return self._backend.exec(command)

@@ -86,6 +86,7 @@ class RunloopBackend(BackendProtocol):
         result = self._client.devboxes.execute_and_await_completion(
             devbox_id=self._devbox_id,
             command=command,
+            timeout=timeout,
         )
         # Combine stdout and stderr
         output = result.stdout or ""

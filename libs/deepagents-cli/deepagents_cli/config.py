@@ -61,6 +61,8 @@ class SessionState:
 
     def __init__(self, auto_approve: bool = False):
         self.auto_approve = auto_approve
+        self.exit_hint_until: float | None = None
+        self.exit_hint_handle = None
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return new state."""

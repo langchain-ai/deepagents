@@ -64,8 +64,25 @@ class RunloopBackend(BackendProtocol):
         self._client = client
         self._devbox_id = devbox_id
 
-    def exec(self, command: str) -> ExecuteResponse:
-        """Execute a command in the devbox and return ExecuteResponse."""
+    def execute(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        *,
+        timeout: int = 30 * 60,
+    ) -> ExecuteResponse:
+        """Execute a command in the devbox and return ExecuteResponse.
+
+        Args:
+            command: Full shell command string to execute.
+            cwd: Working directory to execute the command in (absolute path).
+            env: Environment variables for the command (dict of name -> value).
+            timeout: Maximum execution time in seconds (default: 30 minutes).
+
+        Returns:
+            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+        """
         result = self._client.devboxes.execute_and_await_completion(
             devbox_id=self._devbox_id,
             command=command,
@@ -94,7 +111,7 @@ class RunloopBackend(BackendProtocol):
         """
         # Use find to list only direct children
         cmd = f"find '{path}' -maxdepth 1 -mindepth 1 -printf '%p %s %T@ %y %Y\\n' 2>/dev/null"
-        response = self.exec(cmd)
+        response = self.execute(cmd)
 
         if (response.exit_code or 0) != 0 or not response.output.strip():
             # NOTE: this silently ignores errors; not sure what error
@@ -141,7 +158,7 @@ class RunloopBackend(BackendProtocol):
         # Check if file exists and get content
         start_line = offset + 1
         cmd = f"if [ ! -f '{file_path}' ]; then echo 'Error: File not found'; exit 1; else tail -n +{start_line} '{file_path}' | head -n {limit}; fi"
-        response = self.exec(cmd)
+        response = self.execute(cmd)
 
         if (response.exit_code or 0) != 0 or "Error: File not found" in response.output:
             return f"Error: File '{file_path}' not found"
@@ -172,7 +189,7 @@ class RunloopBackend(BackendProtocol):
 
         # Check if file already exists
         check_cmd = f"test -e '{file_path}' && echo 'exists' || echo 'ok'"
-        response = self.exec(check_cmd)
+        response = self.execute(check_cmd)
 
         if "exists" in response.output:
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
@@ -264,7 +281,7 @@ class RunloopBackend(BackendProtocol):
         pattern_escaped = pattern.replace("'", "\\'")
 
         cmd = f"grep {grep_opts} -e '{pattern_escaped}' '{search_path}' 2>/dev/null || true"
-        response = self.exec(cmd)
+        response = self.execute(cmd)
 
         if not response.output.strip():
             return []
@@ -311,7 +328,7 @@ class RunloopBackend(BackendProtocol):
         # matching files.  Could be simplified if this isn't needed.
         python_cmd = _GLOB_COMMAND_TEMPLATE.format(path_escaped=path_escaped, pattern_escaped=pattern_escaped)
 
-        response = self.exec(python_cmd)
+        response = self.execute(python_cmd)
 
         if (response.exit_code or 0) != 0 or not response.output.strip():
             return []

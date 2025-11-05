@@ -257,29 +257,6 @@ def render_todo_list(todos: list[dict]) -> None:
     console.print(panel)
 
 
-def render_summary_panel(summary_content: str) -> None:
-    """Render conversation summary as a collapsible panel."""
-    # Extract just the summary text, removing any metadata
-    summary_text = summary_content.strip()
-
-    # Truncate if very long
-    if len(summary_text) > 500:
-        preview = summary_text[:500] + "..."
-    else:
-        preview = summary_text
-
-    panel = Panel(
-        f"[dim]Context exceeded threshold. Conversation history summarized to preserve context.[/dim]\n\n"
-        f"[yellow]Summary:[/yellow]\n{preview}\n\n"
-        f"[dim]Recent messages kept in full. Continuing with reduced context...[/dim]",
-        title="[bold yellow]⚠ Context Summarized[/bold yellow]",
-        border_style="yellow",
-        box=box.ROUNDED,
-        padding=(1, 2),
-    )
-    console.print(panel)
-
-
 def _format_line_span(start: int | None, end: int | None) -> str:
     if start is None and end is None:
         return ""

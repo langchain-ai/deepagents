@@ -21,24 +21,8 @@ from .ui import (
     format_tool_message_content,
     render_diff_block,
     render_file_operation,
-    render_summary_panel,
     render_todo_list,
 )
-
-
-def is_summary_message(content: str) -> bool:
-    """Detect if a message is from SummarizationMiddleware."""
-    if not isinstance(content, str):
-        return False
-    content_lower = content.lower()
-    # Common patterns from SummarizationMiddleware
-    return (
-        "conversation summary" in content_lower
-        or "previous conversation" in content_lower
-        or content.startswith("Summary:")
-        or content.startswith("Conversation summary:")
-        or "summarized the conversation" in content_lower
-    )
 
 
 def _extract_tool_args(action_request: dict) -> dict | None:
@@ -242,9 +226,6 @@ def execute_task(
     tool_call_buffers: dict[str | int, dict] = {}
     # Buffer assistant text so we can render complete markdown segments
     pending_text = ""
-    # Track if we're buffering a summary message
-    summary_mode = False
-    summary_buffer = ""
 
     def flush_text_buffer(*, final: bool = False) -> None:
         """Flush accumulated assistant text as rendered markdown when appropriate."""
@@ -260,25 +241,6 @@ def execute_task(
         markdown = Markdown(pending_text.rstrip())
         console.print(markdown, style=COLORS["agent"])
         pending_text = ""
-
-    def flush_summary_buffer() -> None:
-        """Render any buffered summary panel output."""
-        nonlocal summary_mode, summary_buffer, spinner_active, has_responded
-        if not summary_mode or not summary_buffer.strip():
-            summary_mode = False
-            summary_buffer = ""
-            return
-        if spinner_active:
-            status.stop()
-            spinner_active = False
-        if not has_responded:
-            console.print("●", style=COLORS["agent"], markup=False, end=" ")
-            has_responded = True
-        console.print()
-        render_summary_panel(summary_buffer.strip())
-        console.print()
-        summary_mode = False
-        summary_buffer = ""
 
     # Stream input - may need to loop if there are interrupts
     stream_input = {"messages": [{"role": "user", "content": final_input}]}
@@ -348,6 +310,21 @@ def execute_task(
 
                     message, metadata = data
 
+                    if isinstance(message, HumanMessage):
+                        content = str(message.content).strip()
+                        if content:
+                            flush_text_buffer(final=True)
+                            if spinner_active:
+                                status.stop()
+                                spinner_active = False
+                            if not has_responded:
+                                console.print("●", style=COLORS["agent"], markup=False, end=" ")
+                                has_responded = True
+                            markdown = Markdown(content)
+                            console.print(markdown, style=COLORS["agent"])
+                            console.print()
+                        continue
+
                     if isinstance(message, ToolMessage):
                         # Tool results are sent to the agent, not displayed to users
                         # Exception: show shell command errors to help with debugging
@@ -357,7 +334,6 @@ def execute_task(
                         record = file_op_tracker.complete_with_message(message)
 
                         if tool_name == "shell" and tool_status != "success":
-                            flush_summary_buffer()
                             flush_text_buffer(final=True)
                             if tool_content:
                                 if spinner_active:
@@ -369,7 +345,6 @@ def execute_task(
                         elif tool_content and isinstance(tool_content, str):
                             stripped = tool_content.lstrip()
                             if stripped.lower().startswith("error"):
-                                flush_summary_buffer()
                                 flush_text_buffer(final=True)
                                 if spinner_active:
                                     status.stop()
@@ -379,7 +354,6 @@ def execute_task(
                                 console.print()
 
                         if record:
-                            flush_summary_buffer()
                             flush_text_buffer(final=True)
                             if spinner_active:
                                 status.stop()
@@ -418,25 +392,10 @@ def execute_task(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
-                                if summary_mode:
-                                    summary_buffer += text
-                                    continue
-
-                                if is_summary_message(text) or is_summary_message(
-                                    pending_text + text
-                                ):
-                                    if pending_text:
-                                        summary_buffer += pending_text
-                                        pending_text = ""
-                                    summary_mode = True
-                                    summary_buffer += text
-                                    continue
-
                                 pending_text += text
 
                         # Handle reasoning blocks
                         elif block_type == "reasoning":
-                            flush_summary_buffer()
                             flush_text_buffer(final=True)
                             reasoning = block.get("reasoning", "")
                             if reasoning:
@@ -507,7 +466,6 @@ def execute_task(
                             if not isinstance(parsed_args, dict):
                                 parsed_args = {"value": parsed_args}
 
-                            flush_summary_buffer()
                             flush_text_buffer(final=True)
                             if buffer_id is not None:
                                 displayed_tool_ids.add(buffer_id)
@@ -533,11 +491,9 @@ def execute_task(
                                 spinner_active = True
 
                     if getattr(message, "chunk_position", None) == "last":
-                        flush_summary_buffer()
                         flush_text_buffer(final=True)
 
             # After streaming loop - handle interrupt if it occurred
-            flush_summary_buffer()
             flush_text_buffer(final=True)
             
             # Handle human-in-the-loop after stream completes

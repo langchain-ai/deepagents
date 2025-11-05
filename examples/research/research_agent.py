@@ -1,11 +1,54 @@
 import os
+import asyncio
 from typing import Literal
 
 from deepagents import create_deep_agent
 from tavily import TavilyClient
+from langchain_openai import ChatOpenAI
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 # It's best practice to initialize the client once and reuse it.
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
+
+def create_openai_model(
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> ChatOpenAI:
+    """Create a custom OpenAI model instance with specified configuration.
+    
+    Args:
+        api_key: OpenAI API key. If None, will use OPENAI_API_KEY environment variable.
+        base_url: Base URL for OpenAI API. If None, uses default OpenAI endpoint.
+        model: Model name (e.g., "gpt-4o", "gpt-4-turbo"). If None, uses OPENAI_MODEL environment variable or "gpt-4o".
+    
+    Returns:
+        Configured ChatOpenAI instance.
+    """
+    # Get API key from parameter or environment variable
+    api_key = api_key or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass api_key parameter."
+        )
+    
+    # Get model name from parameter or environment variable or use default
+    model_name = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    
+    # Build model configuration
+    model_config = {
+        "api_key": api_key,
+        "model": model_name,
+    }
+    
+    # Add base_url if provided
+    if base_url:
+        model_config["base_url"] = base_url
+    
+    return ChatOpenAI(**model_config)
 
 
 # Search tool to use to do research
@@ -157,9 +200,52 @@ You have access to a few tools.
 Use this to run an internet search for a given query. You can specify the number of results, the topic, and whether raw content should be included.
 """
 
-# Create the agent
+# Create OpenAI model with custom configuration
+# Configuration options:
+# - Set OPENAI_API_KEY environment variable for API key (required)
+# - Set OPENAI_BASE_URL environment variable for custom base URL (optional)
+# - Set OPENAI_MODEL environment variable for model name (optional, defaults to "gpt-4o")
+# Or pass them directly as parameters to create_openai_model()
+openai_model = create_openai_model(
+    api_key=None,  # Will use OPENAI_API_KEY from environment if None
+    base_url=os.environ.get("OPENAI_BASE_URL"),  # Optional custom base URL
+    model=os.environ.get("OPENAI_MODEL"),  # Optional model name
+)
+
+async def get_mcp_tools():
+    """Initialize MCP client and get available tools.
+    
+    Returns:
+        List of MCP tools that can be used by the agent.
+        Returns empty list if MCP server is unavailable.
+    """
+    try:
+        async with streamablehttp_client("http://127.0.0.1:18060/mcp") as (read, write, _):
+            async with ClientSession(read, write) as session:
+                # Initialize the connection
+                await session.initialize()
+                
+                # Get tools
+                tools = await load_mcp_tools(session)
+                return tools
+    except Exception as e:
+        # Log error but don't fail module loading
+        import warnings
+        warnings.warn(
+            f"Failed to connect to MCP server at http://127.0.0.1:18060/mcp: {e}. "
+            "Agent will work without MCP tools.",
+            UserWarning
+        )
+        return []
+
+
+# Get MCP tools synchronously, with error handling
+mcp_tools = asyncio.run(get_mcp_tools())
+
+# For backward compatibility, create a synchronous version without MCP
 agent = create_deep_agent(
-    tools=[internet_search],
+    model=openai_model,
+    tools=[internet_search] + mcp_tools,
     system_prompt=research_instructions,
     subagents=[critique_sub_agent, research_sub_agent],
 )

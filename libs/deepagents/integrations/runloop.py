@@ -20,16 +20,12 @@ from deepagents.backends.utils import (
 )
 
 
-class RunloopBackend:
+class RunloopProtocol(BackendProtocol):
     """Backend that operates on files in a Runloop devbox.
 
     This implementation uses the Runloop API client to execute commands
     and manipulate files within a remote devbox environment.
     """
-
-    # NOTE: As an example, this currently uses a pre-allocated devbox.
-    # For the real version we would want to create a devbox as needed,
-    # run one or more commands, and then clean up when finished.
 
     def __init__(
         self,
@@ -37,7 +33,7 @@ class RunloopBackend:
         client: Optional[Runloop] = None,
         bearer_token: Optional[str] = None,
     ) -> None:
-        """Initialize Runloop backend.
+        """Initialize Runloop protocol.
 
         Args:
             devbox_id: ID of the Runloop devbox to operate on.
@@ -67,11 +63,6 @@ class RunloopBackend:
         # return stderr here instead / in addition to stdout.
         return (result.stdout or "", result.exit_status)
 
-
-class RunloopProtocol(BackendProtocol):
-    def __init__(self, backend):
-        self._backend = backend
-
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
 
@@ -84,7 +75,7 @@ class RunloopProtocol(BackendProtocol):
         """
         # Use find to list only direct children
         cmd = f"find '{path}' -maxdepth 1 -mindepth 1 -printf '%p %s %T@ %y %Y\\n' 2>/dev/null"
-        stdout, exit_code = self._backend.exec(cmd)
+        stdout, exit_code = self.exec(cmd)
 
         if exit_code != 0 or not stdout.strip():
             # NOTE: this silently ignores errors; not sure what error
@@ -131,7 +122,7 @@ class RunloopProtocol(BackendProtocol):
         # Check if file exists and get content
         start_line = offset + 1
         cmd = f"if [ ! -f '{file_path}' ]; then echo 'Error: File not found'; exit 1; else tail -n +{start_line} '{file_path}' | head -n {limit}; fi"
-        stdout, exit_code = self._backend.exec(cmd)
+        stdout, exit_code = self.exec(cmd)
 
         if exit_code != 0 or "Error: File not found" in stdout:
             return f"Error: File '{file_path}' not found"
@@ -162,15 +153,15 @@ class RunloopProtocol(BackendProtocol):
 
         # Check if file already exists
         check_cmd = f"test -e '{file_path}' && echo 'exists' || echo 'ok'"
-        stdout, _ = self._backend.exec(check_cmd)
+        stdout, _ = self.exec(check_cmd)
 
         if "exists" in stdout:
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         # Use the upload_file() method from the Runloop API client.
         try:
-            self._backend._client.devboxes.upload_file(
-                id=self._backend._devbox_id,
+            self._client.devboxes.upload_file(
+                id=self._devbox_id,
                 path=file_path,
                 file=content.encode("utf-8"),  # NOTE: might want a different type?
             )
@@ -205,14 +196,14 @@ class RunloopProtocol(BackendProtocol):
 
         try:
             # fetch the file
-            response = self._backend._client.devboxes.download_file(id=self._backend._devbox_id, path=file_path)
+            response = self._client.devboxes.download_file(id=self._devbox_id, path=file_path)
 
             # do the replacements
             new_text, occurrences = perform_string_replacement(response.text(), old_string, new_string, replace_all)
 
             # write back
-            self._backend._client.devboxes.upload_file(
-                id=self._backend._devbox_id,
+            self._client.devboxes.upload_file(
+                id=self._devbox_id,
                 path=file_path,
                 file=new_text.encode("utf-8"),  # NOTE: might want a different type?
             )
@@ -254,7 +245,7 @@ class RunloopProtocol(BackendProtocol):
         pattern_escaped = pattern.replace("'", "\\'")
 
         cmd = f"grep {grep_opts} -e '{pattern_escaped}' '{search_path}' 2>/dev/null || true"
-        stdout, _ = self._backend.exec(cmd)
+        stdout, _ = self.exec(cmd)
 
         if not stdout.strip():
             return []
@@ -311,7 +302,7 @@ class RunloopProtocol(BackendProtocol):
             f'" 2>/dev/null'
         )
 
-        stdout, exit_code = self._backend.exec(python_cmd)
+        stdout, exit_code = self.exec(python_cmd)
 
         if exit_code != 0 or not stdout.strip():
             return []
@@ -346,7 +337,3 @@ class RunloopProtocol(BackendProtocol):
 
         results.sort(key=lambda x: x.get("path", ""))
         return results
-
-    def exec(self, command: str) -> tuple[str, int]:
-        """Execute a command in the devbox and return (stdout, exit_status)."""
-        return self._backend.exec(command)

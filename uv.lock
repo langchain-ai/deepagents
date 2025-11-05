@@ -407,7 +407,7 @@ test = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.7"
+version = "0.0.8"
 source = { editable = "libs/deepagents-cli" }
 dependencies = [
     { name = "deepagents" },

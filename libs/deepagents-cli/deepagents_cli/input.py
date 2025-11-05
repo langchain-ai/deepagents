@@ -159,7 +159,7 @@ def get_bottom_toolbar(
         parts.append((base_class, base_msg))
 
         # Show exit confirmation hint if active
-        hint_until = getattr(session_state, "exit_hint_until", None)
+        hint_until = session_state.exit_hint_until
         if hint_until is not None:
             now = time.monotonic()
             if now < hint_until:

@@ -1,17 +1,12 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
+from typing import Any
 
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
 
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileInfo, GrepMatch, WriteResult
 from deepagents.backends.utils import (
-    FileInfo,
-    GrepMatch,
     _glob_search_files,
     create_file_data,
     file_data_to_string,
@@ -22,7 +17,7 @@ from deepagents.backends.utils import (
 )
 
 
-class StoreBackend:
+class StoreBackend(BackendProtocol):
     """Backend that stores files in LangGraph's BaseStore (persistent).
 
     Uses LangGraph's Store for persistent, cross-conversation storage.
@@ -381,6 +376,3 @@ class StoreBackend:
                 }
             )
         return infos
-
-
-# Provider classes removed: prefer callables like `lambda rt: StoreBackend(rt)`

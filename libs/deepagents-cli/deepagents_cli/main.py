@@ -167,7 +167,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
             console.print("\nGoodbye!", style=COLORS["primary"])
             break
 
-        execute_task(user_input, agent, assistant_id, session_state, token_tracker)
+        await execute_task(user_input, agent, assistant_id, session_state, token_tracker)
 
 
 async def main(assistant_id: str, session_state):

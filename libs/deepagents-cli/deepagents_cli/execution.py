@@ -1,9 +1,9 @@
 """Task execution and streaming logic for the CLI."""
 
+import asyncio
 import json
 import sys
 import termios
-import threading
 import tty
 
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -174,7 +174,7 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
     return {"type": "reject", "message": "User rejected the command"}
 
 
-def execute_task(
+async def execute_task(
     user_input: str,
     agent,
     assistant_id: str | None,
@@ -287,7 +287,7 @@ def execute_task(
             suppress_resumed_output = False
             hitl_request = None
 
-            for chunk in agent.stream(
+            async for chunk in agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates"],  # Dual-mode for HITL support
                 subgraphs=True,
@@ -570,7 +570,11 @@ def execute_task(
                     # Handle human-in-the-loop approval
                     decisions = []
                     for action_request in hitl_request.get("action_requests", []):
-                        decision = prompt_for_tool_approval(action_request, assistant_id)
+                        decision = await asyncio.to_thread(
+                            prompt_for_tool_approval,
+                            action_request,
+                            assistant_id,
+                        )
                         decisions.append(decision)
 
                     suppress_resumed_output = any(
@@ -596,29 +600,53 @@ def execute_task(
                 # No interrupt, break out of while loop
                 break
 
+    except asyncio.CancelledError:
+        # Event loop cancelled the task (e.g. Ctrl+C during streaming) - clean up and return
+        if spinner_active:
+            status.stop()
+        console.print("\n[yellow]Interrupted by user[/yellow]")
+        console.print("Updating agent state...", style="dim")
+
+        try:
+            await agent.aupdate_state(
+                config=config,
+                values={
+                    "messages": [
+                        HumanMessage(
+                            content="[The previous request was cancelled by the system]"
+                        )
+                    ]
+                },
+            )
+            console.print("Ready for next command.\n", style="dim")
+        except Exception as e:
+            console.print(f"[red]Warning: Failed to update agent state: {e}[/red]\n")
+
+        return
+
     except KeyboardInterrupt:
         # User pressed Ctrl+C - clean up and exit gracefully
         if spinner_active:
             status.stop()
-        console.print("\n[yellow]Interrupted by user[/yellow]\n")
+        console.print("\n[yellow]Interrupted by user[/yellow]")
+        console.print("Updating agent state...", style="dim")
 
-        # Inform the agent in background thread (non-blocking)
-        def notify_agent():
-            try:
-                agent.update_state(
-                    config=config,
-                    values={
-                        "messages": [
-                            HumanMessage(
-                                content="[User interrupted the previous request with Ctrl+C]"
-                            )
-                        ]
-                    },
-                )
-            except Exception:
-                pass
+        # Inform the agent synchronously (in async context)
+        try:
+            await agent.aupdate_state(
+                config=config,
+                values={
+                    "messages": [
+                        HumanMessage(
+                            content="[User interrupted the previous request with Ctrl+C]"
+                        )
+                    ]
+                },
+            )
+            console.print("Ready for next command.\n", style="dim")
+        except Exception as e:
+            console.print(f"[red]Warning: Failed to update agent state: {e}[/red]\n")
 
-        threading.Thread(target=notify_agent, daemon=True).start()
         return
 
     if spinner_active:

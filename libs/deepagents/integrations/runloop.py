@@ -6,7 +6,6 @@ import os
 from runloop_api_client import Runloop
 
 from deepagents.backends.protocol import (
-    BackendFactory,
     BackendProtocol,
     EditResult,
     FileInfo,
@@ -339,6 +338,7 @@ class RunloopBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return results
 
+
 class NotGiven:
     """Sentinel type to indicate non specified parameters."""
 
@@ -357,7 +357,7 @@ class RunloopProvider:
             client = Runloop(bearer_token=api_key)
 
         self.client = client
-        self.create_params = {}
+        self.create_params = create_params
 
     def backend_factory(self, runtime: "ToolRuntime") -> RunloopBackend:
         """Return a RunloopBackendFactory using the stored client."""

@@ -5,13 +5,12 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from deepagents.backends.protocol import FileInfo, GrepMatch, WriteResult, EditResult
-from deepagents.backends.process import ExecuteResponse, Process, ProcessCapabilities
-
 from daytona import CreateSandboxFromSnapshotParams, Daytona, DaytonaConfig
+
 from deepagents.backends.pagination import PageResults, PaginationCursor
-from deepagents.backends.sandbox import Sandbox, SandboxCapabilities, SandboxMetadata, \
-    SandboxProvider
+from deepagents.backends.process import ExecuteResponse, Process, ProcessCapabilities
+from deepagents.backends.protocol import EditResult, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.sandbox import Sandbox, SandboxCapabilities, SandboxMetadata, SandboxProvider
 
 if TYPE_CHECKING:
     from daytona import Sandbox as DaytonaSandboxClient
@@ -92,9 +91,7 @@ class DaytonaFileSystem:
 
         # Write the file using Python
         python_code = (
-            f"import os; "
-            f"os.makedirs(os.path.dirname('{file_path}') or '.', exist_ok=True); "
-            f"open('{file_path}', 'w').write('''{content_escaped}''')"
+            f"import os; os.makedirs(os.path.dirname('{file_path}') or '.', exist_ok=True); open('{file_path}', 'w').write('''{content_escaped}''')"
         )
 
         cmd = f'python3 -c "{python_code}" 2>&1'
@@ -181,11 +178,13 @@ class DaytonaFileSystem:
             # Format is: path:line_number:text
             parts = line.split(":", 2)
             if len(parts) >= 3:
-                matches.append({
-                    "path": parts[0],
-                    "line": int(parts[1]),
-                    "text": parts[2],
-                })
+                matches.append(
+                    {
+                        "path": parts[0],
+                        "line": int(parts[1]),
+                        "text": parts[2],
+                    }
+                )
 
         return matches
 

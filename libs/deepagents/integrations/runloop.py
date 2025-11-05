@@ -2,16 +2,15 @@
 
 import datetime
 import os
-from typing import Optional
 
 from runloop_api_client import Runloop
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    EditResult,
     FileInfo,
     GrepMatch,
     WriteResult,
-    EditResult,
 )
 from deepagents.backends.utils import (
     check_empty_content,
@@ -19,9 +18,8 @@ from deepagents.backends.utils import (
     perform_string_replacement,
 )
 
-
 # Python command template for glob operations
-_GLOB_COMMAND_TEMPLATE = '''python3 -c "
+_GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob, os, json
 os.chdir('{path_escaped}')
 matches = glob.glob('{pattern_escaped}', recursive=True)
@@ -29,7 +27,7 @@ for m in matches:
     if os.path.isfile(m):
         s = os.stat(m)
         print(json.dumps({{'path': m, 'size': s.st_size, 'mtime': s.st_mtime}}))
-" 2>/dev/null'''
+" 2>/dev/null"""
 
 
 class RunloopProtocol(BackendProtocol):
@@ -42,8 +40,8 @@ class RunloopProtocol(BackendProtocol):
     def __init__(
         self,
         devbox_id: str,
-        client: Optional[Runloop] = None,
-        bearer_token: Optional[str] = None,
+        client: Runloop | None = None,
+        bearer_token: str | None = None,
     ) -> None:
         """Initialize Runloop protocol.
 
@@ -229,8 +227,8 @@ class RunloopProtocol(BackendProtocol):
     def grep_raw(
         self,
         pattern: str,
-        path: Optional[str] = None,
-        glob: Optional[str] = None,
+        path: str | None = None,
+        glob: str | None = None,
     ) -> list[GrepMatch] | str:
         """Search for a pattern in files.
 
@@ -302,10 +300,7 @@ class RunloopProtocol(BackendProtocol):
 
         # Use a more complicated command, to grab stat output from the
         # matching files.  Could be simplified if this isn't needed.
-        python_cmd = _GLOB_COMMAND_TEMPLATE.format(
-            path_escaped=path_escaped,
-            pattern_escaped=pattern_escaped
-        )
+        python_cmd = _GLOB_COMMAND_TEMPLATE.format(path_escaped=path_escaped, pattern_escaped=pattern_escaped)
 
         stdout, exit_code = self.exec(python_cmd)
 

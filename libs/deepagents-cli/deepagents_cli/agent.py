@@ -201,6 +201,14 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
 
         return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
 
+    def format_fetch_url_description(tool_call: dict) -> str:
+        """Format fetch_url tool call for approval prompt."""
+        args = tool_call.get("args", {})
+        url = args.get("url", "unknown")
+        timeout = args.get("timeout", 30)
+
+        return f"URL: {url}\nTimeout: {timeout}s\n\n⚠️  Will fetch and convert web content to markdown"
+
     def format_task_description(tool_call: dict) -> str:
         """Format task (subagent) tool call for approval prompt."""
         args = tool_call.get("args", {})
@@ -245,6 +253,11 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         "description": lambda tool_call, state, runtime: format_web_search_description(tool_call),
     }
 
+    fetch_url_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": lambda tool_call, state, runtime: format_fetch_url_description(tool_call),
+    }
+
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": lambda tool_call, state, runtime: format_task_description(tool_call),
@@ -261,6 +274,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
             "write_file": write_file_interrupt_config,
             "edit_file": edit_file_interrupt_config,
             "web_search": web_search_interrupt_config,
+            "fetch_url": fetch_url_interrupt_config,
             "task": task_interrupt_config,
         },
     ).with_config(config)

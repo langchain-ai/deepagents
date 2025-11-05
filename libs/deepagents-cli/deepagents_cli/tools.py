@@ -1,9 +1,12 @@
 """Custom tools for the CLI agent."""
 
+import asyncio
 import os
 from typing import Any, Literal
 
+import httpx
 import requests
+from markdownify import markdownify
 from tavily import TavilyClient
 
 # Initialize Tavily client if API key is available
@@ -12,6 +15,9 @@ tavily_client = (
     if os.environ.get("TAVILY_API_KEY")
     else None
 )
+
+# Initialize httpx client for async requests
+httpx_client = httpx.AsyncClient(follow_redirects=True)
 
 
 def http_request(
@@ -138,3 +144,94 @@ def web_search(
         return search_docs
     except Exception as e:
         return {"error": f"Web search error: {e!s}", "query": query}
+
+
+def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
+    """Fetch content from a URL and convert HTML to markdown format.
+
+    This tool fetches web page content and converts it to clean markdown text,
+    making it easy to read and process HTML content. After receiving the markdown,
+    you MUST synthesize the information into a natural, helpful response for the user.
+
+    Args:
+        url: The URL to fetch (must be a valid HTTP/HTTPS URL)
+        timeout: Request timeout in seconds (default: 30)
+
+    Returns:
+        Dictionary containing:
+        - success: Whether the request succeeded
+        - url: The final URL after redirects
+        - markdown_content: The page content converted to markdown
+        - status_code: HTTP status code
+        - content_length: Length of the markdown content in characters
+
+    IMPORTANT: After using this tool:
+    1. Read through the markdown content
+    2. Extract relevant information that answers the user's question
+    3. Synthesize this into a clear, natural language response
+    4. NEVER show the raw markdown to the user unless specifically requested
+    """
+
+    async def _fetch() -> dict[str, Any]:
+        try:
+            response = await httpx_client.get(url, timeout=timeout)
+            response.raise_for_status()
+
+            # Convert HTML content to markdown
+            markdown_content = markdownify(response.text)
+
+            return {
+                "success": True,
+                "url": str(response.url),
+                "markdown_content": markdown_content,
+                "status_code": response.status_code,
+                "content_length": len(markdown_content),
+            }
+
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "url": url,
+                "markdown_content": "",
+                "status_code": 0,
+                "content_length": 0,
+                "error": f"Request timed out after {timeout} seconds",
+            }
+        except httpx.HTTPStatusError as e:
+            return {
+                "success": False,
+                "url": url,
+                "markdown_content": "",
+                "status_code": e.response.status_code,
+                "content_length": 0,
+                "error": f"HTTP error {e.response.status_code}: {e.response.reason_phrase}",
+            }
+        except httpx.RequestError as e:
+            return {
+                "success": False,
+                "url": url,
+                "markdown_content": "",
+                "status_code": 0,
+                "content_length": 0,
+                "error": f"Request error: {e!s}",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "url": url,
+                "markdown_content": "",
+                "status_code": 0,
+                "content_length": 0,
+                "error": f"Error fetching URL: {e!s}",
+            }
+
+    # Run the async function in a new event loop
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If we're already in an async context, create a new loop
+            return asyncio.run(_fetch())
+        return loop.run_until_complete(_fetch())
+    except RuntimeError:
+        # If no event loop exists, create one
+        return asyncio.run(_fetch())

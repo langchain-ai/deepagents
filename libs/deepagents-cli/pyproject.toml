@@ -13,6 +13,8 @@ dependencies = [
   "langchain-openai>=0.1.0",
   "tavily-python",
   "python-dotenv",
+  "httpx>=0.27.0",
+  "markdownify>=0.13.0",
 ]
 
 [project.scripts]

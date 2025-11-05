@@ -10,7 +10,7 @@ from .commands import execute_bash_command, handle_command
 from .config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
 from .execution import execute_task
 from .input import create_prompt_session
-from .tools import http_request, tavily_client, web_search
+from .tools import fetch_url, http_request, tavily_client, web_search
 from .ui import TokenTracker, show_help
 
 
@@ -176,7 +176,7 @@ async def main(assistant_id: str, session_state):
     model = create_model()
 
     # Create agent with conditional tools
-    tools = [http_request]
+    tools = [http_request, fetch_url]
     if tavily_client is not None:
         tools.append(web_search)
 

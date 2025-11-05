@@ -126,6 +126,13 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         if parts:
             return f"{tool_name}({' '.join(parts)})"
 
+    elif tool_name == "fetch_url":
+        # Fetch URL: show the URL being fetched
+        if "url" in tool_args:
+            url = str(tool_args["url"])
+            url = truncate_value(url, 80)
+            return f'{tool_name}("{url}")'
+
     elif tool_name == "task":
         # Task: show the task description
         if "description" in tool_args:

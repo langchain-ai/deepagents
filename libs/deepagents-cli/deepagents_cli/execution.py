@@ -311,7 +311,7 @@ def execute_task(
                     message, metadata = data
 
                     if isinstance(message, HumanMessage):
-                        content = str(message.content).strip()
+                        content = message.text()
                         if content:
                             flush_text_buffer(final=True)
                             if spinner_active:

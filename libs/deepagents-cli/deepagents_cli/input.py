@@ -1,7 +1,9 @@
 """Input handling, completers, and prompt session for the CLI."""
 
+import asyncio
 import os
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -22,6 +24,8 @@ from .config import COLORS, COMMANDS, SessionState, console
 # Regex patterns for context-aware completion
 AT_MENTION_RE = re.compile(r"@(?P<path>(?:[^\s@]|(?<=\\)\s)*)$")
 SLASH_COMMAND_RE = re.compile(r"^/(?P<command>[a-z]*)$")
+
+EXIT_CONFIRM_WINDOW = 3.0
 
 
 class FilePathCompleter(Completer):
@@ -154,6 +158,16 @@ def get_bottom_toolbar(
 
         parts.append((base_class, base_msg))
 
+        # Show exit confirmation hint if active
+        hint_until = getattr(session_state, "exit_hint_until", None)
+        if hint_until is not None:
+            now = time.monotonic()
+            if now < hint_until:
+                parts.append(("", " | "))
+                parts.append(("class:toolbar-exit", " Ctrl+C again to exit "))
+            else:
+                session_state.exit_hint_until = None
+
         return parts
 
     return toolbar
@@ -167,6 +181,44 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
 
     # Create key bindings
     kb = KeyBindings()
+
+    @kb.add("c-c")
+    def _(event):
+        """Require double Ctrl+C within a short window to exit."""
+        app = event.app
+        now = time.monotonic()
+
+        if session_state.exit_hint_until is not None and now < session_state.exit_hint_until:
+            handle = session_state.exit_hint_handle
+            if handle:
+                handle.cancel()
+                session_state.exit_hint_handle = None
+            session_state.exit_hint_until = None
+            app.invalidate()
+            app.exit(exception=KeyboardInterrupt())
+            return
+
+        session_state.exit_hint_until = now + EXIT_CONFIRM_WINDOW
+
+        handle = session_state.exit_hint_handle
+        if handle:
+            handle.cancel()
+
+        loop = asyncio.get_running_loop()
+        app_ref = app
+
+        def clear_hint():
+            if (
+                session_state.exit_hint_until is not None
+                and time.monotonic() >= session_state.exit_hint_until
+            ):
+                session_state.exit_hint_until = None
+                session_state.exit_hint_handle = None
+                app_ref.invalidate()
+
+        session_state.exit_hint_handle = loop.call_later(EXIT_CONFIRM_WINDOW, clear_hint)
+
+        app.invalidate()
 
     # Bind Ctrl+T to toggle auto-approve
     @kb.add("c-t")
@@ -240,6 +292,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
             "bottom-toolbar": "noreverse",  # Disable default reverse video
             "toolbar-green": "bg:#10b981 #000000",  # Green for auto-accept ON
             "toolbar-orange": "bg:#f59e0b #000000",  # Orange for manual accept
+            "toolbar-exit": "bg:#2563eb #ffffff",  # Blue for exit hint
         }
     )
 

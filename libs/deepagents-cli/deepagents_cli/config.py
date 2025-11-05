@@ -81,11 +81,38 @@ def get_default_coding_instructions() -> str:
 def create_model():
     """Create the appropriate model based on available API keys.
 
+    Supports OpenAI and Anthropic APIs, as well as compatible APIs from other providers
+    (e.g., MiniMax M2, OpenRouter, etc.) via custom base URLs.
+
+    Environment Variables:
+        OPENAI_API_KEY: API key for OpenAI or OpenAI-compatible APIs
+        OPENAI_MODEL: Model name (default: gpt-5-mini)
+        OPENAI_BASE_URL: Custom base URL for OpenAI-compatible APIs (optional)
+
+        ANTHROPIC_API_KEY: API key for Anthropic or Anthropic-compatible APIs
+        ANTHROPIC_MODEL: Model name (default: claude-sonnet-4-5-20250929)
+        ANTHROPIC_BASE_URL: Custom base URL for Anthropic-compatible APIs (optional)
+
     Returns:
         ChatModel instance (OpenAI or Anthropic)
 
     Raises:
         SystemExit if no API key is configured
+
+    Examples:
+        # Using OpenAI
+        export OPENAI_API_KEY=sk-...
+        export OPENAI_MODEL=gpt-4
+
+        # Using MiniMax M2 (Anthropic-compatible)
+        export ANTHROPIC_API_KEY=your_minimax_key
+        export ANTHROPIC_MODEL=MiniMax-M2
+        export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
+
+        # Using other OpenAI-compatible providers
+        export OPENAI_API_KEY=your_api_key
+        export OPENAI_MODEL=your_model_name
+        export OPENAI_BASE_URL=https://api.your-provider.com/v1
     """
     openai_key = os.environ.get("OPENAI_API_KEY")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -94,25 +121,53 @@ def create_model():
         from langchain_openai import ChatOpenAI
 
         model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-        console.print(f"[dim]Using OpenAI model: {model_name}[/dim]")
-        return ChatOpenAI(
-            model=model_name,
-            temperature=0.7,
-        )
+        base_url = os.environ.get("OPENAI_BASE_URL")
+
+        if base_url:
+            console.print(f"[dim]Using OpenAI-compatible model: {model_name} (base_url: {base_url})[/dim]")
+        else:
+            console.print(f"[dim]Using OpenAI model: {model_name}[/dim]")
+
+        kwargs = {
+            "model": model_name,
+            "temperature": 0.7,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+
+        return ChatOpenAI(**kwargs)
+
     if anthropic_key:
         from langchain_anthropic import ChatAnthropic
 
         model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        console.print(f"[dim]Using Anthropic model: {model_name}[/dim]")
-        return ChatAnthropic(
-            model_name=model_name,
-            max_tokens=20000,
-        )
+        base_url = os.environ.get("ANTHROPIC_BASE_URL")
+
+        if base_url:
+            console.print(f"[dim]Using Anthropic-compatible model: {model_name} (base_url: {base_url})[/dim]")
+        else:
+            console.print(f"[dim]Using Anthropic model: {model_name}[/dim]")
+
+        kwargs = {
+            "model_name": model_name,
+            "max_tokens": 20000,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+
+        return ChatAnthropic(**kwargs)
+
     console.print("[bold red]Error:[/bold red] No API key configured.")
     console.print("\nPlease set one of the following environment variables:")
     console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
     console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-    console.print("\nExample:")
-    console.print("  export OPENAI_API_KEY=your_api_key_here")
-    console.print("\nOr add it to your .env file.")
+    console.print("\n[bold]For OpenAI-compatible providers:[/bold]")
+    console.print("  export OPENAI_API_KEY=your_api_key")
+    console.print("  export OPENAI_MODEL=your_model_name")
+    console.print("  export OPENAI_BASE_URL=https://api.your-provider.com/v1")
+    console.print("\n[bold]For Anthropic-compatible providers (e.g., MiniMax M2):[/bold]")
+    console.print("  export ANTHROPIC_API_KEY=your_api_key")
+    console.print("  export ANTHROPIC_MODEL=MiniMax-M2")
+    console.print("  export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic")
+    console.print("\nOr add these to your .env file.")
     sys.exit(1)

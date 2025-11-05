@@ -25,6 +25,64 @@ uv add deepagents
 poetry add deepagents
 ```
 
+## LLM Provider Configuration
+
+`deepagents` supports multiple LLM providers and is compatible with OpenAI and Anthropic-compatible APIs from other providers.
+
+### Supported Providers
+
+**Native Support:**
+- OpenAI (GPT-4, GPT-3.5, etc.)
+- Anthropic (Claude models)
+
+**Compatible APIs:**
+- MiniMax M2 (via Anthropic-compatible API)
+- OpenRouter (via OpenAI-compatible API)
+- Any provider with OpenAI or Anthropic-compatible endpoints
+
+### Configuration
+
+Set environment variables to configure your LLM provider:
+
+#### Using OpenAI
+
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-4o  # Optional, defaults to gpt-5-mini
+```
+
+#### Using Anthropic (Claude)
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_MODEL=claude-sonnet-4-5-20250929  # Optional
+```
+
+#### Using OpenAI-Compatible Providers
+
+```bash
+export OPENAI_API_KEY=your_api_key
+export OPENAI_MODEL=your_model_name
+export OPENAI_BASE_URL=https://api.your-provider.com/v1
+```
+
+#### Using Anthropic-Compatible Providers (e.g., MiniMax M2)
+
+```bash
+export ANTHROPIC_API_KEY=your_minimax_key
+export ANTHROPIC_MODEL=MiniMax-M2
+export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
+```
+
+You can also add these to a `.env` file in your project root:
+
+```env
+# .env
+ANTHROPIC_API_KEY=your_api_key
+ANTHROPIC_MODEL=MiniMax-M2
+ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
+```
+
 ## Usage
 
 (To run the example below, you will need to `pip install tavily-python`).

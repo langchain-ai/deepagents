@@ -73,17 +73,43 @@ def parse_yaml_frontmatter(content: str) -> tuple[dict, str]:
     return frontmatter, remaining_content
 
 
-def parse_skill_md(skill_path: Path) -> Optional[Skill]:
+def find_all_skill_mds(skill_path: Path) -> list[Path]:
+    """Find all SKILL.md files in the skill directory and its subdirectories.
+
+    Args:
+        skill_path: Path to the skill directory
+
+    Returns:
+        List of paths to all SKILL.md files found
+    """
+    skill_mds = []
+    
+    # First check if SKILL.md exists in the root
+    direct_path = skill_path / "SKILL.md"
+    if direct_path.exists():
+        skill_mds.append(direct_path)
+        return skill_mds  # If root has SKILL.md, don't search subdirectories
+    
+    # Recursively search subdirectories for SKILL.md
+    try:
+        for skill_md in skill_path.rglob("SKILL.md"):
+            if skill_md.is_file():
+                skill_mds.append(skill_md)
+    except Exception:
+        pass
+
+    return skill_mds
+
+
+def parse_skill_md(skill_md_path: Path) -> Optional[Skill]:
     """Parse a SKILL.md file and extract metadata.
 
     Args:
-        skill_path: Path to the skill directory containing SKILL.md
+        skill_md_path: Path to the SKILL.md file
 
     Returns:
         Skill object if valid, None if invalid or missing required fields
     """
-    skill_md_path = skill_path / "SKILL.md"
-
     if not skill_md_path.exists():
         return None
 
@@ -109,6 +135,8 @@ def parse_skill_md(skill_path: Path) -> Optional[Skill]:
     # Convert metadata string to dict if needed (simplified)
     if isinstance(metadata, str):
         metadata = {"raw": metadata}
+
+    skill_path = skill_md_path.parent
 
     return Skill(
         name=name,
@@ -142,9 +170,12 @@ def discover_skills(skills_dir: Optional[Path] = None) -> list[Skill]:
             if not item.is_dir():
                 continue
 
-            skill = parse_skill_md(item)
-            if skill:
-                skills.append(skill)
+            skill_md_paths = find_all_skill_mds(item)
+            
+            for skill_md_path in skill_md_paths:
+                skill = parse_skill_md(skill_md_path)
+                if skill:
+                    skills.append(skill)
     except Exception:
         # Silently fail if we can't read the directory
         return []

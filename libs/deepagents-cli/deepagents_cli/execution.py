@@ -612,9 +612,7 @@ async def execute_task(
                 config=config,
                 values={
                     "messages": [
-                        HumanMessage(
-                            content="[The previous request was cancelled by the system]"
-                        )
+                        HumanMessage(content="[The previous request was cancelled by the system]")
                     ]
                 },
             )
@@ -637,9 +635,7 @@ async def execute_task(
                 config=config,
                 values={
                     "messages": [
-                        HumanMessage(
-                            content="[User interrupted the previous request with Ctrl+C]"
-                        )
+                        HumanMessage(content="[User interrupted the previous request with Ctrl+C]")
                     ]
                 },
             )

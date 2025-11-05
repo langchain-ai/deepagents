@@ -70,9 +70,17 @@ class RunloopBackend(BackendProtocol):
             devbox_id=self._devbox_id,
             command=command,
         )
-        # NOTE: could check exit status for error (non-zero) and
-        # return stderr here instead / in addition to stdout.
-        return ExecuteResponse(result=result.stdout or "", exit_code=result.exit_status)
+        # Combine stdout and stderr
+        output = result.stdout or ""
+        if result.stderr:
+            output += "\n" + result.stderr if output else result.stderr
+
+        return ExecuteResponse(
+            output=output,
+            exit_code=result.exit_status,
+            signal=None,  # Runloop API doesn't provide signal information
+            truncated=False,  # Runloop doesn't provide truncation info
+        )
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
@@ -88,14 +96,14 @@ class RunloopBackend(BackendProtocol):
         cmd = f"find '{path}' -maxdepth 1 -mindepth 1 -printf '%p %s %T@ %y %Y\\n' 2>/dev/null"
         response = self.exec(cmd)
 
-        if response.get("exit_code", 0) != 0 or not response["result"].strip():
+        if (response.exit_code or 0) != 0 or not response.output.strip():
             # NOTE: this silently ignores errors; not sure what error
             # handling semantics are needed here, but presumably not
             # this.  :)
             return []
 
         results: list[FileInfo] = []
-        for line in response["result"].strip().split("\n"):
+        for line in response.output.strip().split("\n"):
             if not line:
                 continue
 
@@ -135,14 +143,14 @@ class RunloopBackend(BackendProtocol):
         cmd = f"if [ ! -f '{file_path}' ]; then echo 'Error: File not found'; exit 1; else tail -n +{start_line} '{file_path}' | head -n {limit}; fi"
         response = self.exec(cmd)
 
-        if response.get("exit_code", 0) != 0 or "Error: File not found" in response["result"]:
+        if (response.exit_code or 0) != 0 or "Error: File not found" in response.output:
             return f"Error: File '{file_path}' not found"
 
-        empty_msg = check_empty_content(response["result"])
+        empty_msg = check_empty_content(response.output)
         if empty_msg:
             return empty_msg
 
-        return format_content_with_line_numbers(response["result"], start_line=start_line)
+        return format_content_with_line_numbers(response.output, start_line=start_line)
 
     def write(
         self,
@@ -166,7 +174,7 @@ class RunloopBackend(BackendProtocol):
         check_cmd = f"test -e '{file_path}' && echo 'exists' || echo 'ok'"
         response = self.exec(check_cmd)
 
-        if "exists" in response["result"]:
+        if "exists" in response.output:
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
 
         # Use the upload_file() method from the Runloop API client.
@@ -258,12 +266,12 @@ class RunloopBackend(BackendProtocol):
         cmd = f"grep {grep_opts} -e '{pattern_escaped}' '{search_path}' 2>/dev/null || true"
         response = self.exec(cmd)
 
-        if not response["result"].strip():
+        if not response.output.strip():
             return []
 
         # Parse grep output: path:line_number:content
         matches: list[GrepMatch] = []
-        for line in response["result"].strip().split("\n"):
+        for line in response.output.strip().split("\n"):
             if not line:
                 continue
 
@@ -305,11 +313,11 @@ class RunloopBackend(BackendProtocol):
 
         response = self.exec(python_cmd)
 
-        if response.get("exit_code", 0) != 0 or not response["result"].strip():
+        if (response.exit_code or 0) != 0 or not response.output.strip():
             return []
 
         results: list[FileInfo] = []
-        for line in response["result"].strip().split("\n"):
+        for line in response.output.strip().split("\n"):
             if not line:
                 continue
 

@@ -9,7 +9,7 @@ from daytona import CreateSandboxFromSnapshotParams, Daytona, DaytonaConfig
 
 from deepagents.backends.pagination import PageResults, PaginationCursor
 from deepagents.backends.process import ExecuteResponse, Process, ProcessCapabilities
-from deepagents.backends.protocol import EditResult, FileInfo, GrepMatch, WriteResult, BackendProtocol
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileInfo, GrepMatch, WriteResult
 from deepagents.backends.sandbox import Sandbox, SandboxCapabilities, SandboxMetadata, SandboxProvider
 
 if TYPE_CHECKING:
@@ -228,20 +228,31 @@ class DaytonaProcess(Process):
         self,
         command: str,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
         *,
         timeout: int = 30 * 60,
     ) -> ExecuteResponse:
         """Execute a command in the process.
 
+        Simplified interface optimized for LLM consumption.
+
         Args:
-            command: Command to execute as a string.
-            cwd: Working directory to execute the command in.
+            command: Full shell command string to execute.
+            cwd: Working directory to execute the command in (absolute path).
+            env: Environment variables for the command. Note: Daytona may not support custom env vars.
             timeout: Maximum execution time in seconds (default: 30 minutes).
+
+        Returns:
+            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
         """
+        # Note: Daytona SDK doesn't support custom env variables
         response = self._sandbox.process.exec(command, cwd=cwd, timeout=timeout)
+
         return ExecuteResponse(
-            result=response.result,
+            output=response.result,  # Daytona combines stdout/stderr
             exit_code=response.exit_code,
+            signal=None,  # Daytona SDK doesn't provide signal information
+            truncated=False,  # Daytona doesn't have output limits
         )
 
     def get_capabilities(self) -> ProcessCapabilities:

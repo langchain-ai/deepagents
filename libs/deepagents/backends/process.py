@@ -1,7 +1,8 @@
 """Abstraction for modeling a process."""
 
 import abc
-from typing import NotRequired, TypedDict
+from dataclasses import dataclass
+from typing import TypedDict
 
 
 class ProcessCapabilities(TypedDict):
@@ -10,16 +11,24 @@ class ProcessCapabilities(TypedDict):
     supports_exec: bool
 
 
-class ExecuteResponse(TypedDict):
-    """Result of code execution."""
+@dataclass
+class ExecuteResponse:
+    """Result of code execution.
 
-    result: str
-    """The output of the executed code.
-
-    This will usually be the standard output of the command executed.
+    Simplified schema optimized for LLM consumption.
     """
-    exit_code: NotRequired[int]
-    """The exit code of the executed code, if applicable."""
+
+    output: str
+    """Combined stdout and stderr output of the executed command."""
+
+    exit_code: int | None = None
+    """The process exit code. 0 indicates success, non-zero indicates failure."""
+
+    signal: str | None = None
+    """The signal that terminated the process (e.g., 'SIGTERM', 'SIGKILL'), if applicable."""
+
+    truncated: bool = False
+    """Whether the output was truncated due to backend limitations."""
 
 
 class Process(abc.ABC):
@@ -28,15 +37,22 @@ class Process(abc.ABC):
         self,
         command: str,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
         *,
         timeout: int = 30 * 60,
     ) -> ExecuteResponse:
         """Execute a command in the process.
 
+        Simplified interface optimized for LLM consumption.
+
         Args:
-            command: Command to execute as a string.
-            cwd: Working directory to execute the command in.
+            command: Full shell command string to execute.
+            cwd: Working directory to execute the command in (absolute path).
+            env: Environment variables for the command (dict of name -> value).
             timeout: Maximum execution time in seconds (default: 30 minutes).
+
+        Returns:
+            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
         """
         ...
 

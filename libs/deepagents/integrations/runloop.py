@@ -20,6 +20,18 @@ from deepagents.backends.utils import (
 )
 
 
+# Python command template for glob operations
+_GLOB_COMMAND_TEMPLATE = '''python3 -c "
+import glob, os, json
+os.chdir('{path_escaped}')
+matches = glob.glob('{pattern_escaped}', recursive=True)
+for m in matches:
+    if os.path.isfile(m):
+        s = os.stat(m)
+        print(json.dumps({{'path': m, 'size': s.st_size, 'mtime': s.st_mtime}}))
+" 2>/dev/null'''
+
+
 class RunloopProtocol(BackendProtocol):
     """Backend that operates on files in a Runloop devbox.
 
@@ -290,16 +302,9 @@ class RunloopProtocol(BackendProtocol):
 
         # Use a more complicated command, to grab stat output from the
         # matching files.  Could be simplified if this isn't needed.
-        python_cmd = (
-            f'python3 -c "'
-            f"import glob, os, json; "
-            f"os.chdir('{path_escaped}'); "
-            f"matches = glob.glob('{pattern_escaped}', recursive=True); "
-            f"for m in matches: "
-            f"  if os.path.isfile(m): "
-            f"    s = os.stat(m); "
-            f"    print(json.dumps({{'path': m, 'size': s.st_size, 'mtime': s.st_mtime}})); "
-            f'" 2>/dev/null'
+        python_cmd = _GLOB_COMMAND_TEMPLATE.format(
+            path_escaped=path_escaped,
+            pattern_escaped=pattern_escaped
         )
 
         stdout, exit_code = self.exec(python_cmd)

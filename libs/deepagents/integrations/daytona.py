@@ -9,14 +9,14 @@ from daytona import CreateSandboxFromSnapshotParams, Daytona, DaytonaConfig
 
 from deepagents.backends.pagination import PageResults, PaginationCursor
 from deepagents.backends.process import ExecuteResponse, Process, ProcessCapabilities
-from deepagents.backends.protocol import EditResult, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.protocol import EditResult, FileInfo, GrepMatch, WriteResult, BackendProtocol
 from deepagents.backends.sandbox import Sandbox, SandboxCapabilities, SandboxMetadata, SandboxProvider
 
 if TYPE_CHECKING:
     from daytona import Sandbox as DaytonaSandboxClient
 
 
-class DaytonaFileSystem:
+class DaytonaFileSystem(BackendProtocol):
     """Daytona filesystem implementation conforming to BackendProtocol."""
 
     def __init__(self, sandbox: DaytonaSandboxClient) -> None:

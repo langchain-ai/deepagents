@@ -344,7 +344,7 @@ class NotGiven:
 
 
 class RunloopProvider:
-    def __init__(self, *, client: Runloop | None, api_key: str | None = None, create_params: dict | NotGiven = NotGiven) -> None:
+    def __init__(self, *, client: Runloop | None = None, api_key: str | None = None, create_params: dict | NotGiven = NotGiven) -> None:
         if client and api_key:
             raise ValueError("Provide either client or api_key, not both.")
         if not client and not api_key:

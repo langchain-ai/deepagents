@@ -85,7 +85,7 @@ def create_deep_agent(
         store: Optional store for persistent storage (required if backend uses StoreBackend).
         backend: Optional backend for file storage and execution. Pass either a Backend instance
             or a callable factory like `lambda rt: StateBackend(rt)`. For execution support,
-            use a backend that implements SandboxBackendProtocol (e.g., DockerSandboxBackend).
+            use a backend that implements SandboxBackendProtocol.
         interrupt_on: Optional Dict[str, bool | InterruptOnConfig] mapping tool names to
             interrupt configs.
         debug: Whether to enable debug mode. Passed through to create_agent.

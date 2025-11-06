@@ -224,11 +224,10 @@ Usage:
 - The command parameter is the full shell command string to execute
 - Commands run in an isolated sandbox environment
 - Returns combined stdout/stderr output with exit code
-- The timeout parameter sets maximum execution time in seconds (default: 30 minutes)
 
 Examples:
 - execute(command="ls -la")
-- execute(command="python script.py", timeout=60)
+- execute(command="python script.py")
 - execute(command="npm install && npm test")
 
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
@@ -470,6 +469,29 @@ def _grep_tool_generator(
     return grep
 
 
+def _supports_execution(backend: BackendProtocol) -> bool:
+    """Check if a backend supports command execution.
+
+    For CompositeBackend, checks if the default backend supports execution.
+    For other backends, checks if they implement SandboxBackendProtocol.
+
+    Args:
+        backend: The backend to check.
+
+    Returns:
+        True if the backend supports execution, False otherwise.
+    """
+    # Import here to avoid circular dependency
+    from deepagents.backends.composite import CompositeBackend
+
+    # For CompositeBackend, check the default backend
+    if isinstance(backend, CompositeBackend):
+        return isinstance(backend.default, SandboxBackendProtocol)
+
+    # For other backends, use isinstance check
+    return isinstance(backend, SandboxBackendProtocol)
+
+
 def _execute_tool_generator(
     backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
     custom_description: str | None = None,
@@ -489,19 +511,18 @@ def _execute_tool_generator(
     def execute(
         command: str,
         runtime: ToolRuntime[None, FilesystemState],
-        timeout: int = 30 * 60,
     ) -> str:
         resolved_backend = _get_backend(backend, runtime)
 
         # Runtime check - fail gracefully if not supported
-        if not isinstance(resolved_backend, SandboxBackendProtocol):
+        if not _supports_execution(resolved_backend):
             return (
                 "Error: Execution not available. This agent's backend "
                 "does not support command execution (SandboxBackendProtocol). "
                 "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
             )
 
-        result: ExecuteResponse = resolved_backend.execute(command, timeout=timeout)
+        result: ExecuteResponse = resolved_backend.execute(command)
 
         # Format output for LLM consumption
         parts = [result.output]
@@ -593,6 +614,7 @@ class FilesystemMiddleware(AgentMiddleware):
 
         # With sandbox backend (supports execution)
         from my_sandbox import DockerSandboxBackend
+
         sandbox = DockerSandboxBackend(container_id="my-container")
         agent = create_agent(middleware=[FilesystemMiddleware(backend=sandbox)])
         ```
@@ -666,16 +688,13 @@ class FilesystemMiddleware(AgentMiddleware):
 
             # Add execution instructions if backend supports it
             # Note: We can only check if backend is already resolved
-            if self._cached_backend and isinstance(self._cached_backend, SandboxBackendProtocol):
+            if self._cached_backend and _supports_execution(self._cached_backend):
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request.system_prompt = (
-                request.system_prompt + "\n\n" + system_prompt
-                if request.system_prompt else system_prompt
-            )
+            request.system_prompt = request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt
         return handler(request)
 
     async def awrap_model_call(
@@ -701,16 +720,13 @@ class FilesystemMiddleware(AgentMiddleware):
 
             # Add execution instructions if backend supports it
             # Note: We can only check if backend is already resolved
-            if self._cached_backend and isinstance(self._cached_backend, SandboxBackendProtocol):
+            if self._cached_backend and _supports_execution(self._cached_backend):
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request.system_prompt = (
-                request.system_prompt + "\n\n" + system_prompt
-                if request.system_prompt else system_prompt
-            )
+            request.system_prompt = request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt
         return await handler(request)
 
     def _process_large_message(

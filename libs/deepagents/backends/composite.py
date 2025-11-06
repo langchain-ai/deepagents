@@ -1,6 +1,14 @@
 """CompositeBackend: Route operations to different backends based on path prefix."""
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    EditResult,
+    ExecuteResponse,
+    FileInfo,
+    GrepMatch,
+    SandboxBackendProtocol,
+    WriteResult,
+)
 from deepagents.backends.state import StateBackend
 
 
@@ -211,3 +219,34 @@ class CompositeBackend:
             except Exception:
                 pass
         return res
+
+    def execute(
+        self,
+        command: str,
+        *,
+        timeout: int = 30 * 60,
+    ) -> ExecuteResponse:
+        """Execute a command via the default backend.
+
+        Execution is not path-specific, so it always delegates to the default backend.
+        The default backend must implement SandboxBackendProtocol for this to work.
+
+        Args:
+            command: Full shell command string to execute.
+            timeout: Maximum execution time in seconds (default: 30 minutes).
+
+        Returns:
+            ExecuteResponse with combined output, exit code, and truncation flag.
+
+        Raises:
+            NotImplementedError: If default backend doesn't support execution.
+        """
+        if isinstance(self.default, SandboxBackendProtocol):
+            return self.default.execute(command, timeout=timeout)
+
+        # This shouldn't be reached if the runtime check in the execute tool works correctly,
+        # but we include it as a safety fallback.
+        raise NotImplementedError(
+            "Default backend doesn't support command execution (SandboxBackendProtocol). "
+            "To enable execution, provide a default backend that implements SandboxBackendProtocol."
+        )

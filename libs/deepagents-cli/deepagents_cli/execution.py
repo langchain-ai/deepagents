@@ -308,7 +308,7 @@ async def execute_task(
                     message, metadata = data
 
                     if isinstance(message, HumanMessage):
-                        content = message.text()
+                        content = message.text
                         if content:
                             flush_text_buffer(final=True)
                             if spinner_active:

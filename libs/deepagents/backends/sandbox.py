@@ -113,15 +113,15 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return WriteResult(error=f"Error: File '{file_path}' already exists")
 
         # Write the file using Python
-        python_code = f"import os; os.makedirs(os.path.dirname('{file_path}') or '.', exist_ok=True); open('{file_path}', 'w').write('''{content_escaped}''')"
+        python_code = (
+            f"import os; os.makedirs(os.path.dirname('{file_path}') or '.', exist_ok=True); open('{file_path}', 'w').write('''{content_escaped}''')"
+        )
 
         cmd = f'python3 -c "{python_code}" 2>&1'
         result = self.execute(cmd)
 
         if result.exit_code != 0:
-            return WriteResult(
-                error=f"Error: Failed to write file '{file_path}': {result.output.strip()}"
-            )
+            return WriteResult(error=f"Error: Failed to write file '{file_path}': {result.output.strip()}")
 
         # External storage - no files_update needed
         return WriteResult(path=file_path, files_update=None)
@@ -160,9 +160,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         if exit_code == 1:
             return EditResult(error=f"Error: String not found in file: '{old_string}'")
         if exit_code == 2:
-            return EditResult(
-                error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."
-            )
+            return EditResult(error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.")
         if exit_code != 0:
             return EditResult(error=f"Error: File '{file_path}' not found")
 

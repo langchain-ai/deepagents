@@ -57,8 +57,11 @@ def create_deep_agent(
     """Create a deep agent.
 
     This agent will by default have access to a tool to write todos (write_todos),
-    six file editing tools: write_file, ls, read_file, edit_file, glob_search, grep_search,
+    seven file and execution tools: ls, read_file, write_file, edit_file, glob, grep, execute,
     and a tool to call subagents.
+
+    The execute tool allows running shell commands if the backend implements SandboxBackendProtocol.
+    For non-sandbox backends, the execute tool will return an error message.
 
     Args:
         model: The model to use. Defaults to Claude Sonnet 4.
@@ -80,8 +83,9 @@ def create_deep_agent(
         context_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
         store: Optional store for persistent storage (required if backend uses StoreBackend).
-        backend: Optional backend for file storage. Pass either a Backend instance or a
-            callable factory like `lambda rt: StateBackend(rt)`.
+        backend: Optional backend for file storage and execution. Pass either a Backend instance
+            or a callable factory like `lambda rt: StateBackend(rt)`. For execution support,
+            use a backend that implements SandboxBackendProtocol (e.g., DockerSandboxBackend).
         interrupt_on: Optional Dict[str, bool | InterruptOnConfig] mapping tool names to
             interrupt configs.
         debug: Whether to enable debug mode. Passed through to create_agent.

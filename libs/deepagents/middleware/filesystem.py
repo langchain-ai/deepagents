@@ -23,7 +23,6 @@ from deepagents.backends.protocol import (
     BackendFactory,
     BackendProtocol,
     EditResult,
-    ExecuteResponse,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -554,19 +553,31 @@ def _get_filesystem_tools(
     backend: BackendProtocol,
     custom_tool_descriptions: dict[str, str] | None = None,
 ) -> list[BaseTool]:
-    """Get filesystem and execution tools.
+    """Get filesystem and optionally execution tools.
 
     Args:
         backend: Backend to use for file storage and optional execution, or a factory function that takes runtime and returns a backend.
         custom_tool_descriptions: Optional custom descriptions for tools.
 
     Returns:
-        List of configured tools (ls, read_file, write_file, edit_file, glob, grep, execute).
+        List of configured tools. Always includes: ls, read_file, write_file, edit_file, glob, grep.
+        Includes execute only if backend supports execution and is not a factory function.
     """
     if custom_tool_descriptions is None:
         custom_tool_descriptions = {}
     tools = []
+
+    # Check if we should include execute tool
+    # Only include it if backend is already instantiated and supports execution
+    include_execute = False
+    if not callable(backend):  # Backend is already instantiated, not a factory
+        include_execute = _supports_execution(backend)
+
     for tool_name, tool_generator in TOOL_GENERATORS.items():
+        # Skip execute tool if backend doesn't support it
+        if tool_name == "execute" and not include_execute:
+            continue
+
         tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
         tools.append(tool)
     return tools
@@ -585,10 +596,12 @@ Here are the first 10 lines of the result:
 class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
-    This middleware adds seven tools to the agent: ls, read_file, write_file,
-    edit_file, glob, grep, and execute. Files can be stored using any backend that implements
-    the BackendProtocol. If the backend implements SandboxBackendProtocol, the execute tool
-    will run commands in the sandbox; otherwise, it will return an error.
+    This middleware adds filesystem tools to the agent: ls, read_file, write_file,
+    edit_file, glob, and grep. Files can be stored using any backend that implements
+    the BackendProtocol.
+
+    If the backend implements SandboxBackendProtocol, an execute tool is also added
+    for running shell commands.
 
     Args:
         backend: Backend for file storage and optional execution. If not provided, defaults to StateBackend

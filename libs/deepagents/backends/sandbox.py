@@ -6,8 +6,8 @@ only need to implement the execute() method.
 """
 
 from __future__ import annotations
-import json
 
+import json
 from abc import ABC, abstractmethod
 
 from deepagents.backends.protocol import (

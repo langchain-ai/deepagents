@@ -553,31 +553,20 @@ def _get_filesystem_tools(
     backend: BackendProtocol,
     custom_tool_descriptions: dict[str, str] | None = None,
 ) -> list[BaseTool]:
-    """Get filesystem and optionally execution tools.
+    """Get filesystem and execution tools.
 
     Args:
         backend: Backend to use for file storage and optional execution, or a factory function that takes runtime and returns a backend.
         custom_tool_descriptions: Optional custom descriptions for tools.
 
     Returns:
-        List of configured tools. Always includes: ls, read_file, write_file, edit_file, glob, grep.
-        Includes execute only if backend supports execution and is not a factory function.
+        List of configured tools: ls, read_file, write_file, edit_file, glob, grep, execute.
     """
     if custom_tool_descriptions is None:
         custom_tool_descriptions = {}
     tools = []
 
-    # Check if we should include execute tool
-    # Only include it if backend is already instantiated and supports execution
-    include_execute = False
-    if not callable(backend):  # Backend is already instantiated, not a factory
-        include_execute = _supports_execution(backend)
-
     for tool_name, tool_generator in TOOL_GENERATORS.items():
-        # Skip execute tool if backend doesn't support it
-        if tool_name == "execute" and not include_execute:
-            continue
-
         tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
         tools.append(tool)
     return tools
@@ -657,16 +646,13 @@ class FilesystemMiddleware(AgentMiddleware):
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
-        # Track resolved backend for system prompt generation
-        self._cached_backend: BackendProtocol | None = None
-
         # Set system prompt (allow full override or None to generate dynamically)
         self._custom_system_prompt = system_prompt
 
         self.tools = _get_filesystem_tools(self.backend, custom_tool_descriptions)
 
     def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Get the resolved backend instance from backend or factory, with caching.
+        """Get the resolved backend instance from backend or factory.
 
         Args:
             runtime: The tool runtime context.
@@ -683,7 +669,7 @@ class FilesystemMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Update the system prompt to include instructions on using the filesystem and execution.
+        """Update the system prompt and filter tools based on backend capabilities.
 
         Args:
             request: The model request being processed.
@@ -692,22 +678,37 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
+        # Check if execute tool is present and if backend supports it
+        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+
+        backend_supports_execution = False
+        if has_execute_tool:
+            # Resolve backend to check execution support
+            backend = self._get_backend(request.runtime)
+            backend_supports_execution = _supports_execution(backend)
+
+            # If execute tool exists but backend doesn't support it, filter it out
+            if not backend_supports_execution:
+                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
+                request = request.override(tools=filtered_tools)
+                has_execute_tool = False
+
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            # Build dynamic system prompt based on backend capabilities
+            # Build dynamic system prompt based on available tools
             prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
 
-            # Add execution instructions if backend supports it
-            # Note: We can only check if backend is already resolved
-            if self._cached_backend and _supports_execution(self._cached_backend):
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request.system_prompt = request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt
+            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+
         return handler(request)
 
     async def awrap_model_call(
@@ -715,7 +716,7 @@ class FilesystemMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """(async) Update the system prompt to include instructions on using the filesystem and execution.
+        """(async) Update the system prompt and filter tools based on backend capabilities.
 
         Args:
             request: The model request being processed.
@@ -724,22 +725,37 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
+        # Check if execute tool is present and if backend supports it
+        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+
+        backend_supports_execution = False
+        if has_execute_tool:
+            # Resolve backend to check execution support
+            backend = self._get_backend(request.runtime)
+            backend_supports_execution = _supports_execution(backend)
+
+            # If execute tool exists but backend doesn't support it, filter it out
+            if not backend_supports_execution:
+                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
+                request = request.override(tools=filtered_tools)
+                has_execute_tool = False
+
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
         else:
-            # Build dynamic system prompt based on backend capabilities
+            # Build dynamic system prompt based on available tools
             prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
 
-            # Add execution instructions if backend supports it
-            # Note: We can only check if backend is already resolved
-            if self._cached_backend and _supports_execution(self._cached_backend):
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request.system_prompt = request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt
+            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+
         return await handler(request)
 
     def _process_large_message(

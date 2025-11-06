@@ -12,7 +12,7 @@ from langgraph.types import Overwrite
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
-from deepagents.middleware.filesystem import FILESYSTEM_SYSTEM_PROMPT, FileData, FilesystemMiddleware, FilesystemState
+from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 
@@ -64,33 +64,33 @@ class TestFilesystemMiddleware:
     def test_init_default(self):
         middleware = FilesystemMiddleware()
         assert callable(middleware.backend)
-        assert middleware.system_prompt == FILESYSTEM_SYSTEM_PROMPT
-        assert len(middleware.tools) == 6
+        assert middleware._custom_system_prompt is None
+        assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_with_composite_backend(self):
         backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
         middleware = FilesystemMiddleware(backend=backend_factory)
         assert callable(middleware.backend)
-        assert middleware.system_prompt == FILESYSTEM_SYSTEM_PROMPT
-        assert len(middleware.tools) == 6
+        assert middleware._custom_system_prompt is None
+        assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert callable(middleware.backend)
-        assert middleware.system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 6
+        assert middleware._custom_system_prompt == "Custom system prompt"
+        assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_custom_system_prompt_with_composite(self):
         backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
         middleware = FilesystemMiddleware(backend=backend_factory, system_prompt="Custom system prompt")
         assert callable(middleware.backend)
-        assert middleware.system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 6
+        assert middleware._custom_system_prompt == "Custom system prompt"
+        assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
         assert callable(middleware.backend)
-        assert middleware.system_prompt == FILESYSTEM_SYSTEM_PROMPT
+        assert middleware._custom_system_prompt is None
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         assert ls_tool.description == "Custom ls tool description"
 
@@ -98,7 +98,7 @@ class TestFilesystemMiddleware:
         backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
         middleware = FilesystemMiddleware(backend=backend_factory, custom_tool_descriptions={"ls": "Custom ls tool description"})
         assert callable(middleware.backend)
-        assert middleware.system_prompt == FILESYSTEM_SYSTEM_PROMPT
+        assert middleware._custom_system_prompt is None
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         assert ls_tool.description == "Custom ls tool description"
 

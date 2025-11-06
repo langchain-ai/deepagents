@@ -6,6 +6,7 @@ only need to implement the execute() method.
 """
 
 from __future__ import annotations
+import json
 
 from abc import ABC, abstractmethod
 
@@ -17,6 +18,104 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
+
+_GLOB_COMMAND_TEMPLATE = """python3 -c "
+import glob
+import os
+import json
+
+os.chdir('{path}')
+matches = sorted(glob.glob('{pattern}', recursive=True))
+for m in matches:
+    stat = os.stat(m)
+    result = {{
+        'path': m,
+        'size': stat.st_size,
+        'mtime': stat.st_mtime,
+        'is_dir': os.path.isdir(m)
+    }}
+    print(json.dumps(result))
+" 2>/dev/null"""
+
+_WRITE_COMMAND_TEMPLATE = """python3 -c "
+import os
+
+# Create parent directory if needed
+parent_dir = os.path.dirname('{file_path}') or '.'
+os.makedirs(parent_dir, exist_ok=True)
+
+# Write content to file
+with open('{file_path}', 'w') as f:
+    f.write('''{content}''')
+" 2>&1"""
+
+_EDIT_COMMAND_TEMPLATE = """python3 -c "
+import sys
+
+# Read file content
+with open('{file_path}', 'r') as f:
+    text = f.read()
+
+old = '''{old_string}'''
+new = '''{new_string}'''
+
+# Count occurrences
+count = text.count(old)
+
+# Exit with error codes if issues found
+if count == 0:
+    sys.exit(1)  # String not found
+elif count > 1 and not {replace_all}:
+    sys.exit(2)  # Multiple occurrences without replace_all
+
+# Perform replacement
+if {replace_all}:
+    result = text.replace(old, new)
+else:
+    result = text.replace(old, new, 1)
+
+# Write back to file
+with open('{file_path}', 'w') as f:
+    f.write(result)
+
+print(count)
+" 2>&1"""
+
+_READ_COMMAND_TEMPLATE = """python3 -c "
+import os
+import sys
+
+file_path = '{file_path}'
+offset = {offset}
+limit = {limit}
+
+# Check if file exists
+if not os.path.isfile(file_path):
+    print('Error: File not found')
+    sys.exit(1)
+
+# Check if file is empty
+if os.path.getsize(file_path) == 0:
+    print('System reminder: File exists but has empty contents')
+    sys.exit(0)
+
+# Read file with offset and limit
+with open(file_path, 'r') as f:
+    lines = f.readlines()
+
+# Apply offset and limit
+start_idx = offset
+end_idx = offset + limit
+selected_lines = lines[start_idx:end_idx]
+
+# Format with line numbers (1-indexed, starting from offset + 1)
+for i, line in enumerate(selected_lines):
+    line_num = offset + i + 1
+    # Remove trailing newline for formatting, then add it back
+    line_content = line.rstrip('\\n')
+    print(f'{{line_num:6d}}\\t{{line_content}}')
+" 2>&1"""
+
 
 
 class BaseSandbox(SandboxBackendProtocol, ABC):
@@ -74,17 +173,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers using a single shell command."""
-        # Single command that checks file, reads lines, and formats with line numbers
-        # tail -n +N starts from line N, head limits output, nl adds line numbers
-        start_line = offset + 1
-        cmd = (
-            f"if [ ! -f '{file_path}' ]; then "
-            f"echo 'Error: File not found'; exit 1; "
-            f"elif [ ! -s '{file_path}' ]; then "
-            f"echo 'System reminder: File exists but has empty contents'; "
-            f"else "
-            f"tail -n +{start_line} '{file_path}' | head -n {limit} | nl -ba -nrn -w6 -s$'\\\\t' -v{start_line}; "
-            f"fi"
+        # Use template for reading file with offset and limit
+        cmd = _READ_COMMAND_TEMPLATE.format(
+            file_path=file_path,
+            offset=offset,
+            limit=limit
         )
         result = self.execute(cmd)
 
@@ -112,12 +205,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         if check_result.output.strip() == "exists":
             return WriteResult(error=f"Error: File '{file_path}' already exists")
 
-        # Write the file using Python
-        python_code = (
-            f"import os; os.makedirs(os.path.dirname('{file_path}') or '.', exist_ok=True); open('{file_path}', 'w').write('''{content_escaped}''')"
+        # Write the file using template
+        cmd = _WRITE_COMMAND_TEMPLATE.format(
+            file_path=file_path,
+            content=content_escaped
         )
-
-        cmd = f'python3 -c "{python_code}" 2>&1'
         result = self.execute(cmd)
 
         if result.exit_code != 0:
@@ -138,20 +230,13 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         old_escaped = old_string.replace("'", "'\\\\''")
         new_escaped = new_string.replace("'", "'\\\\''")
 
-        # Use Python one-liner for complex string replacement logic
-        python_code = (
-            f"import sys; "
-            f"text = open('{file_path}', 'r').read(); "
-            f"old = '''{old_escaped}'''; "
-            f"new = '''{new_escaped}'''; "
-            f"count = text.count(old); "
-            f"sys.exit(1) if count == 0 else (sys.exit(2) if count > 1 and not {replace_all} else None); "
-            f"result = text.replace(old, new) if {replace_all} else text.replace(old, new, 1); "
-            f"open('{file_path}', 'w').write(result); "
-            f"print(count)"
+        # Use template for string replacement
+        cmd = _EDIT_COMMAND_TEMPLATE.format(
+            file_path=file_path,
+            old_string=old_escaped,
+            new_string=new_escaped,
+            replace_all=replace_all
         )
-
-        cmd = f'python3 -c "{python_code}" 2>&1'
         result = self.execute(cmd)
 
         exit_code = result.exit_code
@@ -213,28 +298,27 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Structured glob matching returning FileInfo dicts."""
-        # Escape pattern for shell
+        # Escape pattern and path for shell
         pattern_escaped = pattern.replace("'", "'\\\\''")
+        path_escaped = path.replace("'", "'\\\\''")
 
-        # Use Python's glob module for proper glob pattern matching
-        python_code = (
-            f"import glob; "
-            f"import os; "
-            f"os.chdir('{path}'); "
-            f"results = sorted(glob.glob('{pattern_escaped}', recursive=True)); "
-            f"print('\\\\n'.join(results))"
-        )
-
-        cmd = f'python3 -c "{python_code}" 2>/dev/null'
+        cmd = _GLOB_COMMAND_TEMPLATE.format(path=path_escaped, pattern=pattern_escaped)
         result = self.execute(cmd)
 
         output = result.output.strip()
         if not output:
             return []
 
-        # Convert paths to FileInfo dicts
+        # Parse JSON output into FileInfo dicts
         file_infos: list[FileInfo] = []
-        for file_path in output.split("\n"):
-            file_infos.append({"path": file_path})
+        for line in output.split("\n"):
+            try:
+                data = json.loads(line)
+                file_infos.append({
+                    "path": data["path"],
+                    "is_dir": data["is_dir"],
+                })
+            except json.JSONDecodeError:
+                continue
 
         return file_infos

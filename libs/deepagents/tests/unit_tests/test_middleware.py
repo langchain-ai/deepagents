@@ -919,6 +919,165 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         assert "/large_tool_results/test_call_id" in result.update["files"]
 
+    def test_execute_tool_returns_error_when_backend_doesnt_support(self):
+        """Test that execute tool returns friendly error instead of raising exception."""
+        state = FilesystemState(messages=[], files={})
+        middleware = FilesystemMiddleware()  # Default StateBackend doesn't support execution
+
+        # Find the execute tool
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+
+        # Create runtime with StateBackend
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_exec",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        # Execute should return error message, not raise exception
+        result = execute_tool.invoke({"command": "ls -la", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert "Error: Execution not available" in result
+        assert "does not support command execution" in result
+
+    def test_execute_tool_output_formatting(self):
+        """Test execute tool formats output correctly."""
+        from deepagents.backends.protocol import ExecuteResponse
+
+        # Mock sandbox backend that returns specific output
+        class FormattingMockSandboxBackend(StateBackend):
+            def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+                return ExecuteResponse(
+                    output="Hello world\nLine 2",
+                    exit_code=0,
+                    truncated=False,
+                )
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_fmt",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = FormattingMockSandboxBackend(rt)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "echo test", "runtime": rt})
+
+        assert "Hello world\nLine 2" in result
+        assert "succeeded" in result
+        assert "exit code 0" in result
+
+    def test_execute_tool_output_formatting_with_failure(self):
+        """Test execute tool formats failure output correctly."""
+        from deepagents.backends.protocol import ExecuteResponse
+
+        # Mock sandbox backend that returns failure
+        class FailureMockSandboxBackend(StateBackend):
+            def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+                return ExecuteResponse(
+                    output="Error: command not found",
+                    exit_code=127,
+                    truncated=False,
+                )
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_fail",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = FailureMockSandboxBackend(rt)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "nonexistent", "runtime": rt})
+
+        assert "Error: command not found" in result
+        assert "failed" in result
+        assert "exit code 127" in result
+
+    def test_execute_tool_output_formatting_with_truncation(self):
+        """Test execute tool formats truncated output correctly."""
+        from deepagents.backends.protocol import ExecuteResponse
+
+        # Mock sandbox backend that returns truncated output
+        class TruncatedMockSandboxBackend(StateBackend):
+            def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+                return ExecuteResponse(
+                    output="Very long output...",
+                    exit_code=0,
+                    truncated=True,
+                )
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_trunc",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        backend = TruncatedMockSandboxBackend(rt)
+        middleware = FilesystemMiddleware(backend=backend)
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "cat large_file", "runtime": rt})
+
+        assert "Very long output..." in result
+        assert "truncated" in result
+
+    def test_supports_execution_helper_with_composite_backend(self):
+        """Test _supports_execution correctly identifies CompositeBackend capabilities."""
+        from deepagents.middleware.filesystem import _supports_execution
+        from deepagents.backends.protocol import ExecuteResponse
+
+        # Mock sandbox backend
+        class TestSandboxBackend(StateBackend):
+            def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+                return ExecuteResponse(output="test", exit_code=0, truncated=False)
+
+        state = FilesystemState(messages=[], files={})
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        # StateBackend doesn't support execution
+        state_backend = StateBackend(rt)
+        assert not _supports_execution(state_backend)
+
+        # TestSandboxBackend supports execution
+        sandbox_backend = TestSandboxBackend(rt)
+        assert _supports_execution(sandbox_backend)
+
+        # CompositeBackend with sandbox default supports execution
+        comp_with_sandbox = CompositeBackend(default=sandbox_backend, routes={})
+        assert _supports_execution(comp_with_sandbox)
+
+        # CompositeBackend with non-sandbox default doesn't support execution
+        comp_without_sandbox = CompositeBackend(default=state_backend, routes={})
+        assert not _supports_execution(comp_without_sandbox)
+
 
 class TestPatchToolCallsMiddleware:
     def test_first_message(self) -> None:

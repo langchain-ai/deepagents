@@ -10,21 +10,10 @@ except ImportError:
 
 import os
 
-from deepagents.backends.protocol import ExecuteResponse
 from runloop_api_client import Runloop
 
-from deepagents_cli.integrations.base_sandbox import BaseSandbox
-
-# Python command template for glob operations
-_GLOB_COMMAND_TEMPLATE = """python3 -c "
-import glob, os, json
-os.chdir('{path_escaped}')
-matches = glob.glob('{pattern_escaped}', recursive=True)
-for m in matches:
-    if os.path.isfile(m):
-        s = os.stat(m)
-        print(json.dumps({{'path': m, 'size': s.st_size, 'mtime': s.st_mtime}}))
-" 2>/dev/null"""
+from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.sandbox import BaseSandbox
 
 
 class RunloopBackend(BaseSandbox):

@@ -117,7 +117,6 @@ for i, line in enumerate(selected_lines):
 " 2>&1"""
 
 
-
 class BaseSandbox(SandboxBackendProtocol, ABC):
     """Base sandbox implementation with execute() as abstract method.
 
@@ -174,11 +173,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     ) -> str:
         """Read file content with line numbers using a single shell command."""
         # Use template for reading file with offset and limit
-        cmd = _READ_COMMAND_TEMPLATE.format(
-            file_path=file_path,
-            offset=offset,
-            limit=limit
-        )
+        cmd = _READ_COMMAND_TEMPLATE.format(file_path=file_path, offset=offset, limit=limit)
         result = self.execute(cmd)
 
         output = result.output.rstrip()
@@ -206,10 +201,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return WriteResult(error=f"Error: File '{file_path}' already exists")
 
         # Write the file using template
-        cmd = _WRITE_COMMAND_TEMPLATE.format(
-            file_path=file_path,
-            content=content_escaped
-        )
+        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content=content_escaped)
         result = self.execute(cmd)
 
         if result.exit_code != 0:
@@ -231,12 +223,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         new_escaped = new_string.replace("'", "'\\\\''")
 
         # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(
-            file_path=file_path,
-            old_string=old_escaped,
-            new_string=new_escaped,
-            replace_all=replace_all
-        )
+        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_string=old_escaped, new_string=new_escaped, replace_all=replace_all)
         result = self.execute(cmd)
 
         exit_code = result.exit_code
@@ -314,10 +301,12 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         for line in output.split("\n"):
             try:
                 data = json.loads(line)
-                file_infos.append({
-                    "path": data["path"],
-                    "is_dir": data["is_dir"],
-                })
+                file_infos.append(
+                    {
+                        "path": data["path"],
+                        "is_dir": data["is_dir"],
+                    }
+                )
             except json.JSONDecodeError:
                 continue
 

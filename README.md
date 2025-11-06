@@ -37,6 +37,7 @@ poetry add deepagents
 
 **Compatible APIs:**
 - MiniMax M2 (via Anthropic-compatible API)
+- GLM-4.6 from Z.AI (via OpenAI-compatible API)
 - OpenRouter (via OpenAI-compatible API)
 - Any provider with OpenAI or Anthropic-compatible endpoints
 
@@ -74,13 +75,43 @@ export ANTHROPIC_MODEL=MiniMax-M2
 export ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
 ```
 
+#### Using GLM-4.6 from Z.AI (OpenAI-Compatible)
+
+GLM-4.6 offers specialized models for different use cases:
+
+**For Coding Tasks (Recommended for deepagents-cli):**
+```bash
+export OPENAI_API_KEY=your_zai_api_key
+export OPENAI_MODEL=glm-4.6  # or GLM-4.5, GLM-4.5-air
+export OPENAI_BASE_URL=https://api.z.ai/api/coding/paas/v4
+```
+
+**For General Tasks:**
+```bash
+export OPENAI_API_KEY=your_zai_api_key
+export OPENAI_MODEL=glm-4.6
+export OPENAI_BASE_URL=https://api.z.ai/api/paas/v4/
+```
+
+**Model Options:**
+- `glm-4.6` - Latest model, best for complex tasks
+- `GLM-4.5` - Standard model
+- `GLM-4.5-air` - Lightweight model, faster response
+
+Get your API key from [Z.AI API Keys Page](https://z.ai/manage-apikey/apikey-list).
+
 You can also add these to a `.env` file in your project root:
 
 ```env
-# .env
+# .env example - MiniMax M2
 ANTHROPIC_API_KEY=your_api_key
 ANTHROPIC_MODEL=MiniMax-M2
 ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
+
+# .env example - GLM-4.6 for coding
+OPENAI_API_KEY=your_zai_api_key
+OPENAI_MODEL=glm-4.6
+OPENAI_BASE_URL=https://api.z.ai/api/coding/paas/v4
 ```
 
 ## Usage

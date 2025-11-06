@@ -225,13 +225,16 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
                 "error": f"Error fetching URL: {e!s}",
             }
 
-    # Run the async function in a new event loop
+    # Run the async function
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If we're already in an async context, create a new loop
-            return asyncio.run(_fetch())
-        return loop.run_until_complete(_fetch())
+        # Check if we're in an async context
+        loop = asyncio.get_running_loop()
+        # We're already in an async context, but can't await here
+        # Create a new thread with its own event loop
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, _fetch())
+            return future.result()
     except RuntimeError:
-        # If no event loop exists, create one
+        # No event loop is running, safe to use asyncio.run()
         return asyncio.run(_fetch())

@@ -8,6 +8,8 @@ only need to implement the execute() method.
 from __future__ import annotations
 
 import json
+import shlex
+import base64
 from abc import ABC, abstractmethod
 
 from deepagents.backends.protocol import (
@@ -19,13 +21,25 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 
+
+def _python_str_for_shell(s: str) -> str:
+    """Convert a string to a Python string literal safe for use in shell double quotes.
+
+    Uses repr() to create a valid Python string literal, then escapes backslashes
+    and double quotes so it can be safely embedded in a shell double-quoted string.
+    """
+    python_repr = repr(s)
+    # Escape backslashes first, then double quotes for shell double-quoted context
+    return python_repr.replace("\\", "\\\\").replace('"', '\\"')
+
+
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
 import os
 import json
 
-os.chdir('{path}')
-matches = sorted(glob.glob('{pattern}', recursive=True))
+os.chdir({path_quoted})
+matches = sorted(glob.glob({pattern_quoted}, recursive=True))
 for m in matches:
     stat = os.stat(m)
     result = {{
@@ -39,25 +53,32 @@ for m in matches:
 
 _WRITE_COMMAND_TEMPLATE = """python3 -c "
 import os
+import base64
+
+file_path = {file_path_quoted}
+content = base64.b64decode({content_b64_quoted}).decode('utf-8')
 
 # Create parent directory if needed
-parent_dir = os.path.dirname('{file_path}') or '.'
+parent_dir = os.path.dirname(file_path) or '.'
 os.makedirs(parent_dir, exist_ok=True)
 
 # Write content to file
-with open('{file_path}', 'w') as f:
-    f.write('''{content}''')
+with open(file_path, 'w') as f:
+    f.write(content)
 " 2>&1"""
 
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys
+import base64
+
+file_path = {file_path_quoted}
+old = base64.b64decode({old_b64_quoted}).decode('utf-8')
+new = base64.b64decode({new_b64_quoted}).decode('utf-8')
+replace_all = {replace_all}
 
 # Read file content
-with open('{file_path}', 'r') as f:
+with open(file_path, 'r') as f:
     text = f.read()
-
-old = '''{old_string}'''
-new = '''{new_string}'''
 
 # Count occurrences
 count = text.count(old)
@@ -65,17 +86,17 @@ count = text.count(old)
 # Exit with error codes if issues found
 if count == 0:
     sys.exit(1)  # String not found
-elif count > 1 and not {replace_all}:
+elif count > 1 and not replace_all:
     sys.exit(2)  # Multiple occurrences without replace_all
 
 # Perform replacement
-if {replace_all}:
+if replace_all:
     result = text.replace(old, new)
 else:
     result = text.replace(old, new, 1)
 
 # Write back to file
-with open('{file_path}', 'w') as f:
+with open(file_path, 'w') as f:
     f.write(result)
 
 print(count)
@@ -85,7 +106,7 @@ _READ_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
 
-file_path = '{file_path}'
+file_path = {file_path_quoted}
 offset = {offset}
 limit = {limit}
 
@@ -144,7 +165,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """Structured listing with file metadata."""
-        files = self.execute(f"ls -la '{path}' 2>/dev/null || true")
+        # Use shlex.quote for path
+        files = self.execute(f"ls -la {shlex.quote(path)} 2>/dev/null || true")
 
         # Parse ls output - this is a simple implementation
         # You might want to use find for more structured output
@@ -172,8 +194,38 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers using a single shell command."""
-        # Use template for reading file with offset and limit
-        cmd = _READ_COMMAND_TEMPLATE.format(file_path=file_path, offset=offset, limit=limit)
+        # Create JSON payload with all parameters
+        payload = json.dumps({"file_path": file_path, "offset": offset, "limit": limit})
+
+        # Python code that reads from stdin
+        python_code = """import sys, json, os
+data = json.load(sys.stdin)
+file_path = data['file_path']
+offset = data['offset']
+limit = data['limit']
+
+if not os.path.isfile(file_path):
+    print('Error: File not found')
+    sys.exit(1)
+
+if os.path.getsize(file_path) == 0:
+    print('System reminder: File exists but has empty contents')
+    sys.exit(0)
+
+with open(file_path, 'r') as f:
+    lines = f.readlines()
+
+start_idx = offset
+end_idx = offset + limit
+selected_lines = lines[start_idx:end_idx]
+
+for i, line in enumerate(selected_lines):
+    line_num = offset + i + 1
+    line_content = line.rstrip('\\n')
+    print(f'{line_num:6d}\\t{line_content}')"""
+
+        # Execute with JSON payload via stdin
+        cmd = f"echo {shlex.quote(payload)} | python3 -c {shlex.quote(python_code)} 2>&1"
         result = self.execute(cmd)
 
         output = result.output.rstrip()
@@ -190,18 +242,31 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         content: str,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
-        # Escape content for shell safety
-        content_escaped = content.replace("'", "'\\\\''")
+        # Use shlex.quote for file path in shell command
+        file_path_quoted = shlex.quote(file_path)
 
         # Check if file already exists
-        check_cmd = f"test -e '{file_path}' && echo 'exists' || echo 'not_exists'"
+        check_cmd = f"test -e {file_path_quoted} && echo 'exists' || echo 'not_exists'"
         check_result = self.execute(check_cmd)
 
         if check_result.output.strip() == "exists":
             return WriteResult(error=f"Error: File '{file_path}' already exists")
 
-        # Write the file using template
-        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content=content_escaped)
+        # Create JSON payload with all parameters
+        payload = json.dumps({"file_path": file_path, "content_b64": base64.b64encode(content.encode("utf-8")).decode("ascii")})
+
+        # Python code that reads from stdin
+        python_code = """import sys, json, base64, os
+data = json.load(sys.stdin)
+file_path = data['file_path']
+content = base64.b64decode(data['content_b64']).decode('utf-8')
+parent_dir = os.path.dirname(file_path) or '.'
+os.makedirs(parent_dir, exist_ok=True)
+with open(file_path, 'w') as f:
+    f.write(content)"""
+
+        # Execute with JSON payload via stdin
+        cmd = f"echo {shlex.quote(payload)} | python3 -c {shlex.quote(python_code)} 2>&1"
         result = self.execute(cmd)
 
         if result.exit_code != 0:
@@ -218,12 +283,46 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
-        # Escape single quotes in the strings for shell safety
-        old_escaped = old_string.replace("'", "'\\\\''")
-        new_escaped = new_string.replace("'", "'\\\\''")
+        # Create JSON payload with all parameters
+        payload = json.dumps(
+            {
+                "file_path": file_path,
+                "old_b64": base64.b64encode(old_string.encode("utf-8")).decode("ascii"),
+                "new_b64": base64.b64encode(new_string.encode("utf-8")).decode("ascii"),
+                "replace_all": replace_all,
+            }
+        )
 
-        # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_string=old_escaped, new_string=new_escaped, replace_all=replace_all)
+        # Python code that reads from stdin
+        python_code = """import sys, json, base64
+data = json.load(sys.stdin)
+file_path = data['file_path']
+old = base64.b64decode(data['old_b64']).decode('utf-8')
+new = base64.b64decode(data['new_b64']).decode('utf-8')
+replace_all = data['replace_all']
+
+with open(file_path, 'r') as f:
+    text = f.read()
+
+count = text.count(old)
+
+if count == 0:
+    sys.exit(1)
+elif count > 1 and not replace_all:
+    sys.exit(2)
+
+if replace_all:
+    result = text.replace(old, new)
+else:
+    result = text.replace(old, new, 1)
+
+with open(file_path, 'w') as f:
+    f.write(result)
+
+print(count)"""
+
+        # Execute with JSON payload via stdin
+        cmd = f"echo {shlex.quote(payload)} | python3 -c {shlex.quote(python_code)} 2>&1"
         result = self.execute(cmd)
 
         exit_code = result.exit_code
@@ -249,65 +348,105 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         """Structured search results or error string for invalid input."""
         search_path = path or "."
 
-        # Build grep command to get structured output
-        grep_opts = "-rHn"  # recursive, with filename, with line number
+        # Create JSON payload with all parameters
+        payload = json.dumps({"pattern": pattern, "search_path": search_path, "glob": glob})
 
-        # Add glob pattern if specified
-        glob_pattern = ""
-        if glob:
-            glob_pattern = f"--include='{glob}'"
+        # Python code that reads from stdin and performs grep
+        python_code = """import sys, json, os, re
+data = json.load(sys.stdin)
+pattern = data['pattern']
+search_path = data['search_path']
+glob_pattern = data['glob']
 
-        # Escape pattern for shell
-        pattern_escaped = pattern.replace("'", "'\\\\''")
+def matches_glob(filepath, glob_pattern):
+    if not glob_pattern:
+        return True
+    import fnmatch
+    return fnmatch.fnmatch(os.path.basename(filepath), glob_pattern)
 
-        cmd = f"grep {grep_opts} {glob_pattern} -e '{pattern_escaped}' '{search_path}' 2>/dev/null || true"
+def grep_file(filepath, pattern):
+    results = []
+    try:
+        with open(filepath, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                if pattern in line:
+                    results.append({
+                        'path': filepath,
+                        'line': line_num,
+                        'text': line.rstrip('\\n')
+                    })
+    except:
+        pass
+    return results
+
+all_matches = []
+for root, dirs, files in os.walk(search_path):
+    for filename in files:
+        filepath = os.path.join(root, filename)
+        if matches_glob(filepath, glob_pattern):
+            all_matches.extend(grep_file(filepath, pattern))
+
+print(json.dumps(all_matches))"""
+
+        # Execute with JSON payload via stdin
+        cmd = f"echo {shlex.quote(payload)} | python3 -c {shlex.quote(python_code)} 2>&1"
         result = self.execute(cmd)
 
         output = result.output.rstrip()
         if not output:
             return []
 
-        # Parse grep output into GrepMatch objects
-        matches: list[GrepMatch] = []
-        for line in output.split("\n"):
-            # Format is: path:line_number:text
-            parts = line.split(":", 2)
-            if len(parts) >= 3:
-                matches.append(
-                    {
-                        "path": parts[0],
-                        "line": int(parts[1]),
-                        "text": parts[2],
-                    }
-                )
+        try:
+            matches_data = json.loads(output)
+            return matches_data
+        except json.JSONDecodeError:
+            return []
 
-        return matches
-
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob_info(self, pattern: str, path: str = ".") -> list[FileInfo]:
         """Structured glob matching returning FileInfo dicts."""
-        # Escape pattern and path for shell
-        pattern_escaped = pattern.replace("'", "'\\\\''")
-        path_escaped = path.replace("'", "'\\\\''")
+        # Create JSON payload with all parameters
+        payload = json.dumps({"pattern": pattern, "path": path})
 
-        cmd = _GLOB_COMMAND_TEMPLATE.format(path=path_escaped, pattern=pattern_escaped)
+        # Python code that reads from stdin and performs glob
+        python_code = """import sys, json, glob, os
+data = json.load(sys.stdin)
+pattern = data['pattern']
+path = data['path']
+
+os.chdir(path)
+matches = sorted(glob.glob(pattern, recursive=True))
+
+results = []
+for m in matches:
+    stat = os.stat(m)
+    result = {
+        'path': m,
+        'size': stat.st_size,
+        'mtime': stat.st_mtime,
+        'is_dir': os.path.isdir(m)
+    }
+    results.append(result)
+
+print(json.dumps(results))"""
+
+        # Execute with JSON payload via stdin
+        cmd = f"echo {shlex.quote(payload)} | python3 -c {shlex.quote(python_code)} 2>&1"
         result = self.execute(cmd)
 
         output = result.output.strip()
         if not output:
             return []
 
-        # Parse JSON output into FileInfo dicts
-        file_infos: list[FileInfo] = []
-        for line in output.split("\n"):
-            try:
-                data = json.loads(line)
+        try:
+            data = json.loads(output)
+            file_infos: list[FileInfo] = []
+            for item in data:
                 file_infos.append(
                     {
-                        "path": data["path"],
-                        "is_dir": data["is_dir"],
+                        "path": item["path"],
+                        "is_dir": item["is_dir"],
                     }
                 )
-            except json.JSONDecodeError:
-                continue
-
-        return file_infos
+            return file_infos
+        except json.JSONDecodeError:
+            return []

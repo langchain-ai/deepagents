@@ -7,7 +7,7 @@ from runloop_api_client import Runloop
 
 from deepagents.backends.process import ExecuteResponse
 from deepagents.backends.protocol import (
-    BackendProtocol,
+    SandboxBackendProtocol,
     EditResult,
     FileInfo,
     GrepMatch,
@@ -31,7 +31,7 @@ for m in matches:
 " 2>/dev/null"""
 
 
-class RunloopBackend(BackendProtocol):
+class RunloopBackend(SandboxBackendProtocol):
     """Backend that operates on files in a Runloop devbox.
 
     This implementation uses the Runloop API client to execute commands
@@ -67,8 +67,6 @@ class RunloopBackend(BackendProtocol):
     def execute(
         self,
         command: str,
-        cwd: str | None = None,
-        env: dict[str, str] | None = None,
         *,
         timeout: int = 30 * 60,
     ) -> ExecuteResponse:
@@ -364,33 +362,3 @@ class RunloopBackend(BackendProtocol):
 
         results.sort(key=lambda x: x.get("path", ""))
         return results
-
-
-class NotGiven:
-    """Sentinel type to indicate non specified parameters."""
-
-
-class RunloopProvider:
-    def __init__(self, *, client: Runloop | None = None, api_key: str | None = None, create_params: dict | NotGiven = NotGiven) -> None:
-        if client and api_key:
-            raise ValueError("Provide either client or api_key, not both.")
-        if not client and not api_key:
-            raise ValueError("Either client or api_key must be provided.")
-
-        if not client:
-            api_key = api_key or os.environ.get("RUNLOOP_API_KEY", None)
-            if api_key is None:
-                raise ValueError("Either client or api_key must be provided.")
-            client = Runloop(bearer_token=api_key)
-
-        self.client = client
-        self.create_params = create_params
-
-    def backend_factory(self, runtime: "ToolRuntime") -> RunloopBackend:
-        """Return a RunloopBackendFactory using the stored client."""
-        kwargs = {} if self.create_params is NotGiven else self.create_params
-        devbox_resource = self.client.devboxes.create(**kwargs)
-        return RunloopBackend(
-            devbox_id=devbox_resource.id,
-            client=self.client,
-        )

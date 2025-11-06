@@ -521,7 +521,11 @@ def _execute_tool_generator(
                 "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
             )
 
-        result = resolved_backend.execute(command)
+        try:
+            result = resolved_backend.execute(command)
+        except NotImplementedError as e:
+            # Handle case where execute() exists but raises NotImplementedError
+            return f"Error: Execution not available. {e}"
 
         # Format output for LLM consumption
         parts = [result.output]

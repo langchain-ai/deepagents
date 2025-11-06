@@ -14,6 +14,7 @@ dependencies = [
   "tavily-python",
   "python-dotenv",
   "daytona>=0.113.0",
+  "modal>=1.2.0",
 ]
 
 [project.scripts]

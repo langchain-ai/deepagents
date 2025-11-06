@@ -1,17 +1,25 @@
 """BackendProtocol implementation for Runloop."""
 
+try:
+    import runloop_api_client
+except ImportError:
+    raise ImportError(
+        "runloop_api_client package is required for RunloopBackend. "
+        "Install with `pip install runloop_api_client`."
+    )
+
 import datetime
 import os
 
 from runloop_api_client import Runloop
 
-from deepagents.backends.process import ExecuteResponse
 from deepagents.backends.protocol import (
-    SandboxBackendProtocol,
     EditResult,
     FileInfo,
     GrepMatch,
+    SandboxBackendProtocol,
     WriteResult,
+    ExecuteResponse,
 )
 from deepagents.backends.utils import (
     check_empty_content,
@@ -74,8 +82,6 @@ class RunloopBackend(SandboxBackendProtocol):
 
         Args:
             command: Full shell command string to execute.
-            cwd: Working directory to execute the command in (absolute path).
-            env: Environment variables for the command (dict of name -> value).
             timeout: Maximum execution time in seconds (default: 30 minutes).
 
         Returns:
@@ -94,7 +100,6 @@ class RunloopBackend(SandboxBackendProtocol):
         return ExecuteResponse(
             output=output,
             exit_code=result.exit_status,
-            signal=None,  # Runloop API doesn't provide signal information
             truncated=False,  # Runloop doesn't provide truncation info
         )
 
@@ -191,7 +196,9 @@ class RunloopBackend(SandboxBackendProtocol):
         response = self.execute(check_cmd)
 
         if "exists" in response.output:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+            return WriteResult(
+                error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
+            )
 
         # Use the upload_file() method from the Runloop API client.
         try:
@@ -234,7 +241,9 @@ class RunloopBackend(SandboxBackendProtocol):
             response = self._client.devboxes.download_file(id=self._devbox_id, path=file_path)
 
             # do the replacements
-            new_text, occurrences = perform_string_replacement(response.text(), old_string, new_string, replace_all)
+            new_text, occurrences = perform_string_replacement(
+                response.text(), old_string, new_string, replace_all
+            )
 
             # write back
             self._client.devboxes.upload_file(
@@ -325,7 +334,9 @@ class RunloopBackend(SandboxBackendProtocol):
 
         # Use a more complicated command, to grab stat output from the
         # matching files.  Could be simplified if this isn't needed.
-        python_cmd = _GLOB_COMMAND_TEMPLATE.format(path_escaped=path_escaped, pattern_escaped=pattern_escaped)
+        python_cmd = _GLOB_COMMAND_TEMPLATE.format(
+            path_escaped=path_escaped, pattern_escaped=pattern_escaped
+        )
 
         response = self.execute(python_cmd)
 

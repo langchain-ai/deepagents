@@ -2,11 +2,12 @@ from pathlib import Path
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import WriteResult
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol, WriteResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
+import pytest
 
 
 def make_runtime(tid: str = "tc"):
@@ -386,3 +387,84 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store():
     stored_item = rt.store.get(("filesystem",), "/test_routed_123")
     assert stored_item is not None
     assert stored_item.value["content"] == [large_content]
+
+
+# Mock sandbox backend for testing execute functionality
+class MockSandboxBackend(StateBackend):
+    """Mock sandbox backend that implements SandboxBackendProtocol."""
+
+    def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+        """Mock execute that returns the command as output."""
+        return ExecuteResponse(
+            output=f"Executed: {command}",
+            exit_code=0,
+            truncated=False,
+        )
+
+
+def test_composite_backend_execute_with_sandbox_default():
+    """Test that CompositeBackend.execute() delegates to sandbox default backend."""
+    rt = make_runtime("t_exec1")
+    sandbox = MockSandboxBackend(rt)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=sandbox, routes={"/memories/": store})
+
+    # Execute should work since default backend supports it
+    result = comp.execute("ls -la")
+    assert isinstance(result, ExecuteResponse)
+    assert result.output == "Executed: ls -la"
+    assert result.exit_code == 0
+    assert result.truncated is False
+
+
+def test_composite_backend_execute_without_sandbox_default():
+    """Test that CompositeBackend.execute() fails when default doesn't support execution."""
+    rt = make_runtime("t_exec2")
+    state_backend = StateBackend(rt)  # StateBackend doesn't implement SandboxBackendProtocol
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/memories/": store})
+
+    # Execute should raise NotImplementedError since default backend doesn't support it
+    with pytest.raises(NotImplementedError, match="doesn't support command execution"):
+        comp.execute("ls -la")
+
+
+def test_composite_backend_supports_execution_check():
+    """Test the isinstance check works correctly for CompositeBackend."""
+    rt = make_runtime("t_exec3")
+
+    # CompositeBackend with sandbox default should pass isinstance check
+    sandbox = MockSandboxBackend(rt)
+    comp_with_sandbox = CompositeBackend(default=sandbox, routes={})
+    # Note: CompositeBackend itself has execute() method, so isinstance will pass
+    # but the actual support depends on the default backend
+    assert hasattr(comp_with_sandbox, "execute")
+
+    # CompositeBackend with non-sandbox default should still have execute() method
+    # but will raise NotImplementedError when called
+    state = StateBackend(rt)
+    comp_without_sandbox = CompositeBackend(default=state, routes={})
+    assert hasattr(comp_without_sandbox, "execute")
+
+
+def test_composite_backend_execute_with_routed_backends():
+    """Test that execution doesn't interfere with file routing."""
+    rt = make_runtime("t_exec4")
+    sandbox = MockSandboxBackend(rt)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=sandbox, routes={"/memories/": store})
+
+    # Write files to both backends
+    comp.write("/local.txt", "local content")
+    comp.write("/memories/persistent.txt", "persistent content")
+
+    # Execute should still work
+    result = comp.execute("echo test")
+    assert result.output == "Executed: echo test"
+
+    # File operations should still work
+    assert "local content" in comp.read("/local.txt")
+    assert "persistent content" in comp.read("/memories/persistent.txt")

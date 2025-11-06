@@ -522,7 +522,7 @@ def _execute_tool_generator(
                 "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
             )
 
-        result: ExecuteResponse = resolved_backend.execute(command)
+        result = resolved_backend.execute(command)
 
         # Format output for LLM consumption
         parts = [result.output]

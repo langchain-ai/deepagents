@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deepagents_cli.integrations.base_sandbox import BaseSandbox
 from deepagents.backends.protocol import ExecuteResponse
+
+from deepagents_cli.integrations.base_sandbox import BaseSandbox
 
 if TYPE_CHECKING:
     from daytona import Sandbox

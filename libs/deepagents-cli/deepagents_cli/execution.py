@@ -247,7 +247,8 @@ async def execute_task(
             interrupt_occurred = False
             hitl_response = None
             suppress_resumed_output = False
-            hitl_request = None
+            # Track all pending interrupts: {interrupt_id: request_data}
+            pending_interrupts: dict[str, dict] = {}
 
             async for chunk in agent.astream(
                 stream_input,
@@ -267,21 +268,26 @@ async def execute_task(
                     if not isinstance(data, dict):
                         continue
 
-                    # Check for interrupts - just capture the data, don't handle yet
+                    # Check for interrupts - collect ALL pending interrupts
                     if "__interrupt__" in data:
                         interrupt_data = data["__interrupt__"]
                         if interrupt_data:
-                            interrupt_obj = (
-                                interrupt_data[0]
-                                if isinstance(interrupt_data, tuple)
-                                else interrupt_data
+                            # Handle both single interrupt and list of interrupts
+                            interrupt_list = (
+                                interrupt_data if isinstance(interrupt_data, (list, tuple))
+                                else [interrupt_data]
                             )
-                            hitl_request = (
-                                interrupt_obj.value
-                                if hasattr(interrupt_obj, "value")
-                                else interrupt_obj
-                            )
-                            interrupt_occurred = True
+
+                            for interrupt_obj in interrupt_list:
+                                interrupt_request = (
+                                    interrupt_obj.value
+                                    if hasattr(interrupt_obj, "value")
+                                    else interrupt_obj
+                                )
+                                # Extract interrupt ID - required for multiple interrupts
+                                if hasattr(interrupt_obj, "id"):
+                                    pending_interrupts[interrupt_obj.id] = interrupt_request
+                                    interrupt_occurred = True
 
                     # Extract chunk_data from updates for todo checking
                     chunk_data = list(data.values())[0] if data else None
@@ -499,49 +505,64 @@ async def execute_task(
             flush_text_buffer(final=True)
 
             # Handle human-in-the-loop after stream completes
-            if interrupt_occurred and hitl_request:
-                # Check if auto-approve is enabled
-                if session_state.auto_approve:
-                    # Auto-approve all commands without prompting
-                    decisions = []
-                    for action_request in hitl_request.get("action_requests", []):
-                        # Show what's being auto-approved (brief, dim message)
+            if interrupt_occurred and pending_interrupts:
+                # Build response for all pending interrupts
+                all_responses = {}
+                any_rejected = False
+
+                for interrupt_id, hitl_request in pending_interrupts.items():
+                    # Check if auto-approve is enabled
+                    if session_state.auto_approve:
+                        # Auto-approve all commands without prompting
+                        decisions = []
+                        for action_request in hitl_request.get("action_requests", []):
+                            # Show what's being auto-approved (brief, dim message)
+                            if spinner_active:
+                                status.stop()
+                                spinner_active = False
+
+                            description = action_request.get("description", "tool action")
+                            console.print()
+                            console.print(f"  [dim]⚡ {description}[/dim]")
+
+                            decisions.append({"type": "approve"})
+
+                        all_responses[interrupt_id] = {"decisions": decisions}
+
+                        # Restart spinner for continuation
+                        if not spinner_active:
+                            status.start()
+                            spinner_active = True
+                    else:
+                        # Normal HITL flow - stop spinner and prompt user
                         if spinner_active:
                             status.stop()
                             spinner_active = False
 
-                        description = action_request.get("description", "tool action")
-                        console.print()
-                        console.print(f"  [dim]⚡ {description}[/dim]")
+                        # Handle human-in-the-loop approval
+                        decisions = []
+                        for action_request in hitl_request.get("action_requests", []):
+                            decision = await asyncio.to_thread(
+                                prompt_for_tool_approval,
+                                action_request,
+                                assistant_id,
+                            )
+                            decisions.append(decision)
 
-                        decisions.append({"type": "approve"})
+                        if any(decision.get("type") == "reject" for decision in decisions):
+                            any_rejected = True
 
-                    hitl_response = {"decisions": decisions}
+                        all_responses[interrupt_id] = {"decisions": decisions}
 
-                    # Restart spinner for continuation
-                    if not spinner_active:
-                        status.start()
-                        spinner_active = True
+                # Set hitl_response based on number of interrupts
+                if len(all_responses) == 1:
+                    # Single interrupt: pass response directly
+                    hitl_response = list(all_responses.values())[0]
                 else:
-                    # Normal HITL flow - stop spinner and prompt user
-                    if spinner_active:
-                        status.stop()
-                        spinner_active = False
+                    # Multiple interrupts: pass dict mapping interrupt_id -> response
+                    hitl_response = all_responses
 
-                    # Handle human-in-the-loop approval
-                    decisions = []
-                    for action_request in hitl_request.get("action_requests", []):
-                        decision = await asyncio.to_thread(
-                            prompt_for_tool_approval,
-                            action_request,
-                            assistant_id,
-                        )
-                        decisions.append(decision)
-
-                    suppress_resumed_output = any(
-                        decision.get("type") == "reject" for decision in decisions
-                    )
-                    hitl_response = {"decisions": decisions}
+                suppress_resumed_output = any_rejected
 
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:

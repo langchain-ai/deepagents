@@ -5,8 +5,6 @@ from typing import Literal
 from deepagents import create_deep_agent
 from tavily import TavilyClient
 from langchain_openai import ChatOpenAI
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 
 # It's best practice to initialize the client once and reuse it.
@@ -220,14 +218,17 @@ async def get_mcp_tools():
         Returns empty list if MCP server is unavailable.
     """
     try:
-        async with streamablehttp_client("http://127.0.0.1:18060/mcp") as (read, write, _):
-            async with ClientSession(read, write) as session:
-                # Initialize the connection
-                await session.initialize()
-                
-                # Get tools
-                tools = await load_mcp_tools(session)
-                return tools
+        # Use connection config instead of session
+        # This allows tools to create their own session when needed
+        connection = {
+            "transport": "streamable_http",
+            "url": "http://127.0.0.1:18060/mcp"
+        }
+        
+        # Pass connection config, not session
+        # load_mcp_tools will create session on-demand when tools are called
+        tools = await load_mcp_tools(session=None, connection=connection)
+        return tools
     except Exception as e:
         # Log error but don't fail module loading
         import warnings
@@ -241,7 +242,6 @@ async def get_mcp_tools():
 
 # Get MCP tools synchronously, with error handling
 mcp_tools = asyncio.run(get_mcp_tools())
-
 # For backward compatibility, create a synchronous version without MCP
 agent = create_deep_agent(
     model=openai_model,

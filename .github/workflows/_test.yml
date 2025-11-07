@@ -43,7 +43,7 @@ jobs:
 
       - name: "📦 Install Test Dependencies"
         shell: bash
-        run: uv sync --group test --dev
+        run: uv sync --all-groups
 
       - name: "🧪 Run Unit Tests"
         shell: bash

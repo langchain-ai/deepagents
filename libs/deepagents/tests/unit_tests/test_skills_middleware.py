@@ -14,7 +14,55 @@ from deepagents.middleware.skills import (
     SkillsState,
     _discover_skills,
     _parse_skill_md,
+    _validate_skill_name,
 )
+
+
+class TestValidateSkillName:
+    """Tests for _validate_skill_name function."""
+
+    def test_valid_names(self):
+        """Test that valid skill names pass validation."""
+        valid_names = [
+            "test-skill",
+            "python-expert",
+            "code-reviewer",
+            "skill123",
+            "a",
+            "test-skill-with-many-parts",
+        ]
+        for name in valid_names:
+            _validate_skill_name(name)  # Should not raise
+
+    def test_empty_name(self):
+        """Test that empty name raises ValueError."""
+        with pytest.raises(ValueError, match="cannot be empty"):
+            _validate_skill_name("")
+
+    def test_path_traversal_attempts(self):
+        """Test that path traversal attempts are blocked."""
+        invalid_names = [
+            "../etc/passwd",
+            "skill/../etc",
+            "~/skill",
+            "skill/subdir",
+            "skill\\windows",
+        ]
+        for name in invalid_names:
+            with pytest.raises(ValueError, match="invalid characters"):
+                _validate_skill_name(name)
+
+    def test_uppercase_rejected(self):
+        """Test that uppercase letters are rejected."""
+        with pytest.raises(ValueError, match="lowercase"):
+            _validate_skill_name("MySkill")
+
+    def test_special_chars_rejected(self):
+        """Test that special characters are rejected."""
+        invalid_names = ["skill@name", "skill_name", "skill.name", "skill name"]
+        for name in invalid_names:
+            with pytest.raises(ValueError, match="lowercase"):
+                _validate_skill_name(name)
 
 
 class TestParseSkillMd:
@@ -108,6 +156,81 @@ Content
         )
 
         with pytest.raises(ValueError, match="missing required field 'description'"):
+            _parse_skill_md(skill_md)
+
+    def test_parse_invalid_name_type(self, tmp_path: Path):
+        """Test parsing when name is not a string."""
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(
+            """---
+name: 123
+description: Test skill
+---
+
+Content
+"""
+        )
+
+        with pytest.raises(ValueError, match="must be a string"):
+            _parse_skill_md(skill_md)
+
+    def test_parse_invalid_description_type(self, tmp_path: Path):
+        """Test parsing when description is not a string."""
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(
+            """---
+name: test-skill
+description: [list, instead, of, string]
+---
+
+Content
+"""
+        )
+
+        with pytest.raises(ValueError, match="must be a string"):
+            _parse_skill_md(skill_md)
+
+    def test_parse_frontmatter_not_dict(self, tmp_path: Path):
+        """Test parsing when frontmatter is not a dictionary."""
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(
+            """---
+- list
+- instead
+- of
+- dict
+---
+
+Content
+"""
+        )
+
+        with pytest.raises(ValueError, match="must be a dictionary"):
+            _parse_skill_md(skill_md)
+
+    def test_parse_invalid_skill_name_format(self, tmp_path: Path):
+        """Test parsing when skill name has invalid format."""
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(
+            """---
+name: Invalid_Name
+description: Test skill
+---
+
+Content
+"""
+        )
+
+        with pytest.raises(ValueError, match="lowercase"):
+            _parse_skill_md(skill_md)
+
+    def test_parse_encoding_error(self, tmp_path: Path):
+        """Test parsing when file has encoding issues."""
+        skill_md = tmp_path / "SKILL.md"
+        # Write invalid UTF-8
+        skill_md.write_bytes(b"\x80\x81\x82")
+
+        with pytest.raises(ValueError, match="Failed to read"):
             _parse_skill_md(skill_md)
 
 

@@ -1,6 +1,5 @@
 """Middleware for providing skills to an agent."""
 
-import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -38,11 +37,47 @@ class Skill:
     """Path to the skill's directory."""
 
 
+def _active_skills_reducer(left: list[str] | None, right: list[str]) -> list[str]:
+    """Merge skill lists using set union to avoid duplicates.
+
+    Args:
+        left: Existing active skills list. May be None during initialization.
+        right: New skills to activate.
+
+    Returns:
+        Merged list with duplicates removed.
+    """
+    if left is None:
+        return right
+    return list(set(left + right))
+
+
 class SkillsState(TypedDict):
     """State schema for skills middleware."""
 
-    active_skills: Annotated[list[str], lambda left, right: list(set((left or []) + right))]
+    active_skills: Annotated[list[str], _active_skills_reducer]
     """Names of currently active skills. Merged using set union to avoid duplicates."""
+
+
+def _validate_skill_name(name: str) -> None:
+    """Validate skill name for security and consistency.
+
+    Args:
+        name: The skill name to validate.
+
+    Raises:
+        ValueError: If name contains invalid characters or patterns.
+    """
+    if not name:
+        raise ValueError("Skill name cannot be empty")
+
+    # Prevent path traversal
+    if ".." in name or "/" in name or "\\" in name or name.startswith("~"):
+        raise ValueError(f"Skill name contains invalid characters: {name}")
+
+    # Ensure lowercase-with-hyphens convention
+    if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+        raise ValueError(f"Skill name must be lowercase letters, numbers, and hyphens only: {name}")
 
 
 def _parse_skill_md(skill_path: Path) -> Skill:
@@ -60,7 +95,10 @@ def _parse_skill_md(skill_path: Path) -> Skill:
     if not skill_path.exists():
         raise ValueError(f"SKILL.md not found at {skill_path}")
 
-    content = skill_path.read_text(encoding="utf-8")
+    try:
+        content = skill_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"Failed to read SKILL.md at {skill_path}: {e}") from e
 
     # Parse YAML frontmatter
     frontmatter_match = re.match(r"^---\n(.*?)\n---\n(.*)$", content, re.DOTALL)
@@ -75,15 +113,27 @@ def _parse_skill_md(skill_path: Path) -> Skill:
     except yaml.YAMLError as e:
         raise ValueError(f"Failed to parse YAML frontmatter in {skill_path}: {e}") from e
 
-    # Validate required fields
+    # Validate frontmatter is a dict
+    if not isinstance(frontmatter, dict):
+        raise ValueError(f"YAML frontmatter must be a dictionary in {skill_path}, got {type(frontmatter).__name__}")
+
+    # Validate required fields exist
     if "name" not in frontmatter:
         raise ValueError(f"SKILL.md at {skill_path} is missing required field 'name'")
     if "description" not in frontmatter:
         raise ValueError(f"SKILL.md at {skill_path} is missing required field 'description'")
 
-    # Extract name and description
+    # Extract and validate name and description
     name = frontmatter.pop("name")
     description = frontmatter.pop("description")
+
+    if not isinstance(name, str):
+        raise ValueError(f"Skill name must be a string in {skill_path}, got {type(name).__name__}")
+    if not isinstance(description, str):
+        raise ValueError(f"Skill description must be a string in {skill_path}, got {type(description).__name__}")
+
+    # Validate skill name format and security
+    _validate_skill_name(name)
 
     return Skill(
         name=name,
@@ -191,7 +241,7 @@ class SkillsMiddleware(AgentMiddleware):
             skills_path = Path(skills_dir) if skills_dir else Path("./skills")
             self._skills = _discover_skills(skills_path)
 
-        self._auto_activate = list(auto_activate) if auto_activate else []
+        self._auto_activate = list(auto_activate or [])
 
         # Validate auto_activate skills exist
         for skill_name in self._auto_activate:
@@ -202,8 +252,6 @@ class SkillsMiddleware(AgentMiddleware):
                 )
 
         # Create use_skill tool
-        available_skills = self._skills
-
         @tool
         def use_skill(
             runtime: ToolRuntime,
@@ -223,13 +271,13 @@ class SkillsMiddleware(AgentMiddleware):
             Available skills:
 {available_skills_list}
             """
-            if name not in available_skills:
+            if name not in self._skills:
                 return (
                     f"Error: Skill '{name}' not found.\n\n"
-                    f"Available skills: {', '.join(available_skills.keys())}"
+                    f"Available skills: {', '.join(self._skills.keys())}"
                 )
 
-            skill = available_skills[name]
+            skill = self._skills[name]
 
             # Add skill to active skills in state
             state = runtime.state
@@ -260,6 +308,10 @@ class SkillsMiddleware(AgentMiddleware):
         """Inject active skill instructions into system prompt before model call."""
         # Get active skills from state
         active_skills = request.state.get("active_skills", [])
+
+        # Ensure active_skills is a list
+        if not isinstance(active_skills, list):
+            active_skills = []
 
         # Add auto-activated skills if this is the first call
         messages = request.state.get("messages", [])

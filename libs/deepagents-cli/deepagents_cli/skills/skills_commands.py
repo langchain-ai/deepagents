@@ -72,7 +72,7 @@ name: {skill_name}
 description: [Brief description of what this skill does]
 ---
 
-# {skill_name.title().replace('-', ' ')} Skill
+# {skill_name.title().replace("-", " ")} Skill
 
 ## Description
 
@@ -138,9 +138,7 @@ This skill directory can include supporting files referenced in the instructions
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text(template)
 
-    console.print(
-        f"✓ Skill '{skill_name}' created successfully!", style=COLORS["primary"]
-    )
+    console.print(f"✓ Skill '{skill_name}' created successfully!", style=COLORS["primary"])
     console.print(f"Location: {skill_dir}\n", style=COLORS["dim"])
     console.print(
         "[dim]Edit the SKILL.md file to customize:\n"
@@ -165,12 +163,8 @@ def show_skill_info(skill_name: str):
     skill = next((s for s in skills if s["name"] == skill_name), None)
 
     if not skill:
-        console.print(
-            f"[bold red]Error:[/bold red] Skill '{skill_name}' not found."
-        )
-        console.print(
-            f"\n[dim]Available skills:[/dim]", style=COLORS["dim"]
-        )
+        console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
+        console.print(f"\n[dim]Available skills:[/dim]", style=COLORS["dim"])
         for s in skills:
             console.print(f"  - {s['name']}", style=COLORS["dim"])
         return

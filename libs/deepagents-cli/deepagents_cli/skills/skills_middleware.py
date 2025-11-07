@@ -106,10 +106,7 @@ class SkillsMiddleware(AgentMiddleware):
         skills_backend = FilesystemBackend(root_dir=skills_dir, virtual_mode=True)
 
         # Create composite backend with skills routing
-        backend = CompositeBackend(
-            default=FilesystemBackend(),
-            routes={"/skills/": skills_backend}
-        )
+        backend = CompositeBackend(default=FilesystemBackend(), routes={"/skills/": skills_backend})
 
         # Create middleware
         middleware = SkillsMiddleware(skills_dir=skills_dir, skills_path="/skills/")

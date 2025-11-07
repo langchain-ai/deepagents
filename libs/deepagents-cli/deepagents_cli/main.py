@@ -79,6 +79,23 @@ def parse_args():
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
+    # Skills command
+    skills_parser = subparsers.add_parser("skills", help="Manage agent skills")
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_command", help="Skills command")
+
+    # Skills list
+    skills_subparsers.add_parser("list", help="List all available skills")
+
+    # Skills create
+    create_parser = skills_subparsers.add_parser("create", help="Create a new skill")
+    create_parser.add_argument("name", help="Name of the skill to create (e.g., web-research)")
+
+    # Skills info
+    info_parser = skills_subparsers.add_parser(
+        "info", help="Show detailed information about a skill"
+    )
+    info_parser.add_argument("name", help="Name of the skill to show info for")
+
     # Default interactive mode
     parser.add_argument(
         "--agent",
@@ -214,6 +231,23 @@ def cli_main():
             list_agents()
         elif args.command == "reset":
             reset_agent(args.agent, args.source_agent)
+        elif args.command == "skills":
+            # Handle skills subcommands
+            if args.skills_command == "list":
+                list_skills()
+            elif args.skills_command == "create":
+                create_skill(args.name)
+            elif args.skills_command == "info":
+                show_skill_info(args.name)
+            else:
+                # No subcommand provided, show help
+                console.print(
+                    "[yellow]Please specify a skills subcommand: list, create, or info[/yellow]"
+                )
+                console.print("\nExamples:")
+                console.print("  deepagents skills list")
+                console.print("  deepagents skills create web-research")
+                console.print("  deepagents skills info web-research")
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve)

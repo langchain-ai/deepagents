@@ -6,10 +6,13 @@ Backends provide LLM-optimized interfaces for filesystem and shell operations.
 import abc
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, Callable, Awaitable
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime
+from langchain.tools.tool_node import ToolCallRequest
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
 from deepagents.backends.protocol import EditResult
 
@@ -62,10 +65,13 @@ def _create_edit_tool(backend: "Backend", replace_all: bool = False):
 class Backend(AgentMiddleware):
     """Base backend providing LLM-optimized filesystem and shell interfaces."""
 
-    def __init__(self) -> None:
-        """Initialize the backend and register tools."""
-        self.tools = [
+    @property  # <-- This doesn't place nicely with our classvar likely?
+    def tools(self):
+        """Create tools bound to this instance on first access (lazy)."""
+        # you can add as many base tools as you want here
+        return [
             _create_edit_tool(backend=self, replace_all=True),
+            # ... create other tools
         ]
 
     @abc.abstractmethod
@@ -79,6 +85,20 @@ class Backend(AgentMiddleware):
     ) -> EditResult:
         """Edit file by replacing strings."""
         ...
+
+
+class ToolTruncationMiddledare(AgentMiddleware):
+    def __init__(self, backend: Backend):
+        self.backend = backend
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Insert logic for truncation"""
+        # Logic for truncation goes here and can use the `self.backend` for
+        # persisting tool result to the filesystem or state.
 
 
 class StateBackend(Backend):

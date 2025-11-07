@@ -184,40 +184,5 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
             "status_code": response.status_code,
             "content_length": len(markdown_content),
         }
-
-    except requests.exceptions.Timeout:
-        return {
-            "success": False,
-            "url": url,
-            "markdown_content": "",
-            "status_code": 0,
-            "content_length": 0,
-            "error": f"Request timed out after {timeout} seconds",
-        }
-    except requests.exceptions.HTTPError as e:
-        return {
-            "success": False,
-            "url": url,
-            "markdown_content": "",
-            "status_code": e.response.status_code,
-            "content_length": 0,
-            "error": f"HTTP error {e.response.status_code}: {e.response.reason_phrase}",
-        }
-    except requests.exceptions.RequestException as e:
-        return {
-            "success": False,
-            "url": url,
-            "markdown_content": "",
-            "status_code": 0,
-            "content_length": 0,
-            "error": f"Request error: {e!s}",
-        }
     except Exception as e:
-        return {
-            "success": False,
-            "url": url,
-            "markdown_content": "",
-            "status_code": 0,
-            "content_length": 0,
-            "error": f"Error fetching URL: {e!s}",
-        }
+        return {"error": f"Fetch URL error: {e!s}", "url": url}

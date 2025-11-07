@@ -166,7 +166,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
     # Use virtual_mode=True to sandbox paths to cwd (treats /file.txt as cwd/file.txt, not root /file.txt)
     backend = CompositeBackend(
         default=FilesystemBackend(root_dir=Path.cwd(), virtual_mode=True),
-        routes={"/memories/": long_term_backend}
+        routes={"/memories/": long_term_backend},
     )
 
     # Use the same backend for agent memory middleware

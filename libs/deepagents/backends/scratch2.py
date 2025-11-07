@@ -85,6 +85,9 @@ class Backend(AgentMiddleware):
             # ... create other tools
         ]
 
+    # Option C: Likely a very bad idea (it'll lead to runtime issues or surrise behavior)
+    # Define __init_subclass__ to auto-inject tools into subclasses
+
     @abc.abstractmethod
     def edit(
         self,

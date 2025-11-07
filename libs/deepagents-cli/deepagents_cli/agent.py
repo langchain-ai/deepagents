@@ -85,9 +85,15 @@ def get_system_prompt() -> str:
     Returns:
         The system prompt string (without agent.md content)
     """
-    return f"""### Current Working Directory
+    return f"""### File System and Paths
 
 The filesystem backend is currently operating in: `{Path.cwd()}`
+
+**IMPORTANT - Path Handling:**
+- Paths starting with `/` are relative to the working directory (e.g., `/file.txt` → `{Path.cwd()}/file.txt`)
+- Do NOT use absolute system paths like `/Users/...` or `/home/...`
+- Use paths like `/research_project/file.md` to create files in the working directory
+- Special paths `/memories/` and `/skills/` access different virtual filesystems
 
 ### Memory System Reminder
 

@@ -207,7 +207,9 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         url = args.get("url", "unknown")
         timeout = args.get("timeout", 30)
 
-        return f"URL: {url}\nTimeout: {timeout}s\n\n⚠️  Will fetch and convert web content to markdown"
+        return (
+            f"URL: {url}\nTimeout: {timeout}s\n\n⚠️  Will fetch and convert web content to markdown"
+        )
 
     def format_task_description(tool_call: dict) -> str:
         """Format task (subagent) tool call for approval prompt."""

@@ -3,11 +3,26 @@
 import abc
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime
 
 from deepagents.backends.protocol import EditResult
+
+
+class FileData(TypedDict):
+    """Structure for individual file data in state."""
+
+    content: list[str]
+    created_at: str
+    modified_at: str
+
+
+class FileState(TypedDict):
+    """State schema for file storage."""
+
+    files: dict[str, FileData]
 
 
 def _perform_string_replacement(
@@ -60,6 +75,8 @@ class FilesystemMiddleware(AgentMiddleware):
 
 class StateFilesystemMiddleware(FilesystemMiddleware):
     """Store files in LangGraph agent state (ephemeral)."""
+
+    state_schema = FileState
 
     def edit(
         self,
@@ -146,6 +163,9 @@ class CompositeFilesystemMiddleware(FilesystemMiddleware):
         self.default = default
         self.routes = routes
         self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
+
+        # Register children so framework can collect state schemas and lifecycle hooks
+        self.children = [default, *routes.values()]
 
     def _route(self, path: str) -> tuple[FilesystemMiddleware, str]:
         """Find middleware for path and strip prefix."""

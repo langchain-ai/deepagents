@@ -10,6 +10,7 @@ from .commands import execute_bash_command, handle_command
 from .config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
 from .execution import execute_task
 from .input import create_prompt_session
+from .sandbox_factory import cleanup_sandbox, create_sandbox_backend
 from .tools import http_request, tavily_client, web_search
 from .ui import TokenTracker, show_help
 
@@ -89,12 +90,34 @@ def parse_args():
         action="store_true",
         help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
     )
+    parser.add_argument(
+        "--sandbox",
+        choices=["none", "modal", "daytona", "runloop"],
+        default="none",
+        help="Remote sandbox for code execution (default: none - local only)",
+    )
+    parser.add_argument(
+        "--sandbox-id",
+        help="Existing sandbox ID to reuse (skips creation and cleanup)",
+    )
 
     return parser.parse_args()
 
 
-async def simple_cli(agent, assistant_id: str | None, session_state, baseline_tokens: int = 0):
-    """Main CLI loop."""
+async def simple_cli(
+    agent,
+    assistant_id: str | None,
+    session_state,
+    baseline_tokens: int = 0,
+    sandbox_mode: bool = False,
+    backend=None,
+):
+    """Main CLI loop.
+
+    Args:
+        sandbox_mode: True if using remote sandbox execution
+        backend: Backend for file operations (CompositeBackend)
+    """
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
@@ -113,7 +136,13 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
         console.print()
 
     console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
-    console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
+
+    if sandbox_mode:
+        console.print(f"  [dim]Local CLI directory: {Path.cwd()}[/dim]")
+        console.print("  [dim]Code execution: Remote sandbox (/home/user)[/dim]")
+    else:
+        console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
+
     console.print()
 
     if session_state.auto_approve:
@@ -167,33 +196,75 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
             console.print("\nGoodbye!", style=COLORS["primary"])
             break
 
-        await execute_task(user_input, agent, assistant_id, session_state, token_tracker)
+        await execute_task(user_input, agent, assistant_id, session_state, token_tracker, backend=backend)
 
 
-async def main(assistant_id: str, session_state):
-    """Main entry point."""
+async def main(
+    assistant_id: str,
+    session_state,
+    sandbox_type: str = "none",
+    sandbox_id: str | None = None,
+):
+    """Main entry point.
+
+    Args:
+        assistant_id: Agent identifier for memory storage
+        session_state: Session state with auto-approve settings
+        sandbox_type: Type of sandbox ("none", "modal", "daytona", "runloop")
+        sandbox_id: Optional existing sandbox ID to reuse
+    """
     # Create the model (checks API keys)
     model = create_model()
+
+    # ========== SANDBOX LIFECYCLE: CREATE ==========
+    sandbox_backend = None
+    active_sandbox_id = None
+    user_provided_sandbox = sandbox_id is not None  # Track if user gave us an ID
+
+    if sandbox_type != "none":
+        console.print()
+        sandbox_backend, active_sandbox_id = create_sandbox_backend(sandbox_type, sandbox_id)
+
+        if sandbox_backend and active_sandbox_id:
+            console.print()
+            console.print(f"[yellow]⚡ Sandbox: {sandbox_type.upper()}[/yellow]")
+            console.print(f"[dim]Sandbox ID: {active_sandbox_id}[/dim]")
+            console.print("[green]✓ Remote execution enabled[/green]")
+            console.print()
+        else:
+            # Failed to create sandbox - fall back to local mode
+            console.print("[yellow]⚠️  Sandbox creation failed, using local mode[/yellow]")
+            console.print()
+            sandbox_backend = None
+            active_sandbox_id = None
 
     # Create agent with conditional tools
     tools = [http_request]
     if tavily_client is not None:
         tools.append(web_search)
 
-    agent = create_agent_with_config(model, assistant_id, tools)
+    agent, composite_backend = create_agent_with_config(model, assistant_id, tools, sandbox=sandbox_backend)
 
     # Calculate baseline token count for accurate token tracking
     from .agent import get_system_prompt
     from .token_utils import calculate_baseline_tokens
 
     agent_dir = Path.home() / ".deepagents" / assistant_id
-    system_prompt = get_system_prompt()
+    system_prompt = get_system_prompt(sandbox_mode=(sandbox_backend is not None))
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
 
     try:
-        await simple_cli(agent, assistant_id, session_state, baseline_tokens)
+        await simple_cli(agent, assistant_id, session_state, baseline_tokens, sandbox_mode=(sandbox_backend is not None), backend=composite_backend)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
+    finally:
+        # ========== SANDBOX LIFECYCLE: CLEANUP ==========
+        # Only cleanup if:
+        # 1. We created a sandbox (active_sandbox_id exists)
+        # 2. User didn't provide --sandbox-id (we own the lifecycle)
+        if active_sandbox_id and not user_provided_sandbox:
+            console.print()
+            cleanup_sandbox(active_sandbox_id, sandbox_type)
 
 
 def cli_main():
@@ -215,7 +286,12 @@ def cli_main():
             session_state = SessionState(auto_approve=args.auto_approve)
 
             # API key validation happens in create_model()
-            asyncio.run(main(args.agent, session_state))
+            asyncio.run(main(
+                args.agent,
+                session_state,
+                args.sandbox,
+                args.sandbox_id,
+            ))
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

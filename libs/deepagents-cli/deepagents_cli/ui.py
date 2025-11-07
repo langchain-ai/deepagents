@@ -534,13 +534,20 @@ def show_help():
     console.print()
 
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
-    console.print("  deepagents [--agent NAME] [--auto-approve]     Start interactive session")
+    console.print("  deepagents [OPTIONS]                           Start interactive session")
     console.print("  deepagents list                                List all available agents")
     console.print("  deepagents reset --agent AGENT                 Reset agent to default prompt")
     console.print(
         "  deepagents reset --agent AGENT --target SOURCE Reset agent to copy of another agent"
     )
     console.print("  deepagents help                                Show this help message")
+    console.print()
+
+    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("  --agent NAME                  Agent identifier (default: agent)")
+    console.print("  --auto-approve                Auto-approve tool usage without prompting")
+    console.print("  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)")
+    console.print("  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)")
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -553,6 +560,18 @@ def show_help():
     )
     console.print(
         "  deepagents --auto-approve               # Start with auto-approve enabled",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --sandbox runloop            # Execute code in Runloop sandbox",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --sandbox modal              # Execute code in Modal sandbox",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --sandbox runloop --sandbox-id dbx_123  # Reuse existing sandbox",
         style=COLORS["dim"],
     )
     console.print(

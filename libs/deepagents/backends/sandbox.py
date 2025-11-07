@@ -23,9 +23,14 @@ _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
 import os
 import json
+import base64
 
-os.chdir('{path}')
-matches = sorted(glob.glob('{pattern}', recursive=True))
+# Decode base64-encoded parameters
+path = base64.b64decode('{path_b64}').decode('utf-8')
+pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
+
+os.chdir(path)
+matches = sorted(glob.glob(pattern, recursive=True))
 for m in matches:
     stat = os.stat(m)
     result = {{
@@ -39,25 +44,29 @@ for m in matches:
 
 _WRITE_COMMAND_TEMPLATE = """python3 -c "
 import os
+import base64
 
 # Create parent directory if needed
 parent_dir = os.path.dirname('{file_path}') or '.'
 os.makedirs(parent_dir, exist_ok=True)
 
-# Write content to file
+# Decode and write content
+content = base64.b64decode('{content_b64}').decode('utf-8')
 with open('{file_path}', 'w') as f:
-    f.write('''{content}''')
+    f.write(content)
 " 2>&1"""
 
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys
+import base64
 
 # Read file content
 with open('{file_path}', 'r') as f:
     text = f.read()
 
-old = '''{old_string}'''
-new = '''{new_string}'''
+# Decode base64-encoded strings
+old = base64.b64decode('{old_b64}').decode('utf-8')
+new = base64.b64decode('{new_b64}').decode('utf-8')
 
 # Count occurrences
 count = text.count(old)
@@ -143,27 +152,40 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         ...
 
     def ls_info(self, path: str) -> list[FileInfo]:
-        """Structured listing with file metadata."""
-        files = self.execute(f"ls -la '{path}' 2>/dev/null || true")
+        """Structured listing with file metadata using os.scandir."""
+        cmd = f"""python3 -c "
+import os
+import json
 
-        # Parse ls output - this is a simple implementation
-        # You might want to use find for more structured output
-        result: list[FileInfo] = []
-        for line in files.output.strip().split("\n"):
-            if not line or line.startswith("total"):
+path = '{path}'
+
+try:
+    with os.scandir(path) as it:
+        for entry in it:
+            result = {{
+                'path': entry.name,
+                'is_dir': entry.is_dir(follow_symlinks=False)
+            }}
+            print(json.dumps(result))
+except FileNotFoundError:
+    pass
+except PermissionError:
+    pass
+" 2>/dev/null"""
+
+        result = self.execute(cmd)
+
+        file_infos: list[FileInfo] = []
+        for line in result.output.strip().split("\n"):
+            if not line:
                 continue
-            parts = line.split()
-            if len(parts) >= 9:
-                filename = " ".join(parts[8:])
-                is_dir = parts[0].startswith("d")
-                result.append(
-                    {
-                        "path": filename,
-                        "is_dir": is_dir,
-                    }
-                )
+            try:
+                data = json.loads(line)
+                file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
+            except json.JSONDecodeError:
+                continue
 
-        return result
+        return file_infos
 
     def read(
         self,
@@ -190,8 +212,10 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         content: str,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
-        # Escape content for shell safety
-        content_escaped = content.replace("'", "'\\\\''")
+        import base64
+
+        # Encode content as base64 to avoid any escaping issues
+        content_b64 = base64.b64encode(content.encode('utf-8')).decode('ascii')
 
         # Check if file already exists
         check_cmd = f"test -e '{file_path}' && echo 'exists' || echo 'not_exists'"
@@ -201,7 +225,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return WriteResult(error=f"Error: File '{file_path}' already exists")
 
         # Write the file using template
-        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content=content_escaped)
+        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content_b64=content_b64)
         result = self.execute(cmd)
 
         if result.exit_code != 0:
@@ -218,12 +242,14 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
-        # Escape single quotes in the strings for shell safety
-        old_escaped = old_string.replace("'", "'\\\\''")
-        new_escaped = new_string.replace("'", "'\\\\''")
+        import base64
+
+        # Encode strings as base64 to avoid any escaping issues
+        old_b64 = base64.b64encode(old_string.encode('utf-8')).decode('ascii')
+        new_b64 = base64.b64encode(new_string.encode('utf-8')).decode('ascii')
 
         # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_string=old_escaped, new_string=new_escaped, replace_all=replace_all)
+        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_b64=old_b64, new_b64=new_b64, replace_all=replace_all)
         result = self.execute(cmd)
 
         exit_code = result.exit_code
@@ -285,11 +311,13 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Structured glob matching returning FileInfo dicts."""
-        # Escape pattern and path for shell
-        pattern_escaped = pattern.replace("'", "'\\\\''")
-        path_escaped = path.replace("'", "'\\\\''")
+        import base64
 
-        cmd = _GLOB_COMMAND_TEMPLATE.format(path=path_escaped, pattern=pattern_escaped)
+        # Encode pattern and path as base64 to avoid escaping issues
+        pattern_b64 = base64.b64encode(pattern.encode('utf-8')).decode('ascii')
+        path_b64 = base64.b64encode(path.encode('utf-8')).decode('ascii')
+
+        cmd = _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
         result = self.execute(cmd)
 
         output = result.output.strip()

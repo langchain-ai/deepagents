@@ -91,11 +91,15 @@ in the same way you would any LangGraph agent.
 
 **Subagent Spawning**
 
- A built-in `task` tool enables agents to spawn specialized subagents for context isolation. This keeps the main agent’s context clean while still going deep on specific subtasks.
+ A built-in `task` tool enables agents to spawn specialized subagents for context isolation. This keeps the main agent's context clean while still going deep on specific subtasks.
+
+**Skills System**
+
+ Skills are dynamically-loaded instruction sets that provide specialized capabilities for specific tasks. Agents can activate skills via the `use_skill` tool to gain domain expertise (Python development, code review, etc.) without cluttering the base system prompt.
 
 **Long-term Memory**
 
- Extend agents with persistent memory across threads using LangGraph’s Store. Agents can save and retrieve information from previous conversations.
+ Extend agents with persistent memory across threads using LangGraph's Store. Agents can save and retrieve information from previous conversations.
 
 ## Customizing Deep Agents
 
@@ -452,6 +456,95 @@ agent = create_agent(
     ],
 )
 ```
+
+### SkillsMiddleware
+
+Skills are folders of instructions that agents load dynamically to improve performance on specialized tasks. The **SkillsMiddleware** enables agents to activate skills during execution, gaining access to detailed instructions and specialized capabilities for specific domains.
+
+Skills are particularly useful for:
+- **Domain expertise**: Provide deep knowledge in specific areas (Python development, code review, data analysis)
+- **Consistent workflows**: Ensure agents follow standardized processes and best practices
+- **Reusable instructions**: Share skill definitions across multiple agents and projects
+- **Dynamic capabilities**: Activate skills only when needed, keeping the agent focused
+
+```python
+from langchain.agents import create_agent
+from deepagents.middleware.skills import SkillsMiddleware
+
+# SkillsMiddleware can be added to any agent
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    middleware=[
+        SkillsMiddleware(
+            skills_dir="./skills",  # Path to directory containing skill folders
+            auto_activate=["python-expert"],  # Optional: Skills to activate automatically
+            system_prompt="Use skills when...",  # Optional: Custom system prompt
+        ),
+    ],
+)
+```
+
+#### Creating Skills
+
+Each skill is a folder containing a `SKILL.md` file with YAML frontmatter and markdown instructions:
+
+```markdown
+---
+name: python-expert
+description: Expert Python development following PEP 8 and modern best practices
+---
+
+# Python Expert Skill
+
+When writing Python code:
+1. Use type hints for all function signatures
+2. Follow PEP 8 style guidelines
+3. Include comprehensive docstrings
+4. Handle errors explicitly
+
+## Examples
+[Provide examples of expected behavior]
+```
+
+**Required frontmatter fields:**
+- `name` - Unique identifier (lowercase, hyphens for spaces)
+- `description` - Complete description of what the skill does and when to use it
+
+The `example-skills/` directory contains several reference skills to help you get started. See [example-skills/README.md](example-skills/README.md) for more details.
+
+#### Using Skills Programmatically
+
+You can also create skills programmatically:
+
+```python
+from deepagents.middleware.skills import Skill, SkillsMiddleware
+
+custom_skill = Skill(
+    name="data-analyst",
+    description="Analyze datasets and provide statistical insights",
+    instructions="""
+# Data Analyst Skill
+
+When analyzing data:
+1. Summarize key statistics
+2. Identify patterns and outliers
+3. Provide visualizations when helpful
+4. Explain findings clearly
+""",
+)
+
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    middleware=[
+        SkillsMiddleware(
+            skills={"data-analyst": custom_skill},
+            auto_activate=["data-analyst"],
+        )
+    ],
+)
+```
+
+See [examples/skills_example.py](examples/skills_example.py) for complete examples of using skills with deepagents.
 
 ## Sync vs Async
 

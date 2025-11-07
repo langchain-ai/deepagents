@@ -274,7 +274,8 @@ async def execute_task(
                         if interrupt_data:
                             # Handle both single interrupt and list of interrupts
                             interrupt_list = (
-                                interrupt_data if isinstance(interrupt_data, (list, tuple))
+                                interrupt_data
+                                if isinstance(interrupt_data, (list, tuple))
                                 else [interrupt_data]
                             )
 

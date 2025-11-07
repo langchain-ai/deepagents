@@ -65,6 +65,17 @@ def _create_edit_tool(backend: "Backend", replace_all: bool = False):
 class Backend(AgentMiddleware):
     """Base backend providing LLM-optimized filesystem and shell interfaces."""
 
+    # Option A:
+    # Not super nice since users need to remember to call super().__init__()
+    # def __init__(self):
+    #     self.tools = [
+    #         _create_edit_tool(backend=self, replace_all=True),
+    #     ]
+
+    # Option B:
+    # We'd need to figure out whether we can make this work nicely w/ typing
+    # in langchain 1.0. This is a general disadvantage of using classvars in frameworks
+    # they make some things convenient, but make dynamic behavior harder.
     @property  # <-- This doesn't place nicely with our classvar likely?
     def tools(self):
         """Create tools bound to this instance on first access (lazy)."""

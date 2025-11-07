@@ -42,10 +42,7 @@ For each subtopic in your plan:
    - Instructions to write findings to a file: `/findings_[subtopic].md`
    - Budget: 3-5 web searches maximum
 
-2. **Parallel vs Sequential Execution:**
-   - **With `--auto-approve` enabled**: Run up to 3 subagents in parallel for efficient research
-   - **Without `--auto-approve`**: Run subagents sequentially (one at a time) to avoid multiple pending interrupts
-   - Note: Parallel subagents with HITL approval can cause interrupt handling issues
+2. **Run up to 3 subagents in parallel** for efficient research
 
 **Subagent Instructions Template:**
 ```

@@ -8,7 +8,7 @@ These commands are registered with the CLI via cli.py:
 
 from pathlib import Path
 
-from .config import COLORS, console
+from ..config import COLORS, console
 from .skill_loader import SkillLoader
 
 

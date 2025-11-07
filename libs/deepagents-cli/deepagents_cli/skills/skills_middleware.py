@@ -99,7 +99,7 @@ class SkillsMiddleware(AgentMiddleware):
         from pathlib import Path
         from deepagents.backends.filesystem import FilesystemBackend
         from deepagents.backends.composite import CompositeBackend
-        from deepagents_cli.skills_middleware import SkillsMiddleware
+        from deepagents_cli.skills import SkillsMiddleware
 
         # Set up skills backend
         skills_dir = Path.home() / ".deepagents" / "skills"

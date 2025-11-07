@@ -13,6 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from .agent_memory import AgentMemoryMiddleware
 from .config import COLORS, config, console, get_default_coding_instructions
+from .skills import SkillsMiddleware
 
 
 def list_agents():

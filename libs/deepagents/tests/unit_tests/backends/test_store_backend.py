@@ -1,7 +1,8 @@
-from deepagents.backends.protocol import EditResult, WriteResult
-from deepagents.backends.store import StoreBackend
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
+
+from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.store import StoreBackend
 
 
 def make_runtime():
@@ -114,8 +115,9 @@ def test_store_backend_ls_trailing_slash():
 
 def test_store_backend_intercept_large_tool_result():
     """Test that StoreBackend properly handles large tool result interception."""
-    from deepagents.middleware.filesystem import FilesystemMiddleware
     from langchain_core.messages import ToolMessage
+
+    from deepagents.middleware.filesystem import FilesystemMiddleware
 
     rt = make_runtime()
     middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)

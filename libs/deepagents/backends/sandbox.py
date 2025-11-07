@@ -215,7 +215,7 @@ except PermissionError:
         import base64
 
         # Encode content as base64 to avoid any escaping issues
-        content_b64 = base64.b64encode(content.encode('utf-8')).decode('ascii')
+        content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
 
         # Check if file already exists
         check_cmd = f"test -e '{file_path}' && echo 'exists' || echo 'not_exists'"
@@ -245,8 +245,8 @@ except PermissionError:
         import base64
 
         # Encode strings as base64 to avoid any escaping issues
-        old_b64 = base64.b64encode(old_string.encode('utf-8')).decode('ascii')
-        new_b64 = base64.b64encode(new_string.encode('utf-8')).decode('ascii')
+        old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
+        new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
 
         # Use template for string replacement
         cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_b64=old_b64, new_b64=new_b64, replace_all=replace_all)
@@ -314,8 +314,8 @@ except PermissionError:
         import base64
 
         # Encode pattern and path as base64 to avoid escaping issues
-        pattern_b64 = base64.b64encode(pattern.encode('utf-8')).decode('ascii')
-        path_b64 = base64.b64encode(path.encode('utf-8')).decode('ascii')
+        pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+        path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
 
         cmd = _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
         result = self.execute(cmd)

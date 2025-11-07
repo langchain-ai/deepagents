@@ -546,7 +546,9 @@ def show_help():
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
     console.print("  --agent NAME                  Agent identifier (default: agent)")
     console.print("  --auto-approve                Auto-approve tool usage without prompting")
-    console.print("  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)")
+    console.print(
+        "  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)"
+    )
     console.print("  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)")
     console.print()
 

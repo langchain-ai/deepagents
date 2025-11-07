@@ -1044,8 +1044,8 @@ class TestFilesystemMiddleware:
 
     def test_supports_execution_helper_with_composite_backend(self):
         """Test _supports_execution correctly identifies CompositeBackend capabilities."""
-        from deepagents.middleware.filesystem import _supports_execution
         from deepagents.backends.protocol import ExecuteResponse
+        from deepagents.middleware.filesystem import _supports_execution
 
         # Mock sandbox backend
         class TestSandboxBackend(StateBackend):

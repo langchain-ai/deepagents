@@ -1,9 +1,11 @@
 """Test Piece 3: Agent creation with optional sandbox parameter."""
+
 import os
 import sys
 from pathlib import Path
-from deepagents_cli.sandbox_factory import create_sandbox_backend, cleanup_sandbox
+
 from deepagents_cli.agent import create_agent_with_config
+from deepagents_cli.sandbox_factory import cleanup_sandbox, create_sandbox_backend
 from langchain_openai import ChatOpenAI
 
 print("=" * 70)
@@ -33,12 +35,7 @@ print("TEST 1: Local Mode (sandbox=None)")
 print("-" * 70)
 
 try:
-    agent_local = create_agent_with_config(
-        model=model,
-        assistant_id="test-piece3-local",
-        tools=[],
-        sandbox=None
-    )
+    agent_local = create_agent_with_config(model=model, assistant_id="test-piece3-local", tools=[], sandbox=None)
     print("✓ Local agent created successfully")
 
     # Verify memory directory
@@ -56,7 +53,7 @@ print("-" * 70)
 
 # Create devbox
 print("\nCreating Runloop devbox...")
-backend, devbox_id = create_sandbox_backend('runloop', None)
+backend, devbox_id = create_sandbox_backend("runloop", None)
 
 if not backend or not devbox_id:
     print("❌ Failed to create devbox")
@@ -73,12 +70,7 @@ try:
 
     # Create remote agent
     print("\nCreating remote agent...")
-    agent_remote = create_agent_with_config(
-        model=model,
-        assistant_id="test-piece3-remote",
-        tools=[],
-        sandbox=backend
-    )
+    agent_remote = create_agent_with_config(model=model, assistant_id="test-piece3-remote", tools=[], sandbox=backend)
     print("✓ Remote agent created successfully")
     print("✓ No duplicate middleware error (this was the bug!)")
 
@@ -92,6 +84,7 @@ try:
     print("-" * 70)
 
     import inspect
+
     source = inspect.getsource(create_agent_with_config)
 
     checks = [
@@ -135,6 +128,6 @@ finally:
     print("\n" + "-" * 70)
     print("Cleanup")
     print("-" * 70)
-    cleanup_sandbox(devbox_id, 'runloop')
+    cleanup_sandbox(devbox_id, "runloop")
     print("✓ Devbox shut down")
     print("✓ Test complete")

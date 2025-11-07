@@ -108,7 +108,9 @@ The filesystem backend is currently operating in: `{Path.cwd()}`
 
 """
 
-    return working_dir_section + """### Memory System Reminder
+    return (
+        working_dir_section
+        + """### Memory System Reminder
 
 Your long-term memory is stored in /memories/ and persists across sessions.
 
@@ -155,6 +157,7 @@ When using the write_todos tool:
 6. Update todo status promptly as you complete each item
 
 The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking."""
+    )
 
 
 def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None):
@@ -184,7 +187,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None
         # Backend: Local filesystem for code + local /memories/
         composite_backend = CompositeBackend(
             default=FilesystemBackend(),  # Current working directory
-            routes={"/memories/": long_term_backend}  # Agent memories
+            routes={"/memories/": long_term_backend},  # Agent memories
         )
 
         # Middleware: ResumableShellToolMiddleware provides "shell" tool
@@ -199,7 +202,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None
         # Backend: Remote sandbox for code + local /memories/
         composite_backend = CompositeBackend(
             default=sandbox,  # Remote sandbox (ModalBackend, etc.)
-            routes={"/memories/": long_term_backend}  # Agent memories (still local!)
+            routes={"/memories/": long_term_backend},  # Agent memories (still local!)
         )
 
         # Middleware: create_deep_agent automatically provides file tools + execute
@@ -277,8 +280,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": lambda tool_call, state, runtime: (
-            f"Execute Command: {tool_call['args'].get('command', 'N/A')}\n"
-            f"Location: Remote Sandbox"
+            f"Execute Command: {tool_call['args'].get('command', 'N/A')}\nLocation: Remote Sandbox"
         ),
     }
 

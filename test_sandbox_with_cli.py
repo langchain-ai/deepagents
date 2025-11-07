@@ -1,8 +1,10 @@
 """Test Piece 4: Full CLI integration with sandbox lifecycle management."""
+
 import os
-import sys
 import subprocess
+import sys
 import time
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -36,12 +38,7 @@ print("TEST 1: CLI Arguments Work")
 print("-" * 70)
 
 # Test that arguments are accepted (help command has custom implementation)
-result = subprocess.run(
-    ["uv", "run", "deepagents", "help"],
-    capture_output=True,
-    text=True,
-    env=test_env
-)
+result = subprocess.run(["uv", "run", "deepagents", "help"], check=False, capture_output=True, text=True, env=test_env)
 
 # Check help output contains our new flags
 if "sandbox" in result.stdout.lower():
@@ -66,12 +63,7 @@ print(f'  sandbox={args.sandbox}')
 print(f'  sandbox_id={args.sandbox_id}')
 """
 
-result = subprocess.run(
-    ["uv", "run", "python", "-c", test_code],
-    capture_output=True,
-    text=True,
-    env=test_env
-)
+result = subprocess.run(["uv", "run", "python", "-c", test_code], check=False, capture_output=True, text=True, env=test_env)
 
 if result.returncode == 0:
     print(result.stdout.strip())
@@ -96,7 +88,7 @@ process = subprocess.Popen(
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     text=True,
-    env=test_env
+    env=test_env,
 )
 
 # Send quit command after a brief delay to let it start
@@ -138,9 +130,9 @@ print("TEST 3: Reuse Existing Sandbox (No Cleanup)")
 print("-" * 70)
 
 print("\nFirst, create a sandbox to reuse...")
-from deepagents_cli.sandbox_factory import create_sandbox_backend, cleanup_sandbox
+from deepagents_cli.sandbox_factory import cleanup_sandbox, create_sandbox_backend
 
-backend, test_sandbox_id = create_sandbox_backend('runloop', None)
+backend, test_sandbox_id = create_sandbox_backend("runloop", None)
 
 if not backend or not test_sandbox_id:
     print("❌ Failed to create test sandbox")
@@ -158,7 +150,7 @@ try:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env=test_env
+        env=test_env,
     )
 
     time.sleep(2)
@@ -179,13 +171,13 @@ try:
 
     # Manually cleanup the test sandbox
     print(f"\n✓ Manually cleaning up test sandbox {test_sandbox_id}...")
-    cleanup_sandbox(test_sandbox_id, 'runloop')
+    cleanup_sandbox(test_sandbox_id, "runloop")
     print("✓ Test sandbox cleaned up")
 
 except subprocess.TimeoutExpired:
     process.kill()
     # Still cleanup our test sandbox
-    cleanup_sandbox(test_sandbox_id, 'runloop')
+    cleanup_sandbox(test_sandbox_id, "runloop")
     print("❌ Process timed out")
     sys.exit(1)
 

@@ -196,7 +196,9 @@ async def simple_cli(
             console.print("\nGoodbye!", style=COLORS["primary"])
             break
 
-        await execute_task(user_input, agent, assistant_id, session_state, token_tracker, backend=backend)
+        await execute_task(
+            user_input, agent, assistant_id, session_state, token_tracker, backend=backend
+        )
 
 
 async def main(
@@ -243,7 +245,9 @@ async def main(
     if tavily_client is not None:
         tools.append(web_search)
 
-    agent, composite_backend = create_agent_with_config(model, assistant_id, tools, sandbox=sandbox_backend)
+    agent, composite_backend = create_agent_with_config(
+        model, assistant_id, tools, sandbox=sandbox_backend
+    )
 
     # Calculate baseline token count for accurate token tracking
     from .agent import get_system_prompt
@@ -254,7 +258,14 @@ async def main(
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
 
     try:
-        await simple_cli(agent, assistant_id, session_state, baseline_tokens, sandbox_mode=(sandbox_backend is not None), backend=composite_backend)
+        await simple_cli(
+            agent,
+            assistant_id,
+            session_state,
+            baseline_tokens,
+            sandbox_mode=(sandbox_backend is not None),
+            backend=composite_backend,
+        )
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
     finally:
@@ -286,12 +297,14 @@ def cli_main():
             session_state = SessionState(auto_approve=args.auto_approve)
 
             # API key validation happens in create_model()
-            asyncio.run(main(
-                args.agent,
-                session_state,
-                args.sandbox,
-                args.sandbox_id,
-            ))
+            asyncio.run(
+                main(
+                    args.agent,
+                    session_state,
+                    args.sandbox,
+                    args.sandbox_id,
+                )
+            )
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

@@ -1,14 +1,13 @@
 """Factory for creating and managing sandbox backends."""
 
-from typing import Optional, Tuple
 
 from .config import console
 
 
 def create_sandbox_backend(
     sandbox_type: str,
-    sandbox_id: Optional[str] = None,
-) -> Tuple[Optional[object], Optional[str]]:
+    sandbox_id: str | None = None,
+) -> tuple[object | None, str | None]:
     """Create or connect to a sandbox backend.
 
     Args:
@@ -18,10 +17,10 @@ def create_sandbox_backend(
     Returns:
         (backend_instance, sandbox_id) or (None, None) on error
     """
-
     if sandbox_type == "modal":
         try:
             import modal
+
             from deepagents_cli.integrations.modal import ModalBackend
         except ImportError:
             console.print("[red]Error: Modal SDK not installed[/red]")
@@ -49,12 +48,15 @@ def create_sandbox_backend(
     elif sandbox_type == "daytona":
         # TODO: Implement Daytona support
         console.print("[yellow]Daytona support coming soon[/yellow]")
-        console.print("[dim]Track progress at: https://github.com/langchain-ai/deepagents/pull/320[/dim]")
+        console.print(
+            "[dim]Track progress at: https://github.com/langchain-ai/deepagents/pull/320[/dim]"
+        )
         return None, None
 
     elif sandbox_type == "runloop":
         try:
             from runloop_api_client import Runloop
+
             from deepagents_cli.integrations.runloop import RunloopBackend
         except ImportError:
             console.print("[red]Error: Runloop SDK not installed[/red]")
@@ -124,7 +126,6 @@ def cleanup_sandbox(
         sandbox_id: ID of sandbox to terminate
         sandbox_type: Type of sandbox ("modal", "daytona", "runloop")
     """
-
     if not sandbox_id:
         return
 
@@ -135,15 +136,16 @@ def cleanup_sandbox(
             console.print(f"[dim]Terminating sandbox {sandbox_id}...[/dim]")
             sandbox = modal.Sandbox.from_id(sandbox_id)
             sandbox.terminate()
-            console.print(f"[green]✓ Sandbox terminated[/green]")
+            console.print("[green]✓ Sandbox terminated[/green]")
 
         elif sandbox_type == "daytona":
             # TODO: Implement Daytona cleanup
             pass
 
         elif sandbox_type == "runloop":
-            from runloop_api_client import Runloop
             import os
+
+            from runloop_api_client import Runloop
 
             bearer_token = os.environ.get("RUNLOOP_API_KEY")
             if not bearer_token:
@@ -153,7 +155,7 @@ def cleanup_sandbox(
             client = Runloop(bearer_token=bearer_token)
             console.print(f"[dim]Shutting down devbox {sandbox_id}...[/dim]")
             client.devboxes.shutdown(id=sandbox_id)
-            console.print(f"[green]✓ Devbox shut down[/green]")
+            console.print("[green]✓ Devbox shut down[/green]")
 
     except Exception as e:
         # Log but don't crash on cleanup failure

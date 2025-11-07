@@ -1,4 +1,7 @@
-"""Simplified filesystem middleware using explicit runtime parameters."""
+"""Simplified backend abstraction using explicit runtime parameters.
+
+Backends provide LLM-optimized interfaces for filesystem and shell operations.
+"""
 
 import abc
 from datetime import datetime, timezone
@@ -25,40 +28,45 @@ class FileState(TypedDict):
     files: dict[str, FileData]
 
 
-def _perform_string_replacement(
-    content: str,
-    old_string: str,
-    new_string: str,
-    replace_all: bool,
-) -> str | tuple[str, int]:
-    """Perform string replacement in content.
+def _create_edit_tool(backend: "Backend", replace_all: bool = False):
+    """Helper to create an edit tool for a backend."""
+    from langchain_core.tools import StructuredTool
 
-    Returns:
-        Error string if replacement fails, or tuple of (new_content, occurrences) on success.
-    """
-    if replace_all:
-        new_content = content.replace(old_string, new_string)
-        occurrences = content.count(old_string)
-    else:
-        count = content.count(old_string)
-        if count == 0:
-            return f"Error: String not found: {old_string}"
-        if count > 1:
-            return (
-                f"Error: Multiple matches found ({count}). "
-                "Use replace_all=True or provide more context."
-            )
-        new_content = content.replace(old_string, new_string, 1)
-        occurrences = 1
+    def _edit_tool(
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        runtime: ToolRuntime,
+    ) -> EditResult:
+        return backend.edit(
+            file_path,
+            old_string,
+            new_string,
+            runtime,
+            replace_all=replace_all,
+        )
 
-    if occurrences == 0:
-        return f"Error: String not found: {old_string}"
+    name = "edit_file_all" if replace_all else "edit_file"
+    description = (
+        "Edit a file by replacing all occurrences of a string." if replace_all else "Edit a file by replacing a single occurrence of a string."
+    )
 
-    return new_content, occurrences
+    return StructuredTool.from_function(
+        func=_edit_tool,
+        name=name,
+        description=description,
+    )
 
 
-class FilesystemMiddleware(AgentMiddleware):
-    """Base middleware for file operations."""
+# This solution relies on inherting a default implementation of tools from the base Backend class.
+class Backend(AgentMiddleware):
+    """Base backend providing LLM-optimized filesystem and shell interfaces."""
+
+    def __init__(self) -> None:
+        """Initialize the backend and register tools."""
+        self.tools = [
+            _create_edit_tool(backend=self, replace_all=True),
+        ]
 
     @abc.abstractmethod
     def edit(
@@ -73,7 +81,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ...
 
 
-class StateFilesystemMiddleware(FilesystemMiddleware):
+class StateBackend(Backend):
     """Store files in LangGraph agent state (ephemeral)."""
 
     state_schema = FileState
@@ -84,7 +92,6 @@ class StateFilesystemMiddleware(FilesystemMiddleware):
         old_string: str,
         new_string: str,
         runtime: ToolRuntime,
-        *,
         replace_all: bool = False,
     ) -> EditResult:
         files = runtime.state.get("files", {})
@@ -111,7 +118,7 @@ class StateFilesystemMiddleware(FilesystemMiddleware):
         )
 
 
-class LocalFilesystemMiddleware(FilesystemMiddleware):
+class FilesystemBackend(Backend):
     """Read and write files directly from local filesystem."""
 
     def __init__(self, root_dir: str | None = None):
@@ -152,28 +159,35 @@ class LocalFilesystemMiddleware(FilesystemMiddleware):
             return EditResult(error=f"Error writing file: {e}")
 
 
-class CompositeFilesystemMiddleware(FilesystemMiddleware):
-    """Route operations to different middlewares based on path prefix."""
+class CompositeBackend(Backend):
+    """Route operations to different backends based on path prefix."""
 
     def __init__(
         self,
-        default: FilesystemMiddleware,
-        routes: dict[str, FilesystemMiddleware],
+        default: Backend,
+        routes: dict[str, Backend],
     ):
         self.default = default
         self.routes = routes
         self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
 
-        # Register children so framework can collect state schemas and lifecycle hooks
+        # Add children so framework can collect state schemas and lifecycle hooks
+        # THERE IS A SEMANTIC ISSUE WITH CHILDREN DUE TO TOOLS.
+        # Composite backends overrides all the tools, we don't want
+        # to use the default tools of the children backends.
+        # The problem is that the children life cycle hooks (e.g., wrap_model_call)
+        # may assume that their tools are available.
+        # It's unclear whether this would lead to issues or not, but definitely
+        # looks like potential unexpected behavior.
         self.children = [default, *routes.values()]
 
-    def _route(self, path: str) -> tuple[FilesystemMiddleware, str]:
-        """Find middleware for path and strip prefix."""
-        for prefix, middleware in self.sorted_routes:
+    def _route(self, path: str) -> tuple[Backend, str]:
+        """Find backend for path and strip prefix."""
+        for prefix, backend in self.sorted_routes:
             if path.startswith(prefix):
                 suffix = path[len(prefix) :]
                 stripped = f"/{suffix}" if suffix else "/"
-                return middleware, stripped
+                return backend, stripped
         return self.default, path
 
     def edit(
@@ -184,5 +198,35 @@ class CompositeFilesystemMiddleware(FilesystemMiddleware):
         runtime: ToolRuntime,
         replace_all: bool = False,
     ) -> EditResult:
-        middleware, stripped = self._route(file_path)
-        return middleware.edit(stripped, old_string, new_string, runtime, replace_all)
+        backend, stripped = self._route(file_path)
+        return backend.edit(stripped, old_string, new_string, runtime, replace_all)
+
+
+# Helper function not part of abstraction
+def _perform_string_replacement(
+    content: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool,
+) -> str | tuple[str, int]:
+    """Perform string replacement in content.
+
+    Returns:
+        Error string if replacement fails, or tuple of (new_content, occurrences) on success.
+    """
+    if replace_all:
+        new_content = content.replace(old_string, new_string)
+        occurrences = content.count(old_string)
+    else:
+        count = content.count(old_string)
+        if count == 0:
+            return f"Error: String not found: {old_string}"
+        if count > 1:
+            return f"Error: Multiple matches found ({count}). Use replace_all=True or provide more context."
+        new_content = content.replace(old_string, new_string, 1)
+        occurrences = 1
+
+    if occurrences == 0:
+        return f"Error: String not found: {old_string}"
+
+    return new_content, occurrences

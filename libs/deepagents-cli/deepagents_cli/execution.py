@@ -505,7 +505,24 @@ async def execute_task(
             flush_text_buffer(final=True)
 
             # Handle human-in-the-loop after stream completes
-            if interrupt_occurred and pending_interrupts:
+            if interrupt_occurred:
+                # Query graph state to get ALL pending interrupts (not just from current stream)
+                # This is critical when the agent resumes and creates new interrupts - we need to
+                # handle both the new interrupts AND any previous ones still pending in the state
+                state_snapshot = agent.get_state(config)
+                all_state_interrupts = state_snapshot.interrupts if state_snapshot else []
+
+                # If state has multiple interrupts, we need to handle ALL of them
+                # Update pending_interrupts with any we might have missed from the stream
+                for interrupt_obj in all_state_interrupts:
+                    if hasattr(interrupt_obj, "id") and interrupt_obj.id not in pending_interrupts:
+                        interrupt_request = (
+                            interrupt_obj.value
+                            if hasattr(interrupt_obj, "value")
+                            else interrupt_obj
+                        )
+                        pending_interrupts[interrupt_obj.id] = interrupt_request
+
                 # Build response for all pending interrupts
                 all_responses = {}
                 any_rejected = False

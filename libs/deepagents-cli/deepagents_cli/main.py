@@ -89,6 +89,11 @@ def parse_args():
         action="store_true",
         help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
     )
+    parser.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Show agent's reasoning/thinking process",
+    )
 
     return parser.parse_args()
 
@@ -215,7 +220,10 @@ def cli_main():
             reset_agent(args.agent, args.source_agent)
         else:
             # Create session state from args
-            session_state = SessionState(auto_approve=args.auto_approve)
+            session_state = SessionState(
+                auto_approve=args.auto_approve,
+                show_thinking=args.show_thinking
+            )
 
             # API key validation happens in create_model()
             asyncio.run(main(args.agent, session_state))

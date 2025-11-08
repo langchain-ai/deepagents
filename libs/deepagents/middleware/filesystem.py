@@ -119,7 +119,10 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
     normalized = os.path.normpath(path)
     normalized = normalized.replace("\\", "/")
 
-    if not normalized.startswith("/"):
+    # Only add leading slash if it's not a Windows absolute path (with drive letter or UNC prefix)
+    # Windows absolute paths like "C:/Users/..." will be kept as-is
+    drive, _ = os.path.splitdrive(normalized)
+    if not normalized.startswith("/") and not drive:
         normalized = f"/{normalized}"
 
     if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):

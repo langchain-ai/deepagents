@@ -330,6 +330,14 @@ async def execute_task(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
+                        # Display tool output if toggle is enabled
+                        if session_state.show_tool_outputs and tool_content:
+                            if spinner_active:
+                                status.stop()
+                                spinner_active = False
+                            console.print(f"    ↳ {tool_content}", style="dim cyan", markup=False)
+                            console.print()
+
                         # Reset spinner message after tool completes
                         if spinner_active:
                             status.update(f"[bold {COLORS['thinking']}]Agent is thinking...")

@@ -128,7 +128,7 @@ async def simple_cli(agent, assistant_id: str | None, session_state, baseline_to
         console.print()
 
     console.print(
-        "  Tips: Enter to submit, Alt+Enter for newline, Ctrl+E for editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt",
+        "  Tips: Enter to submit, Alt+Enter for newline, Ctrl+E for editor, Ctrl+T to toggle auto-approve, Ctrl+O to toggle tool outputs, Ctrl+C to interrupt",
         style=f"dim {COLORS['dim']}",
     )
     console.print()

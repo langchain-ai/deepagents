@@ -62,6 +62,7 @@ class SessionState:
     def __init__(self, auto_approve: bool = False, show_thinking: bool = False):
         self.auto_approve = auto_approve
         self.show_thinking = show_thinking
+        self.show_tool_outputs = False
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
 
@@ -69,6 +70,11 @@ class SessionState:
         """Toggle auto-approve and return new state."""
         self.auto_approve = not self.auto_approve
         return self.auto_approve
+    
+    def toggle_tool_outputs(self) -> bool:
+        """Toggle tool output visibility and return new state."""
+        self.show_tool_outputs = not self.show_tool_outputs
+        return self.show_tool_outputs
 
 
 def get_default_coding_instructions() -> str:

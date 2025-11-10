@@ -145,4 +145,49 @@ class BackendProtocol(Protocol):
         ...
 
 
+@dataclass
+class ExecuteResponse:
+    """Result of code execution.
+
+    Simplified schema optimized for LLM consumption.
+    """
+
+    output: str
+    """Combined stdout and stderr output of the executed command."""
+
+    exit_code: int | None = None
+    """The process exit code. 0 indicates success, non-zero indicates failure."""
+
+    truncated: bool = False
+    """Whether the output was truncated due to backend limitations."""
+
+
+@runtime_checkable
+class SandboxBackendProtocol(BackendProtocol, Protocol):
+    """Protocol for sandboxed backends with isolated runtime.
+
+    Sandboxed backends run in isolated environments (e.g., separate processes,
+    containers) and communicate via defined interfaces.
+    """
+
+    def execute(
+        self,
+        command: str,
+        *,
+        timeout: int = 30 * 60,
+    ) -> ExecuteResponse:
+        """Execute a command in the process.
+
+        Simplified interface optimized for LLM consumption.
+
+        Args:
+            command: Full shell command string to execute.
+            timeout: Maximum execution time in seconds (default: 30 minutes).
+
+        Returns:
+            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+        """
+        ...
+
+
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

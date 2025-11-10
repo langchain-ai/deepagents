@@ -85,15 +85,19 @@ def get_system_prompt() -> str:
     Returns:
         The system prompt string (without agent.md content)
     """
-    return f"""### File System and Paths
+    cwd = Path.cwd()
+    return f"""<env>
+Working directory: {cwd}
+</env>
 
-The filesystem backend is currently operating in: `{Path.cwd()}`
+### File System and Paths
 
 **IMPORTANT - Path Handling:**
-- Paths starting with `/` are relative to the working directory (e.g., `/file.txt` → `{Path.cwd()}/file.txt`)
-- Do NOT use absolute system paths like `/Users/...` or `/home/...`
-- Use paths like `/research_project/file.md` to create files in the working directory
-- Special paths `/memories/` and `/skills/` access different virtual filesystems
+- All file paths must be absolute paths (e.g., `{cwd}/file.txt`)
+- Use the working directory from <env> to construct absolute paths
+- Example: To create a file in your working directory, use `{cwd}/research_project/file.md`
+- Special paths starting with `/memories/` access persistent storage across sessions
+- Never use relative paths - always construct full absolute paths
 
 ### Memory System Reminder
 
@@ -163,9 +167,10 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
     long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
 
     # Composite backend: current working directory for default, agent directory for /memories/
-    # Use virtual_mode=True to sandbox paths to cwd (treats /file.txt as cwd/file.txt, not root /file.txt)
+    # Default backend uses virtual_mode=False to require absolute paths (like Claude Code)
+    # /memories/ backend uses virtual_mode=True for virtual path handling
     backend = CompositeBackend(
-        default=FilesystemBackend(root_dir=Path.cwd(), virtual_mode=True),
+        default=FilesystemBackend(root_dir=Path.cwd(), virtual_mode=False),
         routes={"/memories/": long_term_backend},
     )
 

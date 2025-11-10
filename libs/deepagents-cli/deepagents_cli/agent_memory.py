@@ -1,5 +1,6 @@
 """Middleware for loading agent-specific long-term memory into the system prompt."""
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import NotRequired
 
@@ -79,6 +80,28 @@ DEFAULT_MEMORY_SNIPPET = """<agent_memory>
 """
 
 
+def _strip_line_numbers(content: str) -> str:
+    """Strip line numbers from backend.read() output for memory content.
+
+    Backend.read() formats content with line numbers (cat -n style):
+         1→# My Agent
+         2→You are helpful
+
+    This function removes them for memory injection into system prompt:
+        # My Agent
+        You are helpful
+
+    Args:
+        content: Content with line numbers from backend.read()
+
+    Returns:
+        Content without line numbers
+    """
+    # Match pattern: optional spaces + number + optional decimal + tab + content
+    # Line numbers format: "     1\t" or "     5.2\t" (for continuation lines)
+    return re.sub(r'^\s*\d+(?:\.\d+)?\t', '', content, flags=re.MULTILINE)
+
+
 class AgentMemoryMiddleware(AgentMiddleware):
     """Middleware for loading agent-specific long-term memory.
 
@@ -144,6 +167,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
         # Only load memory if it hasn't been loaded yet
         if "agent_memory" not in state or state.get("agent_memory") is None:
             file_data = self.backend.read(AGENT_MEMORY_FILE_PATH)
+            # Strip line numbers since memory is for system prompt, not editing
+            file_data = _strip_line_numbers(file_data)
             return {"agent_memory": file_data}
 
     async def abefore_agent(
@@ -163,6 +188,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
         # Only load memory if it hasn't been loaded yet
         if "agent_memory" not in state or state.get("agent_memory") is None:
             file_data = self.backend.read(AGENT_MEMORY_FILE_PATH)
+            # Strip line numbers since memory is for system prompt, not editing
+            file_data = _strip_line_numbers(file_data)
             return {"agent_memory": file_data}
 
     def wrap_model_call(

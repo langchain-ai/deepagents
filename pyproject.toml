@@ -106,4 +106,5 @@ warn_return_any = false
 [tool.uv.workspace]
 members = [
     "libs/deepagents-cli",
+    "libs/acp",
 ]

@@ -6,9 +6,16 @@ import sys
 import termios
 import tty
 
-from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest, HITLResponse
+from langchain.agents.middleware.human_in_the_loop import (
+    ActionRequest,
+    ApproveDecision,
+    Decision,
+    HITLRequest,
+    HITLResponse,
+    RejectDecision,
+)
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.types import Command
+from langgraph.types import Command, Interrupt, StateSnapshot
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -26,7 +33,7 @@ from .ui import (
 )
 
 
-def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | None) -> dict:
+def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | None) -> Decision:
     """Prompt user to approve/reject a tool action with arrow key navigation."""
     description = action_request.get("description", "No description available")
     name = action_request["name"]
@@ -143,8 +150,8 @@ def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | 
 
     # Return decision based on selection
     if selected == 0:
-        return {"type": "approve"}
-    return {"type": "reject", "message": "User rejected the command"}
+        return ApproveDecision(type="approve")
+    return RejectDecision(type="reject", message="User rejected the command")
 
 
 async def execute_task(
@@ -493,8 +500,10 @@ async def execute_task(
                 # Query graph state to get ALL pending interrupts (not just from current stream)
                 # This is critical when the agent resumes and creates new interrupts - we need to
                 # handle both the new interrupts AND any previous ones still pending in the state
-                state_snapshot = agent.get_state(config)
-                all_state_interrupts = state_snapshot.interrupts if state_snapshot else []
+                state_snapshot: StateSnapshot | None = agent.get_state(config)
+                all_state_interrupts: tuple[Interrupt, ...] = (
+                    state_snapshot.interrupts if state_snapshot else ()
+                )
 
                 # If state has multiple interrupts, we need to handle ALL of them
                 # Update pending_interrupts with any we might have missed from the stream
@@ -538,7 +547,7 @@ async def execute_task(
 
                         # Handle human-in-the-loop approval
                         decisions = []
-                        for action_request in hitl_request.get("action_requests", []):
+                        for action_request in hitl_request["action_requests"]:
                             decision = await asyncio.to_thread(
                                 prompt_for_tool_approval,
                                 action_request,

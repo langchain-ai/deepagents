@@ -6,6 +6,7 @@ import sys
 import termios
 import tty
 
+from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest, HITLResponse
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 from rich import box
@@ -25,24 +26,12 @@ from .ui import (
 )
 
 
-def _extract_tool_args(action_request: dict) -> dict | None:
-    """Best-effort extraction of tool call arguments from an action request."""
-    if "tool_call" in action_request and isinstance(action_request["tool_call"], dict):
-        args = action_request["tool_call"].get("args")
-        if isinstance(args, dict):
-            return args
-    args = action_request.get("args")
-    if isinstance(args, dict):
-        return args
-    return None
-
-
-def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> dict:
+def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | None) -> dict:
     """Prompt user to approve/reject a tool action with arrow key navigation."""
     description = action_request.get("description", "No description available")
-    tool_name = action_request.get("name") or action_request.get("tool")
-    tool_args = _extract_tool_args(action_request)
-    preview = build_approval_preview(tool_name, tool_args, assistant_id) if tool_name else None
+    name = action_request["name"]
+    args = action_request["args"]
+    preview = build_approval_preview(name, args, assistant_id) if name else None
 
     body_lines = []
     if preview:
@@ -245,10 +234,10 @@ async def execute_task(
     try:
         while True:
             interrupt_occurred = False
-            hitl_response = None
+            hitl_response: dict[str, HITLResponse] = {}
             suppress_resumed_output = False
             # Track all pending interrupts: {interrupt_id: request_data}
-            pending_interrupts: dict[str, dict] = {}
+            pending_interrupts: dict[str, HITLRequest] = {}
 
             async for chunk in agent.astream(
                 stream_input,
@@ -280,15 +269,9 @@ async def execute_task(
                             )
 
                             for interrupt_obj in interrupt_list:
-                                interrupt_request = (
-                                    interrupt_obj.value
-                                    if hasattr(interrupt_obj, "value")
-                                    else interrupt_obj
-                                )
-                                # Extract interrupt ID - required for multiple interrupts
-                                if hasattr(interrupt_obj, "id"):
-                                    pending_interrupts[interrupt_obj.id] = interrupt_request
-                                    interrupt_occurred = True
+                                # Interrupt has required fields: value (HITLRequest) and id (str)
+                                pending_interrupts[interrupt_obj.id] = interrupt_obj.value
+                                interrupt_occurred = True
 
                     # Extract chunk_data from updates for todo checking
                     chunk_data = list(data.values())[0] if data else None
@@ -516,16 +499,12 @@ async def execute_task(
                 # If state has multiple interrupts, we need to handle ALL of them
                 # Update pending_interrupts with any we might have missed from the stream
                 for interrupt_obj in all_state_interrupts:
-                    if hasattr(interrupt_obj, "id") and interrupt_obj.id not in pending_interrupts:
-                        interrupt_request = (
-                            interrupt_obj.value
-                            if hasattr(interrupt_obj, "value")
-                            else interrupt_obj
-                        )
-                        pending_interrupts[interrupt_obj.id] = interrupt_request
+                    if interrupt_obj.id not in pending_interrupts:
+                        # Interrupt has required fields: value (HITLRequest) and id (str)
+                        pending_interrupts[interrupt_obj.id] = interrupt_obj.value
 
                 # Build response for all pending interrupts
-                all_responses = {}
+                all_responses: dict[str, HITLResponse] = {}
                 any_rejected = False
 
                 for interrupt_id, hitl_request in pending_interrupts.items():
@@ -533,7 +512,7 @@ async def execute_task(
                     if session_state.auto_approve:
                         # Auto-approve all commands without prompting
                         decisions = []
-                        for action_request in hitl_request.get("action_requests", []):
+                        for action_request in hitl_request["action_requests"]:
                             # Show what's being auto-approved (brief, dim message)
                             if spinner_active:
                                 status.stop()
@@ -572,14 +551,9 @@ async def execute_task(
 
                         all_responses[interrupt_id] = {"decisions": decisions}
 
-                # Set hitl_response based on number of interrupts
-                if len(all_responses) == 1:
-                    # Single interrupt: pass response directly
-                    hitl_response = list(all_responses.values())[0]
-                else:
-                    # Multiple interrupts: pass dict mapping interrupt_id -> response
-                    hitl_response = all_responses
-
+                # Always use dict format mapping interrupt_id -> response
+                # (works for both single and multiple interrupts)
+                hitl_response = all_responses
                 suppress_resumed_output = any_rejected
 
             if interrupt_occurred and hitl_response:

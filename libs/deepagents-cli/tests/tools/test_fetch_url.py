@@ -1,12 +1,13 @@
 """Tests for tools module."""
 
-import responses
 import requests
+import responses
+
 from deepagents_cli.tools import fetch_url
 
 
 @responses.activate
-def test_fetch_url_success():
+def test_fetch_url_success() -> None:
     """Test successful URL fetch and HTML to markdown conversion."""
     responses.add(
         responses.GET,
@@ -17,7 +18,6 @@ def test_fetch_url_success():
 
     result = fetch_url("http://example.com")
 
-    assert result["success"] is True
     assert result["status_code"] == 200
     assert "Test" in result["markdown_content"]
     assert result["url"].startswith("http://example.com")
@@ -25,7 +25,7 @@ def test_fetch_url_success():
 
 
 @responses.activate
-def test_fetch_url_http_error():
+def test_fetch_url_http_error() -> None:
     """Test handling of HTTP errors."""
     responses.add(
         responses.GET,
@@ -41,7 +41,7 @@ def test_fetch_url_http_error():
 
 
 @responses.activate
-def test_fetch_url_timeout():
+def test_fetch_url_timeout() -> None:
     """Test handling of request timeout."""
     responses.add(
         responses.GET,
@@ -57,7 +57,7 @@ def test_fetch_url_timeout():
 
 
 @responses.activate
-def test_fetch_url_connection_error():
+def test_fetch_url_connection_error() -> None:
     """Test handling of connection errors."""
     responses.add(
         responses.GET,

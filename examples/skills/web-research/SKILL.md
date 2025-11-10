@@ -1,6 +1,6 @@
 ---
 name: web-research
-description: Structured web research workflow with planning, parallel delegation, and synthesis
+description: Use this skill for requests related to web research; it provides a structured approach to conducting comprehensive web research 
 ---
 
 # Web Research Skill

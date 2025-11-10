@@ -157,14 +157,21 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
     # This handles both /memories/ files and /agent.md
     long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
 
-    # Composite backend: current working directory for default, agent directory for /memories/
+    # Skills backend - global skills directory shared across agents
+    skills_dir = Path.home() / ".deepagents" / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    skills_backend = FilesystemBackend(root_dir=skills_dir, virtual_mode=True)
+
+    # Composite backend: current working directory for default, agent directory for /memories/, skills for /skills/
     backend = CompositeBackend(
-        default=FilesystemBackend(), routes={"/memories/": long_term_backend}
+        default=FilesystemBackend(),
+        routes={"/memories/": long_term_backend, "/skills/": skills_backend},
     )
 
     # Use the same backend for agent memory middleware
     agent_middleware = [
         AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
+        SkillsMiddleware(skills_dir=skills_dir, skills_path="/skills/"),
         shell_middleware,
     ]
 

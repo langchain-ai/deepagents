@@ -167,10 +167,10 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
     long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
 
     # Composite backend: current working directory for default, agent directory for /memories/
-    # Default backend uses virtual_mode=False to require absolute paths (like Claude Code)
+    # Default backend uses default settings (virtual_mode=False) to require absolute paths (like Claude Code)
     # /memories/ backend uses virtual_mode=True for virtual path handling
     backend = CompositeBackend(
-        default=FilesystemBackend(root_dir=Path.cwd(), virtual_mode=False),
+        default=FilesystemBackend(),
         routes={"/memories/": long_term_backend},
     )
 

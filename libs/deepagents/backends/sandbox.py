@@ -44,15 +44,23 @@ for m in matches:
 
 _WRITE_COMMAND_TEMPLATE = """python3 -c "
 import os
+import sys
 import base64
 
+file_path = '{file_path}'
+
+# Check if file already exists (atomic with write)
+if os.path.exists(file_path):
+    print(f'Error: File \\'{file_path}\\' already exists', file=sys.stderr)
+    sys.exit(1)
+
 # Create parent directory if needed
-parent_dir = os.path.dirname('{file_path}') or '.'
+parent_dir = os.path.dirname(file_path) or '.'
 os.makedirs(parent_dir, exist_ok=True)
 
 # Decode and write content
 content = base64.b64decode('{content_b64}').decode('utf-8')
-with open('{file_path}', 'w') as f:
+with open(file_path, 'w') as f:
     f.write(content)
 " 2>&1"""
 
@@ -217,19 +225,14 @@ except PermissionError:
         # Encode content as base64 to avoid any escaping issues
         content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
 
-        # Check if file already exists
-        check_cmd = f"test -e '{file_path}' && echo 'exists' || echo 'not_exists'"
-        check_result = self.execute(check_cmd)
-
-        if check_result.output.strip() == "exists":
-            return WriteResult(error=f"Error: File '{file_path}' already exists")
-
-        # Write the file using template
+        # Single atomic check + write command
         cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content_b64=content_b64)
         result = self.execute(cmd)
 
-        if result.exit_code != 0:
-            return WriteResult(error=f"Error: Failed to write file '{file_path}': {result.output.strip()}")
+        # Check for errors (exit code or error message in output)
+        if result.exit_code != 0 or "Error:" in result.output:
+            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
+            return WriteResult(error=error_msg)
 
         # External storage - no files_update needed
         return WriteResult(path=file_path, files_update=None)

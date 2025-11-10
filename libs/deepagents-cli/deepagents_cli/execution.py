@@ -16,10 +16,10 @@ from langchain.agents.middleware.human_in_the_loop import (
 )
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt, StateSnapshot
+from pydantic import TypeAdapter, ValidationError
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
-from pydantic import TypeAdapter
 
 from .config import COLORS, console
 from .file_ops import FileOpTracker, build_approval_preview
@@ -280,7 +280,9 @@ async def execute_task(
                             for interrupt_obj in interrupt_list:
                                 # Interrupt has required fields: value (HITLRequest) and id (str)
                                 # Validate the HITLRequest using TypeAdapter
-                                validated_request = hitl_adapter.validate_python(interrupt_obj.value)
+                                validated_request = hitl_adapter.validate_python(
+                                    interrupt_obj.value
+                                )
                                 pending_interrupts[interrupt_obj.id] = validated_request
                                 interrupt_occurred = True
 

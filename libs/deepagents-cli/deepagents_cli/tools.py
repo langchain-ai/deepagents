@@ -178,7 +178,6 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
         markdown_content = markdownify(response.text)
 
         return {
-            "success": True,
             "url": str(response.url),
             "markdown_content": markdown_content,
             "status_code": response.status_code,

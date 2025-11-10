@@ -1,163 +1,167 @@
-"""Factory for creating and managing sandbox backends."""
+"""Sandbox lifecycle management with context managers."""
 
+import os
+import time
+from contextlib import contextmanager
 
 from .config import console
 
 
-def create_sandbox_backend(
-    sandbox_type: str,
-    sandbox_id: str | None = None,
-) -> tuple[object | None, str | None]:
-    """Create or connect to a sandbox backend.
+@contextmanager
+def create_modal_sandbox(sandbox_id: str | None = None):
+    """Create or connect to Modal sandbox.
 
     Args:
-        sandbox_type: Type of sandbox ("modal", "daytona", "runloop")
         sandbox_id: Optional existing sandbox ID to reuse
 
-    Returns:
-        (backend_instance, sandbox_id) or (None, None) on error
+    Yields:
+        (ModalBackend, sandbox_id)
+
+    Raises:
+        ImportError: Modal SDK not installed
+        Exception: Sandbox creation/connection failed
     """
-    if sandbox_type == "modal":
-        try:
-            import modal
+    import modal
 
-            from deepagents_cli.integrations.modal import ModalBackend
-        except ImportError:
-            console.print("[red]Error: Modal SDK not installed[/red]")
-            console.print("Install with: [cyan]pip install modal[/cyan]")
-            return None, None
+    from deepagents_cli.integrations.modal import ModalBackend
 
-        console.print("[yellow]Initializing Modal sandbox...[/yellow]")
+    console.print("[yellow]Starting Modal sandbox...[/yellow]")
 
-        try:
-            if sandbox_id:
-                # Connect to existing sandbox
-                sandbox = modal.Sandbox.from_id(sandbox_id)
-                console.print(f"[green]✓ Connected to sandbox: {sandbox_id}[/green]")
-            else:
-                # Create new sandbox
-                sandbox = modal.Sandbox.create()
-                console.print(f"[green]✓ Created sandbox: {sandbox.object_id}[/green]")
-
-            return ModalBackend(sandbox), sandbox.object_id
-
-        except Exception as e:
-            console.print(f"[red]Failed to initialize Modal sandbox: {e}[/red]")
-            return None, None
-
-    elif sandbox_type == "daytona":
-        # TODO: Implement Daytona support
-        console.print("[yellow]Daytona support coming soon[/yellow]")
-        console.print(
-            "[dim]Track progress at: https://github.com/langchain-ai/deepagents/pull/320[/dim]"
-        )
-        return None, None
-
-    elif sandbox_type == "runloop":
-        try:
-            from runloop_api_client import Runloop
-
-            from deepagents_cli.integrations.runloop import RunloopBackend
-        except ImportError:
-            console.print("[red]Error: Runloop SDK not installed[/red]")
-            console.print("Install with: [cyan]pip install runloop-api-client[/cyan]")
-            return None, None
-
-        console.print("[yellow]Initializing Runloop devbox...[/yellow]")
-
-        try:
-            import os
-            import time
-
-            bearer_token = os.environ.get("RUNLOOP_API_KEY")
-            if not bearer_token:
-                console.print("[red]Error: RUNLOOP_API_KEY environment variable not set[/red]")
-                return None, None
-
-            client = Runloop(bearer_token=bearer_token)
-
-            if sandbox_id:
-                # Connect to existing devbox
-                devbox = client.devboxes.retrieve(id=sandbox_id)
-                if devbox.status != "running":
-                    console.print(f"[yellow]Devbox {sandbox_id} status: {devbox.status}[/yellow]")
-                    console.print("[yellow]Waiting for devbox to be ready...[/yellow]")
-                    while devbox.status != "running":
-                        time.sleep(2)
-                        devbox = client.devboxes.retrieve(id=sandbox_id)
-                console.print(f"[green]✓ Connected to devbox: {sandbox_id}[/green]")
-            else:
-                # Create new devbox
-                devbox = client.devboxes.create()
-                console.print(f"[green]✓ Created devbox: {devbox.id}[/green]")
-                console.print("[yellow]Waiting for devbox to be ready...[/yellow]")
-
-                waited = 0
-                while waited < 180:  # 3 minute timeout
-                    status = client.devboxes.retrieve(id=devbox.id)
-                    if status.status == "running":
-                        console.print("[green]✓ Devbox ready[/green]")
-                        break
-                    time.sleep(2)
-                    waited += 2
-                else:
-                    console.print("[red]Timeout: Devbox never reached running state[/red]")
-                    client.devboxes.shutdown(id=devbox.id)
-                    return None, None
-
-            return RunloopBackend(devbox_id=devbox.id, client=client), devbox.id
-
-        except Exception as e:
-            console.print(f"[red]Failed to initialize Runloop devbox: {e}[/red]")
-            return None, None
-
+    if sandbox_id:
+        sandbox = modal.Sandbox.from_id(sandbox_id)
+        should_cleanup = False
     else:
-        # No sandbox ("none" or invalid type)
-        return None, None
+        sandbox = modal.Sandbox.create()
+        sandbox_id = sandbox.object_id
+        should_cleanup = True
 
-
-def cleanup_sandbox(
-    sandbox_id: str,
-    sandbox_type: str,
-) -> None:
-    """Cleanup sandbox
-
-    Args:
-        sandbox_id: ID of sandbox to terminate
-        sandbox_type: Type of sandbox ("modal", "daytona", "runloop")
-    """
-    if not sandbox_id:
-        return
+    console.print(f"[green]✓ Modal sandbox ready: {sandbox_id}[/green]")
 
     try:
-        if sandbox_type == "modal":
-            import modal
+        yield ModalBackend(sandbox), sandbox_id
+    finally:
+        if should_cleanup:
+            try:
+                console.print("[dim]Terminating Modal sandbox...[/dim]")
+                sandbox.terminate()
+                console.print("[dim]✓ Sandbox terminated[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
-            console.print(f"[dim]Terminating sandbox {sandbox_id}...[/dim]")
-            sandbox = modal.Sandbox.from_id(sandbox_id)
-            sandbox.terminate()
-            console.print("[green]✓ Sandbox terminated[/green]")
 
-        elif sandbox_type == "daytona":
-            # TODO: Implement Daytona cleanup
-            pass
+@contextmanager
+def create_runloop_sandbox(sandbox_id: str | None = None):
+    """Create or connect to Runloop devbox.
 
-        elif sandbox_type == "runloop":
-            import os
+    Args:
+        sandbox_id: Optional existing devbox ID to reuse
 
-            from runloop_api_client import Runloop
+    Yields:
+        (RunloopBackend, devbox_id)
 
-            bearer_token = os.environ.get("RUNLOOP_API_KEY")
-            if not bearer_token:
-                console.print("[yellow]Warning: RUNLOOP_API_KEY not set, cannot cleanup[/yellow]")
-                return
+    Raises:
+        ImportError: Runloop SDK not installed
+        ValueError: RUNLOOP_API_KEY not set
+        RuntimeError: Devbox failed to start within timeout
+    """
+    from runloop_api_client import Runloop
 
-            client = Runloop(bearer_token=bearer_token)
-            console.print(f"[dim]Shutting down devbox {sandbox_id}...[/dim]")
-            client.devboxes.shutdown(id=sandbox_id)
-            console.print("[green]✓ Devbox shut down[/green]")
+    from deepagents_cli.integrations.runloop import RunloopBackend
 
-    except Exception as e:
-        # Log but don't crash on cleanup failure
-        console.print(f"[yellow]Warning: Sandbox cleanup failed: {e}[/yellow]")
-        console.print(f"[dim]Sandbox {sandbox_id} may still be running[/dim]")
+    bearer_token = os.environ.get("RUNLOOP_API_KEY")
+    if not bearer_token:
+        raise ValueError("RUNLOOP_API_KEY environment variable not set")
+
+    client = Runloop(bearer_token=bearer_token)
+
+    console.print("[yellow]Starting Runloop devbox...[/yellow]")
+
+    if sandbox_id:
+        devbox = client.devboxes.retrieve(id=sandbox_id)
+        should_cleanup = False
+    else:
+        devbox = client.devboxes.create()
+        sandbox_id = devbox.id
+        should_cleanup = True
+
+        # Poll until running (Runloop requires this)
+        for _ in range(90):  # 180s timeout (90 * 2s)
+            status = client.devboxes.retrieve(id=devbox.id)
+            if status.status == "running":
+                break
+            time.sleep(2)
+        else:
+            # Timeout - cleanup and fail
+            client.devboxes.shutdown(id=devbox.id)
+            raise RuntimeError("Devbox failed to start within 180 seconds")
+
+    console.print(f"[green]✓ Runloop devbox ready: {sandbox_id}[/green]")
+
+    try:
+        yield RunloopBackend(devbox_id=devbox.id, client=client), devbox.id
+    finally:
+        if should_cleanup:
+            try:
+                console.print("[dim]Shutting down Runloop devbox...[/dim]")
+                client.devboxes.shutdown(id=devbox.id)
+                console.print("[dim]✓ Devbox terminated[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+
+
+@contextmanager
+def create_daytona_sandbox(sandbox_id: str | None = None):
+    """Create Daytona sandbox.
+
+    Args:
+        sandbox_id: Optional existing sandbox ID to reuse
+
+    Yields:
+        (DaytonaBackend, sandbox_id)
+
+    Raises:
+        ImportError: Daytona SDK not installed
+        ValueError: DAYTONA_API_KEY not set
+        NotImplementedError: If sandbox_id provided (not yet supported)
+
+    Note:
+        Connecting to existing Daytona sandbox by ID may not be supported yet.
+        If sandbox_id is provided, this will raise NotImplementedError.
+    """
+    from daytona import Daytona, DaytonaConfig
+
+    from deepagents_cli.integrations.daytona import DaytonaBackend
+
+    api_key = os.environ.get("DAYTONA_API_KEY")
+    if not api_key:
+        raise ValueError("DAYTONA_API_KEY environment variable not set")
+
+    if sandbox_id:
+        raise NotImplementedError(
+            "Connecting to existing Daytona sandbox by ID not yet supported. "
+            "Create a new sandbox by omitting --sandbox-id."
+        )
+
+    console.print("[yellow]Starting Daytona sandbox...[/yellow]")
+
+    daytona = Daytona(DaytonaConfig(api_key=api_key))
+    sandbox = daytona.create()
+
+    # Try to get sandbox ID - fallback to placeholder if not available
+    try:
+        sandbox_id = sandbox.id
+    except AttributeError:
+        # Daytona SDK may not expose ID - use hash as placeholder
+        sandbox_id = f"daytona-{id(sandbox)}"
+
+    console.print(f"[green]✓ Daytona sandbox ready: {sandbox_id}[/green]")
+
+    try:
+        yield DaytonaBackend(sandbox), sandbox_id
+    finally:
+        try:
+            console.print("[dim]Deleting Daytona sandbox...[/dim]")
+            sandbox.delete()
+            console.print("[dim]✓ Sandbox terminated[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")

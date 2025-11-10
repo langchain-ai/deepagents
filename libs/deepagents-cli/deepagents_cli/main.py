@@ -10,7 +10,11 @@ from .commands import execute_bash_command, handle_command
 from .config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
 from .execution import execute_task
 from .input import create_prompt_session
-from .sandbox_factory import cleanup_sandbox, create_sandbox_backend
+from .sandbox_factory import (
+    create_daytona_sandbox,
+    create_modal_sandbox,
+    create_runloop_sandbox,
+)
 from .tools import http_request, tavily_client, web_search
 from .ui import TokenTracker, show_help
 
@@ -201,45 +205,22 @@ async def simple_cli(
         )
 
 
-async def main(
+async def _run_agent_session(
+    model,
     assistant_id: str,
     session_state,
-    sandbox_type: str = "none",
-    sandbox_id: str | None = None,
+    sandbox_backend=None,
 ):
-    """Main entry point.
+    """Helper to create agent and run CLI session.
+
+    Extracted to avoid duplication between sandbox and local modes.
 
     Args:
+        model: LLM model to use
         assistant_id: Agent identifier for memory storage
         session_state: Session state with auto-approve settings
-        sandbox_type: Type of sandbox ("none", "modal", "daytona", "runloop")
-        sandbox_id: Optional existing sandbox ID to reuse
+        sandbox_backend: Optional sandbox backend for remote execution
     """
-    # Create the model (checks API keys)
-    model = create_model()
-
-    # ========== SANDBOX LIFECYCLE: CREATE ==========
-    sandbox_backend = None
-    active_sandbox_id = None
-    user_provided_sandbox = sandbox_id is not None  # Track if user gave us an ID
-
-    if sandbox_type != "none":
-        console.print()
-        sandbox_backend, active_sandbox_id = create_sandbox_backend(sandbox_type, sandbox_id)
-
-        if sandbox_backend and active_sandbox_id:
-            console.print()
-            console.print(f"[yellow]⚡ Sandbox: {sandbox_type.upper()}[/yellow]")
-            console.print(f"[dim]Sandbox ID: {active_sandbox_id}[/dim]")
-            console.print("[green]✓ Remote execution enabled[/green]")
-            console.print()
-        else:
-            # Failed to create sandbox - fall back to local mode
-            console.print("[yellow]⚠️  Sandbox creation failed, using local mode[/yellow]")
-            console.print()
-            sandbox_backend = None
-            active_sandbox_id = None
-
     # Create agent with conditional tools
     tools = [http_request]
     if tavily_client is not None:
@@ -257,25 +238,83 @@ async def main(
     system_prompt = get_system_prompt(sandbox_mode=(sandbox_backend is not None))
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
 
-    try:
-        await simple_cli(
-            agent,
-            assistant_id,
-            session_state,
-            baseline_tokens,
-            sandbox_mode=(sandbox_backend is not None),
-            backend=composite_backend,
-        )
-    except Exception as e:
-        console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
-    finally:
-        # ========== SANDBOX LIFECYCLE: CLEANUP ==========
-        # Only cleanup if:
-        # 1. We created a sandbox (active_sandbox_id exists)
-        # 2. User didn't provide --sandbox-id (we own the lifecycle)
-        if active_sandbox_id and not user_provided_sandbox:
+    await simple_cli(
+        agent,
+        assistant_id,
+        session_state,
+        baseline_tokens,
+        sandbox_mode=(sandbox_backend is not None),
+        backend=composite_backend,
+    )
+
+
+async def main(
+    assistant_id: str,
+    session_state,
+    sandbox_type: str = "none",
+    sandbox_id: str | None = None,
+):
+    """Main entry point with conditional sandbox support.
+
+    Args:
+        assistant_id: Agent identifier for memory storage
+        session_state: Session state with auto-approve settings
+        sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona")
+        sandbox_id: Optional existing sandbox ID to reuse
+    """
+    model = create_model()
+
+    # Map sandbox types to context managers
+    sandbox_providers = {
+        "modal": create_modal_sandbox,
+        "runloop": create_runloop_sandbox,
+        "daytona": create_daytona_sandbox,
+    }
+
+    # Branch 1: User wants a sandbox
+    if sandbox_type != "none":
+        # Validate sandbox type
+        if sandbox_type not in sandbox_providers:
+            console.print(f"[red]❌ Unknown sandbox type: {sandbox_type}[/red]")
+            console.print(
+                f"[dim]Available types: {', '.join(sandbox_providers.keys())}, none[/dim]"
+            )
+            sys.exit(1)
+
+        # Try to create sandbox
+        try:
             console.print()
-            cleanup_sandbox(active_sandbox_id, sandbox_type)
+            with sandbox_providers[sandbox_type](sandbox_id) as (
+                sandbox_backend,
+                active_sandbox_id,
+            ):
+                console.print(f"[yellow]⚡ Remote execution enabled ({sandbox_type})[/yellow]")
+                console.print()
+
+                await _run_agent_session(model, assistant_id, session_state, sandbox_backend)
+        except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
+            # Sandbox creation failed - fail hard (no silent fallback)
+            console.print()
+            console.print("[red]❌ Sandbox creation failed[/red]")
+            console.print(f"[dim]{e}[/dim]")
+            sys.exit(1)
+        except KeyboardInterrupt:
+            console.print("\n\n[yellow]Interrupted[/yellow]")
+            sys.exit(0)
+        except Exception as e:
+            console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
+            sys.exit(1)
+
+    # Branch 2: User wants local mode (none or default)
+    else:
+        try:
+            await _run_agent_session(model, assistant_id, session_state, sandbox_backend=None)
+        except KeyboardInterrupt:
+            console.print("\n\n[yellow]Interrupted[/yellow]")
+            sys.exit(0)
+        except Exception as e:
+            console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
+            sys.exit(1)
 
 
 def cli_main():

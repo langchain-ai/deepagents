@@ -19,6 +19,7 @@ from langgraph.types import Command, Interrupt, StateSnapshot
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
+from pydantic import TypeAdapter
 
 from .config import COLORS, console
 from .file_ops import FileOpTracker, build_approval_preview
@@ -267,6 +268,7 @@ async def execute_task(
                     # Check for interrupts - collect ALL pending interrupts
                     if "__interrupt__" in data:
                         interrupt_data = data["__interrupt__"]
+                        hitl_adapter = TypeAdapter(HITLRequest)
                         if interrupt_data:
                             # Handle both single interrupt and list of interrupts
                             interrupt_list = (
@@ -277,7 +279,9 @@ async def execute_task(
 
                             for interrupt_obj in interrupt_list:
                                 # Interrupt has required fields: value (HITLRequest) and id (str)
-                                pending_interrupts[interrupt_obj.id] = interrupt_obj.value
+                                # Validate the HITLRequest using TypeAdapter
+                                validated_request = hitl_adapter.validate_python(interrupt_obj.value)
+                                pending_interrupts[interrupt_obj.id] = validated_request
                                 interrupt_occurred = True
 
                     # Extract chunk_data from updates for todo checking
@@ -507,10 +511,13 @@ async def execute_task(
 
                 # If state has multiple interrupts, we need to handle ALL of them
                 # Update pending_interrupts with any we might have missed from the stream
+                hitl_adapter = TypeAdapter(HITLRequest)
                 for interrupt_obj in all_state_interrupts:
                     if interrupt_obj.id not in pending_interrupts:
                         # Interrupt has required fields: value (HITLRequest) and id (str)
-                        pending_interrupts[interrupt_obj.id] = interrupt_obj.value
+                        # Validate the HITLRequest using TypeAdapter
+                        validated_request = hitl_adapter.validate_python(interrupt_obj.value)
+                        pending_interrupts[interrupt_obj.id] = validated_request
 
                 # Build response for all pending interrupts
                 all_responses: dict[str, HITLResponse] = {}

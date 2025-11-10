@@ -545,7 +545,6 @@ async def execute_task(
                             raise
 
                 # Build response for all pending interrupts
-                all_responses: dict[str, HITLResponse] = {}
                 any_rejected = False
 
                 for interrupt_id, hitl_request in pending_interrupts.items():
@@ -565,7 +564,7 @@ async def execute_task(
 
                             decisions.append({"type": "approve"})
 
-                        all_responses[interrupt_id] = {"decisions": decisions}
+                        hitl_response[interrupt_id] = {"decisions": decisions}
 
                         # Restart spinner for continuation
                         if not spinner_active:
@@ -590,11 +589,8 @@ async def execute_task(
                         if any(decision.get("type") == "reject" for decision in decisions):
                             any_rejected = True
 
-                        all_responses[interrupt_id] = {"decisions": decisions}
+                        hitl_response[interrupt_id] = {"decisions": decisions}
 
-                # Always use dict format mapping interrupt_id -> response
-                # (works for both single and multiple interrupts)
-                hitl_response = all_responses
                 suppress_resumed_output = any_rejected
 
             if interrupt_occurred and hitl_response:

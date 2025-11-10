@@ -33,6 +33,10 @@ from .ui import (
     render_todo_list,
 )
 
+# Create TypeAdapters once at module level for efficiency
+_HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+_INTERRUPT_LIST_ADAPTER = TypeAdapter(list[Interrupt])
+
 
 def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | None) -> Decision:
     """Prompt user to approve/reject a tool action with arrow key navigation."""
@@ -268,23 +272,34 @@ async def execute_task(
                     # Check for interrupts - collect ALL pending interrupts
                     if "__interrupt__" in data:
                         interrupt_data = data["__interrupt__"]
-                        hitl_adapter = TypeAdapter(HITLRequest)
                         if interrupt_data:
-                            # Handle both single interrupt and list of interrupts
-                            interrupt_list = (
-                                interrupt_data
-                                if isinstance(interrupt_data, (list, tuple))
-                                else [interrupt_data]
-                            )
+                            # Validate interrupt list structure
+                            try:
+                                interrupt_list = _INTERRUPT_LIST_ADAPTER.validate_python(
+                                    interrupt_data
+                                )
+                            except ValidationError as e:
+                                console.print(
+                                    f"[yellow]Warning: Invalid interrupt structure: {e}[/yellow]",
+                                    style="dim",
+                                )
+                                raise
 
                             for interrupt_obj in interrupt_list:
                                 # Interrupt has required fields: value (HITLRequest) and id (str)
                                 # Validate the HITLRequest using TypeAdapter
-                                validated_request = hitl_adapter.validate_python(
-                                    interrupt_obj.value
-                                )
-                                pending_interrupts[interrupt_obj.id] = validated_request
-                                interrupt_occurred = True
+                                try:
+                                    validated_request = _HITL_REQUEST_ADAPTER.validate_python(
+                                        interrupt_obj.value
+                                    )
+                                    pending_interrupts[interrupt_obj.id] = validated_request
+                                    interrupt_occurred = True
+                                except ValidationError as e:
+                                    console.print(
+                                        f"[yellow]Warning: Invalid HITL request data: {e}[/yellow]",
+                                        style="dim",
+                                    )
+                                    raise
 
                     # Extract chunk_data from updates for todo checking
                     chunk_data = list(data.values())[0] if data else None
@@ -513,13 +528,21 @@ async def execute_task(
 
                 # If state has multiple interrupts, we need to handle ALL of them
                 # Update pending_interrupts with any we might have missed from the stream
-                hitl_adapter = TypeAdapter(HITLRequest)
                 for interrupt_obj in all_state_interrupts:
                     if interrupt_obj.id not in pending_interrupts:
                         # Interrupt has required fields: value (HITLRequest) and id (str)
                         # Validate the HITLRequest using TypeAdapter
-                        validated_request = hitl_adapter.validate_python(interrupt_obj.value)
-                        pending_interrupts[interrupt_obj.id] = validated_request
+                        try:
+                            validated_request = _HITL_REQUEST_ADAPTER.validate_python(
+                                interrupt_obj.value
+                            )
+                            pending_interrupts[interrupt_obj.id] = validated_request
+                        except ValidationError as e:
+                            console.print(
+                                f"[yellow]Warning: Invalid HITL request in state: {e}[/yellow]",
+                                style="dim",
+                            )
+                            raise
 
                 # Build response for all pending interrupts
                 all_responses: dict[str, HITLResponse] = {}

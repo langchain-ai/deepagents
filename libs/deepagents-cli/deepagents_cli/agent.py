@@ -7,15 +7,19 @@ from pathlib import Path
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware.resumable_shell import ResumableShellToolMiddleware
 from langchain.agents.middleware import HostExecutionPolicy, InterruptOnConfig
+from langchain.tools import BaseTool
+from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.pregel import Pregel
 
-from .agent_memory import AgentMemoryMiddleware
-from .config import COLORS, config, console, get_default_coding_instructions
+from deepagents_cli.agent_memory import AgentMemoryMiddleware
+from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions
 
 
-def list_agents():
+def list_agents() -> None:
     """List all available agents."""
     agents_dir = Path.home() / ".deepagents"
 
@@ -46,7 +50,7 @@ def list_agents():
     console.print()
 
 
-def reset_agent(agent_name: str, source_agent: str = None):
+def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     """Reset an agent to default or copy from another agent."""
     agents_dir = Path.home() / ".deepagents"
     agent_dir = agents_dir / agent_name
@@ -167,8 +171,13 @@ The todo list is a planning tool - use it judiciously to avoid overwhelming the 
 
 
 def create_agent_with_config(
-    model, assistant_id: str, tools: list, sandbox=None, sandbox_type: str | None = None
-):
+    model: str | BaseChatModel,
+    assistant_id: str,
+    tools: list[BaseTool],
+    *,
+    sandbox: SandboxBackendProtocol | None = None,
+    sandbox_type: str | None = None,
+) -> tuple[Pregel, CompositeBackend]:
     """Create and configure an agent with the specified model and tools.
 
     Args:
@@ -178,6 +187,9 @@ def create_agent_with_config(
         sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
                  If None, uses local filesystem + shell.
         sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona")
+
+    Returns:
+        2-tuple of graph and backend
     """
     # Setup agent directory for persistent memory (same for both local and remote modes)
     agent_dir = Path.home() / ".deepagents" / assistant_id

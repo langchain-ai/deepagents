@@ -93,7 +93,9 @@ def parse_args():
     return parser.parse_args()
 
 
-async def simple_cli(agent, assistant_id: str | None, session_state, baseline_tokens: int = 0) -> None:
+async def simple_cli(
+    agent, assistant_id: str | None, session_state, baseline_tokens: int = 0
+) -> None:
     """Main CLI loop."""
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")

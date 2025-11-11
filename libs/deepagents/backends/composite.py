@@ -223,8 +223,6 @@ class CompositeBackend:
     def execute(
         self,
         command: str,
-        *,
-        timeout: int = 30 * 60,
     ) -> ExecuteResponse:
         """Execute a command via the default backend.
 
@@ -233,7 +231,6 @@ class CompositeBackend:
 
         Args:
             command: Full shell command string to execute.
-            timeout: Maximum execution time in seconds (default: 30 minutes).
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
@@ -242,7 +239,7 @@ class CompositeBackend:
             NotImplementedError: If default backend doesn't support execution.
         """
         if isinstance(self.default, SandboxBackendProtocol):
-            return self.default.execute(command, timeout=timeout)
+            return self.default.execute(command)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.

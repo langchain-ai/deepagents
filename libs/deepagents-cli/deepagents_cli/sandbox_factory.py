@@ -8,11 +8,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import modal
-from deepagents_cli.integrations.modal import ModalBackend
-from runloop_api_client import Runloop
-from deepagents_cli.integrations.runloop import RunloopBackend
 from daytona import Daytona, DaytonaConfig
+from runloop_api_client import Runloop
+
 from deepagents_cli.integrations.daytona import DaytonaBackend
+from deepagents_cli.integrations.modal import ModalBackend
+from deepagents_cli.integrations.runloop import RunloopBackend
 
 from .config import console
 
@@ -47,7 +48,7 @@ def run_sandbox_setup(backend, setup_script_path: str):
     if result.exit_code != 0:
         console.print(f"[red]❌ Setup script failed (exit {result.exit_code}):[/red]")
         console.print(f"[dim]{result.output}[/dim]")
-        raise RuntimeError(f"Setup failed - aborting")
+        raise RuntimeError("Setup failed - aborting")
 
     console.print("[green]✓ Setup complete[/green]")
 
@@ -69,7 +70,6 @@ def create_modal_sandbox(sandbox_id: str | None = None, setup_script_path: str |
         FileNotFoundError: Setup script not found
         RuntimeError: Setup script failed
     """
-
     console.print("[yellow]Starting Modal sandbox...[/yellow]")
 
     # Create ephemeral app (auto-cleans up on exit)
@@ -141,8 +141,6 @@ def create_runloop_sandbox(sandbox_id: str | None = None, setup_script_path: str
         FileNotFoundError: Setup script not found
         RuntimeError: Setup script failed
     """
-
-
     bearer_token = os.environ.get("RUNLOOP_API_KEY")
     if not bearer_token:
         raise ValueError("RUNLOOP_API_KEY environment variable not set")
@@ -212,8 +210,6 @@ def create_daytona_sandbox(sandbox_id: str | None = None, setup_script_path: str
         Connecting to existing Daytona sandbox by ID may not be supported yet.
         If sandbox_id is provided, this will raise NotImplementedError.
     """
-
-
     api_key = os.environ.get("DAYTONA_API_KEY")
     if not api_key:
         raise ValueError("DAYTONA_API_KEY environment variable not set")

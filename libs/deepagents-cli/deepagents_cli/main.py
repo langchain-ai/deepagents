@@ -146,7 +146,9 @@ async def simple_cli(
     if sandbox_type and sandbox_id:
         console.print(f"[yellow]⚡ {sandbox_type.capitalize()} sandbox: {sandbox_id}[/yellow]")
         if setup_script_path:
-            console.print(f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]")
+            console.print(
+                f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]"
+            )
         console.print()
 
     if tavily_client is None:

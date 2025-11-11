@@ -92,6 +92,7 @@ def get_system_prompt(sandbox_type: str | None = None) -> str:
     if sandbox_type:
         # Get provider-specific working directory
         from .main import SANDBOX_WORKING_DIRS
+
         working_dir = SANDBOX_WORKING_DIRS.get(sandbox_type, "/home/user")
 
         working_dir_section = f"""### Current Working Directory
@@ -165,7 +166,9 @@ The todo list is a planning tool - use it judiciously to avoid overwhelming the 
     )
 
 
-def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None, sandbox_type: str | None = None):
+def create_agent_with_config(
+    model, assistant_id: str, tools: list, sandbox=None, sandbox_type: str | None = None
+):
     """Create and configure an agent with the specified model and tools.
 
     Args:

@@ -173,12 +173,12 @@ def format_tool_message_content(content: Any) -> str:
 class TokenTracker:
     """Track token usage across the conversation."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.baseline_context = 0  # Baseline system context (system + agent.md + tools)
         self.current_context = 0  # Total context including messages
         self.last_output = 0
 
-    def set_baseline(self, tokens: int):
+    def set_baseline(self, tokens: int) -> None:
         """Set the baseline context token count.
 
         Args:
@@ -187,25 +187,25 @@ class TokenTracker:
         self.baseline_context = tokens
         self.current_context = tokens
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset to baseline (for /clear command)."""
         self.current_context = self.baseline_context
         self.last_output = 0
 
-    def add(self, input_tokens: int, output_tokens: int):
+    def add(self, input_tokens: int, output_tokens: int) -> None:
         """Add tokens from a response."""
         # input_tokens IS the current context size (what was sent to the model)
         self.current_context = input_tokens
         self.last_output = output_tokens
 
-    def display_last(self):
+    def display_last(self) -> None:
         """Display current context size after this turn."""
         if self.last_output and self.last_output >= 1000:
             console.print(f"  Generated: {self.last_output:,} tokens", style="dim")
         if self.current_context:
             console.print(f"  Current context: {self.current_context:,} tokens", style="dim")
 
-    def display_session(self):
+    def display_session(self) -> None:
         """Display current context size."""
         console.print("\n[bold]Token Usage:[/bold]", style=COLORS["primary"])
 
@@ -486,7 +486,7 @@ def render_diff_block(diff: str, title: str) -> None:
         console.print()
 
 
-def show_interactive_help():
+def show_interactive_help() -> None:
     """Show available commands during interactive session."""
     console.print()
     console.print("[bold]Interactive Commands:[/bold]", style=COLORS["primary"])
@@ -534,7 +534,7 @@ def show_interactive_help():
     console.print()
 
 
-def show_help():
+def show_help() -> None:
     """Show help information."""
     console.print()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")

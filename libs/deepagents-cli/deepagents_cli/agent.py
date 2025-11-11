@@ -15,7 +15,7 @@ from .agent_memory import AgentMemoryMiddleware
 from .config import COLORS, config, console, get_default_coding_instructions
 
 
-def list_agents():
+def list_agents() -> None:
     """List all available agents."""
     agents_dir = Path.home() / ".deepagents"
 
@@ -46,7 +46,7 @@ def list_agents():
     console.print()
 
 
-def reset_agent(agent_name: str, source_agent: str = None):
+def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     """Reset an agent to default or copy from another agent."""
     agents_dir = Path.home() / ".deepagents"
     agent_dir = agents_dir / agent_name

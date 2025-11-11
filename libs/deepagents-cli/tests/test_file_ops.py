@@ -1,11 +1,12 @@
 import textwrap
+from pathlib import Path
 
 from langchain_core.messages import ToolMessage
 
 from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
 
 
-def test_tracker_records_read_lines(tmp_path):
+def test_tracker_records_read_lines(tmp_path: Path) -> None:
     tracker = FileOpTracker(assistant_id=None)
     path = tmp_path / "example.py"
 
@@ -28,7 +29,7 @@ def test_tracker_records_read_lines(tmp_path):
     assert record.metrics.end_line == 2
 
 
-def test_tracker_records_write_diff(tmp_path):
+def test_tracker_records_write_diff(tmp_path: Path) -> None:
     tracker = FileOpTracker(assistant_id=None)
     file_path = tmp_path / "created.txt"
 
@@ -54,7 +55,7 @@ def test_tracker_records_write_diff(tmp_path):
     assert "+hello world" in record.diff
 
 
-def test_tracker_records_edit_diff(tmp_path):
+def test_tracker_records_edit_diff(tmp_path: Path) -> None:
     tracker = FileOpTracker(assistant_id=None)
     file_path = tmp_path / "functions.py"
     file_path.write_text(
@@ -99,7 +100,7 @@ def test_tracker_records_edit_diff(tmp_path):
     assert '+    return "hi"' in record.diff
 
 
-def test_build_approval_preview_generates_diff(tmp_path):
+def test_build_approval_preview_generates_diff(tmp_path: Path) -> None:
     target = tmp_path / "notes.txt"
     target.write_text("alpha\nbeta\n")
 

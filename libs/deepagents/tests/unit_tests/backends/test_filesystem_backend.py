@@ -191,10 +191,9 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
+    from deepagents.middleware.filesystem import FilesystemMiddleware
     from langchain.tools import ToolRuntime
     from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
 
     root = tmp_path
     rt = ToolRuntime(

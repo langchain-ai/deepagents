@@ -7,6 +7,7 @@ only need to implement the execute() method.
 
 from __future__ import annotations
 
+import base64
 import json
 from abc import ABC, abstractmethod
 
@@ -145,14 +146,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     def execute(
         self,
         command: str,
-        *,
-        timeout: int = 30 * 60,
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
-            timeout: Maximum execution time in seconds (default: 30 minutes).
 
         Returns:
             ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
@@ -220,8 +218,6 @@ except PermissionError:
         content: str,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
-        import base64
-
         # Encode content as base64 to avoid any escaping issues
         content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
 
@@ -245,8 +241,6 @@ except PermissionError:
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
-        import base64
-
         # Encode strings as base64 to avoid any escaping issues
         old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
         new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
@@ -314,8 +308,6 @@ except PermissionError:
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Structured glob matching returning FileInfo dicts."""
-        import base64
-
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")

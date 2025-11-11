@@ -919,7 +919,7 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         assert "/large_tool_results/test_call_id" in result.update["files"]
 
-   def test_execute_tool_returns_error_when_backend_doesnt_support(self):
+    def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})
         middleware = FilesystemMiddleware()  # Default StateBackend doesn't support execution
@@ -1078,10 +1078,7 @@ class TestFilesystemMiddleware:
         comp_without_sandbox = CompositeBackend(default=state_backend, routes={})
         assert not _supports_execution(comp_without_sandbox)
 
-
-
-
-   def test_intercept_truncates_content_sample_lines(self):
+    def test_intercept_truncates_content_sample_lines(self):
         """Test that content sample in large tool result has lines limited to 1000 chars."""
         from langgraph.types import Command
 
@@ -1125,6 +1122,7 @@ class TestFilesystemMiddleware:
             line = lines[i]
             if line.strip():  # Skip empty lines
                 assert len(line) <= 1010, f"Line {i} exceeds 1000 chars: {len(line)} chars"
+
 
 class TestPatchToolCallsMiddleware:
     def test_first_message(self) -> None:

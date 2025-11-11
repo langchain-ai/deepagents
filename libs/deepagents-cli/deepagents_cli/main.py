@@ -20,7 +20,7 @@ from .ui import TokenTracker, show_help
 
 # Default working directories per sandbox provider
 SANDBOX_WORKING_DIRS = {
-    "modal": "/",
+    "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
 }
@@ -111,6 +111,10 @@ def parse_args():
         "--sandbox-id",
         help="Existing sandbox ID to reuse (skips creation and cleanup)",
     )
+    parser.add_argument(
+        "--sandbox-setup",
+        help="Path to setup script to run in sandbox after creation",
+    )
 
     return parser.parse_args()
 
@@ -123,6 +127,7 @@ async def simple_cli(
     backend=None,
     sandbox_type: str | None = None,
     sandbox_id: str | None = None,
+    setup_script_path: str | None = None,
 ):
     """Main CLI loop.
 
@@ -131,6 +136,7 @@ async def simple_cli(
         sandbox_type: Type of sandbox being used (e.g., "modal", "runloop", "daytona").
                      If None, running in local mode.
         sandbox_id: ID of the active sandbox
+        setup_script_path: Path to setup script that was run (if any)
     """
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
@@ -139,6 +145,8 @@ async def simple_cli(
     # Display sandbox info persistently (survives console.clear())
     if sandbox_type and sandbox_id:
         console.print(f"[yellow]⚡ {sandbox_type.capitalize()} sandbox: {sandbox_id}[/yellow]")
+        if setup_script_path:
+            console.print(f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]")
         console.print()
 
     if tavily_client is None:
@@ -228,6 +236,7 @@ async def _run_agent_session(
     sandbox_backend=None,
     sandbox_type: str | None = None,
     sandbox_id: str | None = None,
+    setup_script_path: str | None = None,
 ):
     """Helper to create agent and run CLI session.
 
@@ -240,6 +249,7 @@ async def _run_agent_session(
         sandbox_backend: Optional sandbox backend for remote execution
         sandbox_type: Type of sandbox being used
         sandbox_id: ID of the active sandbox
+        setup_script_path: Path to setup script that was run (if any)
     """
     # Create agent with conditional tools
     tools = [http_request]
@@ -266,6 +276,7 @@ async def _run_agent_session(
         backend=composite_backend,
         sandbox_type=sandbox_type,
         sandbox_id=sandbox_id,
+        setup_script_path=setup_script_path,
     )
 
 
@@ -274,6 +285,7 @@ async def main(
     session_state,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
+    setup_script_path: str | None = None,
 ):
     """Main entry point with conditional sandbox support.
 
@@ -282,6 +294,7 @@ async def main(
         session_state: Session state with auto-approve settings
         sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona")
         sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run in sandbox
     """
     model = create_model()
 
@@ -305,7 +318,7 @@ async def main(
         # Try to create sandbox
         try:
             console.print()
-            with sandbox_providers[sandbox_type](sandbox_id) as (
+            with sandbox_providers[sandbox_type](sandbox_id, setup_script_path) as (
                 sandbox_backend,
                 active_sandbox_id,
             ):
@@ -319,6 +332,7 @@ async def main(
                     sandbox_backend,
                     sandbox_type=sandbox_type,
                     sandbox_id=active_sandbox_id,
+                    setup_script_path=setup_script_path,
                 )
         except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
             # Sandbox creation failed - fail hard (no silent fallback)
@@ -370,6 +384,7 @@ def cli_main():
                     session_state,
                     args.sandbox,
                     args.sandbox_id,
+                    args.sandbox_setup,
                 )
             )
     except KeyboardInterrupt:

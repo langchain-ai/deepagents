@@ -1,18 +1,64 @@
 """Sandbox lifecycle management with context managers."""
 
 import os
+import shlex
+import string
 import time
 from contextlib import contextmanager
+from pathlib import Path
+
+import modal
+from deepagents_cli.integrations.modal import ModalBackend
+from runloop_api_client import Runloop
+from deepagents_cli.integrations.runloop import RunloopBackend
+from daytona import Daytona, DaytonaConfig
+from deepagents_cli.integrations.daytona import DaytonaBackend
 
 from .config import console
 
 
+def run_sandbox_setup(backend, setup_script_path: str):
+    """Run user's setup script in sandbox with env var expansion.
+
+    Args:
+        backend: Sandbox backend instance
+        setup_script_path: Path to setup script file
+
+    Raises:
+        FileNotFoundError: If script file doesn't exist
+        RuntimeError: If setup script fails (non-zero exit code)
+    """
+    script_path = Path(setup_script_path)
+    if not script_path.exists():
+        raise FileNotFoundError(f"Setup script not found: {setup_script_path}")
+
+    console.print(f"[dim]Running setup script: {setup_script_path}...[/dim]")
+
+    # Read script content
+    script_content = script_path.read_text()
+
+    # Expand ${VAR} syntax using local environment
+    template = string.Template(script_content)
+    expanded_script = template.safe_substitute(os.environ)
+
+    # Execute in sandbox with 5-minute timeout
+    result = backend.execute(f"bash -c {shlex.quote(expanded_script)}", timeout=5 * 60)
+
+    if result.exit_code != 0:
+        console.print(f"[red]❌ Setup script failed (exit {result.exit_code}):[/red]")
+        console.print(f"[dim]{result.output}[/dim]")
+        raise RuntimeError(f"Setup failed - aborting")
+
+    console.print("[green]✓ Setup complete[/green]")
+
+
 @contextmanager
-def create_modal_sandbox(sandbox_id: str | None = None):
+def create_modal_sandbox(sandbox_id: str | None = None, setup_script_path: str | None = None):
     """Create or connect to Modal sandbox.
 
     Args:
         sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
         (ModalBackend, sandbox_id)
@@ -20,10 +66,9 @@ def create_modal_sandbox(sandbox_id: str | None = None):
     Raises:
         ImportError: Modal SDK not installed
         Exception: Sandbox creation/connection failed
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
     """
-    import modal
-
-    from deepagents_cli.integrations.modal import ModalBackend
 
     console.print("[yellow]Starting Modal sandbox...[/yellow]")
 
@@ -35,7 +80,7 @@ def create_modal_sandbox(sandbox_id: str | None = None):
             sandbox = modal.Sandbox.from_id(sandbox_id, app=app)
             should_cleanup = False
         else:
-            sandbox = modal.Sandbox.create(app=app)
+            sandbox = modal.Sandbox.create(app=app, workdir="/workspace")
             sandbox_id = sandbox.object_id
             should_cleanup = True
 
@@ -59,8 +104,14 @@ def create_modal_sandbox(sandbox_id: str | None = None):
 
         console.print(f"[green]✓ Modal sandbox ready: {sandbox_id}[/green]")
 
+        backend = ModalBackend(sandbox)
+
+        # Run setup script if provided
+        if setup_script_path:
+            run_sandbox_setup(backend, setup_script_path)
+
         try:
-            yield ModalBackend(sandbox), sandbox_id
+            yield backend, sandbox_id
         finally:
             if should_cleanup:
                 try:
@@ -73,11 +124,12 @@ def create_modal_sandbox(sandbox_id: str | None = None):
 
 
 @contextmanager
-def create_runloop_sandbox(sandbox_id: str | None = None):
+def create_runloop_sandbox(sandbox_id: str | None = None, setup_script_path: str | None = None):
     """Create or connect to Runloop devbox.
 
     Args:
         sandbox_id: Optional existing devbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
         (RunloopBackend, devbox_id)
@@ -86,10 +138,10 @@ def create_runloop_sandbox(sandbox_id: str | None = None):
         ImportError: Runloop SDK not installed
         ValueError: RUNLOOP_API_KEY not set
         RuntimeError: Devbox failed to start within timeout
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
     """
-    from runloop_api_client import Runloop
 
-    from deepagents_cli.integrations.runloop import RunloopBackend
 
     bearer_token = os.environ.get("RUNLOOP_API_KEY")
     if not bearer_token:
@@ -120,8 +172,14 @@ def create_runloop_sandbox(sandbox_id: str | None = None):
 
     console.print(f"[green]✓ Runloop devbox ready: {sandbox_id}[/green]")
 
+    backend = RunloopBackend(devbox_id=devbox.id, client=client)
+
+    # Run setup script if provided
+    if setup_script_path:
+        run_sandbox_setup(backend, setup_script_path)
+
     try:
-        yield RunloopBackend(devbox_id=devbox.id, client=client), devbox.id
+        yield backend, devbox.id
     finally:
         if should_cleanup:
             try:
@@ -133,11 +191,12 @@ def create_runloop_sandbox(sandbox_id: str | None = None):
 
 
 @contextmanager
-def create_daytona_sandbox(sandbox_id: str | None = None):
+def create_daytona_sandbox(sandbox_id: str | None = None, setup_script_path: str | None = None):
     """Create Daytona sandbox.
 
     Args:
         sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
         (DaytonaBackend, sandbox_id)
@@ -146,14 +205,14 @@ def create_daytona_sandbox(sandbox_id: str | None = None):
         ImportError: Daytona SDK not installed
         ValueError: DAYTONA_API_KEY not set
         NotImplementedError: If sandbox_id provided (not yet supported)
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
 
     Note:
         Connecting to existing Daytona sandbox by ID may not be supported yet.
         If sandbox_id is provided, this will raise NotImplementedError.
     """
-    from daytona import Daytona, DaytonaConfig
 
-    from deepagents_cli.integrations.daytona import DaytonaBackend
 
     api_key = os.environ.get("DAYTONA_API_KEY")
     if not api_key:
@@ -191,8 +250,14 @@ def create_daytona_sandbox(sandbox_id: str | None = None):
 
     console.print(f"[green]✓ Daytona sandbox ready: {sandbox_id}[/green]")
 
+    backend = DaytonaBackend(sandbox)
+
+    # Run setup script if provided
+    if setup_script_path:
+        run_sandbox_setup(backend, setup_script_path)
+
     try:
-        yield DaytonaBackend(sandbox), sandbox_id
+        yield backend, sandbox_id
     finally:
         try:
             console.print(f"[dim]Deleting Daytona sandbox {sandbox_id}...[/dim]")

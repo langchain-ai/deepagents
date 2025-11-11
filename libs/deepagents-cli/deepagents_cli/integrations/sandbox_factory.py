@@ -249,12 +249,11 @@ def create_daytona_sandbox(
             pass
         time.sleep(2)
     else:
-        # Timeout - cleanup and fail
         try:
+            # Clean up if possible
             sandbox.delete()
-        except Exception:
-            pass
-        raise RuntimeError("Daytona sandbox failed to start within 180 seconds")
+        finally:
+            raise RuntimeError("Daytona sandbox failed to start within 180 seconds")
 
     console.print(f"[green]✓ Daytona sandbox ready: {sandbox_id}[/green]")
 

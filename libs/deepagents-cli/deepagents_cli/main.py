@@ -18,6 +18,13 @@ from .sandbox_factory import (
 from .tools import http_request, tavily_client, web_search
 from .ui import TokenTracker, show_help
 
+# Default working directories per sandbox provider
+SANDBOX_WORKING_DIRS = {
+    "modal": "/",
+    "runloop": "/home/user",
+    "daytona": "/home/daytona",
+}
+
 
 def check_cli_dependencies():
     """Check if CLI optional dependencies are installed."""
@@ -113,18 +120,26 @@ async def simple_cli(
     assistant_id: str | None,
     session_state,
     baseline_tokens: int = 0,
-    sandbox_mode: bool = False,
     backend=None,
+    sandbox_type: str | None = None,
+    sandbox_id: str | None = None,
 ):
     """Main CLI loop.
 
     Args:
-        sandbox_mode: True if using remote sandbox execution
         backend: Backend for file operations (CompositeBackend)
+        sandbox_type: Type of sandbox being used (e.g., "modal", "runloop", "daytona").
+                     If None, running in local mode.
+        sandbox_id: ID of the active sandbox
     """
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
+
+    # Display sandbox info persistently (survives console.clear())
+    if sandbox_type and sandbox_id:
+        console.print(f"[yellow]⚡ {sandbox_type.capitalize()} sandbox: {sandbox_id}[/yellow]")
+        console.print()
 
     if tavily_client is None:
         console.print(
@@ -141,9 +156,10 @@ async def simple_cli(
 
     console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
 
-    if sandbox_mode:
+    if sandbox_type:
+        working_dir = SANDBOX_WORKING_DIRS.get(sandbox_type, "sandbox")
         console.print(f"  [dim]Local CLI directory: {Path.cwd()}[/dim]")
-        console.print("  [dim]Code execution: Remote sandbox (/home/user)[/dim]")
+        console.print(f"  [dim]Code execution: Remote sandbox ({working_dir})[/dim]")
     else:
         console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
 
@@ -210,6 +226,8 @@ async def _run_agent_session(
     assistant_id: str,
     session_state,
     sandbox_backend=None,
+    sandbox_type: str | None = None,
+    sandbox_id: str | None = None,
 ):
     """Helper to create agent and run CLI session.
 
@@ -220,6 +238,8 @@ async def _run_agent_session(
         assistant_id: Agent identifier for memory storage
         session_state: Session state with auto-approve settings
         sandbox_backend: Optional sandbox backend for remote execution
+        sandbox_type: Type of sandbox being used
+        sandbox_id: ID of the active sandbox
     """
     # Create agent with conditional tools
     tools = [http_request]
@@ -227,7 +247,7 @@ async def _run_agent_session(
         tools.append(web_search)
 
     agent, composite_backend = create_agent_with_config(
-        model, assistant_id, tools, sandbox=sandbox_backend
+        model, assistant_id, tools, sandbox=sandbox_backend, sandbox_type=sandbox_type
     )
 
     # Calculate baseline token count for accurate token tracking
@@ -235,7 +255,7 @@ async def _run_agent_session(
     from .token_utils import calculate_baseline_tokens
 
     agent_dir = Path.home() / ".deepagents" / assistant_id
-    system_prompt = get_system_prompt(sandbox_mode=(sandbox_backend is not None))
+    system_prompt = get_system_prompt(sandbox_type=sandbox_type)
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
 
     await simple_cli(
@@ -243,8 +263,9 @@ async def _run_agent_session(
         assistant_id,
         session_state,
         baseline_tokens,
-        sandbox_mode=(sandbox_backend is not None),
         backend=composite_backend,
+        sandbox_type=sandbox_type,
+        sandbox_id=sandbox_id,
     )
 
 
@@ -291,7 +312,14 @@ async def main(
                 console.print(f"[yellow]⚡ Remote execution enabled ({sandbox_type})[/yellow]")
                 console.print()
 
-                await _run_agent_session(model, assistant_id, session_state, sandbox_backend)
+                await _run_agent_session(
+                    model,
+                    assistant_id,
+                    session_state,
+                    sandbox_backend,
+                    sandbox_type=sandbox_type,
+                    sandbox_id=active_sandbox_id,
+                )
         except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
             # Sandbox creation failed - fail hard (no silent fallback)
             console.print()

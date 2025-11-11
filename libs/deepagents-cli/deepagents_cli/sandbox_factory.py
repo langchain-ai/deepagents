@@ -27,26 +27,31 @@ def create_modal_sandbox(sandbox_id: str | None = None):
 
     console.print("[yellow]Starting Modal sandbox...[/yellow]")
 
-    if sandbox_id:
-        sandbox = modal.Sandbox.from_id(sandbox_id)
-        should_cleanup = False
-    else:
-        sandbox = modal.Sandbox.create()
-        sandbox_id = sandbox.object_id
-        should_cleanup = True
+    # Create ephemeral app (auto-cleans up on exit)
+    app = modal.App("deepagents-sandbox")
 
-    console.print(f"[green]✓ Modal sandbox ready: {sandbox_id}[/green]")
+    with app.run():
+        if sandbox_id:
+            sandbox = modal.Sandbox.from_id(sandbox_id, app=app)
+            should_cleanup = False
+        else:
+            sandbox = modal.Sandbox.create(app=app)
+            sandbox_id = sandbox.object_id
+            should_cleanup = True
 
-    try:
-        yield ModalBackend(sandbox), sandbox_id
-    finally:
-        if should_cleanup:
-            try:
-                console.print("[dim]Terminating Modal sandbox...[/dim]")
-                sandbox.terminate()
-                console.print("[dim]✓ Sandbox terminated[/dim]")
-            except Exception as e:
-                console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+        console.print(f"[green]✓ Modal sandbox ready: {sandbox_id}[/green]")
+
+        try:
+            yield ModalBackend(sandbox), sandbox_id
+        finally:
+            if should_cleanup:
+                try:
+                    console.print(f"[dim]Terminating Modal sandbox {sandbox_id}...[/dim]")
+                    sandbox.terminate()
+                    console.print(f"[dim]✓ Modal sandbox {sandbox_id} terminated[/dim]")
+                except Exception as e:
+                    console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+    # Ephemeral app auto-terminates here
 
 
 @contextmanager
@@ -102,9 +107,9 @@ def create_runloop_sandbox(sandbox_id: str | None = None):
     finally:
         if should_cleanup:
             try:
-                console.print("[dim]Shutting down Runloop devbox...[/dim]")
+                console.print(f"[dim]Shutting down Runloop devbox {sandbox_id}...[/dim]")
                 client.devboxes.shutdown(id=devbox.id)
-                console.print("[dim]✓ Devbox terminated[/dim]")
+                console.print(f"[dim]✓ Runloop devbox {sandbox_id} terminated[/dim]")
             except Exception as e:
                 console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
@@ -160,8 +165,8 @@ def create_daytona_sandbox(sandbox_id: str | None = None):
         yield DaytonaBackend(sandbox), sandbox_id
     finally:
         try:
-            console.print("[dim]Deleting Daytona sandbox...[/dim]")
+            console.print(f"[dim]Deleting Daytona sandbox {sandbox_id}...[/dim]")
             sandbox.delete()
-            console.print("[dim]✓ Sandbox terminated[/dim]")
+            console.print(f"[dim]✓ Daytona sandbox {sandbox_id} terminated[/dim]")
         except Exception as e:
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")

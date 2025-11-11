@@ -79,25 +79,30 @@ def reset_agent(agent_name: str, source_agent: str = None):
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(sandbox_mode: bool = False) -> str:
+def get_system_prompt(sandbox_type: str | None = None) -> str:
     """Get the base system prompt for the agent.
 
     Args:
-        sandbox_mode: If True, agent is operating in remote sandbox
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+                     If None, agent is operating in local mode.
 
     Returns:
         The system prompt string (without agent.md content)
     """
-    if sandbox_mode:
-        working_dir_section = """### Current Working Directory
+    if sandbox_type:
+        # Get provider-specific working directory
+        from .main import SANDBOX_WORKING_DIRS
+        working_dir = SANDBOX_WORKING_DIRS.get(sandbox_type, "/home/user")
 
-You are operating in a **remote Linux sandbox** at `/home/user`.
+        working_dir_section = f"""### Current Working Directory
+
+You are operating in a **remote Linux sandbox** at `{working_dir}`.
 
 All code execution and file operations happen in this sandbox environment.
 
 **Important:**
 - The CLI is running locally on the user's machine, but you execute code remotely
-- Use `/home/user` as your working directory for all operations
+- Use `{working_dir}` as your working directory for all operations
 - The local `/memories/` directory is still accessible for persistent storage
 
 """
@@ -160,7 +165,7 @@ The todo list is a planning tool - use it judiciously to avoid overwhelming the 
     )
 
 
-def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None):
+def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None, sandbox_type: str | None = None):
     """Create and configure an agent with the specified model and tools.
 
     Args:
@@ -169,6 +174,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
                  If None, uses local filesystem + shell.
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona")
     """
     # Setup agent directory for persistent memory (same for both local and remote modes)
     agent_dir = Path.home() / ".deepagents" / assistant_id
@@ -215,7 +221,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list, sandbox=None
         # No need to add FilesystemMiddleware or ShellToolMiddleware manually.
 
     # Get the system prompt (sandbox-aware)
-    system_prompt = get_system_prompt(sandbox_mode=(sandbox is not None))
+    system_prompt = get_system_prompt(sandbox_type=sandbox_type)
 
     # Helper functions for formatting tool descriptions in HITL prompts
     def format_write_file_description(tool_call: dict) -> str:

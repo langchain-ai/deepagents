@@ -950,7 +950,7 @@ class TestFilesystemMiddleware:
 
         # Mock sandbox backend that returns specific output
         class FormattingMockSandboxBackend(StateBackend):
-            def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+            def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Hello world\nLine 2",
                     exit_code=0,
@@ -983,7 +983,7 @@ class TestFilesystemMiddleware:
 
         # Mock sandbox backend that returns failure
         class FailureMockSandboxBackend(StateBackend):
-            def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+            def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Error: command not found",
                     exit_code=127,
@@ -1016,7 +1016,7 @@ class TestFilesystemMiddleware:
 
         # Mock sandbox backend that returns truncated output
         class TruncatedMockSandboxBackend(StateBackend):
-            def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+            def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Very long output...",
                     exit_code=0,
@@ -1049,7 +1049,7 @@ class TestFilesystemMiddleware:
 
         # Mock sandbox backend
         class TestSandboxBackend(StateBackend):
-            def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+            def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 
         state = FilesystemState(messages=[], files={})

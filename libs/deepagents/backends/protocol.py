@@ -188,3 +188,4 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]
+BACKEND_TYPES = BackendProtocol | BackendFactory

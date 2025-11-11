@@ -19,8 +19,10 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
+
+# Re-export type here for backwards compatibility
+from deepagents.backends.protocol import BACKEND_TYPES as BACKEND_TYPES
 from deepagents.backends.protocol import (
-    BackendFactory,
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,
@@ -38,7 +40,6 @@ MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 500
-BACKEND_TYPES = BackendProtocol | BackendFactory
 
 
 class FileData(TypedDict):

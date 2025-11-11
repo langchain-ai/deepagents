@@ -79,17 +79,44 @@ def reset_agent(agent_name: str, source_agent: str = None):
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt() -> str:
+def get_system_prompt(sandbox_type: str | None = None) -> str:
     """Get the base system prompt for the agent.
+
+    Args:
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+                     If None, agent is operating in local mode.
 
     Returns:
         The system prompt string (without agent.md content)
     """
-    return f"""### Current Working Directory
+    if sandbox_type:
+        # Get provider-specific working directory
+        from .main import SANDBOX_WORKING_DIRS
+
+        working_dir = SANDBOX_WORKING_DIRS.get(sandbox_type, "/home/user")
+
+        working_dir_section = f"""### Current Working Directory
+
+You are operating in a **remote Linux sandbox** at `{working_dir}`.
+
+All code execution and file operations happen in this sandbox environment.
+
+**Important:**
+- The CLI is running locally on the user's machine, but you execute code remotely
+- Use `{working_dir}` as your working directory for all operations
+- The local `/memories/` directory is still accessible for persistent storage
+
+"""
+    else:
+        working_dir_section = f"""### Current Working Directory
 
 The filesystem backend is currently operating in: `{Path.cwd()}`
 
-### Memory System Reminder
+"""
+
+    return (
+        working_dir_section
+        + """### Memory System Reminder
 
 Your long-term memory is stored in /memories/ and persists across sessions.
 
@@ -136,15 +163,23 @@ When using the write_todos tool:
 6. Update todo status promptly as you complete each item
 
 The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking."""
-
-
-def create_agent_with_config(model, assistant_id: str, tools: list):
-    """Create and configure an agent with the specified model and tools."""
-    shell_middleware = ResumableShellToolMiddleware(
-        workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
     )
 
-    # For long-term memory, point to ~/.deepagents/AGENT_NAME/ with /memories/ prefix
+
+def create_agent_with_config(
+    model, assistant_id: str, tools: list, sandbox=None, sandbox_type: str | None = None
+):
+    """Create and configure an agent with the specified model and tools.
+
+    Args:
+        model: LLM model to use
+        assistant_id: Agent identifier for memory storage
+        tools: Additional tools to provide to agent
+        sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
+                 If None, uses local filesystem + shell.
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona")
+    """
+    # Setup agent directory for persistent memory (same for both local and remote modes)
     agent_dir = Path.home() / ".deepagents" / assistant_id
     agent_dir.mkdir(parents=True, exist_ok=True)
     agent_md = agent_dir / "agent.md"
@@ -152,23 +187,44 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         source_content = get_default_coding_instructions()
         agent_md.write_text(source_content)
 
-    # Long-term backend - rooted at agent directory
-    # This handles both /memories/ files and /agent.md
+    # Long-term backend for /memories/ route (always local, persists across sessions)
     long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
 
-    # Composite backend: current working directory for default, agent directory for /memories/
-    backend = CompositeBackend(
-        default=FilesystemBackend(), routes={"/memories/": long_term_backend}
-    )
+    # CONDITIONAL SETUP: Local vs Remote Sandbox
+    if sandbox is None:
+        # ========== LOCAL MODE (current behavior) ==========
+        # Backend: Local filesystem for code + local /memories/
+        composite_backend = CompositeBackend(
+            default=FilesystemBackend(),  # Current working directory
+            routes={"/memories/": long_term_backend},  # Agent memories
+        )
 
-    # Use the same backend for agent memory middleware
-    agent_middleware = [
-        AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
-        shell_middleware,
-    ]
+        # Middleware: ResumableShellToolMiddleware provides "shell" tool
+        agent_middleware = [
+            AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
+            ResumableShellToolMiddleware(
+                workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
+            ),
+        ]
+    else:
+        # ========== REMOTE SANDBOX MODE ==========
+        # Backend: Remote sandbox for code + local /memories/
+        composite_backend = CompositeBackend(
+            default=sandbox,  # Remote sandbox (ModalBackend, etc.)
+            routes={"/memories/": long_term_backend},  # Agent memories (still local!)
+        )
 
-    # Get the system prompt
-    system_prompt = get_system_prompt()
+        # Middleware: create_deep_agent automatically provides file tools + execute
+        # when a SandboxBackend is passed, so we only add AgentMemoryMiddleware
+        agent_middleware = [
+            AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
+        ]
+        # NOTE: File operations (ls, read, write, edit, glob, grep) and execute tool
+        # are automatically provided by create_deep_agent when backend is a SandboxBackend.
+        # No need to add FilesystemMiddleware or ShellToolMiddleware manually.
+
+    # Get the system prompt (sandbox-aware)
+    system_prompt = get_system_prompt(sandbox_type=sandbox_type)
 
     # Helper functions for formatting tool descriptions in HITL prompts
     def format_write_file_description(tool_call: dict) -> str:
@@ -230,6 +286,13 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         ),
     }
 
+    execute_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": lambda tool_call, state, runtime: (
+            f"Execute Command: {tool_call['args'].get('command', 'N/A')}\nLocation: Remote Sandbox"
+        ),
+    }
+
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": lambda tool_call, state, runtime: format_write_file_description(tool_call),
@@ -254,10 +317,11 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         model=model,
         system_prompt=system_prompt,
         tools=tools,
-        backend=backend,
+        backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on={
             "shell": shell_interrupt_config,
+            "execute": execute_interrupt_config,
             "write_file": write_file_interrupt_config,
             "edit_file": edit_file_interrupt_config,
             "web_search": web_search_interrupt_config,
@@ -267,4 +331,4 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
 
     agent.checkpointer = InMemorySaver()
 
-    return agent
+    return agent, composite_backend

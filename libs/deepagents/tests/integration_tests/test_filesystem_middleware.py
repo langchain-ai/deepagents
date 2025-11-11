@@ -935,6 +935,7 @@ class TestFilesystem:
     def test_execute_tool_filtered_for_non_sandbox_backend(self):
         """Verify execute tool is filtered out when backend doesn't support it."""
         from langchain.agents import AgentMiddleware
+
         from deepagents.backends.protocol import ExecuteResponse
 
         # Track what tools are passed to the model
@@ -986,8 +987,8 @@ class TestFilesystem:
     def test_system_prompt_includes_execute_instructions_only_when_supported(self):
         """Verify EXECUTION_SYSTEM_PROMPT is only added when backend supports execution."""
         from langchain.agents import AgentMiddleware
+
         from deepagents.backends.protocol import ExecuteResponse
-        from deepagents.middleware.filesystem import EXECUTION_SYSTEM_PROMPT
 
         # Track system prompts passed to the model
         captured_prompts = []
@@ -1038,8 +1039,8 @@ class TestFilesystem:
 
     def test_composite_backend_execution_support_detection(self):
         """Verify _supports_execution correctly detects CompositeBackend capabilities."""
-        from deepagents.middleware.filesystem import _supports_execution
         from deepagents.backends.protocol import ExecuteResponse
+        from deepagents.middleware.filesystem import _supports_execution
 
         # Mock sandbox backend
         class MockSandboxBackend(StateBackend):

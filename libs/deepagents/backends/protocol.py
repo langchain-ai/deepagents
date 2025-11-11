@@ -173,8 +173,6 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
     def execute(
         self,
         command: str,
-        *,
-        timeout: int = 30 * 60,
     ) -> ExecuteResponse:
         """Execute a command in the process.
 
@@ -182,7 +180,6 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
 
         Args:
             command: Full shell command string to execute.
-            timeout: Maximum execution time in seconds (default: 30 minutes).
 
         Returns:
             ExecuteResponse with combined output, exit code, optional signal, and truncation flag.

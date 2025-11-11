@@ -21,23 +21,21 @@ class DaytonaBackend(BaseSandbox):
     def __init__(self, sandbox: Sandbox) -> None:
         """Initialize the DaytonaBackend with a Daytona sandbox client."""
         self._sandbox = sandbox
+        self._timeout: int = 30 * 60  # 30 mins
 
     def execute(
         self,
         command: str,
-        *,
-        timeout: int = 30 * 60,
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
-            timeout: Maximum execution time in seconds (default: 30 minutes).
 
         Returns:
             ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
         """
-        result = self._sandbox.process.exec(command, timeout=timeout)
+        result = self._sandbox.process.exec(command, timeout=self._timeout)
 
         return ExecuteResponse(
             output=result.result,  # Daytona combines stdout/stderr

@@ -15,7 +15,6 @@ from .sandbox_factory import (
     create_modal_sandbox,
     create_runloop_sandbox,
 )
-from .tools import http_request, tavily_client, web_search
 from .tools import fetch_url, http_request, tavily_client, web_search
 from .ui import TokenTracker, show_help
 

@@ -506,6 +506,7 @@ def show_interactive_help():
         "  Ctrl+E          Open in external editor (nano by default)", style=COLORS["dim"]
     )
     console.print("  Ctrl+T          Toggle auto-approve mode", style=COLORS["dim"])
+    console.print("  Ctrl+O          Toggle tool output visibility", style=COLORS["dim"])
     console.print("  Arrow keys      Navigate input", style=COLORS["dim"])
     console.print("  Ctrl+C          Cancel input or interrupt agent mid-work", style=COLORS["dim"])
     console.print()
@@ -541,7 +542,8 @@ def show_help():
     console.print()
 
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
-    console.print("  deepagents [--agent NAME] [--auto-approve]     Start interactive session")
+    console.print("  deepagents [--agent NAME] [--auto-approve] [--show-thinking]")
+    console.print("                                             Start interactive session")
     console.print("  deepagents list                                List all available agents")
     console.print("  deepagents reset --agent AGENT                 Reset agent to default prompt")
     console.print(
@@ -560,6 +562,10 @@ def show_help():
     )
     console.print(
         "  deepagents --auto-approve               # Start with auto-approve enabled",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --show-thinking              # Show agent's reasoning process",
         style=COLORS["dim"],
     )
     console.print(
@@ -596,6 +602,7 @@ def show_help():
     )
     console.print("  Ctrl+J          Insert newline (alternative)", style=COLORS["dim"])
     console.print("  Ctrl+T          Toggle auto-approve mode", style=COLORS["dim"])
+    console.print("  Ctrl+O          Toggle tool output visibility", style=COLORS["dim"])
     console.print("  Arrow keys      Navigate input", style=COLORS["dim"])
     console.print(
         "  @filename       Type @ to auto-complete files and inject content", style=COLORS["dim"]

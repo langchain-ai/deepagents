@@ -348,6 +348,14 @@ async def execute_task(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
+                        # Display tool output if toggle is enabled
+                        if session_state.show_tool_outputs and tool_content:
+                            if spinner_active:
+                                status.stop()
+                                spinner_active = False
+                            console.print(f"    ↳ {tool_content}", style="dim cyan", markup=False)
+                            console.print()
+
                         # Reset spinner message after tool completes
                         if spinner_active:
                             status.update(f"[bold {COLORS['thinking']}]Agent is thinking...")
@@ -417,12 +425,15 @@ async def execute_task(
                         elif block_type == "reasoning":
                             flush_text_buffer(final=True)
                             reasoning = block.get("reasoning", "")
-                            if reasoning:
+                            if reasoning and session_state.show_thinking:
                                 if spinner_active:
                                     status.stop()
                                     spinner_active = False
-                                # Could display reasoning differently if desired
-                                # For now, skip it or handle minimally
+                                if not has_responded:
+                                    console.print("●", style=COLORS["agent"], markup=False, end=" ")
+                                    has_responded = True
+                                # Display reasoning in dim style
+                                console.print(reasoning, style="dim")
 
                         # Handle tool call chunks
                         elif block_type == "tool_call_chunk":

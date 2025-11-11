@@ -4,14 +4,17 @@ import os
 import shlex
 import string
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from .config import console
+from deepagents.backends.protocol import SandboxBackendProtocol
+
+from deepagents_cli.config import console
 
 
-def run_sandbox_setup(backend, setup_script_path: str):
-    """Run user's setup script in sandbox with env var expansion.
+def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
+    """Run users setup script in sandbox with env var expansion.
 
     Args:
         backend: Sandbox backend instance
@@ -35,7 +38,7 @@ def run_sandbox_setup(backend, setup_script_path: str):
     expanded_script = template.safe_substitute(os.environ)
 
     # Execute in sandbox with 5-minute timeout
-    result = backend.execute(f"bash -c {shlex.quote(expanded_script)}", timeout=5 * 60)
+    result = backend.execute(f"bash -c {shlex.quote(expanded_script)}")
 
     if result.exit_code != 0:
         console.print(f"[red]❌ Setup script failed (exit {result.exit_code}):[/red]")
@@ -46,7 +49,9 @@ def run_sandbox_setup(backend, setup_script_path: str):
 
 
 @contextmanager
-def create_modal_sandbox(sandbox_id: str | None = None, setup_script_path: str | None = None):
+def create_modal_sandbox(
+    sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[tuple["ModalBackend", str], None, None]:
     """Create or connect to Modal sandbox.
 
     Args:
@@ -104,7 +109,7 @@ def create_modal_sandbox(sandbox_id: str | None = None, setup_script_path: str |
 
         # Run setup script if provided
         if setup_script_path:
-            run_sandbox_setup(backend, setup_script_path)
+            _run_sandbox_setup(backend, setup_script_path)
 
         try:
             yield backend, sandbox_id
@@ -116,11 +121,12 @@ def create_modal_sandbox(sandbox_id: str | None = None, setup_script_path: str |
                     console.print(f"[dim]✓ Modal sandbox {sandbox_id} terminated[/dim]")
                 except Exception as e:
                     console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
-    # Ephemeral app auto-terminates here
 
 
 @contextmanager
-def create_runloop_sandbox(sandbox_id: str | None = None, setup_script_path: str | None = None):
+def create_runloop_sandbox(
+    sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[tuple["RunloopBackend", str], None, None]:
     """Create or connect to Runloop devbox.
 
     Args:
@@ -174,7 +180,7 @@ def create_runloop_sandbox(sandbox_id: str | None = None, setup_script_path: str
 
     # Run setup script if provided
     if setup_script_path:
-        run_sandbox_setup(backend, setup_script_path)
+        _run_sandbox_setup(backend, setup_script_path)
 
     try:
         yield backend, devbox.id
@@ -189,7 +195,9 @@ def create_runloop_sandbox(sandbox_id: str | None = None, setup_script_path: str
 
 
 @contextmanager
-def create_daytona_sandbox(sandbox_id: str | None = None, setup_script_path: str | None = None):
+def create_daytona_sandbox(
+    sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[tuple["DaytonaBackend", str], None, None]:
     """Create Daytona sandbox.
 
     Args:
@@ -254,14 +262,20 @@ def create_daytona_sandbox(sandbox_id: str | None = None, setup_script_path: str
 
     # Run setup script if provided
     if setup_script_path:
-        run_sandbox_setup(backend, setup_script_path)
-
+        _run_sandbox_setup(backend, setup_script_path)
     try:
         yield backend, sandbox_id
     finally:
+        console.print(f"[dim]Deleting Daytona sandbox {sandbox_id}...[/dim]")
         try:
-            console.print(f"[dim]Deleting Daytona sandbox {sandbox_id}...[/dim]")
             sandbox.delete()
             console.print(f"[dim]✓ Daytona sandbox {sandbox_id} terminated[/dim]")
         except Exception as e:
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+
+
+__all__ = [
+    "create_daytona_sandbox",
+    "create_modal_sandbox",
+    "create_runloop_sandbox",
+]

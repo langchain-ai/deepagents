@@ -342,7 +342,7 @@ def _create_task_tool(
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
-            allowed_types = ", ".join([f'`{k}`' for k in subagent_graphs])
+            allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
         result = subagent.invoke(subagent_state)
@@ -357,7 +357,7 @@ def _create_task_tool(
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
-            allowed_types = ", ".join([f'`{k}`' for k in subagent_graphs])
+            allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
         result = await subagent.ainvoke(subagent_state)

@@ -932,7 +932,7 @@ class TestFilesystemMiddleware:
         line2 = "a" * 1500  # Long line that should be truncated
         line3 = "another short line"
         line4 = "b" * 2000  # Another long line
-        line5 = "c" * 500   # Short line
+        line5 = "c" * 500  # Short line
         large_content = f"{line1}\n{line2}\n{line3}\n{line4}\n{line5}\n" + ("x" * 1000)
 
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")

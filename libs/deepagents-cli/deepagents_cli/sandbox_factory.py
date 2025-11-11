@@ -7,14 +7,6 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-import modal
-from daytona import Daytona, DaytonaConfig
-from runloop_api_client import Runloop
-
-from deepagents_cli.integrations.daytona import DaytonaBackend
-from deepagents_cli.integrations.modal import ModalBackend
-from deepagents_cli.integrations.runloop import RunloopBackend
-
 from .config import console
 
 
@@ -70,6 +62,10 @@ def create_modal_sandbox(sandbox_id: str | None = None, setup_script_path: str |
         FileNotFoundError: Setup script not found
         RuntimeError: Setup script failed
     """
+    import modal
+
+    from deepagents_cli.integrations.modal import ModalBackend
+
     console.print("[yellow]Starting Modal sandbox...[/yellow]")
 
     # Create ephemeral app (auto-cleans up on exit)
@@ -141,6 +137,10 @@ def create_runloop_sandbox(sandbox_id: str | None = None, setup_script_path: str
         FileNotFoundError: Setup script not found
         RuntimeError: Setup script failed
     """
+    from runloop_api_client import Runloop
+
+    from deepagents_cli.integrations.runloop import RunloopBackend
+
     bearer_token = os.environ.get("RUNLOOP_API_KEY")
     if not bearer_token:
         raise ValueError("RUNLOOP_API_KEY environment variable not set")
@@ -210,6 +210,10 @@ def create_daytona_sandbox(sandbox_id: str | None = None, setup_script_path: str
         Connecting to existing Daytona sandbox by ID may not be supported yet.
         If sandbox_id is provided, this will raise NotImplementedError.
     """
+    from daytona import Daytona, DaytonaConfig
+
+    from deepagents_cli.integrations.daytona import DaytonaBackend
+
     api_key = os.environ.get("DAYTONA_API_KEY")
     if not api_key:
         raise ValueError("DAYTONA_API_KEY environment variable not set")

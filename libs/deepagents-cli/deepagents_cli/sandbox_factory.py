@@ -39,6 +39,24 @@ def create_modal_sandbox(sandbox_id: str | None = None):
             sandbox_id = sandbox.object_id
             should_cleanup = True
 
+            # Poll until running (Modal requires this)
+            for _ in range(90):  # 180s timeout (90 * 2s)
+                if sandbox.poll() is not None:  # Sandbox terminated unexpectedly
+                    raise RuntimeError("Modal sandbox terminated unexpectedly during startup")
+                # Check if sandbox is ready by attempting a simple command
+                try:
+                    process = sandbox.exec("echo", "ready", timeout=5)
+                    process.wait()
+                    if process.returncode == 0:
+                        break
+                except Exception:
+                    pass
+                time.sleep(2)
+            else:
+                # Timeout - cleanup and fail
+                sandbox.terminate()
+                raise RuntimeError("Modal sandbox failed to start within 180 seconds")
+
         console.print(f"[green]✓ Modal sandbox ready: {sandbox_id}[/green]")
 
         try:
@@ -151,13 +169,25 @@ def create_daytona_sandbox(sandbox_id: str | None = None):
 
     daytona = Daytona(DaytonaConfig(api_key=api_key))
     sandbox = daytona.create()
+    sandbox_id = sandbox.id
 
-    # Try to get sandbox ID - fallback to placeholder if not available
-    try:
-        sandbox_id = sandbox.id
-    except AttributeError:
-        # Daytona SDK may not expose ID - use hash as placeholder
-        sandbox_id = f"daytona-{id(sandbox)}"
+    # Poll until running (Daytona requires this)
+    for _ in range(90):  # 180s timeout (90 * 2s)
+        # Check if sandbox is ready by attempting a simple command
+        try:
+            result = sandbox.process.exec("echo ready", timeout=5)
+            if result.exit_code == 0:
+                break
+        except Exception:
+            pass
+        time.sleep(2)
+    else:
+        # Timeout - cleanup and fail
+        try:
+            sandbox.delete()
+        except Exception:
+            pass
+        raise RuntimeError("Daytona sandbox failed to start within 180 seconds")
 
     console.print(f"[green]✓ Daytona sandbox ready: {sandbox_id}[/green]")
 

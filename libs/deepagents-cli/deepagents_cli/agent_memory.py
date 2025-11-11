@@ -16,7 +16,13 @@ class AgentMemoryState(AgentState):
     """State for the agent memory middleware."""
 
     agent_memory: NotRequired[str | None]
-    """Long-term memory content for the agent."""
+    """Long-term memory content for the agent (global)."""
+
+    project_memory: NotRequired[str | None]
+    """Project-specific memory content (from project root)."""
+
+    project_root: NotRequired[Path | None]
+    """Path to the detected project root."""
 
 
 # Long-term Memory Documentation
@@ -26,9 +32,16 @@ LONGTERM_MEMORY_SYSTEM_PROMPT = """
 
 Your long-term memory is stored in files on the filesystem and persists across sessions.
 
-**Memory Location**: `{agent_dir_absolute}` (displays as `{agent_dir_display}`)
+**Global Memory Location**: `{agent_dir_absolute}` (displays as `{agent_dir_display}`)
+**Project Memory Location**: {project_memory_info}
 
-Your system prompt is loaded from `{agent_dir_absolute}/agent.md` at startup. You can update your own instructions by editing this file.
+Your system prompt is loaded from TWO sources at startup:
+1. **Global agent.md**: `{agent_dir_absolute}/agent.md` - Your general instructions across all projects
+2. **Project agent.md**: Loaded from project root if available - Project-specific instructions
+
+Project-specific agent.md is loaded from (in order of priority):
+- `[project-root]/.deepagents/agent.md`
+- `[project-root]/agent.md`
 
 **When to CHECK/READ memories (CRITICAL - do this FIRST):**
 - **At the start of ANY new session**: Run `ls {agent_dir_absolute}` to see what you have stored
@@ -76,10 +89,13 @@ write_file '{agent_dir_absolute}/notes.md' ...       # Create memory file
 **Important**: Always use the absolute path `{agent_dir_absolute}` for all memory operations."""
 
 
-DEFAULT_MEMORY_SNIPPET = """<agent_memory>
+DEFAULT_MEMORY_SNIPPET = """<global_agent_memory>
 {agent_memory}
-</agent_memory>
-"""
+</global_agent_memory>
+
+<project_agent_memory>
+{project_memory}
+</project_agent_memory>"""
 
 
 class AgentMemoryMiddleware(AgentMiddleware):
@@ -143,23 +159,48 @@ class AgentMemoryMiddleware(AgentMiddleware):
     ) -> AgentMemoryState:
         """Load agent memory from file before agent execution.
 
+        Loads both global agent.md and project-specific agent.md if available.
+
         Args:
             state: Current agent state.
             runtime: Runtime context.
 
         Returns:
-            Updated state with agent_memory populated.
+            Updated state with agent_memory and project_memory populated.
         """
-        # Only load memory if it hasn't been loaded yet
+        from .project_utils import find_project_agent_md, find_project_root
+
+        result = {}
+
+        # Load global agent memory if not already loaded
         if "agent_memory" not in state or state.get("agent_memory") is None:
             agent_md_path = self.agent_dir / "agent.md"
             try:
                 if agent_md_path.exists():
-                    agent_memory = agent_md_path.read_text()
-                    return {"agent_memory": agent_memory}
+                    result["agent_memory"] = agent_md_path.read_text()
+                else:
+                    result["agent_memory"] = ""
             except Exception:
-                pass
-            return {"agent_memory": ""}
+                result["agent_memory"] = ""
+
+        # Detect project root and load project memory if not already loaded
+        if "project_memory" not in state or state.get("project_memory") is None:
+            project_root = find_project_root()
+            result["project_root"] = project_root
+
+            if project_root:
+                project_md_path = find_project_agent_md(project_root)
+                if project_md_path:
+                    try:
+                        result["project_memory"] = project_md_path.read_text()
+                    except Exception:
+                        result["project_memory"] = ""
+                else:
+                    result["project_memory"] = ""
+            else:
+                result["project_memory"] = ""
+
+        return result
 
     async def abefore_agent(
         self,
@@ -168,23 +209,17 @@ class AgentMemoryMiddleware(AgentMiddleware):
     ) -> AgentMemoryState:
         """(async) Load agent memory from file before agent execution.
 
+        Loads both global agent.md and project-specific agent.md if available.
+
         Args:
             state: Current agent state.
             runtime: Runtime context.
 
         Returns:
-            Updated state with agent_memory populated.
+            Updated state with agent_memory and project_memory populated.
         """
-        # Only load memory if it hasn't been loaded yet
-        if "agent_memory" not in state or state.get("agent_memory") is None:
-            agent_md_path = self.agent_dir / "agent.md"
-            try:
-                if agent_md_path.exists():
-                    agent_memory = agent_md_path.read_text()
-                    return {"agent_memory": agent_memory}
-            except Exception:
-                pass
-            return {"agent_memory": ""}
+        # Sync version is fine since file operations are fast
+        return self.before_agent(state, runtime)
 
     def wrap_model_call(
         self,
@@ -200,20 +235,37 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Get agent memory from state
+        # Get both global and project memory from state
         agent_memory = request.state.get("agent_memory", "")
+        project_memory = request.state.get("project_memory", "")
+        project_root = request.state.get("project_root")
 
-        memory_section = self.system_prompt_template.format(agent_memory=agent_memory)
+        # Build project memory info for documentation
+        if project_root and project_memory:
+            project_memory_info = f"`{project_root}` (detected)"
+        elif project_root:
+            project_memory_info = f"`{project_root}` (no agent.md found)"
+        else:
+            project_memory_info = "None (not in a git project)"
+
+        # Format memory section with both memories
+        memory_section = self.system_prompt_template.format(
+            agent_memory=agent_memory or "(No global agent.md)",
+            project_memory=project_memory or "(No project agent.md)",
+        )
         if request.system_prompt:
             request.system_prompt = memory_section + "\n\n" + request.system_prompt
         else:
             request.system_prompt = memory_section
+
+        # Add long-term memory documentation
         request.system_prompt = (
             request.system_prompt
             + "\n\n"
             + LONGTERM_MEMORY_SYSTEM_PROMPT.format(
                 agent_dir_absolute=self.agent_dir_absolute,
                 agent_dir_display=self.agent_dir_display,
+                project_memory_info=project_memory_info,
             )
         )
 
@@ -233,20 +285,37 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Get agent memory from state
+        # Get both global and project memory from state
         agent_memory = request.state.get("agent_memory", "")
+        project_memory = request.state.get("project_memory", "")
+        project_root = request.state.get("project_root")
 
-        memory_section = self.system_prompt_template.format(agent_memory=agent_memory)
+        # Build project memory info for documentation
+        if project_root and project_memory:
+            project_memory_info = f"`{project_root}` (detected)"
+        elif project_root:
+            project_memory_info = f"`{project_root}` (no agent.md found)"
+        else:
+            project_memory_info = "None (not in a git project)"
+
+        # Format memory section with both memories
+        memory_section = self.system_prompt_template.format(
+            agent_memory=agent_memory or "(No global agent.md)",
+            project_memory=project_memory or "(No project agent.md)",
+        )
         if request.system_prompt:
             request.system_prompt = memory_section + "\n\n" + request.system_prompt
         else:
             request.system_prompt = memory_section
+
+        # Add long-term memory documentation
         request.system_prompt = (
             request.system_prompt
             + "\n\n"
             + LONGTERM_MEMORY_SYSTEM_PROMPT.format(
                 agent_dir_absolute=self.agent_dir_absolute,
                 agent_dir_display=self.agent_dir_display,
+                project_memory_info=project_memory_info,
             )
         )
 

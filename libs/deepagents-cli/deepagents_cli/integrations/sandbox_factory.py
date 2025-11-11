@@ -19,10 +19,6 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     Args:
         backend: Sandbox backend instance
         setup_script_path: Path to setup script file
-
-    Raises:
-        FileNotFoundError: If script file doesn't exist
-        RuntimeError: If setup script fails (non-zero exit code)
     """
     script_path = Path(setup_script_path)
     if not script_path.exists():

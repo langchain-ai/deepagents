@@ -13,13 +13,14 @@ from .skill_loader import SkillLoader
 
 
 def list_skills():
-    """List all available skills."""
-    skills_dir = Path.home() / ".deepagents" / "skills"
+    """List all available skills for the default agent."""
+    # Use default agent's skills directory
+    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
 
     if not skills_dir.exists() or not any(skills_dir.iterdir()):
         console.print("[yellow]No skills found.[/yellow]")
         console.print(
-            "[dim]Skills will be created in ~/.deepagents/skills/ when you add them.[/dim]",
+            "[dim]Skills will be created in ~/.deepagents/agent/skills/ when you add them.[/dim]",
             style=COLORS["dim"],
         )
         console.print(
@@ -48,13 +49,14 @@ def list_skills():
 
         console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
         console.print(f"    {skill['description']}", style=COLORS["dim"])
-        console.print(f"    Location: ~/.deepagents/skills/{skill_dir_name}/", style=COLORS["dim"])
+        console.print(f"    Location: ~/.deepagents/agent/skills/{skill_dir_name}/", style=COLORS["dim"])
         console.print()
 
 
 def create_skill(skill_name: str):
-    """Create a new skill with a template SKILL.md file."""
-    skills_dir = Path.home() / ".deepagents" / "skills"
+    """Create a new skill with a template SKILL.md file for the default agent."""
+    # Use default agent's skills directory
+    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
     skill_dir = skills_dir / skill_name
 
     if skill_dir.exists():
@@ -152,8 +154,9 @@ This skill directory can include supporting files referenced in the instructions
 
 
 def show_skill_info(skill_name: str):
-    """Show detailed information about a specific skill."""
-    skills_dir = Path.home() / ".deepagents" / "skills"
+    """Show detailed information about a specific skill for the default agent."""
+    # Use default agent's skills directory
+    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
 
     # Load skills
     loader = SkillLoader(skills_dir=skills_dir)

@@ -80,26 +80,38 @@ def reset_agent(agent_name: str, source_agent: str = None):
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt() -> str:
+def get_system_prompt(assistant_id: str) -> str:
     """Get the base system prompt for the agent.
+
+    Args:
+        assistant_id: The agent identifier for path references
 
     Returns:
         The system prompt string (without agent.md content)
     """
+    agent_dir_path = f"~/.deepagents/{assistant_id}"
+
     return f"""### Current Working Directory
 
 The filesystem backend is currently operating in: `{Path.cwd()}`
 
-### Memory System Reminder
+### Agent Memory Directory
 
-Your long-term memory is stored in /memories/ and persists across sessions.
+Your memory is stored at: `{agent_dir_path}/`
+Your agent.md was loaded from this directory at startup.
 
 **IMPORTANT - Check memories before answering:**
-- When asked "what do you know about X?" → Run `ls /memories/` FIRST, then read relevant files
-- When starting a task → Check if you have guides or examples in /memories/
-- At the beginning of new sessions → Consider checking `ls /memories/` to see what context you have
+- When asked "what do you know about X?" → Run `ls {agent_dir_path}/` FIRST, then read relevant files
+- When starting a task → Check if you have guides or examples in `{agent_dir_path}/`
+- At the beginning of new sessions → Consider checking `ls {agent_dir_path}/` to see what context you have
 
-Base your answers on saved knowledge (from /memories/) when available, supplemented by general knowledge.
+Base your answers on saved knowledge from your agent directory when available, supplemented by general knowledge.
+
+### Skills Directory
+
+Your skills are stored at: `{agent_dir_path}/skills/`
+Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:
+Example: `bash python {agent_dir_path}/skills/web-research/script.py`
 
 ### Human-in-the-Loop Tool Approval
 
@@ -145,7 +157,7 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
     )
 
-    # For long-term memory, point to ~/.deepagents/AGENT_NAME/ with /memories/ prefix
+    # Agent directory with memory and skills per-agent
     agent_dir = Path.home() / ".deepagents" / assistant_id
     agent_dir.mkdir(parents=True, exist_ok=True)
     agent_md = agent_dir / "agent.md"
@@ -153,30 +165,25 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
         source_content = get_default_coding_instructions()
         agent_md.write_text(source_content)
 
-    # Long-term backend - rooted at agent directory
-    # This handles both /memories/ files and /agent.md
-    long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
-
-    # Skills backend - global skills directory shared across agents
-    skills_dir = Path.home() / ".deepagents" / "skills"
+    # Skills directory - per-agent
+    skills_dir = agent_dir / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
-    skills_backend = FilesystemBackend(root_dir=skills_dir, virtual_mode=True)
 
-    # Composite backend: current working directory for default, agent directory for /memories/, skills for /skills/
+    # No virtual routing - use real filesystem paths only
     backend = CompositeBackend(
         default=FilesystemBackend(),
-        routes={"/memories/": long_term_backend, "/skills/": skills_backend},
+        routes={},  # No virtualization
     )
 
-    # Use the same backend for agent memory middleware
+    # Agent middleware with real paths
     agent_middleware = [
-        AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
-        SkillsMiddleware(skills_dir=skills_dir, skills_path="/skills/"),
+        AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id=assistant_id),
+        SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
         shell_middleware,
     ]
 
-    # Get the system prompt
-    system_prompt = get_system_prompt()
+    # Get the system prompt with agent-specific paths
+    system_prompt = get_system_prompt(assistant_id)
 
     # Helper functions for formatting tool descriptions in HITL prompts
     def format_write_file_description(tool_call: dict) -> str:

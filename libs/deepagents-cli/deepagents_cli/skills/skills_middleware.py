@@ -5,8 +5,8 @@ This middleware implements Anthropic's "Agent Skills" pattern with progressive d
 2. Inject skills metadata (name + description) into system prompt
 3. Agent reads full SKILL.md content when relevant to a task
 
-Skills directory structure:
-~/.deepagents/skills/
+Skills directory structure (per-agent):
+~/.deepagents/{AGENT_NAME}/skills/
 ├── web-research/
 │   ├── SKILL.md        # Required: YAML frontmatter + instructions
 │   └── helper.py       # Optional: supporting files
@@ -44,6 +44,8 @@ SKILLS_SYSTEM_PROMPT = """
 
 You have access to a skills library that provides specialized capabilities and domain knowledge.
 
+**Skills Location**: `{skills_dir_absolute}` (displays as `{skills_dir_display}`)
+
 **Available Skills:**
 
 {skills_list}
@@ -53,9 +55,9 @@ You have access to a skills library that provides specialized capabilities and d
 Skills follow a **progressive disclosure** pattern - you know they exist (name + description above), but you only read the full instructions when needed:
 
 1. **Recognize when a skill applies**: Check if the user's task matches any skill's description
-2. **Read the skill's full instructions**: Use `read_file '{skills_path}[skill-name]/SKILL.md'` to see detailed guidance
+2. **Read the skill's full instructions**: The skill list above shows the exact path to use with read_file
 3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
-4. **Access supporting files**: Skills may include Python scripts, configs, or reference docs - paths are in SKILL.md
+4. **Access supporting files**: Skills may include Python scripts, configs, or reference docs - use absolute paths
 
 **When to Use Skills:**
 - When the user's request matches a skill's domain (e.g., "research X" → web-research skill)
@@ -64,17 +66,21 @@ Skills follow a **progressive disclosure** pattern - you know they exist (name +
 
 **Skills are Self-Documenting:**
 - Each SKILL.md tells you exactly what the skill does and how to use it
-- You can explore available skills with `ls {skills_path}`
-- You can read any skill's directory with `ls {skills_path}[skill-name]/`
+- You can explore available skills with `ls {skills_dir_absolute}`
+- You can read any skill's directory with `ls {skills_dir_absolute}/[skill-name]`
+
+**Executing Skill Scripts:**
+Skills may contain Python scripts or other executable files. Always use absolute paths:
+Example: `bash python {skills_dir_absolute}/web-research/fetch_data.py`
 
 **Example Workflow:**
 
 User: "Can you research the latest developments in quantum computing?"
 
-1. Check available skills above → See "web-research" skill
-2. Read the skill: `read_file '{skills_path}web-research/SKILL.md'`
+1. Check available skills above → See "web-research" skill with its full path
+2. Read the skill using the path shown: `read_file '{skills_dir_absolute}/web-research/SKILL.md'`
 3. Follow the skill's research workflow (search → organize → synthesize)
-4. Use any helper scripts referenced in SKILL.md
+4. Use any helper scripts with absolute paths: `bash python {skills_dir_absolute}/web-research/script.py`
 
 Remember: Skills are tools to make you more capable and consistent. When in doubt, check if a skill exists for the task!
 """
@@ -89,27 +95,25 @@ class SkillsMiddleware(AgentMiddleware):
     - Agent reads full SKILL.md content when a skill is relevant (progressive disclosure)
 
     Args:
-        skills_dir: Path to the skills directory. Defaults to ~/.deepagents/skills
-        skills_path: Virtual path prefix for skills in the filesystem (e.g., "/skills/")
+        skills_dir: Path to the skills directory (per-agent).
+        assistant_id: The agent identifier for path references in prompts.
         system_prompt_template: Optional custom template for skills documentation.
-            Use {skills_list} for the formatted skills list and {skills_path} for the path.
+            Use {skills_list} for the formatted skills list and {skills_dir_path} for the path.
 
     Example:
         ```python
         from pathlib import Path
-        from deepagents.backends.filesystem import FilesystemBackend
-        from deepagents.backends.composite import CompositeBackend
         from deepagents_cli.skills import SkillsMiddleware
 
-        # Set up skills backend
-        skills_dir = Path.home() / ".deepagents" / "skills"
-        skills_backend = FilesystemBackend(root_dir=skills_dir, virtual_mode=True)
-
-        # Create composite backend with skills routing
-        backend = CompositeBackend(default=FilesystemBackend(), routes={"/skills/": skills_backend})
+        # Set up skills directory (per-agent)
+        agent_dir = Path.home() / ".deepagents" / "agent"
+        skills_dir = agent_dir / "skills"
 
         # Create middleware
-        middleware = SkillsMiddleware(skills_dir=skills_dir, skills_path="/skills/")
+        middleware = SkillsMiddleware(
+            skills_dir=skills_dir,
+            assistant_id="agent"
+        )
         ```
     """
 
@@ -118,19 +122,22 @@ class SkillsMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        skills_dir: str | Path = "~/.deepagents/skills",
-        skills_path: str = "/skills/",
+        skills_dir: str | Path,
+        assistant_id: str,
         system_prompt_template: str | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
         Args:
             skills_dir: Path to the skills directory.
-            skills_path: Virtual path prefix for skills in the filesystem.
+            assistant_id: The agent identifier.
             system_prompt_template: Optional custom template for skills docs.
         """
         self.skills_dir = Path(skills_dir).expanduser()
-        self.skills_path = skills_path
+        self.assistant_id = assistant_id
+        # Store both display path (with ~) and absolute path for file operations
+        self.skills_dir_display = f"~/.deepagents/{assistant_id}/skills"
+        self.skills_dir_absolute = str(self.skills_dir)
         self.system_prompt_template = system_prompt_template or SKILLS_SYSTEM_PROMPT
         self.loader = SkillLoader(skills_dir=self.skills_dir)
 
@@ -144,13 +151,15 @@ class SkillsMiddleware(AgentMiddleware):
             Formatted string with skills list.
         """
         if not skills:
-            return "(No skills available yet. You can create skills in ~/.deepagents/skills/)"
+            return f"(No skills available yet. You can create skills in {self.skills_dir_display}/)"
 
         lines = []
         for skill in skills:
             skill_dir = Path(skill["path"]).parent.name
             lines.append(f"- **{skill['name']}**: {skill['description']}")
-            lines.append(f"  → Read `{self.skills_path}{skill_dir}/SKILL.md` for full instructions")
+            lines.append(
+                f"  → Read `{self.skills_dir_absolute}/{skill_dir}/SKILL.md` for full instructions"
+            )
 
         return "\n".join(lines)
 
@@ -221,7 +230,9 @@ class SkillsMiddleware(AgentMiddleware):
 
         # Format the skills documentation
         skills_section = self.system_prompt_template.format(
-            skills_list=skills_list, skills_path=self.skills_path
+            skills_list=skills_list,
+            skills_dir_absolute=self.skills_dir_absolute,
+            skills_dir_display=self.skills_dir_display,
         )
 
         # Inject into system prompt
@@ -254,7 +265,9 @@ class SkillsMiddleware(AgentMiddleware):
 
         # Format the skills documentation
         skills_section = self.system_prompt_template.format(
-            skills_list=skills_list, skills_path=self.skills_path
+            skills_list=skills_list,
+            skills_dir_absolute=self.skills_dir_absolute,
+            skills_dir_display=self.skills_dir_display,
         )
 
         # Inject into system prompt

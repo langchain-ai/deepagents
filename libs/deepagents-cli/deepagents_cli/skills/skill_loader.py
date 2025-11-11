@@ -147,7 +147,9 @@ class SkillLoader:
 
         return skills
 
-    def format_skills_for_system_message(self, skills: list[SkillMetadata]) -> str:
+    def format_skills_for_system_message(
+        self, skills: list[SkillMetadata], skills_dir_path: str = "~/.deepagents/agent/skills"
+    ) -> str:
         """Format skills metadata for injection into system prompt.
 
         Creates a formatted list of skills with their descriptions and paths,
@@ -155,6 +157,7 @@ class SkillLoader:
 
         Args:
             skills: List of skill metadata to format.
+            skills_dir_path: Path to display in the formatted output (for user reference).
 
         Returns:
             Formatted string for system prompt.
@@ -164,8 +167,9 @@ class SkillLoader:
 
         lines = ["Available skills:"]
         for skill in skills:
+            skill_dir = Path(skill["path"]).parent.name
             lines.append(f"- **{skill['name']}**: {skill['description']}")
-            lines.append(f"  Read `/skills/{Path(skill['path']).parent.name}/SKILL.md` for details")
+            lines.append(f"  Read `{skills_dir_path}/{skill_dir}/SKILL.md` for details")
 
         return "\n".join(lines)
 
@@ -174,14 +178,16 @@ def load_skills(skills_dir: Path | None = None) -> tuple[list[SkillMetadata], st
     """Convenience function to load skills and format for system prompt.
 
     Args:
-        skills_dir: Path to the skills directory. Defaults to ~/.deepagents/skills
+        skills_dir: Path to the skills directory. Defaults to ~/.deepagents/agent/skills
+                    (the default agent's skills directory).
 
     Returns:
         Tuple of (skills metadata list, formatted string for system prompt).
     """
     if skills_dir is None:
-        skills_dir = Path.home() / ".deepagents" / "skills"
+        skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
     loader = SkillLoader(skills_dir)
     skills = loader.list()
-    formatted = loader.format_skills_for_system_message(skills)
+    skills_dir_path = f"~/.deepagents/{skills_dir.parent.name}/skills"
+    formatted = loader.format_skills_for_system_message(skills, skills_dir_path)
     return skills, formatted

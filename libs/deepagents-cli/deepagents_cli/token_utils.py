@@ -7,7 +7,7 @@ from langchain_core.messages import SystemMessage
 from .config import console
 
 
-def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str) -> int:
+def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assistant_id: str) -> int:
     """Calculate baseline context tokens using the model's official tokenizer.
 
     This uses the model's get_num_tokens_from_messages() method to get
@@ -21,6 +21,7 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str) -> int
         model: LangChain model instance (ChatAnthropic or ChatOpenAI)
         agent_dir: Path to agent directory containing agent.md
         system_prompt: The base system prompt string
+        assistant_id: The agent identifier for path references
 
     Returns:
         Token count for system prompt + agent.md (tools not included)
@@ -36,7 +37,7 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str) -> int
     memory_section = f"<agent_memory>\n{agent_memory}\n</agent_memory>"
 
     # Get the long-term memory system prompt
-    memory_system_prompt = get_memory_system_prompt()
+    memory_system_prompt = get_memory_system_prompt(assistant_id)
 
     # Combine all parts in the same order as the middleware
     full_system_prompt = memory_section + "\n\n" + system_prompt + "\n\n" + memory_system_prompt
@@ -55,9 +56,20 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str) -> int
         return 0
 
 
-def get_memory_system_prompt() -> str:
-    """Get the long-term memory system prompt text."""
+def get_memory_system_prompt(assistant_id: str) -> str:
+    """Get the long-term memory system prompt text.
+
+    Args:
+        assistant_id: The agent identifier for path references
+    """
     # Import from agent_memory middleware
+    from pathlib import Path
+
     from .agent_memory import LONGTERM_MEMORY_SYSTEM_PROMPT
 
-    return LONGTERM_MEMORY_SYSTEM_PROMPT.format(memory_path="/memories/")
+    agent_dir = Path.home() / ".deepagents" / assistant_id
+    agent_dir_absolute = str(agent_dir)
+    agent_dir_display = f"~/.deepagents/{assistant_id}"
+    return LONGTERM_MEMORY_SYSTEM_PROMPT.format(
+        agent_dir_absolute=agent_dir_absolute, agent_dir_display=agent_dir_display
+    )

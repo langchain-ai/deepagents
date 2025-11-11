@@ -208,8 +208,8 @@ async def main(assistant_id: str, session_state):
     from .token_utils import calculate_baseline_tokens
 
     agent_dir = Path.home() / ".deepagents" / assistant_id
-    system_prompt = get_system_prompt()
-    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
+    system_prompt = get_system_prompt(assistant_id)
+    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, assistant_id)
 
     try:
         await simple_cli(agent, assistant_id, session_state, baseline_tokens)

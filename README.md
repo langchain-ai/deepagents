@@ -327,7 +327,7 @@ Deep Agents are built with a modular middleware architecture. As a reminder, Dee
 - A filesystem for storing context and long-term memories
 - The ability to spawn subagents
 
-Each of these features is implemented as separate middleware. When you create a deep agent with `create_deep_agent`, we automatically attach **PlanningMiddleware**, **FilesystemMiddleware** and **SubAgentMiddleware** to your agent.
+Each of these features is implemented as separate middleware. When you create a deep agent with `create_deep_agent`, we automatically attach **TodoListMiddleware**, **FilesystemMiddleware** and **SubAgentMiddleware** to your agent.
 
 Middleware is a composable concept, and you can choose to add as many or as few middleware to an agent depending on your use case. That means that you can also use any of the aforementioned middleware independently!
 

@@ -6,8 +6,17 @@ import sys
 import termios
 import tty
 
+from langchain.agents.middleware.human_in_the_loop import (
+    ActionRequest,
+    ApproveDecision,
+    Decision,
+    HITLRequest,
+    HITLResponse,
+    RejectDecision,
+)
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.types import Command
+from langgraph.types import Command, Interrupt, StateSnapshot
+from pydantic import TypeAdapter, ValidationError
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -24,25 +33,17 @@ from .ui import (
     render_todo_list,
 )
 
-
-def _extract_tool_args(action_request: dict) -> dict | None:
-    """Best-effort extraction of tool call arguments from an action request."""
-    if "tool_call" in action_request and isinstance(action_request["tool_call"], dict):
-        args = action_request["tool_call"].get("args")
-        if isinstance(args, dict):
-            return args
-    args = action_request.get("args")
-    if isinstance(args, dict):
-        return args
-    return None
+# Create TypeAdapters once at module level for efficiency
+_HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+_INTERRUPT_LIST_ADAPTER = TypeAdapter(list[Interrupt])
 
 
-def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> dict:
+def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | None) -> Decision:
     """Prompt user to approve/reject a tool action with arrow key navigation."""
     description = action_request.get("description", "No description available")
-    tool_name = action_request.get("name") or action_request.get("tool")
-    tool_args = _extract_tool_args(action_request)
-    preview = build_approval_preview(tool_name, tool_args, assistant_id) if tool_name else None
+    name = action_request["name"]
+    args = action_request["args"]
+    preview = build_approval_preview(name, args, assistant_id) if name else None
 
     body_lines = []
     if preview:
@@ -121,7 +122,7 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
                             selected = (selected + 1) % len(options)
                         elif next2 == "A":  # Up arrow
                             selected = (selected - 1) % len(options)
-                elif char == "\r" or char == "\n":  # Enter
+                elif char in {"\r", "\n"}:  # Enter
                     sys.stdout.write("\r\n")  # Move to start of line and add newline
                     break
                 elif char == "\x03":  # Ctrl+C
@@ -147,15 +148,12 @@ def prompt_for_tool_approval(action_request: dict, assistant_id: str | None) -> 
         console.print("  ☐ (A)pprove  (default)")
         console.print("  ☐ (R)eject")
         choice = input("\nChoice (A/R, default=Approve): ").strip().lower()
-        if choice == "r" or choice == "reject":
-            selected = 1
-        else:
-            selected = 0
+        selected = 1 if choice in {"r", "reject"} else 0
 
     # Return decision based on selection
     if selected == 0:
-        return {"type": "approve"}
-    return {"type": "reject", "message": "User rejected the command"}
+        return ApproveDecision(type="approve")
+    return RejectDecision(type="reject", message="User rejected the command")
 
 
 async def execute_task(
@@ -247,9 +245,10 @@ async def execute_task(
     try:
         while True:
             interrupt_occurred = False
-            hitl_response = None
+            hitl_response: dict[str, HITLResponse] = {}
             suppress_resumed_output = False
-            hitl_request = None
+            # Track all pending interrupts: {interrupt_id: request_data}
+            pending_interrupts: dict[str, HITLRequest] = {}
 
             async for chunk in agent.astream(
                 stream_input,
@@ -269,24 +268,40 @@ async def execute_task(
                     if not isinstance(data, dict):
                         continue
 
-                    # Check for interrupts - just capture the data, don't handle yet
+                    # Check for interrupts - collect ALL pending interrupts
                     if "__interrupt__" in data:
                         interrupt_data = data["__interrupt__"]
                         if interrupt_data:
-                            interrupt_obj = (
-                                interrupt_data[0]
-                                if isinstance(interrupt_data, tuple)
-                                else interrupt_data
-                            )
-                            hitl_request = (
-                                interrupt_obj.value
-                                if hasattr(interrupt_obj, "value")
-                                else interrupt_obj
-                            )
-                            interrupt_occurred = True
+                            # Validate interrupt list structure
+                            try:
+                                interrupt_list = _INTERRUPT_LIST_ADAPTER.validate_python(
+                                    interrupt_data
+                                )
+                            except ValidationError as e:
+                                console.print(
+                                    f"[yellow]Warning: Invalid interrupt structure: {e}[/yellow]",
+                                    style="dim",
+                                )
+                                raise
+
+                            for interrupt_obj in interrupt_list:
+                                # Interrupt has required fields: value (HITLRequest) and id (str)
+                                # Validate the HITLRequest using TypeAdapter
+                                try:
+                                    validated_request = _HITL_REQUEST_ADAPTER.validate_python(
+                                        interrupt_obj.value
+                                    )
+                                    pending_interrupts[interrupt_obj.id] = validated_request
+                                    interrupt_occurred = True
+                                except ValidationError as e:
+                                    console.print(
+                                        f"[yellow]Warning: Invalid HITL request data: {e}[/yellow]",
+                                        style="dim",
+                                    )
+                                    raise
 
                     # Extract chunk_data from updates for todo checking
-                    chunk_data = list(data.values())[0] if data else None
+                    chunk_data = next(iter(data.values())) if data else None
                     if chunk_data and isinstance(chunk_data, dict):
                         # Check for todo updates
                         if "todos" in chunk_data:
@@ -310,7 +325,7 @@ async def execute_task(
                     message, metadata = data
 
                     if isinstance(message, HumanMessage):
-                        content = message.text()
+                        content = message.text
                         if content:
                             flush_text_buffer(final=True)
                             if spinner_active:
@@ -401,10 +416,9 @@ async def execute_task(
                         elif block_type == "reasoning":
                             flush_text_buffer(final=True)
                             reasoning = block.get("reasoning", "")
-                            if reasoning:
-                                if spinner_active:
-                                    status.stop()
-                                    spinner_active = False
+                            if reasoning and spinner_active:
+                                status.stop()
+                                spinner_active = False
                                 # Could display reasoning differently if desired
                                 # For now, skip it or handle minimally
 
@@ -501,49 +515,81 @@ async def execute_task(
             flush_text_buffer(final=True)
 
             # Handle human-in-the-loop after stream completes
-            if interrupt_occurred and hitl_request:
-                # Check if auto-approve is enabled
-                if session_state.auto_approve:
-                    # Auto-approve all commands without prompting
-                    decisions = []
-                    for action_request in hitl_request.get("action_requests", []):
-                        # Show what's being auto-approved (brief, dim message)
+            if interrupt_occurred:
+                # Query graph state to get ALL pending interrupts (not just from current stream)
+                # This is critical when the agent resumes and creates new interrupts - we need to
+                # handle both the new interrupts AND any previous ones still pending in the state
+                state_snapshot: StateSnapshot | None = agent.get_state(config)
+                all_state_interrupts: tuple[Interrupt, ...] = (
+                    state_snapshot.interrupts if state_snapshot else ()
+                )
+
+                # If state has multiple interrupts, we need to handle ALL of them
+                # Update pending_interrupts with any we might have missed from the stream
+                for interrupt_obj in all_state_interrupts:
+                    if interrupt_obj.id not in pending_interrupts:
+                        # Interrupt has required fields: value (HITLRequest) and id (str)
+                        # Validate the HITLRequest using TypeAdapter
+                        try:
+                            validated_request = _HITL_REQUEST_ADAPTER.validate_python(
+                                interrupt_obj.value
+                            )
+                            pending_interrupts[interrupt_obj.id] = validated_request
+                        except ValidationError as e:
+                            console.print(
+                                f"[yellow]Warning: Invalid HITL request in state: {e}[/yellow]",
+                                style="dim",
+                            )
+                            raise
+
+                # Build response for all pending interrupts
+                any_rejected = False
+
+                for interrupt_id, hitl_request in pending_interrupts.items():
+                    # Check if auto-approve is enabled
+                    if session_state.auto_approve:
+                        # Auto-approve all commands without prompting
+                        decisions = []
+                        for action_request in hitl_request["action_requests"]:
+                            # Show what's being auto-approved (brief, dim message)
+                            if spinner_active:
+                                status.stop()
+                                spinner_active = False
+
+                            description = action_request.get("description", "tool action")
+                            console.print()
+                            console.print(f"  [dim]⚡ {description}[/dim]")
+
+                            decisions.append({"type": "approve"})
+
+                        hitl_response[interrupt_id] = {"decisions": decisions}
+
+                        # Restart spinner for continuation
+                        if not spinner_active:
+                            status.start()
+                            spinner_active = True
+                    else:
+                        # Normal HITL flow - stop spinner and prompt user
                         if spinner_active:
                             status.stop()
                             spinner_active = False
 
-                        description = action_request.get("description", "tool action")
-                        console.print()
-                        console.print(f"  [dim]⚡ {description}[/dim]")
+                        # Handle human-in-the-loop approval
+                        decisions = []
+                        for action_request in hitl_request["action_requests"]:
+                            decision = await asyncio.to_thread(
+                                prompt_for_tool_approval,
+                                action_request,
+                                assistant_id,
+                            )
+                            decisions.append(decision)
 
-                        decisions.append({"type": "approve"})
+                        if any(decision.get("type") == "reject" for decision in decisions):
+                            any_rejected = True
 
-                    hitl_response = {"decisions": decisions}
+                        hitl_response[interrupt_id] = {"decisions": decisions}
 
-                    # Restart spinner for continuation
-                    if not spinner_active:
-                        status.start()
-                        spinner_active = True
-                else:
-                    # Normal HITL flow - stop spinner and prompt user
-                    if spinner_active:
-                        status.stop()
-                        spinner_active = False
-
-                    # Handle human-in-the-loop approval
-                    decisions = []
-                    for action_request in hitl_request.get("action_requests", []):
-                        decision = await asyncio.to_thread(
-                            prompt_for_tool_approval,
-                            action_request,
-                            assistant_id,
-                        )
-                        decisions.append(decision)
-
-                    suppress_resumed_output = any(
-                        decision.get("type") == "reject" for decision in decisions
-                    )
-                    hitl_response = {"decisions": decisions}
+                suppress_resumed_output = any_rejected
 
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:

@@ -919,7 +919,7 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         assert "/large_tool_results/test_call_id" in result.update["files"]
 
-    def test_execute_tool_returns_error_when_backend_doesnt_support(self):
+   def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})
         middleware = FilesystemMiddleware()  # Default StateBackend doesn't support execution
@@ -1078,6 +1078,53 @@ class TestFilesystemMiddleware:
         comp_without_sandbox = CompositeBackend(default=state_backend, routes={})
         assert not _supports_execution(comp_without_sandbox)
 
+
+
+
+   def test_intercept_truncates_content_sample_lines(self):
+        """Test that content sample in large tool result has lines limited to 1000 chars."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+
+        # Create content with multiple lines, some longer than 1000 chars
+        line1 = "short line"
+        line2 = "a" * 1500  # Long line that should be truncated
+        line3 = "another short line"
+        line4 = "b" * 2000  # Another long line
+        line5 = "c" * 500  # Short line
+        large_content = f"{line1}\n{line2}\n{line3}\n{line4}\n{line5}\n" + ("x" * 1000)
+
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        processed_message = result.update["messages"][0]
+        content_sample_section = processed_message.content
+
+        # Verify the message contains the expected structure
+        assert "Tool result too large" in content_sample_section
+        assert "first 10 lines" in content_sample_section
+
+        # Extract the content sample part (after "Here are the first 10 lines of the result:")
+        lines = content_sample_section.split("\n")
+
+        # Find where the actual content sample starts
+        sample_start_idx = None
+        for i, line in enumerate(lines):
+            if "first 10 lines" in line:
+                sample_start_idx = i + 1
+                break
+
+        assert sample_start_idx is not None, "Could not find content sample in message"
+
+        # Check each line in the content sample doesn't exceed 1000 chars
+        for i in range(sample_start_idx, len(lines)):
+            line = lines[i]
+            if line.strip():  # Skip empty lines
+                assert len(line) <= 1010, f"Line {i} exceeds 1000 chars: {len(line)} chars"
 
 class TestPatchToolCallsMiddleware:
     def test_first_message(self) -> None:

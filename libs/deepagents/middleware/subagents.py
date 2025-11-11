@@ -322,10 +322,7 @@ def _create_task_tool(
         )
 
     def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
-        """Validate subagent type and prepare state for invocation."""
-        if subagent_type not in subagent_graphs:
-            msg = f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in subagent_graphs]}"
-            raise ValueError(msg)
+        """Prepare state for invocation."""
         subagent = subagent_graphs[subagent_type]
         # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
@@ -344,6 +341,9 @@ def _create_task_tool(
         subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
+        if subagent_type not in subagent_graphs:
+            allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
+            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
         result = subagent.invoke(subagent_state)
         if not runtime.tool_call_id:
@@ -356,6 +356,9 @@ def _create_task_tool(
         subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
+        if subagent_type not in subagent_graphs:
+            allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
+            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
         result = await subagent.ainvoke(subagent_state)
         if not runtime.tool_call_id:

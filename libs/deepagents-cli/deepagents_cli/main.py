@@ -16,6 +16,7 @@ from .sandbox_factory import (
     create_runloop_sandbox,
 )
 from .tools import http_request, tavily_client, web_search
+from .tools import fetch_url, http_request, tavily_client, web_search
 from .ui import TokenTracker, show_help
 
 # Default working directories per sandbox provider
@@ -26,7 +27,7 @@ SANDBOX_WORKING_DIRS = {
 }
 
 
-def check_cli_dependencies():
+def check_cli_dependencies() -> None:
     """Check if CLI optional dependencies are installed."""
     missing = []
 
@@ -195,11 +196,14 @@ async def simple_cli(
     while True:
         try:
             user_input = await session.prompt_async()
+            if session_state.exit_hint_handle:
+                session_state.exit_hint_handle.cancel()
+                session_state.exit_hint_handle = None
+            session_state.exit_hint_until = None
             user_input = user_input.strip()
         except EOFError:
             break
         except KeyboardInterrupt:
-            # Ctrl+C at prompt - exit the program
             console.print("\nGoodbye!", style=COLORS["primary"])
             break
 
@@ -254,7 +258,7 @@ async def _run_agent_session(
         setup_script_path: Path to setup script that was run (if any)
     """
     # Create agent with conditional tools
-    tools = [http_request]
+    tools = [http_request, fetch_url]
     if tavily_client is not None:
         tools.append(web_search)
 
@@ -361,7 +365,7 @@ async def main(
             sys.exit(1)
 
 
-def cli_main():
+def cli_main() -> None:
     """Entry point for console script."""
     # Check dependencies first
     check_cli_dependencies()

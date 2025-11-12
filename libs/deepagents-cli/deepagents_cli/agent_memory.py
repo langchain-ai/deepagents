@@ -26,6 +26,12 @@ class AgentMemoryState(AgentState):
 
 
 # Long-term Memory Documentation
+# Note: Claude Code loads CLAUDE.md files hierarchically and combines them (not precedence-based):
+# - Loads recursively from cwd up to (but not including) root directory
+# - Multiple files are combined hierarchically: enterprise → project → user
+# - Both [project-root]/CLAUDE.md and [project-root]/.claude/CLAUDE.md are loaded if both exist
+# - Files higher in hierarchy load first, providing foundation for more specific memories
+# We will follow that pattern for deepagents-cli 
 LONGTERM_MEMORY_SYSTEM_PROMPT = """
 
 ## Long-term Memory

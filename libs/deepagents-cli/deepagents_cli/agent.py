@@ -158,6 +158,9 @@ def create_agent_with_config(model, assistant_id: str, tools: list):
     skills_dir.mkdir(parents=True, exist_ok=True)
 
     # No virtual routing - use real filesystem paths only
+    # Empty routes dict is intentional: the CLI uses real filesystem access via FilesystemBackend
+    # instead of virtual routes (e.g., /memories/). Memory and skills are managed by dedicated
+    # middleware (AgentMemoryMiddleware, SkillsMiddleware) using real filesystem paths.
     backend = CompositeBackend(
         default=FilesystemBackend(),
         routes={},  # No virtualization

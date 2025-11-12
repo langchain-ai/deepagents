@@ -401,6 +401,10 @@ class MockSandboxBackend(StateBackend):
             truncated=False,
         )
 
+    @property
+    def id(self) -> str:
+        return "mock_sandbox_backend"
+
 
 def test_composite_backend_execute_with_sandbox_default():
     """Test that CompositeBackend.execute() delegates to sandbox default backend."""

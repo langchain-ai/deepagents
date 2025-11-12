@@ -10,7 +10,7 @@ except ImportError:
 
 import os
 
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
 from runloop_api_client import Runloop
 
@@ -82,3 +82,40 @@ class RunloopBackend(BaseSandbox):
             exit_code=result.exit_status,
             truncated=False,  # Runloop doesn't provide truncation info
         )
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the Runloop devbox.
+
+        Downloads files individually using the Runloop API. Returns a list of
+        FileDownloadResponse objects preserving order and reporting per-file
+        errors rather than raising exceptions.
+        """
+        responses: list[FileDownloadResponse] = []
+        for path in paths:
+            try:
+                # devboxes.download_file returns a BinaryAPIResponse which exposes .read()
+                resp = self._client.devboxes.download_file(self._devbox_id, path=path)
+                content = resp.read()
+                responses.append(FileDownloadResponse(path=path, content=content, error=None))
+            except Exception as e:
+                responses.append(FileDownloadResponse(path=path, content=None, error=str(e)))
+
+        return responses
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the Runloop devbox.
+
+        Uploads files individually using the Runloop API. Returns a list of
+        FileUploadResponse objects preserving order and reporting per-file
+        errors rather than raising exceptions.
+        """
+        responses: list[FileUploadResponse] = []
+        for path, content in files:
+            try:
+                # The Runloop client expects 'file' as bytes or a file-like object
+                self._client.devboxes.upload_file(self._devbox_id, path=path, file=content)
+                responses.append(FileUploadResponse(path=path, error=None))
+            except Exception as e:
+                responses.append(FileUploadResponse(path=path, error=str(e)))
+
+        return responses

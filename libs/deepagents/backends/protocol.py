@@ -183,8 +183,7 @@ class FileDownloadResponse:
         >>> # Success
         >>> FileDownloadResponse(path="/app/config.json", content=b"{...}", error=None)
         >>> # Failure
-        >>> FileDownloadResponse(path="/wrong/path.txt", content=None,
-        ...                      error="No such file or directory: /wrong/path.txt")
+        >>> FileDownloadResponse(path="/wrong/path.txt", content=None, error="No such file or directory: /wrong/path.txt")
     """
 
     path: str
@@ -212,8 +211,7 @@ class FileUploadResponse:
         >>> # Success
         >>> FileUploadResponse(path="/app/data.txt", error=None)
         >>> # Failure
-        >>> FileUploadResponse(path="/readonly/file.txt",
-        ...                    error="Permission denied: /readonly/file.txt")
+        >>> FileUploadResponse(path="/readonly/file.txt", error="Permission denied: /readonly/file.txt")
     """
 
     path: str
@@ -249,9 +247,7 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
         """Unique identifier for the sandbox backend instance."""
         ...
 
-    def upload_files(
-        self, files: list[tuple[str, bytes]]
-    ) -> list[FileUploadResponse]:
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
         This is NOT meant to be used by LLMs directly. LLMs should use write/edit
@@ -271,14 +267,14 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
             Check the error field to determine success/failure per file.
 
         Examples:
-            >>> responses = sandbox.upload_files([
-            ...     ("/app/config.json", b"{...}"),
-            ...     ("/app/data.txt", b"content"),
-            ... ])
-            >>> # Check results
-            >>> for resp in responses:
-            ...     if resp.error:
-            ...         print(f"Failed {resp.path}: {resp.error}")
+            ```python
+            responses = sandbox.upload_files(
+                [
+                    ("/app/config.json", b"{...}"),
+                    ("/app/data.txt", b"content"),
+                ]
+            )
+            ```
         """
         ...
 
@@ -300,18 +296,6 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order (response[i] for paths[i]).
             Check the error field to determine success/failure per file.
-
-        Examples:
-            >>> responses = sandbox.download_files([
-            ...     "/app/config.json",
-            ...     "/app/data.txt",
-            ... ])
-            >>> # Check results
-            >>> for resp in responses:
-            ...     if resp.error:
-            ...         print(f"Failed: {resp.error}")
-            ...     else:
-            ...         process(resp.content)
         """
         ...
 

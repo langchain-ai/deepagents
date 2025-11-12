@@ -343,9 +343,7 @@ except PermissionError:
         """Unique identifier for the sandbox backend."""
 
     @abstractmethod
-    def upload_files(
-        self, files: list[tuple[str, bytes]]
-    ) -> list["FileUploadResponse"]:
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
         Implementations must support partial success - catch exceptions per-file
@@ -353,7 +351,7 @@ except PermissionError:
         """
 
     @abstractmethod
-    def download_files(self, paths: list[str]) -> list["FileDownloadResponse"]:
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the sandbox.
 
         Implementations must support partial success - catch exceptions per-file

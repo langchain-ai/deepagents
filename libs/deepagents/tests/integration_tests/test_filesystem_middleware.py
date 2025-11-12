@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 from langchain.agents import create_agent
+from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -930,6 +931,146 @@ class TestFilesystem:
         messages = response["messages"]
         read_message = next(msg for msg in messages if msg.type == "tool" and msg.name == "read_file")
         assert "Hello World" in read_message.content
+
+    def test_execute_tool_filtered_for_non_sandbox_backend(self):
+        """Verify execute tool is filtered out when backend doesn't support it."""
+        from langchain.agents import AgentMiddleware
+
+        from deepagents.backends.protocol import ExecuteResponse
+
+        # Track what tools are passed to the model
+        captured_tools = []
+
+        class CapturingMiddleware(AgentMiddleware):
+            def wrap_model_call(self, request, handler):
+                # Capture tool names
+                captured_tools.clear()
+                captured_tools.extend([tool.name if hasattr(tool, "name") else tool.get("name") for tool in request.tools])
+                return handler(request)
+
+        # Test with StateBackend (no execution support)
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(backend=lambda rt: StateBackend(rt)),
+                CapturingMiddleware(),
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="List files")]})
+
+        # Execute tool should NOT be in the tools passed to model
+        assert "execute" not in captured_tools
+        assert "read_file" in captured_tools
+        assert "write_file" in captured_tools
+
+        # Test with sandbox backend (has execution support)
+        class MockSandboxBackend(StateBackend):
+            def execute(self, command: str) -> ExecuteResponse:
+                return ExecuteResponse(output="test", exit_code=0, truncated=False)
+
+        agent_with_sandbox = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(backend=lambda rt: MockSandboxBackend(rt)),
+                CapturingMiddleware(),
+            ],
+        )
+
+        captured_tools.clear()
+        agent_with_sandbox.invoke({"messages": [HumanMessage(content="List files")]})
+
+        # Execute tool SHOULD be in the tools passed to model
+        assert "execute" in captured_tools
+        assert "read_file" in captured_tools
+
+    def test_system_prompt_includes_execute_instructions_only_when_supported(self):
+        """Verify EXECUTION_SYSTEM_PROMPT is only added when backend supports execution."""
+        from langchain.agents import AgentMiddleware
+
+        from deepagents.backends.protocol import ExecuteResponse
+
+        # Track system prompts passed to the model
+        captured_prompts = []
+
+        class CapturingMiddleware(AgentMiddleware):
+            def wrap_model_call(self, request, handler):
+                captured_prompts.clear()
+                if request.system_prompt:
+                    captured_prompts.append(request.system_prompt)
+                return handler(request)
+
+        # Test with StateBackend (no execution support)
+        agent = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(backend=lambda rt: StateBackend(rt)),
+                CapturingMiddleware(),
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="List files")]})
+
+        # System prompt should NOT include execute instructions
+        assert len(captured_prompts) > 0
+        prompt = captured_prompts[0]
+        assert "execute" not in prompt.lower() or "Execute Tool" not in prompt
+
+        # Test with sandbox backend (has execution support)
+        class MockSandboxBackend(StateBackend):
+            def execute(self, command: str) -> ExecuteResponse:
+                return ExecuteResponse(output="test", exit_code=0, truncated=False)
+
+        agent_with_sandbox = create_agent(
+            model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+            middleware=[
+                FilesystemMiddleware(backend=lambda rt: MockSandboxBackend(rt)),
+                CapturingMiddleware(),
+            ],
+        )
+
+        captured_prompts.clear()
+        agent_with_sandbox.invoke({"messages": [HumanMessage(content="List files")]})
+
+        # System prompt SHOULD include execute instructions
+        assert len(captured_prompts) > 0
+        prompt = captured_prompts[0]
+        assert "Execute Tool" in prompt or "execute" in prompt
+
+    def test_composite_backend_execution_support_detection(self):
+        """Verify _supports_execution correctly detects CompositeBackend capabilities."""
+        from deepagents.backends.protocol import ExecuteResponse
+        from deepagents.middleware.filesystem import _supports_execution
+
+        # Mock sandbox backend
+        class MockSandboxBackend(StateBackend):
+            def execute(self, command: str) -> ExecuteResponse:
+                return ExecuteResponse(output="test", exit_code=0, truncated=False)
+
+        # Create runtimes
+        state = {"messages": [], "files": {}}
+        rt = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        # Test CompositeBackend with sandbox default
+        comp_with_sandbox = CompositeBackend(
+            default=MockSandboxBackend(rt),
+            routes={"/memories/": StoreBackend(rt)},
+        )
+        assert _supports_execution(comp_with_sandbox)
+
+        # Test CompositeBackend with non-sandbox default
+        comp_without_sandbox = CompositeBackend(
+            default=StateBackend(rt),
+            routes={"/memories/": StoreBackend(rt)},
+        )
+        assert not _supports_execution(comp_without_sandbox)
 
 
 # Take actions on multiple threads to test longterm memory

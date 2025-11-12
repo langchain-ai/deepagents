@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langchain_core.messages import SystemMessage
 
-from .config import console
+from deepagents_cli.config import console
 
 
 def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assistant_id: str) -> int:
@@ -70,8 +70,7 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
     try:
         # Note: tools parameter is not supported by LangChain's token counting
         # Tool tokens will be included in the API response after first message
-        token_count = model.get_num_tokens_from_messages(messages)
-        return token_count
+        return model.get_num_tokens_from_messages(messages)
     except Exception as e:
         # Fallback if token counting fails
         console.print(f"[yellow]Warning: Could not calculate baseline tokens: {e}[/yellow]")

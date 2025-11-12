@@ -122,7 +122,7 @@ def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | 
                             selected = (selected + 1) % len(options)
                         elif next2 == "A":  # Up arrow
                             selected = (selected - 1) % len(options)
-                elif char == "\r" or char == "\n":  # Enter
+                elif char in {"\r", "\n"}:  # Enter
                     sys.stdout.write("\r\n")  # Move to start of line and add newline
                     break
                 elif char == "\x03":  # Ctrl+C
@@ -148,10 +148,7 @@ def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | 
         console.print("  ☐ (A)pprove  (default)")
         console.print("  ☐ (R)eject")
         choice = input("\nChoice (A/R, default=Approve): ").strip().lower()
-        if choice == "r" or choice == "reject":
-            selected = 1
-        else:
-            selected = 0
+        selected = 1 if choice in {"r", "reject"} else 0
 
     # Return decision based on selection
     if selected == 0:
@@ -165,6 +162,7 @@ async def execute_task(
     assistant_id: str | None,
     session_state,
     token_tracker: TokenTracker | None = None,
+    backend=None,
 ):
     """Execute any task by passing it directly to the AI agent."""
     # Parse file mentions and inject content if any
@@ -210,13 +208,14 @@ async def execute_task(
         "glob": "🔍",
         "grep": "🔎",
         "shell": "⚡",
+        "execute": "🔧",
         "web_search": "🌐",
         "http_request": "🌍",
         "task": "🤖",
         "write_todos": "📋",
     }
 
-    file_op_tracker = FileOpTracker(assistant_id=assistant_id)
+    file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
 
     # Track which tool calls we've displayed to avoid duplicates
     displayed_tool_ids = set()
@@ -302,7 +301,7 @@ async def execute_task(
                                     raise
 
                     # Extract chunk_data from updates for todo checking
-                    chunk_data = list(data.values())[0] if data else None
+                    chunk_data = next(iter(data.values())) if data else None
                     if chunk_data and isinstance(chunk_data, dict):
                         # Check for todo updates
                         if "todos" in chunk_data:
@@ -417,10 +416,9 @@ async def execute_task(
                         elif block_type == "reasoning":
                             flush_text_buffer(final=True)
                             reasoning = block.get("reasoning", "")
-                            if reasoning:
-                                if spinner_active:
-                                    status.stop()
-                                    spinner_active = False
+                            if reasoning and spinner_active:
+                                status.stop()
+                                spinner_active = False
                                 # Could display reasoning differently if desired
                                 # For now, skip it or handle minimally
 

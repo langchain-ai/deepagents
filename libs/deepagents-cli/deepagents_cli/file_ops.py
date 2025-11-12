@@ -236,8 +236,9 @@ def build_approval_preview(
 class FileOpTracker:
     """Collect file operation metrics during a CLI interaction."""
 
-    def __init__(self, *, assistant_id: str | None) -> None:
+    def __init__(self, *, assistant_id: str | None, backend=None) -> None:
         self.assistant_id = assistant_id
+        self.backend = backend
         self.active: dict[str | None, FileOperationRecord] = {}
         self.completed: list[FileOperationRecord] = []
 
@@ -304,6 +305,7 @@ class FileOpTracker:
             if isinstance(limit, int) and lines > limit:
                 record.metrics.end_line = (record.metrics.start_line or 1) + limit - 1
         else:
+            # For write/edit operations, read back from backend (or local filesystem)
             self._populate_after_content(record)
             if record.after_content is None:
                 record.status = "error"
@@ -349,10 +351,24 @@ class FileOpTracker:
         return record
 
     def _populate_after_content(self, record: FileOperationRecord) -> None:
-        if record.physical_path is None:
-            record.after_content = None
-            return
-        record.after_content = _safe_read(record.physical_path)
+        # Use backend if available (works for any BackendProtocol implementation)
+        if self.backend:
+            try:
+                file_path = record.args.get("file_path") or record.args.get("path")
+                if file_path:
+                    result = self.backend.read(file_path)
+                    # BackendProtocol.read() returns error string starting with "Error:" on failure
+                    record.after_content = None if result.startswith("Error:") else result
+                else:
+                    record.after_content = None
+            except Exception:
+                record.after_content = None
+        else:
+            # Fallback: direct filesystem read when no backend provided
+            if record.physical_path is None:
+                record.after_content = None
+                return
+            record.after_content = _safe_read(record.physical_path)
 
     def _finalize(self, record: FileOperationRecord) -> None:
         self.completed.append(record)

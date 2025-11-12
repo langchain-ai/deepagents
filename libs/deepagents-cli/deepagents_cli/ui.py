@@ -173,12 +173,12 @@ def format_tool_message_content(content: Any) -> str:
 class TokenTracker:
     """Track token usage across the conversation."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.baseline_context = 0  # Baseline system context (system + agent.md + tools)
         self.current_context = 0  # Total context including messages
         self.last_output = 0
 
-    def set_baseline(self, tokens: int):
+    def set_baseline(self, tokens: int) -> None:
         """Set the baseline context token count.
 
         Args:
@@ -187,25 +187,25 @@ class TokenTracker:
         self.baseline_context = tokens
         self.current_context = tokens
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset to baseline (for /clear command)."""
         self.current_context = self.baseline_context
         self.last_output = 0
 
-    def add(self, input_tokens: int, output_tokens: int):
+    def add(self, input_tokens: int, output_tokens: int) -> None:
         """Add tokens from a response."""
         # input_tokens IS the current context size (what was sent to the model)
         self.current_context = input_tokens
         self.last_output = output_tokens
 
-    def display_last(self):
+    def display_last(self) -> None:
         """Display current context size after this turn."""
         if self.last_output and self.last_output >= 1000:
             console.print(f"  Generated: {self.last_output:,} tokens", style="dim")
         if self.current_context:
             console.print(f"  Current context: {self.current_context:,} tokens", style="dim")
 
-    def display_session(self):
+    def display_session(self) -> None:
         """Display current context size."""
         console.print("\n[bold]Token Usage:[/bold]", style=COLORS["primary"])
 
@@ -486,7 +486,7 @@ def render_diff_block(diff: str, title: str) -> None:
         console.print()
 
 
-def show_interactive_help():
+def show_interactive_help() -> None:
     """Show available commands during interactive session."""
     console.print()
     console.print("[bold]Interactive Commands:[/bold]", style=COLORS["primary"])
@@ -534,20 +534,29 @@ def show_interactive_help():
     console.print()
 
 
-def show_help():
+def show_help() -> None:
     """Show help information."""
     console.print()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
 
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
-    console.print("  deepagents [--agent NAME] [--auto-approve]     Start interactive session")
+    console.print("  deepagents [OPTIONS]                           Start interactive session")
     console.print("  deepagents list                                List all available agents")
     console.print("  deepagents reset --agent AGENT                 Reset agent to default prompt")
     console.print(
         "  deepagents reset --agent AGENT --target SOURCE Reset agent to copy of another agent"
     )
     console.print("  deepagents help                                Show this help message")
+    console.print()
+
+    console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("  --agent NAME                  Agent identifier (default: agent)")
+    console.print("  --auto-approve                Auto-approve tool usage without prompting")
+    console.print(
+        "  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)"
+    )
+    console.print("  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)")
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -560,6 +569,18 @@ def show_help():
     )
     console.print(
         "  deepagents --auto-approve               # Start with auto-approve enabled",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --sandbox runloop            # Execute code in Runloop sandbox",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --sandbox modal              # Execute code in Modal sandbox",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --sandbox runloop --sandbox-id dbx_123  # Reuse existing sandbox",
         style=COLORS["dim"],
     )
     console.print(

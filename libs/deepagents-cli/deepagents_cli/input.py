@@ -31,7 +31,7 @@ EXIT_CONFIRM_WINDOW = 3.0
 class FilePathCompleter(Completer):
     """Activate filesystem completion only when cursor is after '@'."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.path_completer = PathCompleter(
             expanduser=True,
             min_input_len=0,
@@ -183,7 +183,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
     kb = KeyBindings()
 
     @kb.add("c-c")
-    def _(event):
+    def _(event) -> None:
         """Require double Ctrl+C within a short window to exit."""
         app = event.app
         now = time.monotonic()
@@ -207,7 +207,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
         loop = asyncio.get_running_loop()
         app_ref = app
 
-        def clear_hint():
+        def clear_hint() -> None:
             if (
                 session_state.exit_hint_until is not None
                 and time.monotonic() >= session_state.exit_hint_until
@@ -222,7 +222,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
 
     # Bind Ctrl+T to toggle auto-approve
     @kb.add("c-t")
-    def _(event):
+    def _(event) -> None:
         """Toggle auto-approve mode."""
         session_state.toggle_auto_approve()
         # Force UI refresh to update toolbar
@@ -230,7 +230,7 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
 
     # Bind regular Enter to submit (intuitive behavior)
     @kb.add("enter")
-    def _(event):
+    def _(event) -> None:
         """Enter submits the input, unless completion menu is active."""
         buffer = event.current_buffer
 
@@ -259,19 +259,19 @@ def create_prompt_session(assistant_id: str, session_state: SessionState) -> Pro
 
     # Alt+Enter for newlines (press ESC then Enter, or Option+Enter on Mac)
     @kb.add("escape", "enter")
-    def _(event):
+    def _(event) -> None:
         """Alt+Enter inserts a newline for multi-line input."""
         event.current_buffer.insert_text("\n")
 
     # Ctrl+E to open in external editor
     @kb.add("c-e")
-    def _(event):
+    def _(event) -> None:
         """Open the current input in an external editor (nano by default)."""
         event.current_buffer.open_in_editor()
 
     # Backspace handler to retrigger completions after deletion
     @kb.add("backspace")
-    def _(event):
+    def _(event) -> None:
         """Handle backspace and retrigger completion if in @ or / context."""
         buffer = event.current_buffer
 

@@ -18,9 +18,9 @@ tavily_client = (
 def http_request(
     url: str,
     method: str = "GET",
-    headers: dict[str, str] = None,
-    data: str | dict = None,
-    params: dict[str, str] = None,
+    headers: dict[str, str] | None = None,
+    data: str | dict | None = None,
+    params: dict[str, str] | None = None,
     timeout: int = 30,
 ) -> dict[str, Any]:
     """Make HTTP requests to APIs and web services.
@@ -130,13 +130,12 @@ def web_search(
         }
 
     try:
-        search_docs = tavily_client.search(
+        return tavily_client.search(
             query,
             max_results=max_results,
             include_raw_content=include_raw_content,
             topic=topic,
         )
-        return search_docs
     except Exception as e:
         return {"error": f"Web search error: {e!s}", "query": query}
 

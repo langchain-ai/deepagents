@@ -19,7 +19,15 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
-from deepagents.backends.protocol import BackendFactory, BackendProtocol, EditResult, WriteResult
+
+# Re-export type here for backwards compatibility
+from deepagents.backends.protocol import BACKEND_TYPES as BACKEND_TYPES
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    EditResult,
+    SandboxBackendProtocol,
+    WriteResult,
+)
 from deepagents.backends.utils import (
     format_content_with_line_numbers,
     format_grep_matches,
@@ -32,7 +40,6 @@ MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 500
-BACKEND_TYPES = BackendProtocol | BackendFactory
 
 
 class FileData(TypedDict):
@@ -211,6 +218,50 @@ Examples:
 - Search Python files only: `grep(pattern="import", glob="*.py")`
 - Show matching lines: `grep(pattern="error", output_mode="content")`"""
 
+EXECUTE_TOOL_DESCRIPTION = """Executes a given command in the sandbox environment with proper handling and security measures.
+
+Before executing the command, please follow these steps:
+
+1. Directory Verification:
+   - If the command will create new directories or files, first use the ls tool to verify the parent directory exists and is the correct location
+   - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
+
+2. Command Execution:
+   - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
+   - Examples of proper quoting:
+     - cd "/Users/name/My Documents" (correct)
+     - cd /Users/name/My Documents (incorrect - will fail)
+     - python "/path/with spaces/script.py" (correct)
+     - python /path/with spaces/script.py (incorrect - will fail)
+   - After ensuring proper quoting, execute the command
+   - Capture the output of the command
+
+Usage notes:
+  - The command parameter is required
+  - Commands run in an isolated sandbox environment
+  - Returns combined stdout/stderr output with exit code
+  - If the output is very large, it may be truncated
+  - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
+  - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
+    - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
+    - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
+  - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of cd
+
+Examples:
+  Good examples:
+    - execute(command="pytest /foo/bar/tests")
+    - execute(command="python /path/to/script.py")
+    - execute(command="npm install && npm test")
+
+  Bad examples (avoid these):
+    - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
+    - execute(command="cat file.txt")  # Use read_file tool instead
+    - execute(command="find . -name '*.py'")  # Use glob tool instead
+    - execute(command="grep -r 'pattern' .")  # Use grep tool instead
+
+Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
+If execution is not supported, the tool will return an error message."""
+
 FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
@@ -222,6 +273,13 @@ All file paths must start with a /.
 - edit_file: edit a file in the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files"""
+
+EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
+
+You have access to an `execute` tool for running shell commands in a sandboxed environment.
+Use this tool to run commands, scripts, tests, builds, and other shell operations.
+
+- execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
 def _get_backend(backend: BACKEND_TYPES, runtime: ToolRuntime) -> BackendProtocol:
@@ -440,6 +498,80 @@ def _grep_tool_generator(
     return grep
 
 
+def _supports_execution(backend: BackendProtocol) -> bool:
+    """Check if a backend supports command execution.
+
+    For CompositeBackend, checks if the default backend supports execution.
+    For other backends, checks if they implement SandboxBackendProtocol.
+
+    Args:
+        backend: The backend to check.
+
+    Returns:
+        True if the backend supports execution, False otherwise.
+    """
+    # Import here to avoid circular dependency
+    from deepagents.backends.composite import CompositeBackend
+
+    # For CompositeBackend, check the default backend
+    if isinstance(backend, CompositeBackend):
+        return isinstance(backend.default, SandboxBackendProtocol)
+
+    # For other backends, use isinstance check
+    return isinstance(backend, SandboxBackendProtocol)
+
+
+def _execute_tool_generator(
+    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
+    custom_description: str | None = None,
+) -> BaseTool:
+    """Generate the execute tool for sandbox command execution.
+
+    Args:
+        backend: Backend to use for execution, or a factory function that takes runtime and returns a backend.
+        custom_description: Optional custom description for the tool.
+
+    Returns:
+        Configured execute tool that runs commands if backend supports SandboxBackendProtocol.
+    """
+    tool_description = custom_description or EXECUTE_TOOL_DESCRIPTION
+
+    @tool(description=tool_description)
+    def execute(
+        command: str,
+        runtime: ToolRuntime[None, FilesystemState],
+    ) -> str:
+        resolved_backend = _get_backend(backend, runtime)
+
+        # Runtime check - fail gracefully if not supported
+        if not _supports_execution(resolved_backend):
+            return (
+                "Error: Execution not available. This agent's backend "
+                "does not support command execution (SandboxBackendProtocol). "
+                "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
+            )
+
+        try:
+            result = resolved_backend.execute(command)
+        except NotImplementedError as e:
+            # Handle case where execute() exists but raises NotImplementedError
+            return f"Error: Execution not available. {e}"
+
+        # Format output for LLM consumption
+        parts = [result.output]
+
+        if result.exit_code is not None:
+            status = "succeeded" if result.exit_code == 0 else "failed"
+            parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
+
+        if result.truncated:
+            parts.append("\n[Output was truncated due to size limits]")
+
+        return "".join(parts)
+
+    return execute
+
+
 TOOL_GENERATORS = {
     "ls": _ls_tool_generator,
     "read_file": _read_file_tool_generator,
@@ -447,6 +579,7 @@ TOOL_GENERATORS = {
     "edit_file": _edit_file_tool_generator,
     "glob": _glob_tool_generator,
     "grep": _grep_tool_generator,
+    "execute": _execute_tool_generator,
 }
 
 
@@ -454,18 +587,19 @@ def _get_filesystem_tools(
     backend: BackendProtocol,
     custom_tool_descriptions: dict[str, str] | None = None,
 ) -> list[BaseTool]:
-    """Get filesystem tools.
+    """Get filesystem and execution tools.
 
     Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
+        backend: Backend to use for file storage and optional execution, or a factory function that takes runtime and returns a backend.
         custom_tool_descriptions: Optional custom descriptions for tools.
 
     Returns:
-        List of configured filesystem tools (ls, read_file, write_file, edit_file, glob, grep).
+        List of configured tools: ls, read_file, write_file, edit_file, glob, grep, execute.
     """
     if custom_tool_descriptions is None:
         custom_tool_descriptions = {}
     tools = []
+
     for tool_name, tool_generator in TOOL_GENERATORS.items():
         tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
         tools.append(tool)
@@ -483,16 +617,20 @@ Here are the first 10 lines of the result:
 
 
 class FilesystemMiddleware(AgentMiddleware):
-    """Middleware for providing filesystem tools to an agent.
+    """Middleware for providing filesystem and optional execution tools to an agent.
 
-    This middleware adds six filesystem tools to the agent: ls, read_file, write_file,
+    This middleware adds filesystem tools to the agent: ls, read_file, write_file,
     edit_file, glob, and grep. Files can be stored using any backend that implements
     the BackendProtocol.
 
+    If the backend implements SandboxBackendProtocol, an execute tool is also added
+    for running shell commands.
+
     Args:
-        backend: Backend for file storage. If not provided, defaults to StateBackend
-            (ephemeral storage in agent state). For real filesystem access,
-            use CompositeBackend with FilesystemBackend as the default.
+        backend: Backend for file storage and optional execution. If not provided, defaults to StateBackend
+            (ephemeral storage in agent state). For real filesystem access or persistent storage,
+            use CompositeBackend with FilesystemBackend. For execution support, use a backend
+            that implements SandboxBackendProtocol.
         system_prompt: Optional custom system prompt override.
         custom_tool_descriptions: Optional custom tool descriptions override.
         tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
@@ -501,15 +639,26 @@ class FilesystemMiddleware(AgentMiddleware):
         ```python
         from deepagents.middleware.filesystem import FilesystemMiddleware
         from deepagents.backends.filesystem import FilesystemBackend
-        from deepagents.backends.composite import CompositeBackend
+        from deepagents.backends import StateBackend, CompositeBackend
         from langchain.agents import create_agent
 
-        # Ephemeral storage only (default)
+        # Ephemeral storage only (default, no execution)
         agent = create_agent(middleware=[FilesystemMiddleware()])
 
         # Real filesystem access (no virtual routing)
         backend = CompositeBackend(default=FilesystemBackend(), routes={})
         agent = create_agent(middleware=[FilesystemMiddleware(backend=backend)])
+
+        # With hybrid storage (ephemeral + persistent /memories/)
+        from deepagents.backends import StoreBackend
+        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+        agent = create_agent(middleware=[FilesystemMiddleware(backend=backend)])
+
+        # With sandbox backend (supports execution)
+        from my_sandbox import DockerSandboxBackend
+
+        sandbox = DockerSandboxBackend(container_id="my-container")
+        agent = create_agent(middleware=[FilesystemMiddleware(backend=sandbox)])
         ```
     """
 
@@ -526,7 +675,8 @@ class FilesystemMiddleware(AgentMiddleware):
         """Initialize the filesystem middleware.
 
         Args:
-            backend: Backend for file storage, or a factory callable. Defaults to StateBackend if not provided.
+            backend: Backend for file storage and optional execution, or a factory callable.
+                Defaults to StateBackend if not provided.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
@@ -536,8 +686,8 @@ class FilesystemMiddleware(AgentMiddleware):
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
-        # Set system prompt (allow full override)
-        self.system_prompt = system_prompt if system_prompt is not None else FILESYSTEM_SYSTEM_PROMPT
+        # Set system prompt (allow full override or None to generate dynamically)
+        self._custom_system_prompt = system_prompt
 
         self.tools = _get_filesystem_tools(self.backend, custom_tool_descriptions)
 
@@ -559,7 +709,7 @@ class FilesystemMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Update the system prompt to include instructions on using the filesystem.
+        """Update the system prompt and filter tools based on backend capabilities.
 
         Args:
             request: The model request being processed.
@@ -568,8 +718,37 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        if self.system_prompt is not None:
-            request.system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
+        # Check if execute tool is present and if backend supports it
+        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+
+        backend_supports_execution = False
+        if has_execute_tool:
+            # Resolve backend to check execution support
+            backend = self._get_backend(request.runtime)
+            backend_supports_execution = _supports_execution(backend)
+
+            # If execute tool exists but backend doesn't support it, filter it out
+            if not backend_supports_execution:
+                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
+                request = request.override(tools=filtered_tools)
+                has_execute_tool = False
+
+        # Use custom system prompt if provided, otherwise generate dynamically
+        if self._custom_system_prompt is not None:
+            system_prompt = self._custom_system_prompt
+        else:
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
+
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+
+            system_prompt = "\n\n".join(prompt_parts)
+
+        if system_prompt:
+            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+
         return handler(request)
 
     async def awrap_model_call(
@@ -577,7 +756,7 @@ class FilesystemMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """(async) Update the system prompt to include instructions on using the filesystem.
+        """(async) Update the system prompt and filter tools based on backend capabilities.
 
         Args:
             request: The model request being processed.
@@ -586,8 +765,37 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        if self.system_prompt is not None:
-            request.system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
+        # Check if execute tool is present and if backend supports it
+        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+
+        backend_supports_execution = False
+        if has_execute_tool:
+            # Resolve backend to check execution support
+            backend = self._get_backend(request.runtime)
+            backend_supports_execution = _supports_execution(backend)
+
+            # If execute tool exists but backend doesn't support it, filter it out
+            if not backend_supports_execution:
+                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
+                request = request.override(tools=filtered_tools)
+                has_execute_tool = False
+
+        # Use custom system prompt if provided, otherwise generate dynamically
+        if self._custom_system_prompt is not None:
+            system_prompt = self._custom_system_prompt
+        else:
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [FILESYSTEM_SYSTEM_PROMPT]
+
+            # Add execution instructions if execute tool is available
+            if has_execute_tool and backend_supports_execution:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+
+            system_prompt = "\n\n".join(prompt_parts)
+
+        if system_prompt:
+            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+
         return await handler(request)
 
     def _process_large_message(

@@ -32,8 +32,8 @@ jobs:
     strategy:
       matrix:
         include:
-          # Root package: deepagents core
-          - working-directory: "."
+          # Core package: deepagents
+          - working-directory: "libs/deepagents"
             python-version: "3.11"
           # CLI package
           - working-directory: "libs/deepagents-cli"
@@ -49,12 +49,12 @@ jobs:
     strategy:
       matrix:
         include:
-          # Root package: test on multiple Python versions (3.11 = min, 3.13 = max)
-          - working-directory: "."
+          # Core package: test on multiple Python versions (3.11 = min, 3.13 = max)
+          - working-directory: "libs/deepagents"
             python-version: "3.11"
-          - working-directory: "."
+          - working-directory: "libs/deepagents"
             python-version: "3.12"
-          - working-directory: "."
+          - working-directory: "libs/deepagents"
             python-version: "3.13"
           # CLI package: test on min and max Python versions
           - working-directory: "libs/deepagents-cli"

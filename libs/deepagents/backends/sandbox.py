@@ -334,3 +334,16 @@ except PermissionError:
                 continue
 
         return file_infos
+
+    @property
+    @abstractmethod
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend."""
+
+    @abstractmethod
+    def upload_file(self, path: str, content: bytes) -> None:
+        """Upload a file to the sandbox at the specified path."""
+
+    @abstractmethod
+    def download_file(self, path: str) -> bytes:
+        """Download a file from the sandbox at the specified path."""

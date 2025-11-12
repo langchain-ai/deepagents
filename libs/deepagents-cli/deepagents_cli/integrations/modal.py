@@ -64,3 +64,33 @@ class ModalBackend(BaseSandbox):
             exit_code=process.returncode,
             truncated=False,  # Modal doesn't provide truncation info
         )
+
+    def download_file(self, path: str) -> bytes:
+        """Download a file from the Modal sandbox.
+
+        Args:
+            path: Full path of the file to download.
+
+        Returns:
+            File contents as bytes.
+        """
+        # This implementation relies on the Modal sandbox file API.
+        # https://modal.com/doc/guide/sandbox-files
+        # The API is currently in alpha and is not recommended for production use.
+        # We're OK using it here as it's targeting the CLI application.
+        with self._sandbox.open(path, "rb") as f:
+            return f.read()
+
+    def upload_file(self, path: str, content: bytes) -> None:
+        """Upload a file to the Modal sandbox.
+
+        Args:
+            path: Full path where the file should be uploaded.
+            content: File contents as bytes.
+        """
+        # This implementation relies on the Modal sandbox file API.
+        # https://modal.com/doc/guide/sandbox-files
+        # The API is currently in alpha and is not recommended for production use.
+        # We're OK using it here as it's targeting the CLI application.
+        with self._sandbox.open(path, "wb") as f:
+            f.write(content)

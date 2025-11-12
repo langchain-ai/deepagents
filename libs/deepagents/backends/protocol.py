@@ -162,6 +162,14 @@ class ExecuteResponse:
     """Whether the output was truncated due to backend limitations."""
 
 
+@dataclass()
+class FileDownloadResponse:
+    """Result of file download operation."""
+
+    error: str | None = None
+    content: bytes | None = None
+
+
 @runtime_checkable
 class SandboxBackendProtocol(BackendProtocol, Protocol):
     """Protocol for sandboxed backends with isolated runtime.
@@ -185,6 +193,43 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
             ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
         """
         ...
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend instance."""
+        ...
+
+    def upload_file(self, path: str, content: bytes) -> None:
+        """Upload is not meant to be used by an LLM directly.
+
+        LLMs are expected to use write/edit methods for file content manipulation.
+
+        This method is provided to allow users to define custom tools that
+        use the upload functionality as needed.
+
+        Args:
+            path: str
+            content: bytes
+
+        Returns:
+            None
+        """
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download is not meant to be used by an LLM directly.
+
+        LLMs are expected to use read/grep methods for file content retrieval.
+
+        This method is provided to allow users to define custom tools that
+        use the download functionality as needed.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects for each requested path.
+            The list should maintain the same order as the input paths.
+        """
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

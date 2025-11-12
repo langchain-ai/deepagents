@@ -5,6 +5,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+from deepagents.backends.protocol import SandboxBackendProtocol
+
 from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
 from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
@@ -118,7 +120,6 @@ async def simple_cli(
     baseline_tokens: int = 0,
     backend=None,
     sandbox_type: str | None = None,
-    sandbox_id: str | None = None,
     setup_script_path: str | None = None,
 ):
     """Main CLI loop.
@@ -133,6 +134,11 @@ async def simple_cli(
     console.clear()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
+
+    if backend and isinstance(backend, SandboxBackendProtocol):
+        sandbox_id: str | None = backend.id
+    else:
+        sandbox_id = None
 
     # Display sandbox info persistently (survives console.clear())
     if sandbox_type and sandbox_id:
@@ -232,7 +238,6 @@ async def _run_agent_session(
     session_state,
     sandbox_backend=None,
     sandbox_type: str | None = None,
-    sandbox_id: str | None = None,
     setup_script_path: str | None = None,
 ):
     """Helper to create agent and run CLI session.
@@ -245,7 +250,6 @@ async def _run_agent_session(
         session_state: Session state with auto-approve settings
         sandbox_backend: Optional sandbox backend for remote execution
         sandbox_type: Type of sandbox being used
-        sandbox_id: ID of the active sandbox
         setup_script_path: Path to setup script that was run (if any)
     """
     # Create agent with conditional tools
@@ -272,7 +276,6 @@ async def _run_agent_session(
         baseline_tokens,
         backend=composite_backend,
         sandbox_type=sandbox_type,
-        sandbox_id=sandbox_id,
         setup_script_path=setup_script_path,
     )
 
@@ -302,10 +305,7 @@ async def main(
             console.print()
             with create_sandbox(
                 sandbox_type, sandbox_id=sandbox_id, setup_script_path=setup_script_path
-            ) as (
-                sandbox_backend,
-                active_sandbox_id,
-            ):
+            ) as (sandbox_backend,):
                 console.print(f"[yellow]⚡ Remote execution enabled ({sandbox_type})[/yellow]")
                 console.print()
 
@@ -315,7 +315,6 @@ async def main(
                     session_state,
                     sandbox_backend,
                     sandbox_type=sandbox_type,
-                    sandbox_id=active_sandbox_id,
                     setup_script_path=setup_script_path,
                 )
         except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:

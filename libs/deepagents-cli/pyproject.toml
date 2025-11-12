@@ -22,9 +22,6 @@ dependencies = [
 deepagents = "deepagents_cli:cli_main"
 deepagents-cli = "deepagents_cli:cli_main"
 
-[tool.uv.sources]
-deepagents = { workspace = true }
-
 [dependency-groups]
 test = [
     "pytest>=8.3.4",
@@ -113,3 +110,6 @@ enable_error_code = ["deprecated"]
 # Optional: reduce strictness if needed
 disallow_any_generics = false
 warn_return_any = false
+
+[tool.uv.sources]
+deepagents = { path = "../deepagents" }

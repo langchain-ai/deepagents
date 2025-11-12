@@ -2,8 +2,8 @@ PYTHON_FILES=.
 MYPY_CACHE=.mypy_cache
 lint format: PYTHON_FILES=.
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/deepagents --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
-lint_package: PYTHON_FILES=libs/deepagents
-lint_tests: PYTHON_FILES=libs/deepagents/tests
+lint_package: PYTHON_FILES=.
+lint_tests: PYTHON_FILES=tests
 
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
@@ -23,7 +23,7 @@ format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check --fix $(PYTHON_FILES)
 
 test:
-	uv run pytest libs/deepagents/tests/unit_tests --cov=deepagents --cov-report=term-missing
+	uv run pytest tests/unit_tests --cov=deepagents --cov-report=term-missing
 
 integration_test:
-	uv run pytest libs/deepagents/tests/integration_tests --cov=deepagents --cov-report=term-missing
+	uv run pytest tests/integration_tests --cov=deepagents --cov-report=term-missing

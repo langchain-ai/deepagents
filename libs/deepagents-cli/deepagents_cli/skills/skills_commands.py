@@ -150,7 +150,13 @@ This skill directory can include supporting files referenced in the instructions
         "  2. Fill in the instructions and examples\n"
         "  3. Add any supporting files (scripts, configs, etc.)\n"
         "\n"
-        f"  nano {skill_md}\n",
+        f"  nano {skill_md}\n"
+        "\n"
+        "💡 See examples/skills/ in the deepagents repo for example skills:\n"
+        "   - web-research: Structured research workflow\n"
+        "   - langgraph-docs: LangGraph documentation lookup\n"
+        "\n"
+        "   Copy an example: cp -r examples/skills/web-research ~/.deepagents/agent/skills/\n",
         style=COLORS["dim"],
     )
 

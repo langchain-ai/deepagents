@@ -38,10 +38,14 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
     project_memory = ""
     project_root = find_project_root()
     if project_root:
-        project_md_path = find_project_agent_md(project_root)
-        if project_md_path:
+        project_md_paths = find_project_agent_md(project_root)
+        if project_md_paths:
             try:
-                project_memory = project_md_path.read_text()
+                # Combine all project agent.md files (if multiple exist)
+                contents = []
+                for path in project_md_paths:
+                    contents.append(path.read_text())
+                project_memory = "\n\n".join(contents)
             except Exception:
                 pass
 

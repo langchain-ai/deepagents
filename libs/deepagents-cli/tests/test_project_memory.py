@@ -57,7 +57,7 @@ class TestProjectAgentMdFinding:
     """Test finding project-specific agent.md files."""
 
     def test_find_agent_md_in_deepagents_dir(self, tmp_path):
-        """Test finding agent.md in .deepagents/ directory (preferred)."""
+        """Test finding agent.md in .deepagents/ directory."""
         project_root = tmp_path / "project"
         project_root.mkdir()
 
@@ -68,7 +68,8 @@ class TestProjectAgentMdFinding:
         agent_md.write_text("Project instructions")
 
         result = find_project_agent_md(project_root)
-        assert result == agent_md
+        assert len(result) == 1
+        assert result[0] == agent_md
 
     def test_find_agent_md_in_root(self, tmp_path):
         """Test finding agent.md in project root (fallback)."""
@@ -80,10 +81,11 @@ class TestProjectAgentMdFinding:
         agent_md.write_text("Project instructions")
 
         result = find_project_agent_md(project_root)
-        assert result == agent_md
+        assert len(result) == 1
+        assert result[0] == agent_md
 
-    def test_prefer_deepagents_over_root(self, tmp_path):
-        """Test that .deepagents/agent.md is preferred over root."""
+    def test_both_agent_md_files_combined(self, tmp_path):
+        """Test that both agent.md files are returned when both exist."""
         project_root = tmp_path / "project"
         project_root.mkdir()
 
@@ -96,17 +98,19 @@ class TestProjectAgentMdFinding:
         root_md = project_root / "agent.md"
         root_md.write_text("In root")
 
-        # Should prefer .deepagents/ location
+        # Should return both, with .deepagents/ first
         result = find_project_agent_md(project_root)
-        assert result == deepagents_md
+        assert len(result) == 2
+        assert result[0] == deepagents_md
+        assert result[1] == root_md
 
     def test_find_agent_md_not_found(self, tmp_path):
-        """Test that None is returned when no agent.md exists."""
+        """Test that empty list is returned when no agent.md exists."""
         project_root = tmp_path / "project"
         project_root.mkdir()
 
         result = find_project_agent_md(project_root)
-        assert result is None
+        assert result == []
 
 
 class TestAgentMemoryMiddleware:
@@ -232,9 +236,10 @@ class TestRealAgentMemory:
         print(f"\n✓ Detected project root: {project_root}")
 
         # Check for project agent.md
-        project_md = find_project_agent_md(project_root)
-        if project_md:
-            print(f"✓ Found project agent.md: {project_md}")
+        project_md_paths = find_project_agent_md(project_root)
+        if project_md_paths:
+            for path in project_md_paths:
+                print(f"✓ Found project agent.md: {path}")
         else:
             print(
                 f"ℹ️  No project agent.md found. "

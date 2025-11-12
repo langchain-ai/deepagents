@@ -46,6 +46,41 @@ Both global and project agent.md files are loaded together, allowing you to:
 - Keep general coding style/preferences in global agent.md
 - Add project-specific context, conventions, or guidelines in project agent.md
 
+### How the System Prompt is Constructed
+
+The CLI uses middleware to dynamically construct the system prompt on each model call:
+
+1. **AgentMemoryMiddleware** (runs first):
+   - **Prepends** the contents of both agent.md files:
+     ```xml
+     <global_agent_memory>[~/.deepagents/{agent}/agent.md content]</global_agent_memory>
+     <project_agent_memory>[{project}/.deepagents/agent.md content]</project_agent_memory>
+     ```
+   - **Appends** memory management instructions (how to read/write memory files, decision framework)
+
+2. **SkillsMiddleware** (runs second):
+   - **Appends** list of available skills (name + description only, not full SKILL.md content)
+   - **Appends** progressive disclosure instructions (how to read full SKILL.md when needed)
+
+3. **Base System Prompt** (from `get_system_prompt()`):
+   - Current working directory info
+   - Skills directory location
+   - Human-in-the-loop guidance
+
+**Final prompt structure:**
+```
+<global_agent_memory>...</global_agent_memory>
+<project_agent_memory>...</project_agent_memory>
+
+[Base system prompt]
+
+[Memory management instructions with project-scoped paths]
+
+[Skills list + progressive disclosure instructions]
+```
+
+This approach ensures that agent.md contents are always loaded, while skills use progressive disclosure (metadata shown, full instructions read on-demand).
+
 ## Skills
 
 Skills are reusable agent capabilities that can be loaded into the CLI. Each agent has its own skills directory at `~/.deepagents/{AGENT_NAME}/skills/`.

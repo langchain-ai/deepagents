@@ -39,9 +39,9 @@ Your system prompt is loaded from TWO sources at startup:
 1. **Global agent.md**: `{agent_dir_absolute}/agent.md` - Your general instructions across all projects
 2. **Project agent.md**: Loaded from project root if available - Project-specific instructions
 
-Project-specific agent.md is loaded from (in order of priority):
-- `[project-root]/.deepagents/agent.md`
-- `[project-root]/agent.md`
+Project-specific agent.md is loaded from these locations (both combined if both exist):
+- `[project-root]/.deepagents/agent.md` (preferred)
+- `[project-root]/agent.md` (fallback, but also included if both exist)
 
 **When to CHECK/READ memories (CRITICAL - do this FIRST):**
 - **At the start of ANY new session**: Check both global and project memories
@@ -240,10 +240,14 @@ class AgentMemoryMiddleware(AgentMiddleware):
             result["project_root"] = project_root
 
             if project_root:
-                project_md_path = find_project_agent_md(project_root)
-                if project_md_path:
+                project_md_paths = find_project_agent_md(project_root)
+                if project_md_paths:
                     try:
-                        result["project_memory"] = project_md_path.read_text()
+                        # Combine all project agent.md files (if multiple exist)
+                        contents = []
+                        for path in project_md_paths:
+                            contents.append(path.read_text())
+                        result["project_memory"] = "\n\n".join(contents)
                     except Exception:
                         result["project_memory"] = ""
                 else:

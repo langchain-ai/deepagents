@@ -95,18 +95,6 @@ def get_system_prompt(assistant_id: str) -> str:
 
 The filesystem backend is currently operating in: `{Path.cwd()}`
 
-### Agent Memory Directory
-
-Your memory is stored at: `{agent_dir_path}/`
-Your agent.md was loaded from this directory at startup.
-
-**IMPORTANT - Check memories before answering:**
-- When asked "what do you know about X?" → Run `ls {agent_dir_path}/` FIRST, then read relevant files
-- When starting a task → Check if you have guides or examples in `{agent_dir_path}/`
-- At the beginning of new sessions → Consider checking `ls {agent_dir_path}/` to see what context you have
-
-Base your answers on saved knowledge from your agent directory when available, supplemented by general knowledge.
-
 ### Skills Directory
 
 Your skills are stored at: `{agent_dir_path}/skills/`

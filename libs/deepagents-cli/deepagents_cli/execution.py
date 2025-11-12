@@ -33,9 +33,7 @@ from deepagents_cli.ui import (
     render_todo_list,
 )
 
-# Create TypeAdapters once at module level for efficiency
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
-_INTERRUPT_LIST_ADAPTER = TypeAdapter(list[Interrupt])
 
 
 def prompt_for_tool_approval(
@@ -273,21 +271,9 @@ async def execute_task(
 
                     # Check for interrupts - collect ALL pending interrupts
                     if "__interrupt__" in data:
-                        interrupt_data = data["__interrupt__"]
-                        if interrupt_data:
-                            # Validate interrupt list structure
-                            try:
-                                interrupt_list = _INTERRUPT_LIST_ADAPTER.validate_python(
-                                    interrupt_data
-                                )
-                            except ValidationError as e:
-                                console.print(
-                                    f"[yellow]Warning: Invalid interrupt structure: {e}[/yellow]",
-                                    style="dim",
-                                )
-                                raise
-
-                            for interrupt_obj in interrupt_list:
+                        interrupts: list[Interrupt] = data["__interrupt__"]
+                        if interrupts:
+                            for interrupt_obj in interrupts:
                                 # Interrupt has required fields: value (HITLRequest) and id (str)
                                 # Validate the HITLRequest using TypeAdapter
                                 try:
@@ -519,19 +505,6 @@ async def execute_task(
 
             # Handle human-in-the-loop after stream completes
             if interrupt_occurred:
-                for pending_interrupt in pending_interrupts:
-                    # Interrupt has required fields: value (HITLRequest) and id (str)
-                    # Validate the HITLRequest using TypeAdapter
-                    try:
-                        _HITL_REQUEST_ADAPTER.validate_python(pending_interrupt)
-                    except ValidationError as e:
-                        console.print(
-                            f"[yellow]Warning: Invalid HITL request in state: {e}[/yellow]",
-                            style="dim",
-                        )
-                        raise
-
-                # Build response for all pending interrupts
                 any_rejected = False
 
                 for interrupt_id, hitl_request in pending_interrupts.items():

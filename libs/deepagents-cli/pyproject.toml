@@ -22,9 +22,6 @@ dependencies = [
 deepagents = "deepagents_cli:cli_main"
 deepagents-cli = "deepagents_cli:cli_main"
 
-[tool.uv.sources]
-deepagents = { workspace = true }
-
 [dependency-groups]
 test = [
     "pytest>=8.3.4",

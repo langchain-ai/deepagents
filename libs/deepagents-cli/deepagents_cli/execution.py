@@ -15,7 +15,7 @@ from langchain.agents.middleware.human_in_the_loop import (
     RejectDecision,
 )
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.types import Command, Interrupt, StateSnapshot
+from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 from rich import box
 from rich.markdown import Markdown
@@ -519,31 +519,17 @@ async def execute_task(
 
             # Handle human-in-the-loop after stream completes
             if interrupt_occurred:
-                # Query graph state to get ALL pending interrupts (not just from current stream)
-                # This is critical when the agent resumes and creates new interrupts - we need to
-                # handle both the new interrupts AND any previous ones still pending in the state
-                state_snapshot: StateSnapshot | None = agent.get_state(config)
-                all_state_interrupts: tuple[Interrupt, ...] = (
-                    state_snapshot.interrupts if state_snapshot else ()
-                )
-
-                # If state has multiple interrupts, we need to handle ALL of them
-                # Update pending_interrupts with any we might have missed from the stream
-                for interrupt_obj in all_state_interrupts:
-                    if interrupt_obj.id not in pending_interrupts:
-                        # Interrupt has required fields: value (HITLRequest) and id (str)
-                        # Validate the HITLRequest using TypeAdapter
-                        try:
-                            validated_request = _HITL_REQUEST_ADAPTER.validate_python(
-                                interrupt_obj.value
-                            )
-                            pending_interrupts[interrupt_obj.id] = validated_request
-                        except ValidationError as e:
-                            console.print(
-                                f"[yellow]Warning: Invalid HITL request in state: {e}[/yellow]",
-                                style="dim",
-                            )
-                            raise
+                for pending_interrupt in pending_interrupts:
+                    # Interrupt has required fields: value (HITLRequest) and id (str)
+                    # Validate the HITLRequest using TypeAdapter
+                    try:
+                        _HITL_REQUEST_ADAPTER.validate_python(pending_interrupt)
+                    except ValidationError as e:
+                        console.print(
+                            f"[yellow]Warning: Invalid HITL request in state: {e}[/yellow]",
+                            style="dim",
+                        )
+                        raise
 
                 # Build response for all pending interrupts
                 any_rejected = False

@@ -53,6 +53,7 @@ def create_deep_agent(
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    summary_threshold: int | None = None,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -87,12 +88,17 @@ def create_deep_agent(
         debug: Whether to enable debug mode. Passed through to create_agent.
         name: The name of the agent. Passed through to create_agent.
         cache: The cache to use for the agent. Passed through to create_agent.
+        summary_threshold: The token threshold for triggering conversation summarization.
+            Defaults to 100000 if not provided.
 
     Returns:
         A configured deep agent.
     """
     if model is None:
         model = get_default_model()
+
+    # Use the provided threshold or default to 100000
+    threshold = summary_threshold if summary_threshold is not None else 100000
 
     deepagent_middleware = [
         TodoListMiddleware(),
@@ -106,7 +112,7 @@ def create_deep_agent(
                 FilesystemMiddleware(backend=backend),
                 SummarizationMiddleware(
                     model=model,
-                    max_tokens_before_summary=170000,
+                    max_tokens_before_summary=threshold,
                     messages_to_keep=6,
                 ),
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
@@ -117,7 +123,7 @@ def create_deep_agent(
         ),
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=170000,
+            max_tokens_before_summary=threshold,
             messages_to_keep=6,
         ),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),

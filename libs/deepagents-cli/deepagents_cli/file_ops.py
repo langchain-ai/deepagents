@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from deepagents.backends.protocol import BACKEND_TYPES
 from deepagents.backends.utils import perform_string_replacement
 
 FileOpStatus = Literal["pending", "success", "error"]
@@ -142,13 +143,10 @@ def format_display_path(path_str: str | None) -> str:
 
 def build_approval_preview(
     tool_name: str,
-    args: dict[str, Any] | None,
+    args: dict[str, Any],
     assistant_id: str | None,
 ) -> ApprovalPreview | None:
     """Collect summary info and diff for HITL approvals."""
-    if args is None:
-        return None
-
     path_str = str(args.get("file_path") or args.get("path") or "")
     display_path = format_display_path(path_str)
     physical_path = resolve_physical_path(path_str, assistant_id)
@@ -236,7 +234,8 @@ def build_approval_preview(
 class FileOpTracker:
     """Collect file operation metrics during a CLI interaction."""
 
-    def __init__(self, *, assistant_id: str | None, backend=None) -> None:
+    def __init__(self, *, assistant_id: str | None, backend: BACKEND_TYPES | None = None) -> None:
+        """Initialize the tracker."""
         self.assistant_id = assistant_id
         self.backend = backend
         self.active: dict[str | None, FileOperationRecord] = {}

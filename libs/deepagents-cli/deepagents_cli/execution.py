@@ -21,10 +21,10 @@ from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from .config import COLORS, console
-from .file_ops import FileOpTracker, build_approval_preview
-from .input import parse_file_mentions
-from .ui import (
+from deepagents_cli.config import COLORS, console
+from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
+from deepagents_cli.input import parse_file_mentions
+from deepagents_cli.ui import (
     TokenTracker,
     format_tool_display,
     format_tool_message_content,
@@ -38,7 +38,10 @@ _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 _INTERRUPT_LIST_ADAPTER = TypeAdapter(list[Interrupt])
 
 
-def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | None) -> Decision:
+def prompt_for_tool_approval(
+    action_request: ActionRequest,
+    assistant_id: str | None,
+) -> Decision:
     """Prompt user to approve/reject a tool action with arrow key navigation."""
     description = action_request.get("description", "No description available")
     name = action_request["name"]
@@ -576,9 +579,10 @@ async def execute_task(
 
                         # Handle human-in-the-loop approval
                         decisions = []
-                        for action_request in hitl_request["action_requests"]:
-                            decision = await asyncio.to_thread(
-                                prompt_for_tool_approval,
+                        for action_index, action_request in enumerate(
+                            hitl_request["action_requests"]
+                        ):
+                            decision = prompt_for_tool_approval(
                                 action_request,
                                 assistant_id,
                             )

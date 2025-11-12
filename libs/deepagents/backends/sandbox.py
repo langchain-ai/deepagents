@@ -335,7 +335,7 @@ except PermissionError:
 
         return file_infos
 
-    @abstractmethod
     @property
+    @abstractmethod
     def id(self) -> str:
         """Unique identifier for this backend instance."""

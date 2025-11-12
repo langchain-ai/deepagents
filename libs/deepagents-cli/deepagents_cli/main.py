@@ -7,23 +7,23 @@ from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
-from .agent import create_agent_with_config, list_agents, reset_agent
-from .commands import execute_bash_command, handle_command
-from .config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
-from .execution import execute_task
-from .input import create_prompt_session
-from .integrations.sandbox_factory import (
+from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
+from deepagents_cli.commands import execute_bash_command, handle_command
+from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
+from deepagents_cli.execution import execute_task
+from deepagents_cli.input import create_prompt_session
+from deepagents_cli.integrations.sandbox_factory import (
     create_sandbox,
     get_default_working_dir,
 )
-from .tools import (
+from deepagents_cli.tools import (
     fetch_url,
     get_web_search_tool,
     http_request,
     parallel_client,
     tavily_client,
 )
-from .ui import TokenTracker, show_help
+from deepagents_cli.ui import TokenTracker, show_help
 
 
 def check_cli_dependencies() -> None:

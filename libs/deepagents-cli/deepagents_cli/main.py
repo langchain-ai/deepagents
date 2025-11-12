@@ -153,10 +153,17 @@ async def simple_cli(
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
 
-    if backend and isinstance(backend, SandboxBackendProtocol):
-        sandbox_id: str | None = backend.id
-    else:
-        sandbox_id = None
+    # Extract sandbox ID from backend if using sandbox mode
+    sandbox_id: str | None = None
+    if backend:
+        from deepagents.backends.composite import CompositeBackend
+
+        # Check if it's a CompositeBackend with a sandbox default backend
+        if isinstance(backend, CompositeBackend):
+            if isinstance(backend.default, SandboxBackendProtocol):
+                sandbox_id = backend.default.id
+        elif isinstance(backend, SandboxBackendProtocol):
+            sandbox_id = backend.id
 
     # Display sandbox info persistently (survives console.clear())
     if sandbox_type and sandbox_id:

@@ -651,6 +651,7 @@ class FilesystemMiddleware(AgentMiddleware):
 
         # With hybrid storage (ephemeral + persistent /memories/)
         from deepagents.backends import StoreBackend
+
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         agent = create_agent(middleware=[FilesystemMiddleware(backend=backend)])
 

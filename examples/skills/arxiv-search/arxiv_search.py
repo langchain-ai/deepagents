@@ -41,9 +41,7 @@ def query_arxiv(query: str, max_papers: int = 10) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Search arXiv for research papers")
     parser.add_argument("query", type=str, help="Search query string")
-    parser.add_argument(
-        "--max-papers", type=int, default=10, help="Maximum number of papers to retrieve (default: 10)"
-    )
+    parser.add_argument("--max-papers", type=int, default=10, help="Maximum number of papers to retrieve (default: 10)")
 
     args = parser.parse_args()
 

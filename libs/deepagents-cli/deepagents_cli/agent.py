@@ -169,7 +169,6 @@ The todo list is a planning tool - use it judiciously to avoid overwhelming the 
     )
 
 
-
 def create_agent_with_config(
     model: str | BaseChatModel,
     assistant_id: str,

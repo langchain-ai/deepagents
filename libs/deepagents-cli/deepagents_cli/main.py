@@ -146,7 +146,7 @@ async def simple_cli(
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
 
-    if backend and isinstance(backend, SandboxBackendProtocol):
+    if backend and isinstance(backend, SandboxBackendProtocol) and hasattr(backend, "id"):
         sandbox_id: str | None = backend.id
     else:
         sandbox_id = None

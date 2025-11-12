@@ -26,28 +26,33 @@ class RunloopBackend(BaseSandbox):
         self,
         devbox_id: str,
         client: Runloop | None = None,
-        bearer_token: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         """Initialize Runloop protocol.
 
         Args:
             devbox_id: ID of the Runloop devbox to operate on.
             client: Optional existing Runloop client instance
-            bearer_token: Optional API key for creating a new client
+            api_key: Optional API key for creating a new client
                          (defaults to RUNLOOP_API_KEY environment variable)
         """
-        if client and bearer_token:
+        if client and api_key:
             raise ValueError("Provide either client or bearer_token, not both.")
 
         if client is None:
-            bearer_token = bearer_token or os.environ.get("RUNLOOP_API_KEY", None)
-            if bearer_token is None:
+            api_key = api_key or os.environ.get("RUNLOOP_API_KEY", None)
+            if api_key is None:
                 raise ValueError("Either client or bearer_token must be provided.")
-            client = Runloop(bearer_token=bearer_token)
+            client = Runloop(bearer_token=api_key)
 
         self._client = client
         self._devbox_id = devbox_id
         self._timeout = 30 * 60
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend."""
+        return self._devbox_id
 
     def execute(
         self,

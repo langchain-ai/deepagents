@@ -19,9 +19,18 @@ class DaytonaBackend(BaseSandbox):
     """
 
     def __init__(self, sandbox: Sandbox) -> None:
-        """Initialize the DaytonaBackend with a Daytona sandbox client."""
+        """Initialize the DaytonaBackend with a Daytona sandbox client.
+
+        Args:
+            sandbox: Daytona sandbox instance
+        """
         self._sandbox = sandbox
         self._timeout: int = 30 * 60  # 30 mins
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend."""
+        return self._sandbox.id
 
     def execute(
         self,

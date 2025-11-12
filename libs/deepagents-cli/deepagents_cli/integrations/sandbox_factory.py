@@ -46,8 +46,8 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
 @contextmanager
 def create_modal_sandbox(
-    sandbox_id: str | None = None, setup_script_path: str | None = None
-) -> Generator[tuple["ModalBackend", str], None, None]:
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to Modal sandbox.
 
     Args:
@@ -74,11 +74,10 @@ def create_modal_sandbox(
 
     with app.run():
         if sandbox_id:
-            sandbox = modal.Sandbox.from_id(sandbox_id, app=app)
+            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=app)
             should_cleanup = False
         else:
             sandbox = modal.Sandbox.create(app=app, workdir="/workspace")
-            sandbox_id = sandbox.object_id
             should_cleanup = True
 
             # Poll until running (Modal requires this)
@@ -99,16 +98,14 @@ def create_modal_sandbox(
                 sandbox.terminate()
                 raise RuntimeError("Modal sandbox failed to start within 180 seconds")
 
-        console.print(f"[green]✓ Modal sandbox ready: {sandbox_id}[/green]")
-
         backend = ModalBackend(sandbox)
+        console.print(f"[green]✓ Modal sandbox ready: {backend.id}[/green]")
 
         # Run setup script if provided
         if setup_script_path:
             _run_sandbox_setup(backend, setup_script_path)
-
         try:
-            yield backend, sandbox_id
+            yield backend
         finally:
             if should_cleanup:
                 try:
@@ -121,8 +118,8 @@ def create_modal_sandbox(
 
 @contextmanager
 def create_runloop_sandbox(
-    sandbox_id: str | None = None, setup_script_path: str | None = None
-) -> Generator[tuple["RunloopBackend", str], None, None]:
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to Runloop devbox.
 
     Args:
@@ -179,7 +176,7 @@ def create_runloop_sandbox(
         _run_sandbox_setup(backend, setup_script_path)
 
     try:
-        yield backend, devbox.id
+        yield backend
     finally:
         if should_cleanup:
             try:
@@ -192,8 +189,8 @@ def create_runloop_sandbox(
 
 @contextmanager
 def create_daytona_sandbox(
-    sandbox_id: str | None = None, setup_script_path: str | None = None
-) -> Generator[tuple["DaytonaBackend", str], None, None]:
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
     """Create Daytona sandbox.
 
     Args:
@@ -202,13 +199,6 @@ def create_daytona_sandbox(
 
     Yields:
         (DaytonaBackend, sandbox_id)
-
-    Raises:
-        ImportError: Daytona SDK not installed
-        ValueError: DAYTONA_API_KEY not set
-        NotImplementedError: If sandbox_id provided (not yet supported)
-        FileNotFoundError: Setup script not found
-        RuntimeError: Setup script failed
 
     Note:
         Connecting to existing Daytona sandbox by ID may not be supported yet.
@@ -251,15 +241,14 @@ def create_daytona_sandbox(
         finally:
             raise RuntimeError("Daytona sandbox failed to start within 180 seconds")
 
-    console.print(f"[green]✓ Daytona sandbox ready: {sandbox_id}[/green]")
-
     backend = DaytonaBackend(sandbox)
+    console.print(f"[green]✓ Daytona sandbox ready: {backend.id}[/green]")
 
     # Run setup script if provided
     if setup_script_path:
         _run_sandbox_setup(backend, setup_script_path)
     try:
-        yield backend, sandbox_id
+        yield backend
     finally:
         console.print(f"[dim]Deleting Daytona sandbox {sandbox_id}...[/dim]")
         try:
@@ -290,7 +279,7 @@ def create_sandbox(
     *,
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
-) -> Generator[tuple[SandboxBackendProtocol, str], None, None]:
+) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
     This is the unified interface for sandbox creation that delegates to
@@ -310,11 +299,13 @@ def create_sandbox(
             f"Available providers: {', '.join(get_available_sandbox_types())}"
         )
 
-    with _SANDBOX_PROVIDERS[provider](sandbox_id, setup_script_path) as (
+    sandbox_provider = _SANDBOX_PROVIDERS[provider]
+
+    with sandbox_provider(sandbox_id=sandbox_id, setup_script_path=setup_script_path) as (
         backend,
         active_sandbox_id,
     ):
-        yield backend, active_sandbox_id
+        yield backend
 
 
 def get_available_sandbox_types() -> list[str]:

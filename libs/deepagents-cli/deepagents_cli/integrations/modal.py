@@ -27,6 +27,11 @@ class ModalBackend(BaseSandbox):
         self._sandbox = sandbox
         self._timeout = 30 * 60
 
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend."""
+        return self._sandbox.object_id
+
     def execute(
         self,
         command: str,

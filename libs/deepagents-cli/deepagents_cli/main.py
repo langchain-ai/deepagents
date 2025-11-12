@@ -305,7 +305,7 @@ async def main(
             console.print()
             with create_sandbox(
                 sandbox_type, sandbox_id=sandbox_id, setup_script_path=setup_script_path
-            ) as (sandbox_backend,):
+            ) as sandbox_backend:
                 console.print(f"[yellow]⚡ Remote execution enabled ({sandbox_type})[/yellow]")
                 console.print()
 
@@ -328,6 +328,7 @@ async def main(
             sys.exit(0)
         except Exception as e:
             console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
+            console.print_exception()
             sys.exit(1)
 
     # Branch 2: User wants local mode (none or default)
@@ -339,6 +340,7 @@ async def main(
             sys.exit(0)
         except Exception as e:
             console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
+            console.print_exception()
             sys.exit(1)
 
 

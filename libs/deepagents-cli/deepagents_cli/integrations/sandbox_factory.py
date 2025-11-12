@@ -174,7 +174,6 @@ def create_runloop_sandbox(
     # Run setup script if provided
     if setup_script_path:
         _run_sandbox_setup(backend, setup_script_path)
-
     try:
         yield backend
     finally:
@@ -301,10 +300,7 @@ def create_sandbox(
 
     sandbox_provider = _SANDBOX_PROVIDERS[provider]
 
-    with sandbox_provider(sandbox_id=sandbox_id, setup_script_path=setup_script_path) as (
-        backend,
-        active_sandbox_id,
-    ):
+    with sandbox_provider(sandbox_id=sandbox_id, setup_script_path=setup_script_path) as backend:
         yield backend
 
 

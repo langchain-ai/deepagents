@@ -44,21 +44,22 @@ Project-specific agent.md is loaded from (in order of priority):
 - `[project-root]/agent.md`
 
 **When to CHECK/READ memories (CRITICAL - do this FIRST):**
-- **At the start of ANY new session**: Run `ls {agent_dir_absolute}` to see what you have stored
-- **BEFORE answering questions**: If asked "what do you know about X?" or "how do I do Y?", check `ls {agent_dir_absolute}` for relevant files FIRST
-- **When user asks you to do something**: Check if you have guides, examples, or patterns in `{agent_dir_absolute}`
-- **When user references past work or conversations**: Search `{agent_dir_absolute}` for related content
-- **If you're unsure**: Check your memories rather than guessing or using only general knowledge
+- **At the start of ANY new session**: Check both global and project memories
+  - Global: `ls {agent_dir_absolute}`
+  - Project: `ls {project_deepagents_dir}` (if in a project)
+- **BEFORE answering questions**: If asked "what do you know about X?" or "how do I do Y?", check project memories FIRST, then global
+- **When user asks you to do something**: Check if you have project-specific guides or examples
+- **When user references past work**: Search project memory files for related context
 
 **Memory-first response pattern:**
-1. User asks a question → Run `ls {agent_dir_absolute}` to check for relevant files
-2. If relevant files exist → Read them with `read_file '{agent_dir_absolute}/[filename]'`
-3. Base your answer on saved knowledge (from memories) supplemented by general knowledge
-4. If no relevant memories exist → Use general knowledge, then consider if this is worth saving
+1. User asks a question → Check project directory first: `ls {project_deepagents_dir}`
+2. If relevant files exist → Read them with `read_file '{project_deepagents_dir}/[filename]'`
+3. Check global if needed → `ls {agent_dir_absolute}`
+4. Base your answer on saved knowledge supplemented by general knowledge
 
 **When to update memories:**
-- **IMMEDIATELY when the user describes your role or how you should behave** (e.g., "you are a web researcher", "you are an expert in X")
-- **IMMEDIATELY when the user gives feedback on your work** - Before continuing, update memories to capture what was wrong and how to do it better
+- **IMMEDIATELY when the user describes your role or how you should behave**
+- **IMMEDIATELY when the user gives feedback on your work** - Update memories to capture what was wrong and how to do it better
 - When the user explicitly asks you to remember something
 - When patterns or preferences emerge (coding styles, conventions, workflows)
 - After significant work where context would help in future sessions
@@ -68,25 +69,78 @@ Project-specific agent.md is loaded from (in order of priority):
 - Each correction is a chance to improve permanently - don't just fix the immediate issue, update your instructions
 - When user says "you should remember X" or "be careful about Y", treat this as HIGH PRIORITY - update memories IMMEDIATELY
 - Look for the underlying principle behind corrections, not just the specific mistake
-- If it's something you "should have remembered", identify where that instruction should live permanently
 
-**What to store where:**
-- **`{agent_dir_absolute}/agent.md`**: Update this to modify your core instructions and behavioral patterns
-- **Other `{agent_dir_absolute}/*.md` files**: Use for context, reference information, or structured notes
-  - If you create additional memory files, add references to them in `{agent_dir_absolute}/agent.md` so you remember to consult them
+## Deciding Where to Store Memory
 
-The portion of your system prompt that comes from `{agent_dir_absolute}/agent.md` is marked with `<agent_memory>` tags so you can identify what instructions come from your persistent memory.
+When writing or updating agent memory, decide whether each fact, configuration, or behavior belongs in:
+
+### Global Agent File: `{agent_dir_absolute}/agent.md`
+→ Describes the agent's **personality, style, and universal behavior** across all projects.
+
+**Store here:**
+- Your general tone and communication style
+- Universal coding preferences (formatting, comment style, etc.)
+- General workflows and methodologies you follow
+- Tool usage patterns that apply everywhere
+- Personal preferences that don't change per-project
+
+**Examples:**
+- "Be concise and direct in responses"
+- "Always use type hints in Python"
+- "Prefer functional programming patterns"
+
+### Project Agent File: `{project_deepagents_dir}/agent.md`
+→ Describes **how this specific project works** and **how the agent should behave here only.**
+
+**Store here:**
+- Project-specific architecture and design patterns
+- Coding conventions specific to this codebase
+- Project structure and organization
+- Testing strategies for this project
+- Deployment processes and workflows
+- Team conventions and guidelines
+
+**Examples:**
+- "This project uses FastAPI with SQLAlchemy"
+- "Tests go in tests/ directory mirroring src/ structure"
+- "All API changes require updating OpenAPI spec"
+
+### Project Memory Files: `{project_deepagents_dir}/*.md`
+→ Use for **project-specific reference information** and structured notes.
+
+**Store here:**
+- API design documentation
+- Architecture decisions and rationale
+- Deployment procedures
+- Common debugging patterns
+- Onboarding information
+
+**Examples:**
+- `{project_deepagents_dir}/api-design.md` - REST API patterns used
+- `{project_deepagents_dir}/architecture.md` - System architecture overview
+- `{project_deepagents_dir}/deployment.md` - How to deploy this project
 
 ### File Operations:
 
+**Global memory:**
 ```
-ls {agent_dir_absolute}                              # List your memory files
-read_file '{agent_dir_absolute}/agent.md'            # Read your instructions
-edit_file '{agent_dir_absolute}/agent.md' ...        # Update instructions
-write_file '{agent_dir_absolute}/notes.md' ...       # Create memory file
+ls {agent_dir_absolute}                              # List global memory files
+read_file '{agent_dir_absolute}/agent.md'            # Read global instructions
+edit_file '{agent_dir_absolute}/agent.md' ...        # Update global instructions
 ```
 
-**Important**: Always use the absolute path `{agent_dir_absolute}` for all memory operations."""
+**Project memory (preferred for project-specific information):**
+```
+ls {project_deepagents_dir}                          # List project memory files
+read_file '{project_deepagents_dir}/agent.md'        # Read project instructions
+edit_file '{project_deepagents_dir}/agent.md' ...    # Update project instructions
+write_file '{project_deepagents_dir}/api-design.md' ...  # Create project memory file
+```
+
+**Important**:
+- Project memory files are stored in `.deepagents/` inside the project root
+- Always use absolute paths for file operations
+- Check project memories BEFORE global when answering project-specific questions"""
 
 
 DEFAULT_MEMORY_SNIPPET = """<global_agent_memory>
@@ -248,6 +302,12 @@ class AgentMemoryMiddleware(AgentMiddleware):
         else:
             project_memory_info = "None (not in a git project)"
 
+        # Build project deepagents directory path
+        if project_root:
+            project_deepagents_dir = f"{project_root}/.deepagents"
+        else:
+            project_deepagents_dir = "[project-root]/.deepagents (not in a project)"
+
         # Format memory section with both memories
         memory_section = self.system_prompt_template.format(
             agent_memory=agent_memory or "(No global agent.md)",
@@ -266,6 +326,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
                 agent_dir_absolute=self.agent_dir_absolute,
                 agent_dir_display=self.agent_dir_display,
                 project_memory_info=project_memory_info,
+                project_deepagents_dir=project_deepagents_dir,
             )
         )
 
@@ -298,6 +359,12 @@ class AgentMemoryMiddleware(AgentMiddleware):
         else:
             project_memory_info = "None (not in a git project)"
 
+        # Build project deepagents directory path
+        if project_root:
+            project_deepagents_dir = f"{project_root}/.deepagents"
+        else:
+            project_deepagents_dir = "[project-root]/.deepagents (not in a project)"
+
         # Format memory section with both memories
         memory_section = self.system_prompt_template.format(
             agent_memory=agent_memory or "(No global agent.md)",
@@ -316,6 +383,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
                 agent_dir_absolute=self.agent_dir_absolute,
                 agent_dir_display=self.agent_dir_display,
                 project_memory_info=project_memory_info,
+                project_deepagents_dir=project_deepagents_dir,
             )
         )
 

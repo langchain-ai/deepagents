@@ -99,8 +99,15 @@ def get_memory_system_prompt(
     else:
         project_memory_info = "None (not in a git project)"
 
+    # Build project deepagents directory path
+    if project_root:
+        project_deepagents_dir = f"{project_root}/.deepagents"
+    else:
+        project_deepagents_dir = "[project-root]/.deepagents (not in a project)"
+
     return LONGTERM_MEMORY_SYSTEM_PROMPT.format(
         agent_dir_absolute=agent_dir_absolute,
         agent_dir_display=agent_dir_display,
         project_memory_info=project_memory_info,
+        project_deepagents_dir=project_deepagents_dir,
     )

@@ -135,3 +135,22 @@ def test_get_web_search_tool_calls_parallel_when_tavily_not_available(
 
     assert result.search_id == "789"
     assert len(result.results) == 1
+
+
+def test_web_search_backward_compatibility(mock_tavily_client):
+    """Test that web_search wrapper calls tavily_search for backward compatibility."""
+    expected = {
+        "results": [
+            {"title": "Python", "url": "https://python.org", "content": "Guide", "score": 0.9}
+        ],
+        "query": "python tutorial",
+    }
+
+    class MockClient:
+        def search(self, *args, **kwargs):
+            return expected
+
+    tools.tavily_client = MockClient()
+    result = tools.web_search("python tutorial")
+
+    assert result == expected

@@ -14,7 +14,9 @@ from abc import ABC, abstractmethod
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileDownloadResponse,
     FileInfo,
+    FileUploadResponse,
     GrepMatch,
     SandboxBackendProtocol,
     WriteResult,
@@ -341,9 +343,19 @@ except PermissionError:
         """Unique identifier for the sandbox backend."""
 
     @abstractmethod
-    def upload_file(self, path: str, content: bytes) -> None:
-        """Upload a file to the sandbox at the specified path."""
+    def upload_files(
+        self, files: list[tuple[str, bytes]]
+    ) -> list["FileUploadResponse"]:
+        """Upload multiple files to the sandbox.
+
+        Implementations must support partial success - catch exceptions per-file
+        and return errors in FileUploadResponse objects rather than raising.
+        """
 
     @abstractmethod
-    def download_file(self, path: str) -> bytes:
-        """Download a file from the sandbox at the specified path."""
+    def download_files(self, paths: list[str]) -> list["FileDownloadResponse"]:
+        """Download multiple files from the sandbox.
+
+        Implementations must support partial success - catch exceptions per-file
+        and return errors in FileDownloadResponse objects rather than raising.
+        """

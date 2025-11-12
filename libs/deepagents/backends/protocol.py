@@ -162,12 +162,62 @@ class ExecuteResponse:
     """Whether the output was truncated due to backend limitations."""
 
 
-@dataclass()
+@dataclass
 class FileDownloadResponse:
-    """Result of file download operation."""
+    """Result of a single file download operation.
 
-    error: str | None = None
+    Supports partial success in batch operations - if an LLM requests multiple
+    files and some paths are incorrect, the valid files can still be downloaded
+    while errors are reported for invalid paths.
+
+    Attributes:
+        path: The file path that was requested. Included for easy correlation
+            when processing batch results, especially useful for error messages.
+        content: File contents as bytes on success, None on failure.
+        error: Human-readable error message on failure, None on success.
+            Stored as string rather than exception for LLM consumption - allows
+            the error to be serialized in tool responses so LLMs can read the
+            error and correct mistakes (e.g., fix an incorrect file path).
+
+    Examples:
+        >>> # Success
+        >>> FileDownloadResponse(path="/app/config.json", content=b"{...}", error=None)
+        >>> # Failure
+        >>> FileDownloadResponse(path="/wrong/path.txt", content=None,
+        ...                      error="No such file or directory: /wrong/path.txt")
+    """
+
+    path: str
     content: bytes | None = None
+    error: str | None = None
+
+
+@dataclass
+class FileUploadResponse:
+    """Result of a single file upload operation.
+
+    Supports partial success in batch operations - if an LLM attempts to upload
+    multiple files and some operations fail (e.g., permission denied), successful
+    uploads still complete while errors are reported for failures.
+
+    Attributes:
+        path: The file path that was requested. Included for easy correlation
+            when processing batch results and for clear error messages.
+        error: Human-readable error message on failure, None on success.
+            Stored as string rather than exception for LLM consumption - allows
+            the error to be serialized in tool responses so LLMs can read the
+            error and correct mistakes (e.g., fix permission issues or paths).
+
+    Examples:
+        >>> # Success
+        >>> FileUploadResponse(path="/app/data.txt", error=None)
+        >>> # Failure
+        >>> FileUploadResponse(path="/readonly/file.txt",
+        ...                    error="Permission denied: /readonly/file.txt")
+    """
+
+    path: str
+    error: str | None = None
 
 
 @runtime_checkable
@@ -199,37 +249,71 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
         """Unique identifier for the sandbox backend instance."""
         ...
 
-    def upload_file(self, path: str, content: bytes) -> None:
-        """Upload is not meant to be used by an LLM directly.
+    def upload_files(
+        self, files: list[tuple[str, bytes]]
+    ) -> list[FileUploadResponse]:
+        """Upload multiple files to the sandbox.
 
-        LLMs are expected to use write/edit methods for file content manipulation.
+        This is NOT meant to be used by LLMs directly. LLMs should use write/edit
+        methods for file content manipulation. This method is provided to allow
+        users to define custom tools that use upload functionality as needed.
 
-        This method is provided to allow users to define custom tools that
-        use the upload functionality as needed.
+        Supports partial success - individual file uploads may fail without
+        affecting others. Implementations must catch exceptions per-file and
+        return error messages in FileUploadResponse objects rather than raising.
 
         Args:
-            path: str
-            content: bytes
+            files: List of (path, content) tuples to upload.
 
         Returns:
-            None
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order (response[i] for files[i]).
+            Check the error field to determine success/failure per file.
+
+        Examples:
+            >>> responses = sandbox.upload_files([
+            ...     ("/app/config.json", b"{...}"),
+            ...     ("/app/data.txt", b"content"),
+            ... ])
+            >>> # Check results
+            >>> for resp in responses:
+            ...     if resp.error:
+            ...         print(f"Failed {resp.path}: {resp.error}")
         """
+        ...
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download is not meant to be used by an LLM directly.
+        """Download multiple files from the sandbox.
 
-        LLMs are expected to use read/grep methods for file content retrieval.
+        This is NOT meant to be used by LLMs directly. LLMs should use read/grep
+        methods for file content retrieval. This method is provided to allow
+        users to define custom tools that use download functionality as needed.
 
-        This method is provided to allow users to define custom tools that
-        use the download functionality as needed.
+        Supports partial success - individual file downloads may fail without
+        affecting others. Implementations must catch exceptions per-file and
+        return error messages in FileDownloadResponse objects rather than raising.
 
         Args:
             paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects for each requested path.
-            The list should maintain the same order as the input paths.
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order (response[i] for paths[i]).
+            Check the error field to determine success/failure per file.
+
+        Examples:
+            >>> responses = sandbox.download_files([
+            ...     "/app/config.json",
+            ...     "/app/data.txt",
+            ... ])
+            >>> # Check results
+            >>> for resp in responses:
+            ...     if resp.error:
+            ...         print(f"Failed: {resp.error}")
+            ...     else:
+            ...         process(resp.content)
         """
+        ...
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

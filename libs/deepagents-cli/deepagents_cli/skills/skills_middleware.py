@@ -110,10 +110,7 @@ class SkillsMiddleware(AgentMiddleware):
         skills_dir = agent_dir / "skills"
 
         # Create middleware
-        middleware = SkillsMiddleware(
-            skills_dir=skills_dir,
-            assistant_id="agent"
-        )
+        middleware = SkillsMiddleware(skills_dir=skills_dir, assistant_id="agent")
         ```
     """
 

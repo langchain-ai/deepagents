@@ -49,7 +49,9 @@ def list_skills():
 
         console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
         console.print(f"    {skill['description']}", style=COLORS["dim"])
-        console.print(f"    Location: ~/.deepagents/agent/skills/{skill_dir_name}/", style=COLORS["dim"])
+        console.print(
+            f"    Location: ~/.deepagents/agent/skills/{skill_dir_name}/", style=COLORS["dim"]
+        )
         console.print()
 
 

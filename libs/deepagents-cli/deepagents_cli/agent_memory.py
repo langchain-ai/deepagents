@@ -175,10 +175,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
         agent_dir = Path.home() / ".deepagents" / "my-agent"
 
         # Create middleware
-        middleware = AgentMemoryMiddleware(
-            agent_dir=agent_dir,
-            assistant_id="my-agent"
-        )
+        middleware = AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id="my-agent")
         ```
     """
 

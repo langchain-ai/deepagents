@@ -53,7 +53,9 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
     )
 
     # Get the long-term memory system prompt
-    memory_system_prompt = get_memory_system_prompt(assistant_id, project_root, bool(project_memory))
+    memory_system_prompt = get_memory_system_prompt(
+        assistant_id, project_root, bool(project_memory)
+    )
 
     # Combine all parts in the same order as the middleware
     full_system_prompt = memory_section + "\n\n" + system_prompt + "\n\n" + memory_system_prompt

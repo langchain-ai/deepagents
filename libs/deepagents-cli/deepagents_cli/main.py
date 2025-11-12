@@ -12,7 +12,6 @@ from deepagents_cli.execution import execute_task
 from deepagents_cli.input import create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
     create_sandbox,
-    get_available_sandbox_types,
     get_default_working_dir,
 )
 from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search

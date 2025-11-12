@@ -112,13 +112,25 @@ All code execution and file operations happen in this sandbox environment.
 **Important:**
 - The CLI is running locally on the user's machine, but you execute code remotely
 - Use `{working_dir}` as your working directory for all operations
-- The local `/memories/` directory is still accessible for persistent storage
 
 """
     else:
-        working_dir_section = f"""### Current Working Directory
+        cwd = Path.cwd()
+        working_dir_section = f"""<env>
+Working directory: {cwd}
+</env>
 
-The filesystem backend is currently operating in: `{Path.cwd()}`
+### Current Working Directory
+
+The filesystem backend is currently operating in: `{cwd}`
+
+### File System and Paths
+
+**IMPORTANT - Path Handling:**
+- All file paths must be absolute paths (e.g., `{cwd}/file.txt`)
+- Use the working directory from <env> to construct absolute paths
+- Example: To create a file in your working directory, use `{cwd}/research_project/file.md`
+- Never use relative paths - always construct full absolute paths
 
 """
 

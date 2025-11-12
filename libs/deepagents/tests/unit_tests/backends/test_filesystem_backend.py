@@ -21,9 +21,10 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     # ls_info absolute path - should only list files in root, not subdirectories
     infos = be.ls_info(str(root))
     paths = {i["path"] for i in infos}
-    assert str(f1) in paths  # File in root should be listed
-    assert str(f2) not in paths  # File in subdirectory should NOT be listed
-    assert (str(root) + "/dir/") in paths  # Directory should be listed
+    # Normalize paths for comparison (backend returns POSIX-style paths)
+    assert str(f1).replace("\\", "/") in paths  # File in root should be listed
+    assert str(f2).replace("\\", "/") not in paths  # File in subdirectory should NOT be listed
+    assert (str(root).replace("\\", "/") + "/dir/") in paths  # Directory should be listed
 
     # read, edit, write
     txt = be.read(str(f1))
@@ -39,7 +40,7 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
 
     # glob_info
     g = be.glob_info("*.py", path=str(root))
-    assert any(i["path"] == str(f2) for i in g)
+    assert any(i["path"] == str(f2).replace("\\", "/") for i in g)
 
 
 def test_filesystem_backend_virtual_mode(tmp_path: Path):
@@ -148,15 +149,16 @@ def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
     root_listing = be.ls_info(str(root))
     root_paths = [fi["path"] for fi in root_listing]
 
-    assert str(root / "file1.txt") in root_paths
-    assert str(root / "subdir") + "/" in root_paths
-    assert str(root / "subdir" / "file2.txt") not in root_paths
+    # Normalize paths for comparison (backend returns POSIX-style paths)
+    assert str(root / "file1.txt").replace("\\", "/") in root_paths
+    assert str(root / "subdir").replace("\\", "/") + "/" in root_paths
+    assert str(root / "subdir" / "file2.txt").replace("\\", "/") not in root_paths
 
     subdir_listing = be.ls_info(str(root / "subdir"))
     subdir_paths = [fi["path"] for fi in subdir_listing]
-    assert str(root / "subdir" / "file2.txt") in subdir_paths
-    assert str(root / "subdir" / "nested") + "/" in subdir_paths
-    assert str(root / "subdir" / "nested" / "file3.txt") not in subdir_paths
+    assert str(root / "subdir" / "file2.txt").replace("\\", "/") in subdir_paths
+    assert str(root / "subdir" / "nested").replace("\\", "/") + "/" in subdir_paths
+    assert str(root / "subdir" / "nested" / "file3.txt").replace("\\", "/") not in subdir_paths
 
 
 def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):

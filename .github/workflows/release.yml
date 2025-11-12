@@ -34,7 +34,7 @@ env:
   UV_FROZEN: "true"
   UV_NO_SYNC: "true"
   # Map package name to working directory
-  WORKING_DIR: ${{ inputs.package == 'deepagents' && '.' || (inputs.package == 'deepagents-cli' && 'libs/deepagents-cli' || '__invalid__') }}
+  WORKING_DIR: ${{ inputs.package == 'deepagents' && 'libs/deepagents' || (inputs.package == 'deepagents-cli' && 'libs/deepagents-cli' || '__invalid__') }}
 
 permissions:
   contents: write # Required for creating GitHub releases
@@ -315,7 +315,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Run integration tests
-        # Only run integration tests if they exist (currently only for root package)
+        # Only run integration tests if they exist (currently only for deepagents package)
         if: ${{ inputs.package == 'deepagents' }}
         run: make integration_test || echo "No integration tests found, skipping..."
         working-directory: ${{ env.WORKING_DIR }}

@@ -186,6 +186,11 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
         """
         ...
 
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend."""
+        ...
+
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]
 BACKEND_TYPES = BackendProtocol | BackendFactory

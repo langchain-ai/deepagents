@@ -15,16 +15,16 @@ from langchain.agents.middleware.human_in_the_loop import (
     RejectDecision,
 )
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.types import Command, Interrupt, StateSnapshot
+from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from .config import COLORS, console
-from .file_ops import FileOpTracker, build_approval_preview
-from .input import parse_file_mentions
-from .ui import (
+from deepagents_cli.config import COLORS, console
+from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
+from deepagents_cli.input import parse_file_mentions
+from deepagents_cli.ui import (
     TokenTracker,
     format_tool_display,
     format_tool_message_content,
@@ -33,12 +33,13 @@ from .ui import (
     render_todo_list,
 )
 
-# Create TypeAdapters once at module level for efficiency
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
-_INTERRUPT_LIST_ADAPTER = TypeAdapter(list[Interrupt])
 
 
-def prompt_for_tool_approval(action_request: ActionRequest, assistant_id: str | None) -> Decision:
+def prompt_for_tool_approval(
+    action_request: ActionRequest,
+    assistant_id: str | None,
+) -> Decision:
     """Prompt user to approve/reject a tool action with arrow key navigation."""
     description = action_request.get("description", "No description available")
     name = action_request["name"]
@@ -270,21 +271,9 @@ async def execute_task(
 
                     # Check for interrupts - collect ALL pending interrupts
                     if "__interrupt__" in data:
-                        interrupt_data = data["__interrupt__"]
-                        if interrupt_data:
-                            # Validate interrupt list structure
-                            try:
-                                interrupt_list = _INTERRUPT_LIST_ADAPTER.validate_python(
-                                    interrupt_data
-                                )
-                            except ValidationError as e:
-                                console.print(
-                                    f"[yellow]Warning: Invalid interrupt structure: {e}[/yellow]",
-                                    style="dim",
-                                )
-                                raise
-
-                            for interrupt_obj in interrupt_list:
+                        interrupts: list[Interrupt] = data["__interrupt__"]
+                        if interrupts:
+                            for interrupt_obj in interrupts:
                                 # Interrupt has required fields: value (HITLRequest) and id (str)
                                 # Validate the HITLRequest using TypeAdapter
                                 try:
@@ -516,33 +505,6 @@ async def execute_task(
 
             # Handle human-in-the-loop after stream completes
             if interrupt_occurred:
-                # Query graph state to get ALL pending interrupts (not just from current stream)
-                # This is critical when the agent resumes and creates new interrupts - we need to
-                # handle both the new interrupts AND any previous ones still pending in the state
-                state_snapshot: StateSnapshot | None = agent.get_state(config)
-                all_state_interrupts: tuple[Interrupt, ...] = (
-                    state_snapshot.interrupts if state_snapshot else ()
-                )
-
-                # If state has multiple interrupts, we need to handle ALL of them
-                # Update pending_interrupts with any we might have missed from the stream
-                for interrupt_obj in all_state_interrupts:
-                    if interrupt_obj.id not in pending_interrupts:
-                        # Interrupt has required fields: value (HITLRequest) and id (str)
-                        # Validate the HITLRequest using TypeAdapter
-                        try:
-                            validated_request = _HITL_REQUEST_ADAPTER.validate_python(
-                                interrupt_obj.value
-                            )
-                            pending_interrupts[interrupt_obj.id] = validated_request
-                        except ValidationError as e:
-                            console.print(
-                                f"[yellow]Warning: Invalid HITL request in state: {e}[/yellow]",
-                                style="dim",
-                            )
-                            raise
-
-                # Build response for all pending interrupts
                 any_rejected = False
 
                 for interrupt_id, hitl_request in pending_interrupts.items():
@@ -576,9 +538,10 @@ async def execute_task(
 
                         # Handle human-in-the-loop approval
                         decisions = []
-                        for action_request in hitl_request["action_requests"]:
-                            decision = await asyncio.to_thread(
-                                prompt_for_tool_approval,
+                        for action_index, action_request in enumerate(
+                            hitl_request["action_requests"]
+                        ):
+                            decision = prompt_for_tool_approval(
                                 action_request,
                                 assistant_id,
                             )

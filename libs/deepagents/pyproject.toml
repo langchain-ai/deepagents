@@ -44,15 +44,6 @@ dev = [
 requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-[tool.setuptools.packages.find]
-where = ["libs"]
-include = ["deepagents*"]
-exclude = ["deepagents.tests*", "deepagents.tests.*", "tests*", "tests.*"]
-
-[tool.setuptools.package-dir]
-"" = "libs"
-
 [tool.setuptools.package-data]
 "*" = ["py.typed", "*.md"]
 
@@ -105,8 +96,3 @@ enable_error_code = ["deprecated"]
 # Optional: reduce strictness if needed
 disallow_any_generics = false
 warn_return_any = false
-
-[tool.uv.workspace]
-members = [
-    "libs/deepagents-cli",
-]

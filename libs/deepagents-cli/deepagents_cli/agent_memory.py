@@ -99,7 +99,7 @@ def _strip_line_numbers(content: str) -> str:
     """
     # Match pattern: optional spaces + number + optional decimal + tab + content
     # Line numbers format: "     1\t" or "     5.2\t" (for continuation lines)
-    return re.sub(r'^\s*\d+(?:\.\d+)?\t', '', content, flags=re.MULTILINE)
+    return re.sub(r"^\s*\d+(?:\.\d+)?\t", "", content, flags=re.MULTILINE)
 
 
 class AgentMemoryMiddleware(AgentMiddleware):

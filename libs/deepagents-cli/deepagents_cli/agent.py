@@ -95,9 +95,9 @@ def get_system_prompt(sandbox_type: str | None = None) -> str:
     """
     if sandbox_type:
         # Get provider-specific working directory
-        from .main import SANDBOX_WORKING_DIRS
+        from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 
-        working_dir = SANDBOX_WORKING_DIRS.get(sandbox_type, "/home/user")
+        working_dir = get_default_working_dir(sandbox_type)
 
         working_dir_section = f"""### Current Working Directory
 

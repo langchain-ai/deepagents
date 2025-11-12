@@ -269,8 +269,82 @@ def create_daytona_sandbox(
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
+_PROVIDER_TO_WORKING_DIR = {
+    "modal": "/workspace",
+    "runloop": "/home/user",
+    "daytona": "/home/daytona",
+}
+
+
+# Mapping of sandbox types to their context manager factories
+_SANDBOX_PROVIDERS = {
+    "modal": create_modal_sandbox,
+    "runloop": create_runloop_sandbox,
+    "daytona": create_daytona_sandbox,
+}
+
+
+@contextmanager
+def create_sandbox(
+    provider: str,
+    *,
+    sandbox_id: str | None = None,
+    setup_script_path: str | None = None,
+) -> Generator[tuple[SandboxBackendProtocol, str], None, None]:
+    """Create or connect to a sandbox of the specified provider.
+
+    This is the unified interface for sandbox creation that delegates to
+    the appropriate provider-specific context manager.
+
+    Args:
+        provider: Sandbox provider ("modal", "runloop", "daytona")
+        sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        (SandboxBackend, sandbox_id)
+    """
+    if provider not in _SANDBOX_PROVIDERS:
+        raise ValueError(
+            f"Unknown sandbox provider: {provider}. "
+            f"Available providers: {', '.join(get_available_sandbox_types())}"
+        )
+
+    with _SANDBOX_PROVIDERS[provider](sandbox_id, setup_script_path) as (
+        backend,
+        active_sandbox_id,
+    ):
+        yield backend, active_sandbox_id
+
+
+def get_available_sandbox_types() -> list[str]:
+    """Get list of available sandbox provider types.
+
+    Returns:
+        List of sandbox type names (e.g., ["modal", "runloop", "daytona"])
+    """
+    return list(_SANDBOX_PROVIDERS.keys())
+
+
+def get_default_working_dir(provider: str) -> str:
+    """Get the default working directory for a given sandbox provider.
+
+    Args:
+        provider: Sandbox provider name ("modal", "runloop", "daytona")
+
+    Returns:
+        Default working directory path as string
+
+    Raises:
+        ValueError: If provider is unknown
+    """
+    if provider in _PROVIDER_TO_WORKING_DIR:
+        return _PROVIDER_TO_WORKING_DIR[provider]
+    raise ValueError(f"Unknown sandbox provider: {provider}")
+
+
 __all__ = [
-    "create_daytona_sandbox",
-    "create_modal_sandbox",
-    "create_runloop_sandbox",
+    "create_sandbox",
+    "get_available_sandbox_types",
+    "get_default_working_dir",
 ]

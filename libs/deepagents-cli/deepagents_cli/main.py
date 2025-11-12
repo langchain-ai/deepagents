@@ -11,19 +11,12 @@ from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, conso
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
-    create_daytona_sandbox,
-    create_modal_sandbox,
-    create_runloop_sandbox,
+    create_sandbox,
+    get_available_sandbox_types,
+    get_default_working_dir,
 )
 from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search
 from deepagents_cli.ui import TokenTracker, show_help
-
-# Default working directories per sandbox provider
-SANDBOX_WORKING_DIRS = {
-    "modal": "/workspace",
-    "runloop": "/home/user",
-    "daytona": "/home/daytona",
-}
 
 
 def check_cli_dependencies() -> None:
@@ -167,7 +160,7 @@ async def simple_cli(
     console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
 
     if sandbox_type:
-        working_dir = SANDBOX_WORKING_DIRS.get(sandbox_type, "sandbox")
+        working_dir = get_default_working_dir(sandbox_type)
         console.print(f"  [dim]Local CLI directory: {Path.cwd()}[/dim]")
         console.print(f"  [dim]Code execution: Remote sandbox ({working_dir})[/dim]")
     else:
@@ -303,27 +296,14 @@ async def main(
     """
     model = create_model()
 
-    # Map sandbox types to context managers
-    sandbox_providers = {
-        "modal": create_modal_sandbox,
-        "runloop": create_runloop_sandbox,
-        "daytona": create_daytona_sandbox,
-    }
-
     # Branch 1: User wants a sandbox
     if sandbox_type != "none":
-        # Validate sandbox type
-        if sandbox_type not in sandbox_providers:
-            console.print(f"[red]❌ Unknown sandbox type: {sandbox_type}[/red]")
-            console.print(
-                f"[dim]Available types: {', '.join(sandbox_providers.keys())}, none[/dim]"
-            )
-            sys.exit(1)
-
         # Try to create sandbox
         try:
             console.print()
-            with sandbox_providers[sandbox_type](sandbox_id, setup_script_path) as (
+            with create_sandbox(
+                sandbox_type, sandbox_id=sandbox_id, setup_script_path=setup_script_path
+            ) as (
                 sandbox_backend,
                 active_sandbox_id,
             ):

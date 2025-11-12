@@ -957,6 +957,10 @@ class TestFilesystemMiddleware:
                     truncated=False,
                 )
 
+            @property
+            def id(self):
+                return "formatting-mock-sandbox-backend"
+
         state = FilesystemState(messages=[], files={})
         rt = ToolRuntime(
             state=state,
@@ -989,6 +993,10 @@ class TestFilesystemMiddleware:
                     exit_code=127,
                     truncated=False,
                 )
+
+            @property
+            def id(self):
+                return "failure-mock-sandbox-backend"
 
         state = FilesystemState(messages=[], files={})
         rt = ToolRuntime(
@@ -1023,6 +1031,10 @@ class TestFilesystemMiddleware:
                     truncated=True,
                 )
 
+            @property
+            def id(self):
+                return "failure-mock-sandbox-backend"
+
         state = FilesystemState(messages=[], files={})
         rt = ToolRuntime(
             state=state,
@@ -1051,6 +1063,10 @@ class TestFilesystemMiddleware:
         class TestSandboxBackend(StateBackend):
             def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
+
+            @property
+            def id(self) -> str:
+                return "test-sandbox-backend"
 
         state = FilesystemState(messages=[], files={})
         rt = ToolRuntime(

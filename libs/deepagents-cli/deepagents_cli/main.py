@@ -7,17 +7,23 @@ from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
-from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
-from deepagents_cli.commands import execute_bash_command, handle_command
-from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
-from deepagents_cli.execution import execute_task
-from deepagents_cli.input import create_prompt_session
-from deepagents_cli.integrations.sandbox_factory import (
+from .agent import create_agent_with_config, list_agents, reset_agent
+from .commands import execute_bash_command, handle_command
+from .config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
+from .execution import execute_task
+from .input import create_prompt_session
+from .integrations.sandbox_factory import (
     create_sandbox,
     get_default_working_dir,
 )
-from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search
-from deepagents_cli.ui import TokenTracker, show_help
+from .tools import (
+    fetch_url,
+    get_web_search_tool,
+    http_request,
+    parallel_client,
+    tavily_client,
+)
+from .ui import TokenTracker, show_help
 
 
 def check_cli_dependencies() -> None:
@@ -43,6 +49,11 @@ def check_cli_dependencies() -> None:
         import tavily
     except ImportError:
         missing.append("tavily-python")
+
+    try:
+        import parallel
+    except ImportError:
+        missing.append("parallel-web")
 
     try:
         import prompt_toolkit
@@ -149,15 +160,17 @@ async def simple_cli(
             )
         console.print()
 
-    if tavily_client is None:
+    if tavily_client is None and parallel_client is None:
         console.print(
-            "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
+            "[yellow]⚠ Web search disabled:[/yellow] No API key found.",
             style=COLORS["dim"],
         )
-        console.print("  To enable web search, set your Tavily API key:", style=COLORS["dim"])
+        console.print("  To enable web search, set one of these API keys:", style=COLORS["dim"])
         console.print("    export TAVILY_API_KEY=your_api_key_here", style=COLORS["dim"])
+        console.print("    export PARALLEL_API_KEY=your_api_key_here", style=COLORS["dim"])
+        console.print("  Or add them to your .env file.", style=COLORS["dim"])
         console.print(
-            "  Or add it to your .env file. Get your key at: https://tavily.com",
+            "  Get keys at: https://tavily.com or https://www.parallel.ai",
             style=COLORS["dim"],
         )
         console.print()
@@ -254,8 +267,9 @@ async def _run_agent_session(
     """
     # Create agent with conditional tools
     tools = [http_request, fetch_url]
-    if tavily_client is not None:
-        tools.append(web_search)
+    web_search_tool = get_web_search_tool()
+    if web_search_tool is not None:
+        tools.append(web_search_tool)
 
     agent, composite_backend = create_agent_with_config(
         model, assistant_id, tools, sandbox=sandbox_backend, sandbox_type=sandbox_type

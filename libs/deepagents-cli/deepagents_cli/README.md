@@ -44,9 +44,10 @@ cli/
 ### `tools.py` - Custom Agent Tools
 - **Purpose**: Additional tools for the agent beyond built-in filesystem operations
 - **Tools**:
+  - `fetch_url()` - Fetch and convert web content to markdown
   - `http_request()` - Make HTTP requests to APIs
-  - `web_search()` - Search the web using Tavily API
-  - `tavily_client` - Initialized Tavily client (if API key available)
+  - `parallel_search()` - Search the web using Parallel API (if PARALLEL_API_KEY is set)
+  - `tavily_search()` - Search the web using Tavily API (if TAVILY_API_KEY is set)
 
 ### `ui.py` - Display & Rendering
 - **Purpose**: All UI rendering and display logic

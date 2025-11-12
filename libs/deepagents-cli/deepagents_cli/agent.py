@@ -143,15 +143,27 @@ Respect the user's decisions and work with them collaboratively.
 
 ### Web Search Tool Usage
 
-When you use the web_search tool:
-1. The tool will return search results with titles, URLs, and content excerpts
-2. You MUST read and process these results, then respond naturally to the user
-3. NEVER show raw JSON or tool results directly to the user
-4. Synthesize the information from multiple sources into a coherent answer
-5. Cite your sources by mentioning page titles or URLs when relevant
-6. If the search doesn't find what you need, explain what you found and ask clarifying questions
+You have access to web search tools based on available API keys:
 
-The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
+**tavily_search**:
+- Returns results with 'content' field (string) containing excerpts
+- Includes 'score' field for relevance (0-1)
+- Supports 'topic' parameter: "general", "news", or "finance"
+
+**parallel_search**:
+- Returns results with 'excerpts' field (array of strings) in markdown format
+- Includes 'search_id' for tracking
+- Supports 'objective' parameter for natural language search goals and multiple queries
+
+When using either tool:
+1. You MUST read and process the results, then respond naturally to the user
+2. NEVER show raw JSON or tool results directly to the user
+3. Synthesize the information from multiple sources into a coherent answer
+4. Cite your sources by mentioning page titles or URLs when relevant
+5. If the search doesn't find what you need, explain what you found and ask clarifying questions
+
+The user only sees your text responses - not tool results.
+Always provide a complete, natural language answer after searching.
 
 ### Todo List Management
 
@@ -261,13 +273,33 @@ def create_agent_with_config(
             f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})"
         )
 
-    def format_web_search_description(tool_call: dict) -> str:
-        """Format web_search tool call for approval prompt."""
+    def format_tavily_search_description(tool_call: dict) -> str:
+        """Format tavily_search tool call for approval prompt."""
         args = tool_call.get("args", {})
         query = args.get("query", "unknown")
         max_results = args.get("max_results", 5)
+        topic = args.get("topic", "general")
 
-        return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
+        return (
+            f"Query: {query}\n"
+            f"Max results: {max_results}\n"
+            f"Topic: {topic}\n\n"
+            "⚠️  This will use Tavily API credits"
+        )
+
+    def format_parallel_search_description(tool_call: dict) -> str:
+        """Format parallel_search tool call for approval prompt."""
+        args = tool_call.get("args", {})
+        queries = args.get("queries", "unknown")
+        max_results = args.get("max_results", 5)
+        objective = args.get("objective")
+
+        description = f"Queries: {queries}\nMax results: {max_results}\n"
+        if objective:
+            description += f"Objective: {objective}\n"
+        description += "\n⚠️  This will use Parallel API credits"
+
+        return description
 
     def format_fetch_url_description(tool_call: dict) -> str:
         """Format fetch_url tool call for approval prompt."""
@@ -325,9 +357,18 @@ def create_agent_with_config(
         "description": lambda tool_call, state, runtime: format_edit_file_description(tool_call),
     }
 
-    web_search_interrupt_config: InterruptOnConfig = {
+    tavily_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_web_search_description(tool_call),
+        "description": lambda tool_call, state, runtime: format_tavily_search_description(
+            tool_call
+        ),
+    }
+
+    parallel_search_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": lambda tool_call, state, runtime: format_parallel_search_description(
+            tool_call
+        ),
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
@@ -351,7 +392,8 @@ def create_agent_with_config(
             "execute": execute_interrupt_config,
             "write_file": write_file_interrupt_config,
             "edit_file": edit_file_interrupt_config,
-            "web_search": web_search_interrupt_config,
+            "tavily_search": tavily_search_interrupt_config,
+            "parallel_search": parallel_search_interrupt_config,
             "fetch_url": fetch_url_interrupt_config,
             "task": task_interrupt_config,
         },

@@ -1,7 +1,6 @@
 """Dev server launcher for deepagents CLI."""
 
 import argparse
-
 # Point langgraph to the generated module
 import json
 import os
@@ -12,12 +11,10 @@ from pathlib import Path
 # Recreate agent without interrupts
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-
 # Create the agent
 from deepagents_cli.agent import create_agent_with_config, get_system_prompt
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import config, console, create_model
-from deepagents_cli.integrations.sandbox_factory import create_sandbox
 from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search
 
 
@@ -134,34 +131,23 @@ def create_server_agent(
     if tavily_client is not None:
         tools.append(web_search)
 
-    # Setup sandbox if needed
-    sandbox_backend = None
-    sandbox_type_str = None
-    if sandbox_type != "none":
-        try:
-            sandbox_context = create_sandbox(
-                sandbox_type,
-                sandbox_id=sandbox_id,
-                setup_script_path=sandbox_setup,
-            )
-            sandbox_backend = sandbox_context.__enter__()
-            sandbox_type_str = sandbox_type
-        except Exception as e:
-            raise RuntimeError(f"Failed to create sandbox: {e}") from e
-
+    if sandbox_type is not None:
+        raise NotImplementedError()
     model = create_model()
+
+    sandbox_backend = None
 
     agent, backend = create_agent_with_config(
         model=model,
         assistant_id=agent_name,
         tools=tools,
-        sandbox=sandbox_backend,
-        sandbox_type=sandbox_type_str,
+        sandbox=None,
+        sandbox_type=None,
     )
 
     # Handle auto-approve by removing interrupts
     if auto_approve:
-        system_prompt = get_system_prompt(sandbox_type=sandbox_type_str)
+        system_prompt = get_system_prompt(sandbox_type=None)
         # Build middleware based on sandbox type
         agent_dir = Path.home() / ".deepagents" / agent_name
         long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)

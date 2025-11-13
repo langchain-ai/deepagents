@@ -102,42 +102,47 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
         os.chdir(original_dir)
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)  # Agent can take 60-120 seconds
-async def test_cli_auto_approve_write_file(tmp_path: Path) -> None:
-    """Test CLI with auto-approve mode to write a file."""
-    async with run_cli_task("write hello to file foo.md", tmp_path) as (work_dir, console_output):
-        # Verify the file was created
-        output_file = work_dir / "foo.md"
-        assert output_file.exists(), f"foo.md should have been created in {work_dir}"
+class TestSimpleTasks:
+    """A collection of simple task benchmarks for the deepagents-cli."""
 
-        content = output_file.read_text()
-        assert "hello" in content.lower(), f"File should contain 'hello', but got: {content!r}"
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(120)  # Agent can take 60-120 seconds
+    async def test_write_hello_to_a_file(self, tmp_path: Path) -> None:
+        """Test agents to write 'hello' to a file."""
+        async with run_cli_task("write hello to file foo.md", tmp_path) as (
+            work_dir,
+            console_output,
+        ):
+            # Verify the file was created
+            output_file = work_dir / "foo.md"
+            assert output_file.exists(), f"foo.md should have been created in {work_dir}"
 
-        # Verify console output shows auto-approve mode
-        # Print output for debugging if assertion fails
-        assert "Auto-approve" in console_output or "⚡" in console_output, (
-            f"Expected auto-approve indicator in output.\nConsole output:\n{console_output}"
-        )
+            content = output_file.read_text()
+            assert "hello" in content.lower(), f"File should contain 'hello', but got: {content!r}"
 
+            # Verify console output shows auto-approve mode
+            # Print output for debugging if assertion fails
+            assert "Auto-approve" in console_output or "⚡" in console_output, (
+                f"Expected auto-approve indicator in output.\nConsole output:\n{console_output}"
+            )
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)  # Agent can take 60-120 seconds
-async def test_cli_auto_approve_multiple_operations(tmp_path: Path) -> None:
-    """Test CLI with auto-approve mode performing multiple file operations."""
-    task = "create files test1.txt and test2.txt with content 'test file'"
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(120)
+    async def test_cli_auto_approve_multiple_operations(self, tmp_path: Path) -> None:
+        """Test agent to create multiple files with auto-approve."""
+        task = "create files test1.txt and test2.txt with content 'test file'"
 
-    async with run_cli_task(task, tmp_path) as (work_dir, console_output):
-        # Verify both files were created
-        test1 = work_dir / "test1.txt"
-        test2 = work_dir / "test2.txt"
+        async with run_cli_task(task, tmp_path) as (work_dir, console_output):
+            # Verify both files were created
+            test1 = work_dir / "test1.txt"
+            test2 = work_dir / "test2.txt"
 
-        # At least one file should be created (agent might interpret task differently)
-        created_files = [f for f in [test1, test2] if f.exists()]
-        assert len(created_files) > 0, (
-            f"Expected at least one test file to be created in {work_dir}.\n"
-            f"Files in directory: {list(work_dir.iterdir())}"
-        )
+            # At least one file should be created (agent might interpret task differently)
+            created_files = [f for f in [test1, test2] if f.exists()]
+            assert len(created_files) > 0, (
+                f"Expected at least one test file to be created in {work_dir}.\n"
+                f"Files in directory: {list(work_dir.iterdir())}"
+            )
 
-        # Verify console output captured the interaction
-        assert len(console_output) > 0, "Console output should not be empty"
+            # Verify console output captured the interaction
+            assert len(console_output) > 0, "Console output should not be empty"

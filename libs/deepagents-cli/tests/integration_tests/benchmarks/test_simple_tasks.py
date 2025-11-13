@@ -25,6 +25,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from rich.console import Console
 
+from deepagents_cli import config as config_module
+from deepagents_cli import main as main_module
 from deepagents_cli.config import SessionState
 from deepagents_cli.main import simple_cli
 
@@ -56,7 +58,8 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
 
     try:
         # Mock the prompt session to provide input and exit
-        with patch("deepagents_cli.main.create_prompt_session") as mock_prompt:
+        # Use patch.object() to fail immediately if attributes don't exist
+        with patch.object(main_module, "create_prompt_session") as mock_prompt:
             mock_session = AsyncMock()
             mock_session.prompt_async.side_effect = [
                 task,  # User input
@@ -65,8 +68,9 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
             mock_prompt.return_value = mock_session
 
             # Mock console to capture output
-            with patch("deepagents_cli.main.console", captured_console):
-                with patch("deepagents_cli.config.console", captured_console):
+            # Use patch.object() to fail immediately if attributes don't exist
+            with patch.object(main_module, "console", captured_console):
+                with patch.object(config_module, "console", captured_console):
                     # Import after patching
                     from deepagents_cli.agent import create_agent_with_config
                     from deepagents_cli.config import create_model
@@ -94,6 +98,12 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
                         sandbox_type=None,
                         setup_script_path=None,
                     )
+
+            # Verify that our mocks were actually used (ensures patching worked)
+            mock_prompt.assert_called_once()
+            assert mock_session.prompt_async.call_count >= 1, (
+                "prompt_async should have been called at least once"
+            )
 
         # Yield the directory and captured output
         yield tmp_path, output.getvalue()

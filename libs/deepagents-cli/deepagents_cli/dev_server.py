@@ -1,12 +1,24 @@
 """Dev server launcher for deepagents CLI."""
 
 import argparse
+
+# Point langgraph to the generated module
+import json
 import os
 import sys
 import tempfile
 from pathlib import Path
 
-from deepagents_cli.config import console
+# Recreate agent without interrupts
+from deepagents import create_deep_agent
+from deepagents.backends.filesystem import FilesystemBackend
+
+# Create the agent
+from deepagents_cli.agent import create_agent_with_config, get_system_prompt
+from deepagents_cli.agent_memory import AgentMemoryMiddleware
+from deepagents_cli.config import config, console, create_model
+from deepagents_cli.integrations.sandbox_factory import create_sandbox
+from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search
 
 
 def add_dev_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -76,6 +88,12 @@ def add_dev_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Enable remote debugging by listening on specified port",
     )
     dev_parser.add_argument(
+        "--allow-blocking",
+        default=False,
+        action="store_true",
+        help="Allow blocking operations in the server (not recommended for production)",
+    )
+    dev_parser.add_argument(
         "--wait-for-client",
         action="store_true",
         default=False,
@@ -111,7 +129,6 @@ def create_server_agent(
         Configured agent (Pregel graph)
     """
     # Setup tools
-    from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search
 
     tools = [http_request, fetch_url]
     if tavily_client is not None:
@@ -121,8 +138,6 @@ def create_server_agent(
     sandbox_backend = None
     sandbox_type_str = None
     if sandbox_type != "none":
-        from deepagents_cli.integrations.sandbox_factory import create_sandbox
-
         try:
             sandbox_context = create_sandbox(
                 sandbox_type,
@@ -133,10 +148,6 @@ def create_server_agent(
             sandbox_type_str = sandbox_type
         except Exception as e:
             raise RuntimeError(f"Failed to create sandbox: {e}") from e
-
-    # Create the agent
-    from deepagents_cli.agent import create_agent_with_config
-    from deepagents_cli.config import create_model
 
     model = create_model()
 
@@ -150,16 +161,7 @@ def create_server_agent(
 
     # Handle auto-approve by removing interrupts
     if auto_approve:
-        # Recreate agent without interrupts
-        from deepagents import create_deep_agent
-        from deepagents.backends.filesystem import FilesystemBackend
-
-        from deepagents_cli.agent import get_system_prompt
-        from deepagents_cli.agent_memory import AgentMemoryMiddleware
-        from deepagents_cli.config import config
-
         system_prompt = get_system_prompt(sandbox_type=sandbox_type_str)
-
         # Build middleware based on sandbox type
         agent_dir = Path.home() / ".deepagents" / agent_name
         long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
@@ -187,10 +189,6 @@ def create_server_agent(
             middleware=agent_middleware,
             interrupt_on={},  # No interrupts
         ).with_config(config)
-
-        from langgraph.checkpoint.memory import InMemorySaver
-
-        agent.checkpointer = InMemorySaver()
 
     return agent
 
@@ -238,15 +236,13 @@ graph = create_server_agent(
     sandbox_id={args.sandbox_id!r},
     sandbox_setup={args.sandbox_setup!r},
 )
+graph.checkpointer = None
 '''
 
         # Write the module to a file
         module_path = temp_dir / "agent_graph.py"
         module_path.write_text(module_code)
         console.print(f"[green]✓[/green] Generated: {module_path}")
-
-        # Point langgraph to the generated module
-        import json
 
         langserve_graphs = {args.agent: str(module_path) + ":graph"}
 
@@ -284,7 +280,7 @@ graph = create_server_agent(
             ui=None,
             ui_config=None,
             studio_url=args.studio_url,
-            allow_blocking=False,
+            allow_blocking=args.allow_blocking,
             tunnel=args.tunnel,
             server_level="WARNING",
         )

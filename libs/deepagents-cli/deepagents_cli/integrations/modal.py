@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+)
 from deepagents.backends.sandbox import BaseSandbox
 
 if TYPE_CHECKING:
@@ -64,3 +68,82 @@ class ModalBackend(BaseSandbox):
             exit_code=process.returncode,
             truncated=False,  # Modal doesn't provide truncation info
         )
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the Modal sandbox.
+
+        Supports partial success - individual downloads may fail without
+        affecting others.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+        """
+        # This implementation relies on the Modal sandbox file API.
+        # https://modal.com/doc/guide/sandbox-files
+        # The API is currently in alpha and is not recommended for production use.
+        # We're OK using it here as it's targeting the CLI application.
+        responses = []
+        for path in paths:
+            try:
+                with self._sandbox.open(path, "rb") as f:
+                    content = f.read()
+                responses.append(FileDownloadResponse(path=path, content=content, error=None))
+            except FileNotFoundError:
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error=f"File not found: {path}")
+                )
+            except PermissionError:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path, content=None, error=f"Permission denied: {path}"
+                    )
+                )
+            except Exception as e:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path, content=None, error=f"Error downloading {path}: {e}"
+                    )
+                )
+        return responses
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the Modal sandbox.
+
+        Supports partial success - individual uploads may fail without
+        affecting others.
+
+        Args:
+            files: List of (path, content) tuples to upload.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order.
+        """
+        # This implementation relies on the Modal sandbox file API.
+        # https://modal.com/doc/guide/sandbox-files
+        # The API is currently in alpha and is not recommended for production use.
+        # We're OK using it here as it's targeting the CLI application.
+        responses = []
+        for path, content in files:
+            try:
+                with self._sandbox.open(path, "wb") as f:
+                    f.write(content)
+                responses.append(FileUploadResponse(path=path, error=None))
+            except FileNotFoundError:
+                responses.append(
+                    FileUploadResponse(
+                        path=path,
+                        error=f"Directory not found for path: {path}",
+                    )
+                )
+            except PermissionError:
+                responses.append(FileUploadResponse(path=path, error=f"Permission denied: {path}"))
+            except Exception as e:
+                responses.append(
+                    FileUploadResponse(path=path, error=f"Error uploading {path}: {e}")
+                )
+        return responses

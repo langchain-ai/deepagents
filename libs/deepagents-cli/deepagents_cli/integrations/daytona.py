@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+)
 from deepagents.backends.sandbox import BaseSandbox
 
 if TYPE_CHECKING:
@@ -51,3 +55,63 @@ class DaytonaBackend(BaseSandbox):
             exit_code=result.exit_code,
             truncated=False,
         )
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the Daytona sandbox.
+
+        Leverages Daytona's native batch download API for efficiency.
+        Supports partial success - individual downloads may fail without
+        affecting others.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+        """
+        from daytona import FileDownloadRequest
+
+        # Create batch download request using Daytona's native batch API
+        download_requests = [FileDownloadRequest(source=path) for path in paths]
+
+        try:
+            daytona_responses = self._sandbox.fs.download_files(download_requests)
+        except Exception as e:
+            # If the entire batch fails, return errors for all paths
+            return [
+                FileDownloadResponse(
+                    path=path,
+                    content=None,
+                    error=f"Batch download failed: {e}",
+                )
+                for path in paths
+            ]
+
+        # Convert Daytona results to our response format
+        return [
+            FileDownloadResponse(path=resp.source, content=resp.result, error=resp.error)
+            for resp in daytona_responses
+        ]
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the Daytona sandbox.
+
+        Leverages Daytona's native batch upload API for efficiency.
+        Supports partial success - individual uploads may fail without
+        affecting others.
+
+        Args:
+            files: List of (path, content) tuples to upload.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order.
+        """
+        from daytona import FileUpload
+
+        # Create batch upload request using Daytona's native batch API
+        upload_requests = [FileUpload(source=content, destination=path) for path, content in files]
+        self._sandbox.fs.upload_files(upload_requests)
+
+        return [FileUploadResponse(path=path, error=None) for (path, _) in files]

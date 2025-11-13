@@ -131,6 +131,8 @@ def create_server_agent(
     if tavily_client is not None:
         tools.append(web_search)
 
+    sandbox_type = None
+
     if sandbox_type is not None:
         raise NotImplementedError()
     model = create_model()

@@ -324,7 +324,9 @@ def render_file_operation(record: FileOperationRecord) -> None:
                 detail = f"{detail} (+{added} / -{removed})"
         _print_detail(detail)
 
-    if record.diff:
+    # Skip diff display for HIL-approved operations that succeeded
+    # (user already saw the diff during approval)
+    if record.diff and not (record.hitl_approved and record.status == "success"):
         render_diff(record)
 
 

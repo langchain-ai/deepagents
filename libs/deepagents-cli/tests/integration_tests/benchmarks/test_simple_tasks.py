@@ -1,5 +1,11 @@
 """Integration test for CLI with auto-approve mode.
 
+This module implements benchmarking for simple tasks using the DeepAgents CLI; e.g.,
+"write a poem to a file", "create multiple files", etc.
+
+The agent runs on auto-approve mode, meaning it can perform actions without
+user confirmation.
+
 Note on testing approach:
 - We use StringIO to capture console output, which is the recommended
   approach according to Rich's documentation for unit/integration tests.
@@ -106,15 +112,12 @@ async def test_cli_auto_approve_write_file(tmp_path: Path) -> None:
         assert output_file.exists(), f"foo.md should have been created in {work_dir}"
 
         content = output_file.read_text()
-        assert "hello" in content.lower(), (
-            f"File should contain 'hello', but got: {content!r}"
-        )
+        assert "hello" in content.lower(), f"File should contain 'hello', but got: {content!r}"
 
         # Verify console output shows auto-approve mode
         # Print output for debugging if assertion fails
         assert "Auto-approve" in console_output or "⚡" in console_output, (
-            f"Expected auto-approve indicator in output.\n"
-            f"Console output:\n{console_output}"
+            f"Expected auto-approve indicator in output.\nConsole output:\n{console_output}"
         )
 
 

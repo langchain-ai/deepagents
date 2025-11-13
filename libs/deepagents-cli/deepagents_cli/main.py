@@ -84,6 +84,11 @@ def parse_args():
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
+    # Dev command - defined in dev_server module
+    from deepagents_cli.dev_server import add_dev_parser
+
+    add_dev_parser(subparsers)
+
     # Default interactive mode
     parser.add_argument(
         "--agent",
@@ -358,6 +363,11 @@ def cli_main() -> None:
             list_agents()
         elif args.command == "reset":
             reset_agent(args.agent, args.source_agent)
+        elif args.command == "dev":
+            # Import and run dev server
+            from deepagents_cli.dev_server import run_dev_server
+
+            run_dev_server(args)
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve)

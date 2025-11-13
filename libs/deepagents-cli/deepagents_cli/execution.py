@@ -547,6 +547,14 @@ async def execute_task(
                             )
                             decisions.append(decision)
 
+                            # Mark file operations as HIL-approved if user approved
+                            if decision.get("type") == "approve":
+                                tool_name = action_request.get("name")
+                                if tool_name in {"write_file", "edit_file"}:
+                                    file_op_tracker.mark_hitl_approved(
+                                        tool_name, action_request.get("args", {})
+                                    )
+
                         if any(decision.get("type") == "reject" for decision in decisions):
                             any_rejected = True
 

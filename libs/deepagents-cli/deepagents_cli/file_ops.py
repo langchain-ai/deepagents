@@ -109,6 +109,7 @@ class FileOperationRecord:
     before_content: str | None = None
     after_content: str | None = None
     read_output: str | None = None
+    hitl_approved: bool = False
 
 
 def resolve_physical_path(path_str: str | None, assistant_id: str | None) -> Path | None:
@@ -348,6 +349,19 @@ class FileOpTracker:
 
         self._finalize(record)
         return record
+
+    def mark_hitl_approved(self, tool_name: str, args: dict[str, Any]) -> None:
+        """Mark operations matching tool_name and file_path as HIL-approved."""
+        file_path = args.get("file_path") or args.get("path")
+        if not file_path:
+            return
+
+        # Mark all active records that match
+        for record in self.active.values():
+            if record.tool_name == tool_name:
+                record_path = record.args.get("file_path") or record.args.get("path")
+                if record_path == file_path:
+                    record.hitl_approved = True
 
     def _populate_after_content(self, record: FileOperationRecord) -> None:
         # Use backend if available (works for any BackendProtocol implementation)

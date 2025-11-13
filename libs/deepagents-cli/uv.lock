@@ -707,6 +707,7 @@ dependencies = [
     { name = "daytona" },
     { name = "deepagents" },
     { name = "langchain-openai" },
+    { name = "langgraph-cli" },
     { name = "markdownify" },
     { name = "modal" },
     { name = "prompt-toolkit" },
@@ -747,6 +748,7 @@ requires-dist = [
     { name = "daytona", specifier = ">=0.113.0" },
     { name = "deepagents", directory = "../deepagents" },
     { name = "langchain-openai", specifier = ">=0.1.0" },
+    { name = "langgraph-cli", specifier = ">=0.4.7" },
     { name = "markdownify", specifier = ">=0.13.0" },
     { name = "modal", specifier = ">=0.65.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
@@ -1319,6 +1321,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/0f/07/2b1c042fa87d40cf2db5ca27dc4e8dd86f9a0436a10aa4361a8982718ae7/langgraph_checkpoint-3.0.1.tar.gz", hash = "sha256:59222f875f85186a22c494aedc65c4e985a3df27e696e5016ba0b98a5ed2cee0", size = 137785, upload-time = "2025-11-04T21:55:47.774Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/48/e3/616e3a7ff737d98c1bbb5700dd62278914e2a9ded09a79a1fa93cf24ce12/langgraph_checkpoint-3.0.1-py3-none-any.whl", hash = "sha256:9b04a8d0edc0474ce4eaf30c5d731cee38f11ddff50a6177eead95b5c4e4220b", size = 46249, upload-time = "2025-11-04T21:55:46.472Z" },
+]
+
+[[package]]
+name = "langgraph-cli"
+version = "0.4.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "langgraph-sdk" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/aa/73/c581ff48ea039404619f56e0628eaa0e5327d9bee43ff2d3ae579b231d06/langgraph_cli-0.4.7.tar.gz", hash = "sha256:51dc5c7bfd0ce957162facea5ef93ffe9778e8d9ec993354f19aec9dd0161470", size = 801549, upload-time = "2025-11-03T23:45:34.668Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/16/b6/0d2d0ea664a74fa1b58aaf5e86f6cfa68a4173e601d5aef5f6fc2d83f99e/langgraph_cli-0.4.7-py3-none-any.whl", hash = "sha256:c24e1593c2cdffb658841999eccf71d8bd73025105c727ebcad7fafe35c983ab", size = 39482, upload-time = "2025-11-03T23:45:33.375Z" },
 ]
 
 [[package]]

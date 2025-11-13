@@ -662,7 +662,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.2.5"
+version = "0.2.6"
 source = { directory = "../deepagents" }
 dependencies = [
     { name = "daytona" },
@@ -701,7 +701,7 @@ test = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.8"
+version = "0.0.9"
 source = { editable = "." }
 dependencies = [
     { name = "daytona" },

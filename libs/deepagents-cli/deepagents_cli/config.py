@@ -96,11 +96,19 @@ def create_model():
         from langchain_openai import ChatOpenAI
 
         model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+        base_url = os.environ.get("CUSTOM_BASE_URL")
         console.print(f"[dim]Using OpenAI model: {model_name}[/dim]")
-        return ChatOpenAI(
-            model=model_name,
-            temperature=0.7,
-        )
+        if base_url:
+            console.print(f"[dim]Using custom base URL: {base_url}[/dim]")
+
+        kwargs = {
+            "model": model_name,
+            "temperature": 0.7,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+
+        return ChatOpenAI(**kwargs)
     if anthropic_key:
         from langchain_anthropic import ChatAnthropic
 

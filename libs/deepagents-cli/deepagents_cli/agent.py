@@ -9,11 +9,17 @@ from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware.resumable_shell import ResumableShellToolMiddleware
-from langchain.agents.middleware import HostExecutionPolicy, InterruptOnConfig
+from langchain.agents.middleware import (
+    HostExecutionPolicy,
+    InterruptOnConfig,
+)
+from langchain.agents.middleware.types import AgentState
+from langchain.messages import ToolCall
 from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
+from langgraph.runtime import Runtime
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions
@@ -170,6 +176,83 @@ The todo list is a planning tool - use it judiciously to avoid overwhelming the 
     )
 
 
+def _format_write_file_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format write_file tool call for approval prompt."""
+    args = tool_call["args"]
+    file_path = args.get("file_path", "unknown")
+    content = args.get("content", "")
+
+    action = "Overwrite" if os.path.exists(file_path) else "Create"
+    line_count = len(content.splitlines())
+
+    return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
+
+
+def _format_edit_file_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format edit_file tool call for approval prompt."""
+    args = tool_call["args"]
+    file_path = args.get("file_path", "unknown")
+    replace_all = bool(args.get("replace_all", False))
+
+    return (
+        f"File: {file_path}\n"
+        f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})"
+    )
+
+
+def _format_web_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format web_search tool call for approval prompt."""
+    args = tool_call["args"]
+    query = args.get("query", "unknown")
+    max_results = args.get("max_results", 5)
+
+    return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
+
+
+def _format_fetch_url_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format fetch_url tool call for approval prompt."""
+    args = tool_call["args"]
+    url = args.get("url", "unknown")
+    timeout = args.get("timeout", 30)
+
+    return f"URL: {url}\nTimeout: {timeout}s\n\n⚠️  Will fetch and convert web content to markdown"
+
+
+def _format_task_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format task (subagent) tool call for approval prompt."""
+    args = tool_call["args"]
+    description = args.get("description", "unknown")
+    prompt = args.get("prompt", "")
+
+    # Truncate prompt if too long
+    prompt_preview = prompt[:300]
+    if len(prompt) > 300:
+        prompt_preview += "..."
+
+    return (
+        f"Task: {description}\n\n"
+        f"Instructions to subagent:\n"
+        f"{'─' * 40}\n"
+        f"{prompt_preview}\n"
+        f"{'─' * 40}\n\n"
+        f"⚠️  Subagent will have access to file operations and shell commands"
+    )
+
+
+def _format_shell_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format shell tool call for approval prompt."""
+    args = tool_call["args"]
+    command = args.get("command", "N/A")
+    return f"Shell Command: {command}\nWorking Directory: {os.getcwd()}"
+
+
+def _format_execute_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format execute tool call for approval prompt."""
+    args = tool_call["args"]
+    command = args.get("command", "N/A")
+    return f"Execute Command: {command}\nLocation: Remote Sandbox"
+
+
 def create_agent_with_config(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -238,106 +321,40 @@ def create_agent_with_config(
     # Get the system prompt (sandbox-aware)
     system_prompt = get_system_prompt(sandbox_type=sandbox_type)
 
-    # Helper functions for formatting tool descriptions in HITL prompts
-    def format_write_file_description(tool_call: dict) -> str:
-        """Format write_file tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        file_path = args.get("file_path", "unknown")
-        content = args.get("content", "")
-
-        action = "Overwrite" if os.path.exists(file_path) else "Create"
-        line_count = len(content.splitlines())
-
-        return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
-
-    def format_edit_file_description(tool_call: dict) -> str:
-        """Format edit_file tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        file_path = args.get("file_path", "unknown")
-        replace_all = bool(args.get("replace_all", False))
-
-        return (
-            f"File: {file_path}\n"
-            f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})"
-        )
-
-    def format_web_search_description(tool_call: dict) -> str:
-        """Format web_search tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        query = args.get("query", "unknown")
-        max_results = args.get("max_results", 5)
-
-        return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
-
-    def format_fetch_url_description(tool_call: dict) -> str:
-        """Format fetch_url tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        url = args.get("url", "unknown")
-        timeout = args.get("timeout", 30)
-
-        return (
-            f"URL: {url}\nTimeout: {timeout}s\n\n⚠️  Will fetch and convert web content to markdown"
-        )
-
-    def format_task_description(tool_call: dict) -> str:
-        """Format task (subagent) tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        description = args.get("description", "unknown")
-        prompt = args.get("prompt", "")
-
-        # Truncate prompt if too long
-        prompt_preview = prompt[:300]
-        if len(prompt) > 300:
-            prompt_preview += "..."
-
-        return (
-            f"Task: {description}\n\n"
-            f"Instructions to subagent:\n"
-            f"{'─' * 40}\n"
-            f"{prompt_preview}\n"
-            f"{'─' * 40}\n\n"
-            f"⚠️  Subagent will have access to file operations and shell commands"
-        )
-
     # Configure human-in-the-loop for potentially destructive tools
     shell_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: (
-            f"Shell Command: {tool_call['args'].get('command', 'N/A')}\n"
-            f"Working Directory: {os.getcwd()}"
-        ),
+        "description": _format_shell_description,
     }
 
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: (
-            f"Execute Command: {tool_call['args'].get('command', 'N/A')}\nLocation: Remote Sandbox"
-        ),
+        "description": _format_execute_description,
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_write_file_description(tool_call),
+        "description": _format_write_file_description,
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_edit_file_description(tool_call),
+        "description": _format_edit_file_description,
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_web_search_description(tool_call),
+        "description": _format_web_search_description,
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_fetch_url_description(tool_call),
+        "description": _format_fetch_url_description,
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_task_description(tool_call),
+        "description": _format_task_description,
     }
 
     agent = create_deep_agent(

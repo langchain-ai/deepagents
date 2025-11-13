@@ -12,10 +12,10 @@ TEST_FILE ?= tests/unit_tests
 INTEGRATION_FILES ?= tests/integration_tests
 
 test:
-	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10
+	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE)
 
 test_integration:
-	uv run pytest $(INTEGRATION_FILES) --timeout 10
+	uv run pytest $(INTEGRATION_FILES)
 
 test_watch:
 	uv run ptw . -- $(TEST_FILE)

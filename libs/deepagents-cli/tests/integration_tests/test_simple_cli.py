@@ -10,6 +10,7 @@ Note on testing approach:
 """
 
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from io import StringIO
 from pathlib import Path
@@ -23,7 +24,7 @@ from deepagents_cli.main import simple_cli
 
 
 @asynccontextmanager
-async def run_cli_task(task: str, tmp_path: Path):
+async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, str]]:
     """Context manager to run a CLI task with auto-approve and capture output.
 
     Args:
@@ -96,7 +97,8 @@ async def run_cli_task(task: str, tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_cli_auto_approve_write_file(tmp_path: Path):
+@pytest.mark.timeout(120)  # Agent can take 60-120 seconds
+async def test_cli_auto_approve_write_file(tmp_path: Path) -> None:
     """Test CLI with auto-approve mode to write a file."""
     async with run_cli_task("write hello to file foo.md", tmp_path) as (work_dir, console_output):
         # Verify the file was created
@@ -117,7 +119,8 @@ async def test_cli_auto_approve_write_file(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_cli_auto_approve_multiple_operations(tmp_path: Path):
+@pytest.mark.timeout(120)  # Agent can take 60-120 seconds
+async def test_cli_auto_approve_multiple_operations(tmp_path: Path) -> None:
     """Test CLI with auto-approve mode performing multiple file operations."""
     task = "create files test1.txt and test2.txt with content 'test file'"
 

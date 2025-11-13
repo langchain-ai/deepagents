@@ -103,6 +103,9 @@ ignore-var-parameters = true
     "INP001",  # Implicit namespace package
 ]
 
+[tool.pytest.ini_options]
+timeout = 10  # Default timeout for all tests (can be overridden per-test)
+
 [tool.mypy]
 strict = true
 ignore_missing_imports = true

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents_cli.config import COLORS, console
-from deepagents_cli.skills.skill_loader import SkillLoader
+from deepagents_cli.skills.skill_loader import list_skills
 
 
 def _list() -> None:
@@ -32,8 +32,7 @@ def _list() -> None:
         return
 
     # Load skills
-    loader = SkillLoader(skills_dir=skills_dir)
-    skills = loader.list()
+    skills = list_skills(skills_dir)
 
     if not skills:
         console.print("[yellow]No valid skills found.[/yellow]")
@@ -169,8 +168,7 @@ def _info(skill_name: str) -> None:
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
 
     # Load skills
-    loader = SkillLoader(skills_dir=skills_dir)
-    skills = loader.list()
+    skills = list_skills(skills_dir)
 
     # Find the skill
     skill = next((s for s in skills if s["name"] == skill_name), None)

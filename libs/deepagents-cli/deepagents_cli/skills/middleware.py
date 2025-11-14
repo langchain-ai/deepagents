@@ -26,7 +26,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 
-from deepagents_cli.skills.skill_loader import SkillLoader, SkillMetadata
+from deepagents_cli.skills.skill_loader import SkillMetadata, list_skills
 
 
 class SkillsState(AgentState):
@@ -142,7 +142,6 @@ class SkillsMiddleware(AgentMiddleware):
         self.skills_dir_display = f"~/.deepagents/{assistant_id}/skills"
         self.skills_dir_absolute = str(self.skills_dir)
         self.system_prompt_template = system_prompt_template or SKILLS_SYSTEM_PROMPT
-        self.loader = SkillLoader(skills_dir=self.skills_dir)
 
     def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
         """Format skills metadata for display in system prompt.
@@ -184,7 +183,7 @@ class SkillsMiddleware(AgentMiddleware):
         """
         if state.get("skills_metadata") is not None:
             return None
-        skills = self.loader.list()
+        skills = list_skills(self.skills_dir)
         return SkillsStateUpdate(skills_metadata=skills)
 
     async def abefore_agent(

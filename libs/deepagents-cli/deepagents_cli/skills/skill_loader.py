@@ -172,22 +172,3 @@ class SkillLoader:
             lines.append(f"  Read `{skills_dir_path}/{skill_dir}/SKILL.md` for details")
 
         return "\n".join(lines)
-
-
-def load_skills(skills_dir: Path | None = None) -> tuple[list[SkillMetadata], str]:
-    """Convenience function to load skills and format for system prompt.
-
-    Args:
-        skills_dir: Path to the skills directory. Defaults to ~/.deepagents/agent/skills
-                    (the default agent's skills directory).
-
-    Returns:
-        Tuple of (skills metadata list, formatted string for system prompt).
-    """
-    if skills_dir is None:
-        skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
-    loader = SkillLoader(skills_dir)
-    skills = loader.list()
-    skills_dir_path = f"~/.deepagents/{skills_dir.parent.name}/skills"
-    formatted = loader.format_skills_for_system_message(skills, skills_dir_path)
-    return skills, formatted

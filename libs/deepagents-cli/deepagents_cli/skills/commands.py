@@ -8,6 +8,7 @@ These commands are registered with the CLI via cli.py:
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from deepagents_cli.config import COLORS, console
 from deepagents_cli.skills.skill_loader import SkillLoader
@@ -205,15 +206,10 @@ def _info(skill_name: str) -> None:
     console.print()
 
 
-def setup_skills_parser(subparsers) -> argparse.ArgumentParser:
-    """Setup the skills subcommand parser with all its subcommands.
-
-    Args:
-        subparsers: The subparsers object from the main argument parser
-
-    Returns:
-        The skills parser object
-    """
+def setup_skills_parser(
+    subparsers: Any,
+) -> argparse.ArgumentParser:
+    """Setup the skills subcommand parser with all its subcommands."""
     skills_parser = subparsers.add_parser(
         "skills",
         help="Manage agent skills",
@@ -241,7 +237,6 @@ def setup_skills_parser(subparsers) -> argparse.ArgumentParser:
         description="Show detailed information about a specific skill",
     )
     info_parser.add_argument("name", help="Name of the skill to show info for")
-
     return skills_parser
 
 

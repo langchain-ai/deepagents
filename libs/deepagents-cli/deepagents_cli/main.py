@@ -16,6 +16,7 @@ from deepagents_cli.integrations.sandbox_factory import (
     create_sandbox,
     get_default_working_dir,
 )
+from deepagents_cli.skills import create_skill, list_skills, show_skill_info
 from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search
 from deepagents_cli.ui import TokenTracker, show_help
 
@@ -84,6 +85,23 @@ def parse_args():
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
+    # Skills command
+    skills_parser = subparsers.add_parser("skills", help="Manage agent skills")
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_command", help="Skills command")
+
+    # Skills list
+    skills_subparsers.add_parser("list", help="List all available skills")
+
+    # Skills create
+    create_parser = skills_subparsers.add_parser("create", help="Create a new skill")
+    create_parser.add_argument("name", help="Name of the skill to create (e.g., web-research)")
+
+    # Skills info
+    info_parser = skills_subparsers.add_parser(
+        "info", help="Show detailed information about a skill"
+    )
+    info_parser.add_argument("name", help="Name of the skill to show info for")
+
     # Default interactive mode
     parser.add_argument(
         "--agent",
@@ -135,10 +153,17 @@ async def simple_cli(
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
 
-    if backend and isinstance(backend, SandboxBackendProtocol):
-        sandbox_id: str | None = backend.id
-    else:
-        sandbox_id = None
+    # Extract sandbox ID from backend if using sandbox mode
+    sandbox_id: str | None = None
+    if backend:
+        from deepagents.backends.composite import CompositeBackend
+
+        # Check if it's a CompositeBackend with a sandbox default backend
+        if isinstance(backend, CompositeBackend):
+            if isinstance(backend.default, SandboxBackendProtocol):
+                sandbox_id = backend.default.id
+        elif isinstance(backend, SandboxBackendProtocol):
+            sandbox_id = backend.id
 
     # Display sandbox info persistently (survives console.clear())
     if sandbox_type and sandbox_id:
@@ -266,8 +291,8 @@ async def _run_agent_session(
     from .token_utils import calculate_baseline_tokens
 
     agent_dir = Path.home() / ".deepagents" / assistant_id
-    system_prompt = get_system_prompt(sandbox_type=sandbox_type)
-    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
+    system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
+    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, assistant_id)
 
     await simple_cli(
         agent,
@@ -358,6 +383,23 @@ def cli_main() -> None:
             list_agents()
         elif args.command == "reset":
             reset_agent(args.agent, args.source_agent)
+        elif args.command == "skills":
+            # Handle skills subcommands
+            if args.skills_command == "list":
+                list_skills()
+            elif args.skills_command == "create":
+                create_skill(args.name)
+            elif args.skills_command == "info":
+                show_skill_info(args.name)
+            else:
+                # No subcommand provided, show help
+                console.print(
+                    "[yellow]Please specify a skills subcommand: list, create, or info[/yellow]"
+                )
+                console.print("\nExamples:")
+                console.print("  deepagents skills list")
+                console.print("  deepagents skills create web-research")
+                console.print("  deepagents skills info web-research")
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve)

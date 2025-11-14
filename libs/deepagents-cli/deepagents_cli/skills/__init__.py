@@ -12,7 +12,7 @@ from deepagents_cli.skills.commands import (
     execute_skills_command,
     setup_skills_parser,
 )
-from deepagents_cli.skills.skills_middleware import SkillsMiddleware
+from deepagents_cli.skills.middleware import SkillsMiddleware
 
 __all__ = [
     "SkillsMiddleware",

@@ -271,25 +271,6 @@ class AgentMemoryMiddleware(AgentMiddleware):
 
         return result
 
-    async def abefore_agent(
-        self,
-        state: AgentMemoryState,
-        runtime: Runtime,
-    ) -> AgentMemoryStateUpdate:
-        """(async) Load agent memory from file before agent execution.
-
-        Loads both global agent.md and project-specific agent.md if available.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context.
-
-        Returns:
-            Updated state with agent_memory and project_memory populated.
-        """
-        # Sync version is fine since file operations are fast
-        return self.before_agent(state, runtime)
-
     def _build_system_prompt(
         self,
         agent_memory: str,

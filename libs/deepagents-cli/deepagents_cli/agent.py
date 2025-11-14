@@ -345,7 +345,6 @@ def create_agent_with_config(
     # Get the system prompt (sandbox-aware)
     system_prompt = get_system_prompt(sandbox_type=sandbox_type)
 
-
     # Configure human-in-the-loop for potentially destructive tools
     shell_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],

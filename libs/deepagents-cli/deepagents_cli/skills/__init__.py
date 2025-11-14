@@ -1,8 +1,8 @@
 """Skills module for deepagents CLI."""
 
-from deepagents_cli.skill_loader import SkillLoader, SkillMetadata, load_skills
-from deepagents_cli.skills_commands import create_skill, list_skills, show_skill_info
-from deepagents_cli.skills_middleware import SkillsMiddleware
+from deepagents_cli.skills.skill_loader import SkillLoader, SkillMetadata, load_skills
+from deepagents_cli.skills.skills_commands import create_skill, list_skills, show_skill_info
+from deepagents_cli.skills.skills_middleware import SkillsMiddleware
 
 __all__ = [
     "SkillLoader",

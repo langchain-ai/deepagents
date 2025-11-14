@@ -62,7 +62,7 @@ The CLI uses middleware to dynamically construct the system prompt on each model
    - **Appends** list of available skills (name + description only, not full SKILL.md content)
    - **Appends** progressive disclosure instructions (how to read full SKILL.md when needed)
 
-3. **Base System Prompt** (from `get_system_prompt()`):
+3. **Base System Prompt**:
    - Current working directory info
    - Skills directory location
    - Human-in-the-loop guidance

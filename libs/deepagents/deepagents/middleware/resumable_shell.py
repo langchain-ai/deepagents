@@ -17,4 +17,4 @@ class ResumableShellToolMiddleware(ShellToolMiddleware):
     actually active. This keeps behaviour identical for uninterrupted runs while
     allowing HITL pauses to succeed.
     """
-    ...
+

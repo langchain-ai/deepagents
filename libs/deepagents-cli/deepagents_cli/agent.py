@@ -212,13 +212,25 @@ def _format_edit_file_description(tool_call: ToolCall, state: AgentState, runtim
     )
 
 
-def _format_web_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
-    """Format web_search tool call for approval prompt."""
+def _format_tavily_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format tavily_search tool call for approval prompt."""
     args = tool_call["args"]
     query = args.get("query", "unknown")
     max_results = args.get("max_results", 5)
 
     return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
+
+def _format_parallel_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format parallel_search tool call for approval prompt."""
+    args = tool_call.get("args", {})
+    queries = args.get("queries", "unknown")
+    max_results = args.get("max_results", 5)
+    objective = args.get("objective")
+
+    description = f"Queries: {queries}\nMax results: {max_results}\n"
+    if objective:
+        description += f"Objective: {objective}\n"
+    description += "\n⚠️  This will use Parallel API credits"
 
 
 def _format_fetch_url_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
@@ -357,12 +369,12 @@ def create_agent_with_config(
 
     tavily_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_web_search_description,
+        "description": _format_tavily_search_description,
     }
 
     parallel_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_web_search_description,
+        "description": _format_parallel_search_description,
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {

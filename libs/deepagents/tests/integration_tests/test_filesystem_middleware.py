@@ -934,7 +934,7 @@ class TestFilesystem:
 
     def test_execute_tool_filtered_for_non_sandbox_backend(self):
         """Verify execute tool is filtered out when backend doesn't support it."""
-        from langchain.agents import AgentMiddleware
+        from langchain.agents.middleware import AgentMiddleware
 
         from deepagents.backends.protocol import ExecuteResponse
 
@@ -986,7 +986,7 @@ class TestFilesystem:
 
     def test_system_prompt_includes_execute_instructions_only_when_supported(self):
         """Verify EXECUTION_SYSTEM_PROMPT is only added when backend supports execution."""
-        from langchain.agents import AgentMiddleware
+        from langchain.agents.middleware import AgentMiddleware
 
         from deepagents.backends.protocol import ExecuteResponse
 

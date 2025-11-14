@@ -625,8 +625,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "daytona", specifier = ">=0.113.0" },
-    { name = "langchain", specifier = ">=1.0.2,<2.0.0" },
-    { name = "langchain-anthropic", specifier = ">=1.0.0,<2.0.0" },
+    { name = "langchain", specifier = ">=1.0.7,<2.0.0" },
+    { name = "langchain-anthropic", specifier = ">=1.0.4,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.0.0,<2.0.0" },
     { name = "runloop-api-client", specifier = ">=0.66.1" },
     { name = "tavily", specifier = ">=1.1.0" },
@@ -1063,16 +1063,16 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.0.6"
+version = "1.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/75/75884a15995f04f98aa252f3c100bb38027315d9a79c52903eb95aaf6580/langchain-1.0.6.tar.gz", hash = "sha256:b5cb8cf89fa52bc99f0dace824cd116fea41fa13ecb9a515422f44e49ea442e9", size = 461733, upload-time = "2025-11-14T18:57:09.565Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/7a/63c041d1ee74c505e30ec882889117baa08afce2264bcb4463929bac4e94/langchain-1.0.7.tar.gz", hash = "sha256:e3f8ad742b4cdc91d728f96bd70e4688bc11ffeca3bd160c5fe9937625d541b9", size = 465198, upload-time = "2025-11-14T20:52:21.813Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/47/a215efe244cd1c63e4e98d560f12244cc71169c42194eec93ed9e47fda89/langchain-1.0.6-py3-none-any.whl", hash = "sha256:66cc1dc5239a5b53d377c0d7abd18c5a39e5f032f3d84e0cc07ae19a83f8aa2b", size = 93530, upload-time = "2025-11-14T18:57:07.892Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/4a/02c14af46fa79ce7b02a0f8af46f5905cc7e8b647a5f1a7c793c03ac5063/langchain-1.0.7-py3-none-any.whl", hash = "sha256:cf33b4d60d7a2ff7f0f313441628927853192cdbab9d6d8ce229909a868bbf12", size = 93738, upload-time = "2025-11-14T20:52:20.717Z" },
 ]
 
 [[package]]

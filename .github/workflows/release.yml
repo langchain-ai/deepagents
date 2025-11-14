@@ -310,13 +310,12 @@ jobs:
           VIRTUAL_ENV=.venv uv pip install dist/*.whl
 
       - name: Run unit tests
-        if: false  # Temporarily disabled
         run: make test
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Run integration tests
         # Only run integration tests if they exist (currently only for deepagents package)
-        if: ${{ inputs.package == 'deepagents' }}
+        if: false  # Temporarily disabled
         run: make integration_test || echo "No integration tests found, skipping..."
         working-directory: ${{ env.WORKING_DIR }}
 

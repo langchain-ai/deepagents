@@ -1,6 +1,5 @@
 """Tests for project-specific memory and dual agent.md loading."""
 
-import tempfile
 from pathlib import Path
 
 import pytest

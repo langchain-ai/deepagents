@@ -21,9 +21,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
-from .agent_memory import AgentMemoryMiddleware
-from .config import COLORS, config, console, get_default_coding_instructions
-from .skills import SkillsMiddleware
+from deepagents_cli.agent_memory import AgentMemoryMiddleware
+from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions
+from deepagents_cli.skills import SkillsMiddleware
 
 
 def list_agents() -> None:

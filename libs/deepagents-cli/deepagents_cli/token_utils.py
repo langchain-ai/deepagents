@@ -88,8 +88,6 @@ def get_memory_system_prompt(
         has_project_memory: Whether project memory was loaded
     """
     # Import from agent_memory middleware
-    from pathlib import Path
-
     from .agent_memory import LONGTERM_MEMORY_SYSTEM_PROMPT
 
     agent_dir = Path.home() / ".deepagents" / assistant_id

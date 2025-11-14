@@ -8,8 +8,8 @@ These commands are registered with the CLI via cli.py:
 
 from pathlib import Path
 
-from ..config import COLORS, console
-from .skill_loader import SkillLoader
+from deepagents_cli.config import COLORS, console
+from deepagents_cli.skill_loader import SkillLoader
 
 
 def list_skills():
@@ -24,7 +24,7 @@ def list_skills():
             style=COLORS["dim"],
         )
         console.print(
-            f"\n[dim]Create your first skill:\n  deepagents skills create my-skill[/dim]",
+            "\n[dim]Create your first skill:\n  deepagents skills create my-skill[/dim]",
             style=COLORS["dim"],
         )
         return
@@ -175,7 +175,7 @@ def show_skill_info(skill_name: str):
 
     if not skill:
         console.print(f"[bold red]Error:[/bold red] Skill '{skill_name}' not found.")
-        console.print(f"\n[dim]Available skills:[/dim]", style=COLORS["dim"])
+        console.print("\n[dim]Available skills:[/dim]", style=COLORS["dim"])
         for s in skills:
             console.print(f"  - {s['name']}", style=COLORS["dim"])
         return

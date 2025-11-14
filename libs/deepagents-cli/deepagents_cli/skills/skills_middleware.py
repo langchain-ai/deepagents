@@ -19,7 +19,6 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import NotRequired
 
-from deepagents.backends.protocol import BackendProtocol
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -27,7 +26,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 
-from .skill_loader import SkillLoader, SkillMetadata
+from deepagents_cli.skill_loader import SkillLoader, SkillMetadata
 
 
 class SkillsState(AgentState):

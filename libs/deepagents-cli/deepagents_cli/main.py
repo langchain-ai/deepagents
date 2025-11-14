@@ -10,6 +10,9 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
 from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
+
+# Dev command - defined in dev_server module
+from deepagents_cli.dev_server import add_dev_parser, run_dev_server
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
@@ -83,6 +86,8 @@ def parse_args():
     reset_parser.add_argument(
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
+
+    add_dev_parser(subparsers)
 
     # Default interactive mode
     parser.add_argument(
@@ -358,6 +363,9 @@ def cli_main() -> None:
             list_agents()
         elif args.command == "reset":
             reset_agent(args.agent, args.source_agent)
+        elif args.command == "dev":
+            # Import and run dev server
+            run_dev_server(args)
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve)

@@ -1,7 +1,7 @@
 """Middleware for loading agent-specific long-term memory into the system prompt."""
 
 from collections.abc import Awaitable, Callable
-from typing import NotRequired
+from typing_extensions import NotRequired
 
 from deepagents.backends.protocol import BackendProtocol
 from langchain.agents.middleware.types import (

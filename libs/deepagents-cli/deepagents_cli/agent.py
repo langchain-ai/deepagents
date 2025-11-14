@@ -373,7 +373,4 @@ def create_agent_with_config(
             "task": task_interrupt_config,
         },
     ).with_config(config)
-
-    agent.checkpointer = InMemorySaver()
-
     return agent, composite_backend

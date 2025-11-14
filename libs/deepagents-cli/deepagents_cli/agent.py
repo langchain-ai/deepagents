@@ -264,6 +264,8 @@ def _format_parallel_search_description(tool_call: ToolCall, state: AgentState, 
         description += f"Objective: {objective}\n"
     description += "\n⚠️  This will use Parallel API credits"
 
+    return description
+
 
 def _format_fetch_url_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
     """Format fetch_url tool call for approval prompt."""

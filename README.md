@@ -95,7 +95,26 @@ in the same way you would any LangGraph agent.
 
 **Long-term Memory**
 
- Extend agents with persistent memory across threads using LangGraph’s Store. Agents can save and retrieve information from previous conversations.
+ Extend agents with persistent memory across threads using LangGraph's Store. Agents can save and retrieve information from previous conversations.
+
+## Default Tools
+
+Every deep agent created with `create_deep_agent` comes with a standard set of tools that enable planning, context management, and task delegation. These tools are provided automatically through the default middleware:
+
+| Tool Name | Description | Provided By |
+|-----------|-------------|-------------|
+| `write_todos` | Create and manage structured task lists for tracking progress through complex workflows | TodoListMiddleware |
+| `read_todos` | Read the current todo list state | TodoListMiddleware |
+| `ls` | List all files in a directory (requires absolute path) | FilesystemMiddleware |
+| `read_file` | Read content from a file with optional pagination (offset/limit parameters) | FilesystemMiddleware |
+| `write_file` | Create a new file or completely overwrite an existing file | FilesystemMiddleware |
+| `edit_file` | Perform exact string replacements in files | FilesystemMiddleware |
+| `glob` | Find files matching a pattern (e.g., `**/*.py`) | FilesystemMiddleware |
+| `grep` | Search for text patterns within files | FilesystemMiddleware |
+| `execute`* | Run shell commands in a sandboxed environment | FilesystemMiddleware |
+| `task` | Delegate tasks to specialized sub-agents with isolated context windows | SubAgentMiddleware |
+
+\* The `execute` tool is only available if the backend implements `SandboxBackendProtocol`. By default, it uses the in-memory state backend which does not support command execution.
 
 ## Customizing Deep Agents
 
@@ -131,6 +150,37 @@ agent = create_deep_agent(
     system_prompt=research_instructions,
 )
 ```
+
+### Default Prompting and Instructions
+
+When you create a deep agent with `create_deep_agent`, the middleware automatically injects detailed instructions into the system prompt to guide the agent in using the default tools effectively. Your custom `system_prompt` is combined with these middleware-provided instructions.
+
+**The final system prompt consists of:**
+1. Your custom `system_prompt` (if provided)
+2. Middleware-injected instructions for using built-in tools
+
+**Middleware-Injected Instructions:**
+
+Each middleware adds its own instructions to guide tool usage:
+
+- **TodoListMiddleware** - Adds instructions on when and how to use `write_todos` for task planning and tracking progress through complex workflows. Encourages breaking down multi-step tasks into discrete, trackable items.
+
+- **FilesystemMiddleware** - Adds comprehensive instructions for filesystem tools:
+  - When to use `ls` to orient in the filesystem
+  - How to use `read_file` with pagination for large files
+  - When to use `write_file` vs `edit_file`
+  - How to use `glob` and `grep` for code exploration
+  - Guidelines for the `execute` tool (if available via SandboxBackendProtocol)
+
+- **SubAgentMiddleware** - Adds detailed instructions for the `task` tool:
+  - When to spawn subagents (complex tasks, parallel research, context isolation)
+  - How to delegate effectively with clear, self-contained prompts
+  - Encourages parallel execution for independent tasks
+  - Guidelines for when NOT to use subagents (simple, single-step tasks)
+
+These instructions are based on patterns observed in production agents like Claude Code and Manus. They help the agent understand not just what tools are available, but when and how to use them effectively.
+
+**Important:** The quality of your custom `system_prompt` combined with these default instructions significantly impacts agent performance. For domain-specific agents, provide clear context about the task domain, expected outputs, and any constraints.
 
 ### `tools`
 
@@ -330,6 +380,41 @@ Deep Agents are built with a modular middleware architecture. As a reminder, Dee
 Each of these features is implemented as separate middleware. When you create a deep agent with `create_deep_agent`, we automatically attach **TodoListMiddleware**, **FilesystemMiddleware** and **SubAgentMiddleware** to your agent.
 
 Middleware is a composable concept, and you can choose to add as many or as few middleware to an agent depending on your use case. That means that you can also use any of the aforementioned middleware independently!
+
+### Middleware Overview
+
+Middleware components extend agent capabilities by providing tools and implementing hooks that process model and tool interactions. Every deep agent includes the following middleware by default (applied in order):
+
+| Middleware | Tools Added | Where It Acts | What It Does |
+|------------|-------------|---------------|--------------|
+| **TodoListMiddleware** | `write_todos`, `read_todos` | `wrap_model_call`, `before_agent` | Provides task planning and progress tracking tools. Enables agents to create structured todo lists, break down complex tasks into steps, and track completion status. Injects todo usage instructions into system prompt. |
+| **FilesystemMiddleware** | `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`* | `wrap_model_call`, `wrap_tool_call` | Provides file system operations and context offloading. In `wrap_model_call`: Injects filesystem instructions and filters out `execute` tool if backend doesn't support SandboxBackendProtocol. In `wrap_tool_call`: Intercepts large tool results (>20,000 tokens), automatically saves them to files, and returns summaries to prevent context overflow. |
+| **SubAgentMiddleware** | `task` | `wrap_model_call` | Enables task delegation to specialized subagents with isolated contexts. Provides the `task` tool for spawning ephemeral subagents that handle complex, multi-step tasks independently. Injects detailed instructions about when and how to use subagents effectively. |
+| **SummarizationMiddleware** | N/A | `before_agent` | Prevents context window overflow via automatic summarization. Monitors conversation history token count before each agent turn. When tokens exceed 170,000, summarizes older messages while keeping the last 6 messages intact. |
+| **AnthropicPromptCachingMiddleware** | N/A | `wrap_model_call` | Reduces API costs through prompt caching (Anthropic models only). Adds cache control headers to system prompts. Configured with `unsupported_model_behavior="ignore"` to work with non-Anthropic models. |
+| **PatchToolCallsMiddleware** | N/A | `before_agent` | Fixes "dangling" tool calls from interrupted operations. Scans message history to find AIMessages with tool_calls that lack corresponding ToolMessages. Adds placeholder ToolMessages to prevent LangGraph validation errors. |
+| **HumanInTheLoopMiddleware** | N/A | `wrap_tool_call` | Enables human approval for sensitive operations. Intercepts tool calls for tools specified in `interrupt_on` configuration. Creates LangGraph interrupts/breakpoints that pause execution and wait for human approval. Requires a checkpointer. Only included when `interrupt_on` is provided to `create_deep_agent()`. |
+
+\* The `execute` tool is only available if the backend implements `SandboxBackendProtocol`
+
+**Middleware Hook Execution Sequence**
+
+For each agent turn, middleware hooks execute in this order:
+
+1. **before_agent** - Runs before the agent processes the current state
+   - PatchToolCallsMiddleware: Fixes dangling tool calls
+   - SummarizationMiddleware: Summarizes if token count exceeds threshold
+
+2. **wrap_model_call** - Runs before/after the model generates a response
+   - FilesystemMiddleware: Injects filesystem instructions
+   - SubAgentMiddleware: Injects subagent instructions
+   - AnthropicPromptCachingMiddleware: Adds cache headers
+
+3. **Model generates response with tool calls**
+
+4. **wrap_tool_call** - Runs after each tool executes
+   - FilesystemMiddleware: Evicts large results to files
+   - HumanInTheLoopMiddleware: Pauses for approval if configured
 
 ### TodoListMiddleware
 

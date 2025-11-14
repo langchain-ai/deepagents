@@ -1,9 +1,13 @@
-"""Shell tool middleware that survives HITL pauses."""
+"""Shell tool middleware that survives HITL pauses.
+
+This is temporary implementation of ResumableShellToolMiddleware until
+the patch is released in langchain.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import cast
 
 from langchain.agents.middleware.shell_tool import (
     ShellToolMiddleware,

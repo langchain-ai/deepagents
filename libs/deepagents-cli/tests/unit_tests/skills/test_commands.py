@@ -1,6 +1,5 @@
 """Unit tests for skills command sanitization and validation."""
 
-
 import pytest
 
 from deepagents_cli.skills.commands import _validate_skill_name, _validate_skill_path

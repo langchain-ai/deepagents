@@ -13,76 +13,7 @@ from deepagents_cli.config import COLORS, console
 from deepagents_cli.skills.skill_loader import SkillLoader
 
 
-def setup_skills_parser(subparsers) -> argparse.ArgumentParser:
-    """Setup the skills subcommand parser with all its subcommands.
-
-    Args:
-        subparsers: The subparsers object from the main argument parser
-
-    Returns:
-        The skills parser object
-    """
-    skills_parser = subparsers.add_parser(
-        "skills",
-        help="Manage agent skills",
-        description="Manage agent skills - create, list, and view skill information",
-    )
-    skills_subparsers = skills_parser.add_subparsers(dest="skills_command", help="Skills command")
-
-    # Skills list
-    skills_subparsers.add_parser(
-        "list", help="List all available skills", description="List all available skills"
-    )
-
-    # Skills create
-    create_parser = skills_subparsers.add_parser(
-        "create",
-        help="Create a new skill",
-        description="Create a new skill with a template SKILL.md file",
-    )
-    create_parser.add_argument("name", help="Name of the skill to create (e.g., web-research)")
-
-    # Skills info
-    info_parser = skills_subparsers.add_parser(
-        "info",
-        help="Show detailed information about a skill",
-        description="Show detailed information about a specific skill",
-    )
-    info_parser.add_argument("name", help="Name of the skill to show info for")
-
-    return skills_parser
-
-
-def execute_skills_command(args) -> None:
-    """Execute skills subcommands based on parsed arguments.
-
-    Args:
-        args: Parsed command line arguments with skills_command attribute
-    """
-    if args.skills_command == "list":
-        list_skills()
-    elif args.skills_command == "create":
-        create_skill(args.name)
-    elif args.skills_command == "info":
-        show_skill_info(args.name)
-    else:
-        # No subcommand provided, show help
-        console.print("[yellow]Please specify a skills subcommand: list, create, or info[/yellow]")
-        console.print("\n[bold]Usage:[/bold]", style=COLORS["primary"])
-        console.print("  deepagents skills <command> [options]\n")
-        console.print("[bold]Available commands:[/bold]", style=COLORS["primary"])
-        console.print("  list              List all available skills")
-        console.print("  create <name>     Create a new skill")
-        console.print("  info <name>       Show detailed information about a skill")
-        console.print("\n[bold]Examples:[/bold]", style=COLORS["primary"])
-        console.print("  deepagents skills list")
-        console.print("  deepagents skills create web-research")
-        console.print("  deepagents skills info web-research")
-        console.print("\n[dim]For more help on a specific command:[/dim]", style=COLORS["dim"])
-        console.print("  deepagents skills <command> --help", style=COLORS["dim"])
-
-
-def list_skills() -> None:
+def _list() -> None:
     """List all available skills for the default agent."""
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
@@ -125,7 +56,7 @@ def list_skills() -> None:
         console.print()
 
 
-def create_skill(skill_name: str) -> None:
+def _create(skill_name: str) -> None:
     """Create a new skill with a template SKILL.md file for the default agent."""
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
@@ -231,7 +162,7 @@ This skill directory can include supporting files referenced in the instructions
     )
 
 
-def show_skill_info(skill_name: str) -> None:
+def _info(skill_name: str) -> None:
     """Show detailed information about a specific skill for the default agent."""
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
@@ -272,3 +203,78 @@ def show_skill_info(skill_name: str) -> None:
     console.print("[bold]Full SKILL.md Content:[/bold]\n", style=COLORS["primary"])
     console.print(skill_content, style=COLORS["dim"])
     console.print()
+
+
+def setup_skills_parser(subparsers) -> argparse.ArgumentParser:
+    """Setup the skills subcommand parser with all its subcommands.
+
+    Args:
+        subparsers: The subparsers object from the main argument parser
+
+    Returns:
+        The skills parser object
+    """
+    skills_parser = subparsers.add_parser(
+        "skills",
+        help="Manage agent skills",
+        description="Manage agent skills - create, list, and view skill information",
+    )
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_command", help="Skills command")
+
+    # Skills list
+    skills_subparsers.add_parser(
+        "list", help="List all available skills", description="List all available skills"
+    )
+
+    # Skills create
+    create_parser = skills_subparsers.add_parser(
+        "create",
+        help="Create a new skill",
+        description="Create a new skill with a template SKILL.md file",
+    )
+    create_parser.add_argument("name", help="Name of the skill to create (e.g., web-research)")
+
+    # Skills info
+    info_parser = skills_subparsers.add_parser(
+        "info",
+        help="Show detailed information about a skill",
+        description="Show detailed information about a specific skill",
+    )
+    info_parser.add_argument("name", help="Name of the skill to show info for")
+
+    return skills_parser
+
+
+def execute_skills_command(args: argparse.Namespace) -> None:
+    """Execute skills subcommands based on parsed arguments.
+
+    Args:
+        args: Parsed command line arguments with skills_command attribute
+    """
+    if args.skills_command == "list":
+        _list()
+    elif args.skills_command == "create":
+        _create(args.name)
+    elif args.skills_command == "info":
+        _info(args.name)
+    else:
+        # No subcommand provided, show help
+        console.print("[yellow]Please specify a skills subcommand: list, create, or info[/yellow]")
+        console.print("\n[bold]Usage:[/bold]", style=COLORS["primary"])
+        console.print("  deepagents skills <command> [options]\n")
+        console.print("[bold]Available commands:[/bold]", style=COLORS["primary"])
+        console.print("  list              List all available skills")
+        console.print("  create <name>     Create a new skill")
+        console.print("  info <name>       Show detailed information about a skill")
+        console.print("\n[bold]Examples:[/bold]", style=COLORS["primary"])
+        console.print("  deepagents skills list")
+        console.print("  deepagents skills create web-research")
+        console.print("  deepagents skills info web-research")
+        console.print("\n[dim]For more help on a specific command:[/dim]", style=COLORS["dim"])
+        console.print("  deepagents skills <command> --help", style=COLORS["dim"])
+
+
+__all__ = [
+    "execute_skills_command",
+    "setup_skills_parser",
+]

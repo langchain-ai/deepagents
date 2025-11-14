@@ -7,11 +7,76 @@ These commands are registered with the CLI via cli.py:
 """
 
 import argparse
+import re
 from pathlib import Path
 from typing import Any
 
 from deepagents_cli.config import COLORS, console
-from deepagents_cli.skills.skill_loader import list_skills
+from deepagents_cli.skills.load import list_skills
+
+
+def _validate_skill_name(skill_name: str) -> tuple[bool, str]:
+    """Validate skill name to prevent path traversal attacks.
+
+    Args:
+        skill_name: The skill name to validate
+
+    Returns:
+        Tuple of (is_valid, error_message). If valid, error_message is empty.
+    """
+    # Check for empty or whitespace-only names
+    if not skill_name or not skill_name.strip():
+        return False, "Skill name cannot be empty"
+
+    # Check for path traversal sequences
+    if ".." in skill_name:
+        return False, "Skill name cannot contain '..' (path traversal)"
+
+    # Check for absolute paths
+    if skill_name.startswith("/") or skill_name.startswith("\\"):
+        return False, "Skill name cannot be an absolute path"
+
+    # Check for path separators
+    if "/" in skill_name or "\\" in skill_name:
+        return False, "Skill name cannot contain path separators"
+
+    # Only allow alphanumeric, hyphens, underscores
+    if not re.match(r"^[a-zA-Z0-9_-]+$", skill_name):
+        return False, "Skill name can only contain letters, numbers, hyphens, and underscores"
+
+    return True, ""
+
+
+def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
+    """Validate that the resolved skill directory is within the base directory.
+
+    Args:
+        skill_dir: The skill directory path to validate
+        base_dir: The base skills directory that should contain skill_dir
+
+    Returns:
+        Tuple of (is_valid, error_message). If valid, error_message is empty.
+    """
+    try:
+        # Resolve both paths to their canonical form
+        resolved_skill = skill_dir.resolve()
+        resolved_base = base_dir.resolve()
+
+        # Check if skill_dir is within base_dir
+        # Use is_relative_to if available (Python 3.9+), otherwise use string comparison
+        if hasattr(resolved_skill, "is_relative_to"):
+            if not resolved_skill.is_relative_to(resolved_base):
+                return False, f"Skill directory must be within {base_dir}"
+        else:
+            # Fallback for older Python versions
+            try:
+                resolved_skill.relative_to(resolved_base)
+            except ValueError:
+                return False, f"Skill directory must be within {base_dir}"
+
+        return True, ""
+    except (OSError, RuntimeError) as e:
+        return False, f"Invalid path: {e}"
 
 
 def _list() -> None:
@@ -58,9 +123,25 @@ def _list() -> None:
 
 def _create(skill_name: str) -> None:
     """Create a new skill with a template SKILL.md file for the default agent."""
+    # Validate skill name first
+    is_valid, error_msg = _validate_skill_name(skill_name)
+    if not is_valid:
+        console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
+        console.print(
+            "[dim]Skill names must only contain letters, numbers, hyphens, and underscores.[/dim]",
+            style=COLORS["dim"],
+        )
+        return
+
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
     skill_dir = skills_dir / skill_name
+
+    # Validate the resolved path is within skills_dir
+    is_valid_path, path_error = _validate_skill_path(skill_dir, skills_dir)
+    if not is_valid_path:
+        console.print(f"[bold red]Error:[/bold red] {path_error}")
+        return
 
     if skill_dir.exists():
         console.print(

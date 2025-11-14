@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import NotRequired
+from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -24,8 +24,15 @@ class AgentMemoryState(AgentState):
     project_memory: NotRequired[str]
     """Project-specific memory content (from project root)."""
 
-    project_root: NotRequired[Path]
-    """Path to the detected project root."""
+
+class AgentMemoryStateUpdate(TypedDict):
+    """A state update for the agent memory middleware."""
+
+    agent_memory: NotRequired[str]
+    """Long-term memory content for the agent (global)."""
+
+    project_memory: NotRequired[str]
+    """Project-specific memory content (from project root)."""
 
 
 # Long-term Memory Documentation
@@ -216,7 +223,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
         self,
         state: AgentMemoryState,
         runtime: Runtime,
-    ) -> AgentMemoryState:
+    ) -> AgentMemoryStateUpdate:
         """Load agent memory from file before agent execution.
 
         Loads both global agent.md and project-specific agent.md if available.
@@ -268,7 +275,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
         self,
         state: AgentMemoryState,
         runtime: Runtime,
-    ) -> AgentMemoryState:
+    ) -> AgentMemoryStateUpdate:
         """(async) Load agent memory from file before agent execution.
 
         Loads both global agent.md and project-specific agent.md if available.

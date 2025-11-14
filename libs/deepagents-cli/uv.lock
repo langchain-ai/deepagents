@@ -706,6 +706,7 @@ source = { editable = "." }
 dependencies = [
     { name = "daytona" },
     { name = "deepagents" },
+    { name = "langchain" },
     { name = "langchain-openai" },
     { name = "markdownify" },
     { name = "modal" },
@@ -746,6 +747,7 @@ test = [
 requires-dist = [
     { name = "daytona", specifier = ">=0.113.0" },
     { name = "deepagents", directory = "../deepagents" },
+    { name = "langchain", specifier = ">=1.0.7" },
     { name = "langchain-openai", specifier = ">=0.1.0" },
     { name = "markdownify", specifier = ">=0.13.0" },
     { name = "modal", specifier = ">=0.65.0" },
@@ -1233,16 +1235,16 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.0.5"
+version = "1.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0c/5d/c98f2ffaefc73845a1f6bc66a8c2a643e36ce8ec09cff1307216c115d22c/langchain-1.0.5.tar.gz", hash = "sha256:7e0635b36a7f7a649be21fcce4c82b7428bcf72a5d14aacdf9f2636c4775f159", size = 461860, upload-time = "2025-11-07T23:04:59.414Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/7a/63c041d1ee74c505e30ec882889117baa08afce2264bcb4463929bac4e94/langchain-1.0.7.tar.gz", hash = "sha256:e3f8ad742b4cdc91d728f96bd70e4688bc11ffeca3bd160c5fe9937625d541b9", size = 465198, upload-time = "2025-11-14T20:52:21.813Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/4f/2603973fb3b74c717335703851a45914bc9794fbfaeb4ff74f7f08ecf5e8/langchain-1.0.5-py3-none-any.whl", hash = "sha256:d59ce7303f1d9e4bca41855b20a1842f4470a22d09a64fb93fb0ff30a2d36d4b", size = 93779, upload-time = "2025-11-07T23:04:57.83Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/4a/02c14af46fa79ce7b02a0f8af46f5905cc7e8b647a5f1a7c793c03ac5063/langchain-1.0.7-py3-none-any.whl", hash = "sha256:cf33b4d60d7a2ff7f0f313441628927853192cdbab9d6d8ce229909a868bbf12", size = 93738, upload-time = "2025-11-14T20:52:20.717Z" },
 ]
 
 [[package]]

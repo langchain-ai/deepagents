@@ -6,7 +6,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "deepagents==0.2.6",
+  "deepagents==0.2.7",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",
@@ -16,6 +16,7 @@ dependencies = [
   "daytona>=0.113.0",
   "modal>=0.65.0",
   "markdownify>=0.13.0",
+  "langchain>=1.0.7",
 ]
 
 [project.scripts]

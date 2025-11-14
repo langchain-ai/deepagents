@@ -628,8 +628,8 @@ class FilesystemMiddleware(AgentMiddleware):
 
     Args:
         backend: Backend for file storage and optional execution. If not provided, defaults to StateBackend
-            (ephemeral storage in agent state). For real filesystem access or persistent storage,
-            use CompositeBackend with FilesystemBackend. For execution support, use a backend
+            (ephemeral storage in agent state). For persistent storage or hybrid setups,
+            use CompositeBackend with custom routes. For execution support, use a backend
             that implements SandboxBackendProtocol.
         system_prompt: Optional custom system prompt override.
         custom_tool_descriptions: Optional custom tool descriptions override.
@@ -638,20 +638,13 @@ class FilesystemMiddleware(AgentMiddleware):
     Example:
         ```python
         from deepagents.middleware.filesystem import FilesystemMiddleware
-        from deepagents.backends.filesystem import FilesystemBackend
-        from deepagents.backends import StateBackend, CompositeBackend
+        from deepagents.backends import StateBackend, StoreBackend, CompositeBackend
         from langchain.agents import create_agent
 
         # Ephemeral storage only (default, no execution)
         agent = create_agent(middleware=[FilesystemMiddleware()])
 
-        # Real filesystem access (no virtual routing)
-        backend = CompositeBackend(default=FilesystemBackend(), routes={})
-        agent = create_agent(middleware=[FilesystemMiddleware(backend=backend)])
-
         # With hybrid storage (ephemeral + persistent /memories/)
-        from deepagents.backends import StoreBackend
-
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         agent = create_agent(middleware=[FilesystemMiddleware(backend=backend)])
 

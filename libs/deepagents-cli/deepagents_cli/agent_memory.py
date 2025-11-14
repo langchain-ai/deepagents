@@ -10,18 +10,21 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langgraph.runtime import Runtime
+
+from deepagents_cli.project_utils import find_project_agent_md, find_project_root
 
 
 class AgentMemoryState(AgentState):
     """State for the agent memory middleware."""
 
-    agent_memory: NotRequired[str | None]
+    agent_memory: NotRequired[str]
     """Long-term memory content for the agent (global)."""
 
-    project_memory: NotRequired[str | None]
+    project_memory: NotRequired[str]
     """Project-specific memory content (from project root)."""
 
-    project_root: NotRequired[Path | None]
+    project_root: NotRequired[Path]
     """Path to the detected project root."""
 
 
@@ -212,7 +215,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
     def before_agent(
         self,
         state: AgentMemoryState,
-        runtime,
+        runtime: Runtime,
     ) -> AgentMemoryState:
         """Load agent memory from file before agent execution.
 
@@ -225,8 +228,6 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             Updated state with agent_memory and project_memory populated.
         """
-        from .project_utils import find_project_agent_md, find_project_root
-
         result = {}
 
         # Load global agent memory if not already loaded
@@ -266,7 +267,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
     async def abefore_agent(
         self,
         state: AgentMemoryState,
-        runtime,
+        runtime: Runtime,
     ) -> AgentMemoryState:
         """(async) Load agent memory from file before agent execution.
 
@@ -320,24 +321,19 @@ class AgentMemoryMiddleware(AgentMiddleware):
             agent_memory=agent_memory or "(No global agent.md)",
             project_memory=project_memory or "(No project agent.md)",
         )
-        if request.system_prompt:
-            request.system_prompt = memory_section + "\n\n" + request.system_prompt
-        else:
-            request.system_prompt = memory_section
+        system_prompt = memory_section
 
-        # Add long-term memory documentation
-        request.system_prompt = (
-            request.system_prompt
-            + "\n\n"
-            + LONGTERM_MEMORY_SYSTEM_PROMPT.format(
-                agent_dir_absolute=self.agent_dir_absolute,
-                agent_dir_display=self.agent_dir_display,
-                project_memory_info=project_memory_info,
-                project_deepagents_dir=project_deepagents_dir,
-            )
+        if request.system_prompt:
+            system_prompt += "\n\n" + request.system_prompt
+
+        system_prompt += "\n\n" + LONGTERM_MEMORY_SYSTEM_PROMPT.format(
+            agent_dir_absolute=self.agent_dir_absolute,
+            agent_dir_display=self.agent_dir_display,
+            project_memory_info=project_memory_info,
+            project_deepagents_dir=project_deepagents_dir,
         )
 
-        return handler(request)
+        return handler(request.override(system_prompt=system_prompt))
 
     async def awrap_model_call(
         self,
@@ -377,21 +373,17 @@ class AgentMemoryMiddleware(AgentMiddleware):
             agent_memory=agent_memory or "(No global agent.md)",
             project_memory=project_memory or "(No project agent.md)",
         )
-        if request.system_prompt:
-            request.system_prompt = memory_section + "\n\n" + request.system_prompt
-        else:
-            request.system_prompt = memory_section
 
-        # Add long-term memory documentation
-        request.system_prompt = (
-            request.system_prompt
-            + "\n\n"
-            + LONGTERM_MEMORY_SYSTEM_PROMPT.format(
-                agent_dir_absolute=self.agent_dir_absolute,
-                agent_dir_display=self.agent_dir_display,
-                project_memory_info=project_memory_info,
-                project_deepagents_dir=project_deepagents_dir,
-            )
+        system_prompt = memory_section
+
+        if request.system_prompt:
+            system_prompt += "\n\n" + request.system_prompt
+
+        system_prompt += "\n\n" + LONGTERM_MEMORY_SYSTEM_PROMPT.format(
+            agent_dir_absolute=self.agent_dir_absolute,
+            agent_dir_display=self.agent_dir_display,
+            project_memory_info=project_memory_info,
+            project_deepagents_dir=project_deepagents_dir,
         )
 
-        return await handler(request)
+        return await handler(request.override(system_prompt=system_prompt))

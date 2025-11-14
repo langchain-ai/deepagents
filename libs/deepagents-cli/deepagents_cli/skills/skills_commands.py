@@ -9,10 +9,10 @@ These commands are registered with the CLI via cli.py:
 from pathlib import Path
 
 from deepagents_cli.config import COLORS, console
-from deepagents_cli.skill_loader import SkillLoader
+from deepagents_cli.skills.skill_loader import SkillLoader
 
 
-def list_skills():
+def list_skills() -> None:
     """List all available skills for the default agent."""
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
@@ -55,7 +55,7 @@ def list_skills():
         console.print()
 
 
-def create_skill(skill_name: str):
+def create_skill(skill_name: str) -> None:
     """Create a new skill with a template SKILL.md file for the default agent."""
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
@@ -161,7 +161,7 @@ This skill directory can include supporting files referenced in the instructions
     )
 
 
-def show_skill_info(skill_name: str):
+def show_skill_info(skill_name: str) -> None:
     """Show detailed information about a specific skill for the default agent."""
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"

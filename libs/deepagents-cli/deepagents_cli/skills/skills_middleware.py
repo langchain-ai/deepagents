@@ -17,7 +17,7 @@ Skills directory structure (per-agent):
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import NotRequired
+from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -26,13 +26,20 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 
-from deepagents_cli.skill_loader import SkillLoader, SkillMetadata
+from deepagents_cli.skills.skill_loader import SkillLoader, SkillMetadata
 
 
 class SkillsState(AgentState):
     """State for the skills middleware."""
 
-    skills_metadata: NotRequired[list[SkillMetadata] | None]
+    skills_metadata: NotRequired[list[SkillMetadata]]
+    """List of loaded skill metadata (name, description, path)."""
+
+
+class SkillsStateUpdate(TypedDict):
+    """State update for the skills middleware."""
+
+    skills_metadata: list[SkillMetadata]
     """List of loaded skill metadata (name, description, path)."""
 
 
@@ -163,7 +170,7 @@ class SkillsMiddleware(AgentMiddleware):
         self,
         state: SkillsState,
         runtime,
-    ) -> SkillsState:
+    ) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution.
 
         This runs once at session start to discover available skills.
@@ -175,15 +182,10 @@ class SkillsMiddleware(AgentMiddleware):
         Returns:
             Updated state with skills_metadata populated.
         """
-        # Only load skills if not already loaded
-        if "skills_metadata" not in state or state.get("skills_metadata") is None:
-            try:
-                # Load skills from directory
-                skills = self.loader.list()
-                return {"skills_metadata": skills}
-            except Exception:
-                # Silently handle errors, return empty list
-                return {"skills_metadata": []}
+        if state.get("skills_metadata") is not None:
+            return None
+        skills = self.loader.list()
+        return SkillsStateUpdate(skills_metadata=skills)
 
     async def abefore_agent(
         self,
@@ -231,13 +233,12 @@ class SkillsMiddleware(AgentMiddleware):
             skills_dir_display=self.skills_dir_display,
         )
 
-        # Inject into system prompt
         if request.system_prompt:
-            request.system_prompt = request.system_prompt + "\n\n" + skills_section
+            system_prompt = request.system_prompt + "\n\n" + skills_section
         else:
-            request.system_prompt = skills_section
+            system_prompt = skills_section
 
-        return handler(request)
+        return handler(request.override(system_prompt=system_prompt))
 
     async def awrap_model_call(
         self,

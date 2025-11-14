@@ -104,6 +104,9 @@ def add_dev_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+async def agent_factory():
+    """Async factory function to create the deepagents agent."""
+
 def create_server_agent(
     agent_name: str,
     auto_approve: bool = False,
@@ -131,13 +134,7 @@ def create_server_agent(
     if tavily_client is not None:
         tools.append(web_search)
 
-    sandbox_type = None
-
-    if sandbox_type is not None:
-        raise NotImplementedError()
     model = create_model()
-
-    sandbox_backend = None
 
     agent, backend = create_agent_with_config(
         model=model,
@@ -146,38 +143,6 @@ def create_server_agent(
         sandbox=None,
         sandbox_type=None,
     )
-
-    # Handle auto-approve by removing interrupts
-    if auto_approve:
-        system_prompt = get_system_prompt(sandbox_type=None)
-        # Build middleware based on sandbox type
-        agent_dir = Path.home() / ".deepagents" / agent_name
-        long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
-
-        if sandbox_backend is None:
-            from deepagents.middleware.resumable_shell import ResumableShellToolMiddleware
-            from langchain.agents.middleware import HostExecutionPolicy
-
-            agent_middleware = [
-                AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
-                ResumableShellToolMiddleware(
-                    workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
-                ),
-            ]
-        else:
-            agent_middleware = [
-                AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
-            ]
-
-        agent = create_deep_agent(
-            model=model,
-            system_prompt=system_prompt,
-            tools=tools,
-            backend=backend,
-            middleware=agent_middleware,
-            interrupt_on={},  # No interrupts
-        ).with_config(config)
-
     return agent
 
 

@@ -252,6 +252,18 @@ def _format_parallel_search_description(tool_call: ToolCall, state: AgentState, 
 
     return description
 
+def _format_parallel_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format parallel_search tool call for approval prompt."""
+    args = tool_call.get("args", {})
+    queries = args.get("queries", "unknown")
+    max_results = args.get("max_results", 5)
+    objective = args.get("objective")
+
+    description = f"Queries: {queries}\nMax results: {max_results}\n"
+    if objective:
+        description += f"Objective: {objective}\n"
+    description += "\n⚠️  This will use Parallel API credits"
+
 
 def _format_fetch_url_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
     """Format fetch_url tool call for approval prompt."""

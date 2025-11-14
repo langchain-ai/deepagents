@@ -6,7 +6,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "deepagents==0.2.5",
+  "deepagents==0.2.6",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",
@@ -102,6 +102,9 @@ ignore-var-parameters = true
     "ANN201",  # Missing return type annotation
     "INP001",  # Implicit namespace package
 ]
+
+[tool.pytest.ini_options]
+timeout = 10  # Default timeout for all tests (can be overridden per-test)
 
 [tool.mypy]
 strict = true

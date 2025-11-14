@@ -99,7 +99,6 @@ def create_model():
         console.print(f"[dim]Using OpenAI model: {model_name}[/dim]")
         return ChatOpenAI(
             model=model_name,
-            temperature=0.7,
         )
     if anthropic_key:
         from langchain_anthropic import ChatAnthropic

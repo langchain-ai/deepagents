@@ -42,7 +42,7 @@ The agent created with `create_deep_agent` is a LangGraph graph—use it with st
 
 <img src="deepagents_tools.png" alt="deep agent" width="600"/>
 
-Every deep agent created with `create_deep_agent` comes with a standard set of tools that enable planning, filesystem usage, and task delegation:
+Every deep agent created with `create_deep_agent` comes with a standard set of tools:
 
 | Tool Name | Description | Provided By |
 |-----------|-------------|-------------|

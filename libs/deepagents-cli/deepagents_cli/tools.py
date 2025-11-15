@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 import requests
 from markdownify import markdownify
+from parallel import Parallel
+from parallel.types.beta.search_result import SearchResult
 from tavily import TavilyClient
 
 # Initialize Tavily client if API key is available
@@ -12,6 +14,10 @@ tavily_client = (
     TavilyClient(api_key=os.environ.get("TAVILY_API_KEY"))
     if os.environ.get("TAVILY_API_KEY")
     else None
+)
+
+parallel_client = (
+    Parallel(api_key=os.environ["PARALLEL_API_KEY"]) if os.environ.get("PARALLEL_API_KEY") else None
 )
 
 
@@ -90,12 +96,12 @@ def http_request(
         }
 
 
-def web_search(
+def tavily_search(
     query: str,
     max_results: int = 5,
     topic: Literal["general", "news", "finance"] = "general",
     include_raw_content: bool = False,
-):
+) -> dict[str, Any]:
     """Search the web using Tavily for current information and documentation.
 
     This tool searches the web and returns relevant results. After receiving results,
@@ -137,7 +143,114 @@ def web_search(
             topic=topic,
         )
     except Exception as e:
-        return {"error": f"Web search error: {e!s}", "query": query}
+        return {"error": f"Tavily search error: {e!s}", "query": query}
+
+
+def parallel_search(
+    queries: list[str],
+    max_results: int = 5,
+    objective: str | None = None,
+    max_chars_per_excerpt: int = 1000,
+) -> SearchResult:
+    """Search the web using Parallel for current information and documentation.
+
+    This tool searches the web and returns relevant results with excerpts.
+    After receiving results, you MUST synthesize the information into a natural,
+    helpful response for the user.
+
+    Args:
+        queries: A list of search queries (be specific and detailed)
+        max_results: Number of results to return (default: 5)
+        objective: Natural-language description of what the web search is trying to find.
+            May include guidance about preferred sources or freshness.
+            At least one of objective or search_queries must be provided.
+        max_chars_per_excerpt: Maximum characters per excerpt (default: 1000)
+
+    Returns:
+        Dictionary containing:
+        - results: A list of WebSearchResult objects, ordered by decreasing relevance:
+            - title: Title of the webpage, if available.
+            - url: URL associated with the search result.
+            - excerpts: List of relevant excerpted content from the URL, formatted as markdown.
+            - publish_date: Publish date of the webpage in YYYY-MM-DD format, if available.
+        - search_id: Unique search identifier
+
+    IMPORTANT: After using this tool:
+    1. Read through the 'excerpts' field of each result (array of strings)
+    2. Extract relevant information that answers the user's question
+    3. Synthesize this into a clear, natural language response
+    4. Cite sources by mentioning the page titles or URLs
+    5. NEVER show the raw JSON to the user - always provide a formatted response
+    """
+    if parallel_client is None:
+        return {
+            "error": "Parallel API key not configured. Please set PARALLEL_API_KEY environment variable.",
+            "queries": queries,
+            "objective": objective,
+        }
+
+    try:
+        return parallel_client.beta.search(
+            objective=objective,
+            search_queries=queries,
+            max_results=max_results,
+            max_chars_per_result=max_chars_per_excerpt,
+        )
+    except Exception as e:
+        return {
+            "error": f"Parallel search error: {e!s}",
+            "queries": queries,
+            "objective": objective,
+        }
+
+
+def get_web_search_tool():
+    """Get the available web search tool based on configured API keys.
+
+    Returns tavily_search if TAVILY_API_KEY is set, otherwise parallel_search
+    if PARALLEL_API_KEY is set, otherwise None.
+    """
+    if tavily_client is not None:
+        return tavily_search
+    if parallel_client is not None:
+        return parallel_search
+    return None
+
+
+def web_search(
+    query: str,
+    max_results: int = 5,
+    topic: Literal["general", "news", "finance"] = "general",
+    include_raw_content: bool = False,
+) -> dict[str, Any]:
+    """Search the web using Tavily for current information and documentation.
+
+    This is a backward compatibility wrapper for tavily_search.
+    For new code, use tavily_search or parallel_search directly.
+
+    This tool searches the web and returns relevant results. After receiving results,
+    you MUST synthesize the information into a natural, helpful response for the user.
+
+    Args:
+        query: The search query (be specific and detailed)
+        max_results: Number of results to return (default: 5)
+        topic: Search topic type - "general" for most queries, "news" for current events
+        include_raw_content: Include full page content (warning: uses more tokens)
+
+    Returns:
+        Dictionary containing:
+        - results: List of search results, each with:
+            - title: Page title
+            - url: Page URL
+            - content: Relevant excerpt from the page
+            - score: Relevance score (0-1)
+        - query: The original search query
+
+    IMPORTANT: After using this tool:
+    1. Read through the 'content' field of each result
+    2. Extract relevant information that answers the user's question
+    """
+    return tavily_search(query, max_results, topic, include_raw_content)
 
 
 def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:

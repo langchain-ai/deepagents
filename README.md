@@ -1,8 +1,6 @@
 # 🧠🤖 Deepagents
 
-Agents increasingly tackle long-horizon tasks ([task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)), but these tasks—spanning dozens of tool calls—face cost and reliability challenges.
-
-`deepagents` is a simple agent harness that addresses these challenges with **planning** (structured task lists), **filesystem access** (context offloading), and **sub-agent delegation** (isolated task execution). `deepagents` is inspired by the principles used in popular agents like [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8), but is open source and easily extendable with your own custom tools and instructions. See our [docs](https://docs.langchain.com/oss/python/deepagents/overview) for a full overview.
+Agents can increasingly tackle long-horizon tasks, ([with agent task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)). But, these long horizon tasks spanning dozens of tool calls present both cost and reliability challenges. `deepagents` is a simple agent harness that addresses these challenges with built in tools for **planning** (for structured task lists), **filesystem access** (for context offloading), and **sub-agent delegation** (isolated task execution). The inclusion of these tools is inspired by popular agents like [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8), which make use of them.  However, `deepagents` is open source and easily extendable with your own custom tools and instructions. See our [docs](https://docs.langchain.com/oss/python/deepagents/overview) for a full overview.
 
 <img src="deepagents_banner.png" alt="deep agent" width="600"/>
 
@@ -42,6 +40,8 @@ The agent created with `create_deep_agent` is a LangGraph graph—use it with st
 
 ## Built-in Tools
 
+<img src="deepagents_tools.png" alt="deep agent" width="600"/>
+
 Every deep agent created with `create_deep_agent` comes with a standard set of tools that enable planning, filesystem usage, and task delegation:
 
 | Tool Name | Description | Provided By |
@@ -57,19 +57,17 @@ Every deep agent created with `create_deep_agent` comes with a standard set of t
 | `execute`* | Run shell commands in a sandboxed environment | FilesystemMiddleware |
 | `task` | Delegate tasks to specialized sub-agents with isolated context windows | SubAgentMiddleware |
 
-\* The `execute` tool is only available if the backend implements `SandboxBackendProtocol`. By default, it uses the in-memory state backend which does not support command execution.
+The `execute` tool is only available if the backend implements `SandboxBackendProtocol`. By default, it uses the in-memory state backend which does not support command execution. As shown, these tools (along with other capabilities) are provided by default middleware:
 
-These tools are provided by default middleware:
-
-| Middleware | Tools | Purpose |
-|------------|-------|---------|
-| **TodoListMiddleware** | `write_todos`, `read_todos` | Task planning and progress tracking |
-| **FilesystemMiddleware** | `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`* | File operations and context offloading (auto-saves large results) |
-| **SubAgentMiddleware** | `task` | Delegate tasks to isolated sub-agents |
-| **SummarizationMiddleware** | - | Auto-summarizes when context exceeds 170k tokens |
-| **AnthropicPromptCachingMiddleware** | - | Caches system prompts to reduce costs (Anthropic only) |
-| **PatchToolCallsMiddleware** | - | Fixes dangling tool calls from interruptions |
-| **HumanInTheLoopMiddleware** | - | Pauses execution for human approval (requires `interrupt_on` config) |
+| Middleware | Purpose |
+|------------|---------|
+| **TodoListMiddleware** | Task planning and progress tracking |
+| **FilesystemMiddleware** | File operations and context offloading (auto-saves large results) |
+| **SubAgentMiddleware** | Delegate tasks to isolated sub-agents |
+| **SummarizationMiddleware** | Auto-summarizes when context exceeds 170k tokens |
+| **AnthropicPromptCachingMiddleware** | Caches system prompts to reduce costs (Anthropic only) |
+| **PatchToolCallsMiddleware** | Fixes dangling tool calls from interruptions |
+| **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
 
 ## Customizing Deep Agents
 
@@ -93,19 +91,19 @@ agent = create_deep_agent(
 
 You can provide a `system_prompt` parameter to `create_deep_agent()`. This custom prompt is **appended to** default instructions that are automatically injected by middleware. The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:
 
-#### From TodoListMiddleware
+#### From [TodoListMiddleware](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)
 - Explains when to use `write_todos` and `read_todos`
 - Guidance on marking tasks completed
 - Best practices for todo list management
 - When NOT to use todos (simple tasks)
 
-#### From FilesystemMiddleware
+#### From [FilesystemMiddleware](libs/deepagents/deepagents/middleware/filesystem.py)
 - Lists all filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`*)
 - Explains that file paths must start with `/`
 - Describes each tool's purpose and parameters
 - Notes about context offloading for large tool results
 
-#### From SubAgentMiddleware
+#### From [SubAgentMiddleware](libs/deepagents/deepagents/middleware/subagents.py)
 - Explains the `task()` tool for delegating to sub-agents
 - When to use sub-agents vs when NOT to use them
 - Guidance on parallel execution
@@ -218,7 +216,7 @@ agent = create_deep_agent(
 
 ### `interrupt_on`
 
-A common reality for agents is that some tool operations may be sensitive and require human approval before execution. Deep Agents supports human-in-the-loop workflows through LangGraph’s interrupt capabilities. You can configure which tools require approval using a checkpointer.
+Some tools may be sensitive and require human approval before execution. Deepagents supports human-in-the-loop workflows through LangGraph’s interrupt capabilities. You can configure which tools require approval using a checkpointer.
 
 These tool configs are passed to our prebuilt [HITL middleware](https://docs.langchain.com/oss/python/langchain/middleware#human-in-the-loop) so that the agent pauses execution and waits for feedback from the user before executing configured tools.
 
@@ -240,7 +238,6 @@ agent = create_deep_agent(
         },
     }
 )
-
 ```
 
 ## Sync vs Async

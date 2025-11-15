@@ -1,12 +1,12 @@
 [project]
 name = "deepagents-cli"
-version = "0.0.8"
+version = "0.0.9"
 description = "Deepagents CLI"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "deepagents==0.2.6",
+  "deepagents==0.2.7",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",
@@ -17,6 +17,7 @@ dependencies = [
   "modal>=0.65.0",
   "markdownify>=0.13.0",
   "parallel-web",
+  "langchain>=1.0.7",
 ]
 
 [project.scripts]

@@ -53,8 +53,8 @@ The CLI uses middleware to dynamically construct the system prompt on each model
 1. **AgentMemoryMiddleware** (runs first):
    - **Prepends** the contents of both agent.md files:
      ```xml
-     <global_agent_memory>[~/.deepagents/{agent}/agent.md content]</global_agent_memory>
-     <project_agent_memory>[{project}/.deepagents/agent.md content]</project_agent_memory>
+     <user_memory>[~/.deepagents/{agent}/agent.md content]</user_memory>
+     <project_memory>[{project}/.deepagents/agent.md content]</project_memory>
      ```
    - **Appends** memory management instructions (how to read/write memory files, decision framework)
 
@@ -69,8 +69,8 @@ The CLI uses middleware to dynamically construct the system prompt on each model
 
 **Final prompt structure:**
 ```
-<global_agent_memory>...</global_agent_memory>
-<project_agent_memory>...</project_agent_memory>
+<user_memory>...</user_memory>
+<project_memory>...</project_memory>
 
 [Base system prompt]
 

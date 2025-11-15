@@ -115,15 +115,15 @@ class TestProjectAgentMdFinding:
 class TestAgentMemoryMiddleware:
     """Test dual memory loading in AgentMemoryMiddleware."""
 
-    def test_load_global_memory_only(self, tmp_path):
-        """Test loading global agent.md when no project memory exists."""
+    def test_load_user_memory_only(self, tmp_path):
+        """Test loading user agent.md when no project memory exists."""
         import os
 
-        # Create global agent directory
+        # Create user agent directory
         agent_dir = tmp_path / ".deepagents" / "test-agent"
         agent_dir.mkdir(parents=True)
-        global_md = agent_dir / "agent.md"
-        global_md.write_text("Global instructions")
+        user_md = agent_dir / "agent.md"
+        user_md.write_text("User instructions")
 
         # Create a directory without .git to avoid project detection
         non_project_dir = tmp_path / "not-a-project"
@@ -141,19 +141,18 @@ class TestAgentMemoryMiddleware:
             state = {}
             result = middleware.before_agent(state, None)
 
-            assert result["agent_memory"] == "Global instructions"
+            assert result["user_memory"] == "User instructions"
             assert result["project_memory"] == ""
-            assert result["project_root"] is None
         finally:
             os.chdir(original_cwd)
 
     def test_load_both_memories(self, tmp_path):
-        """Test loading both global and project agent.md."""
-        # Create global agent directory
+        """Test loading both user and project agent.md."""
+        # Create user agent directory
         agent_dir = tmp_path / ".deepagents" / "test-agent"
         agent_dir.mkdir(parents=True)
-        global_md = agent_dir / "agent.md"
-        global_md.write_text("Global instructions")
+        user_md = agent_dir / "agent.md"
+        user_md.write_text("User instructions")
 
         # Create project with .git and agent.md
         project_root = tmp_path / "project"
@@ -176,9 +175,8 @@ class TestAgentMemoryMiddleware:
             state = {}
             result = middleware.before_agent(state, None)
 
-            assert result["agent_memory"] == "Global instructions"
+            assert result["user_memory"] == "User instructions"
             assert result["project_memory"] == "Project instructions"
-            assert result["project_root"] == project_root
         finally:
             os.chdir(original_cwd)
 
@@ -190,7 +188,7 @@ class TestAgentMemoryMiddleware:
         middleware = AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id="test-agent")
 
         # State already has memory
-        state = {"agent_memory": "Existing memory", "project_memory": "Existing project"}
+        state = {"user_memory": "Existing memory", "project_memory": "Existing project"}
         result = middleware.before_agent(state, None)
 
         # Should return empty dict (no updates)
@@ -200,25 +198,25 @@ class TestAgentMemoryMiddleware:
 class TestRealAgentMemory:
     """Test with real agent.md files (may not exist on all systems)."""
 
-    def test_load_real_global_memory(self):
-        """Test loading actual global agent.md if it exists."""
+    def test_load_real_user_memory(self):
+        """Test loading actual user agent.md if it exists."""
         agent_dir = Path.home() / ".deepagents" / "agent"
         agent_md = agent_dir / "agent.md"
 
         if not agent_md.exists():
             pytest.skip(
-                "⚠️  Global agent.md not found. "
+                "⚠️  User agent.md not found. "
                 f"Create {agent_md} to enable this test. "
-                "This is expected if you haven't set up your global agent yet."
+                "This is expected if you haven't set up your user agent yet."
             )
 
         middleware = AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id="agent")
         state = {}
         result = middleware.before_agent(state, None)
 
-        assert "agent_memory" in result
-        assert len(result["agent_memory"]) > 0
-        print(f"\n✓ Loaded global agent.md ({len(result['agent_memory'])} chars)")
+        assert "user_memory" in result
+        assert len(result["user_memory"]) > 0
+        print(f"\n✓ Loaded user agent.md ({len(result['user_memory'])} chars)")
 
     def test_detect_current_project(self):
         """Test detecting project root from current directory."""

@@ -26,11 +26,11 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
     Returns:
         Token count for system prompt + agent.md (tools not included)
     """
-    # Load global agent.md content
+    # Load user agent.md content
     agent_md_path = agent_dir / "agent.md"
-    agent_memory = ""
+    user_memory = ""
     if agent_md_path.exists():
-        agent_memory = agent_md_path.read_text()
+        user_memory = agent_md_path.read_text()
 
     # Load project agent.md content
     from .project_utils import find_project_agent_md, find_project_root
@@ -52,8 +52,8 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
     # Build the complete system prompt as it will be sent
     # This mimics what AgentMemoryMiddleware.wrap_model_call() does
     memory_section = (
-        f"<global_agent_memory>\n{agent_memory or '(No global agent.md)'}\n</global_agent_memory>\n\n"
-        f"<project_agent_memory>\n{project_memory or '(No project agent.md)'}\n</project_agent_memory>"
+        f"<user_memory>\n{user_memory or '(No user agent.md)'}\n</user_memory>\n\n"
+        f"<project_memory>\n{project_memory or '(No project agent.md)'}\n</project_memory>"
     )
 
     # Get the long-term memory system prompt

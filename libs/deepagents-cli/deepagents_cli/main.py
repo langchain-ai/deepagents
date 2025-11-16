@@ -9,7 +9,7 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 
 from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
 from deepagents_cli.commands import execute_bash_command, handle_command
-from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
+from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model, settings
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
@@ -17,7 +17,7 @@ from deepagents_cli.integrations.sandbox_factory import (
     get_default_working_dir,
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
-from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search
+from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.ui import TokenTracker, show_help
 
 
@@ -160,7 +160,7 @@ async def simple_cli(
             )
         console.print()
 
-    if tavily_client is None:
+    if not settings.has_tavily:
         console.print(
             "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
             style=COLORS["dim"],
@@ -265,7 +265,7 @@ async def _run_agent_session(
     """
     # Create agent with conditional tools
     tools = [http_request, fetch_url]
-    if tavily_client is not None:
+    if settings.has_tavily:
         tools.append(web_search)
 
     agent, composite_backend = create_agent_with_config(

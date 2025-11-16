@@ -33,12 +33,12 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
         user_memory = agent_md_path.read_text()
 
     # Load project agent.md content
-    from .project_utils import find_project_agent_md, find_project_root
+    from .config import _find_project_agent_md, _find_project_root
 
     project_memory = ""
-    project_root = find_project_root()
+    project_root = _find_project_root()
     if project_root:
-        project_md_paths = find_project_agent_md(project_root)
+        project_md_paths = _find_project_agent_md(project_root)
         if project_md_paths:
             try:
                 # Combine all project agent.md files (if multiple exist)

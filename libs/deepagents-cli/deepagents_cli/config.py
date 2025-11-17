@@ -122,16 +122,13 @@ class Settings:
     - File system paths
 
     Attributes:
-        openai_api_key: OpenAI API key if available
-        anthropic_api_key: Anthropic API key if available
-        tavily_api_key: Tavily API key if available
         project_root: Current project root directory (if in a git project)
         project_agent_md_paths: List of project agent.md file paths
         project_deepagents_dir: Path to .deepagents directory in project
-        has_openai: Whether OpenAI API key is configured
-        has_anthropic: Whether Anthropic API key is configured
-        has_tavily: Whether Tavily API key is configured
-        has_project: Whether currently in a git project
+
+        openai_api_key: OpenAI API key if available
+        anthropic_api_key: Anthropic API key if available
+        tavily_api_key: Tavily API key if available
     """
 
     # API keys

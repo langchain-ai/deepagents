@@ -1,7 +1,7 @@
 """Middleware for loading agent-specific long-term memory into the system prompt."""
 
 from collections.abc import Awaitable, Callable
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -224,32 +224,19 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             Updated state with user_memory and project_memory populated.
         """
-        result = {}
+        agent_md_path = self.agent_dir / "agent.md"
+        result: AgentMemoryStateUpdate = {}
+        if agent_md_path.exists():
+            result["user_memory"] = agent_md_path.read_text()
 
-        # Load user memory if not already loaded
-        if not state.get("user_memory"):
-            agent_md_path = self.agent_dir / "agent.md"
+        # Add project memory for the given run
+        if self.project_agent_md_paths:
             try:
-                result["user_memory"] = (
-                    agent_md_path.read_text() if agent_md_path.exists() else None
-                )
+                # Combine all project agent.md files (if multiple exist)
+                contents = [path.read_text() for path in self.project_agent_md_paths]
+                result["project_memory"] = "\n\n".join(contents) if contents else None
             except (OSError, UnicodeDecodeError):
-                # OSError covers FileNotFoundError, PermissionError, etc.
-                result["user_memory"] = None
-
-        # Load project memory if not already loaded
-        if not state.get("project_memory"):
-            if self.project_agent_md_paths:
-                try:
-                    # Combine all project agent.md files (if multiple exist)
-                    contents = [path.read_text() for path in self.project_agent_md_paths]
-                    result["project_memory"] = "\n\n".join(contents) if contents else None
-                except (OSError, UnicodeDecodeError):
-                    # OSError covers FileNotFoundError, PermissionError, etc.
-                    result["project_memory"] = None
-            else:
-                result["project_memory"] = None
-
+                pass
         return result
 
     def _build_system_prompt(
@@ -316,9 +303,10 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
+        state = cast("AgentMemoryState", request.state)
         system_prompt = self._build_system_prompt(
-            request.state.get("user_memory"),
-            request.state.get("project_memory"),
+            state.get("user_memory"),
+            state.get("project_memory"),
             request.system_prompt,
         )
         return handler(request.override(system_prompt=system_prompt))
@@ -337,9 +325,10 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
+        state = cast("AgentMemoryState", request.state)
         system_prompt = self._build_system_prompt(
-            request.state.get("user_memory"),
-            request.state.get("project_memory"),
+            state.get("user_memory"),
+            state.get("project_memory"),
             request.system_prompt,
         )
         return await handler(request.override(system_prompt=system_prompt))

@@ -203,8 +203,6 @@ class AgentMemoryMiddleware(AgentMiddleware):
 
         # Project paths (from settings)
         self.project_root = settings.project_root
-        self.project_agent_md_paths = settings.project_agent_md_paths
-        self.project_deepagents_dir = settings.project_deepagents_dir
 
         self.system_prompt_template = system_prompt_template or DEFAULT_MEMORY_SNIPPET
 
@@ -216,6 +214,9 @@ class AgentMemoryMiddleware(AgentMiddleware):
         """Load agent memory from file before agent execution.
 
         Loads both user agent.md and project-specific agent.md if available.
+        Only loads if not already present in state.
+
+        Dynamically checks for file existence on every call to catch user updates.
 
         Args:
             state: Current agent state.
@@ -224,19 +225,26 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             Updated state with user_memory and project_memory populated.
         """
-        agent_md_path = self.agent_dir / "agent.md"
         result: AgentMemoryStateUpdate = {}
-        if agent_md_path.exists():
-            result["user_memory"] = agent_md_path.read_text()
 
-        # Add project memory for the given run
-        if self.project_agent_md_paths:
-            try:
-                # Combine all project agent.md files (if multiple exist)
-                contents = [path.read_text() for path in self.project_agent_md_paths]
-                result["project_memory"] = "\n\n".join(contents) if contents else None
-            except (OSError, UnicodeDecodeError):
-                pass
+        # Load user memory if not already in state
+        if "user_memory" not in state:
+            user_path = self.settings.get_user_agent_md_path(self.assistant_id)
+            if user_path.exists():
+                try:
+                    result["user_memory"] = user_path.read_text()
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        # Load project memory if not already in state
+        if "project_memory" not in state:
+            project_path = self.settings.get_project_agent_md_path()
+            if project_path and project_path.exists():
+                try:
+                    result["project_memory"] = project_path.read_text()
+                except (OSError, UnicodeDecodeError):
+                    pass
+
         return result
 
     def _build_system_prompt(
@@ -264,8 +272,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
             project_memory_info = "None (not in a git project)"
 
         # Build project deepagents directory path
-        if self.project_deepagents_dir:
-            project_deepagents_dir = str(self.project_deepagents_dir)
+        if self.project_root:
+            project_deepagents_dir = str(self.project_root / ".deepagents")
         else:
             project_deepagents_dir = "[project-root]/.deepagents (not in a project)"
 

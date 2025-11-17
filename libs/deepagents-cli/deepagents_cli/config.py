@@ -123,8 +123,6 @@ class Settings:
 
     Attributes:
         project_root: Current project root directory (if in a git project)
-        project_agent_md_paths: List of project agent.md file paths
-        project_deepagents_dir: Path to .deepagents directory in project
 
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
@@ -138,8 +136,6 @@ class Settings:
 
     # Project information
     project_root: Path | None
-    project_agent_md_paths: list[Path]
-    project_deepagents_dir: Path | None
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
@@ -158,20 +154,12 @@ class Settings:
 
         # Detect project
         project_root = _find_project_root(start_path)
-        project_agent_md_paths = []
-        project_deepagents_dir = None
-
-        if project_root:
-            project_agent_md_paths = _find_project_agent_md(project_root)
-            project_deepagents_dir = project_root / ".deepagents"
 
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             tavily_api_key=tavily_key,
             project_root=project_root,
-            project_agent_md_paths=project_agent_md_paths,
-            project_deepagents_dir=project_deepagents_dir,
         )
 
     @property
@@ -193,6 +181,31 @@ class Settings:
     def has_project(self) -> bool:
         """Check if currently in a git project."""
         return self.project_root is not None
+
+    def get_user_agent_md_path(self, agent_name: str) -> Path:
+        """Get user-level agent.md path for a specific agent.
+
+        Returns path regardless of whether the file exists.
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Path to ~/.deepagents/{agent_name}/agent.md
+        """
+        return Path.home() / ".deepagents" / agent_name / "agent.md"
+
+    def get_project_agent_md_path(self) -> Path | None:
+        """Get project-level agent.md path.
+
+        Returns path regardless of whether the file exists.
+
+        Returns:
+            Path to {project_root}/.deepagents/agent.md, or None if not in a project
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".deepagents" / "agent.md"
 
     @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:
@@ -242,11 +255,12 @@ class Settings:
         Returns:
             Path to project .deepagents directory, or None if not in a project
         """
-        if not self.project_deepagents_dir:
+        if not self.project_root:
             return None
 
-        self.project_deepagents_dir.mkdir(parents=True, exist_ok=True)
-        return self.project_deepagents_dir
+        project_deepagents_dir = self.project_root / ".deepagents"
+        project_deepagents_dir.mkdir(parents=True, exist_ok=True)
+        return project_deepagents_dir
 
 
 # Global settings instance (initialized once)

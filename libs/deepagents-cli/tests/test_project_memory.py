@@ -44,7 +44,7 @@ class TestAgentMemoryMiddleware:
             result = middleware.before_agent(state, None)
 
             assert result["user_memory"] == "User instructions"
-            assert result["project_memory"] is None
+            assert "project_memory" not in result
         finally:
             os.chdir(original_cwd)
 
@@ -59,11 +59,12 @@ class TestAgentMemoryMiddleware:
         user_md = agent_dir / "agent.md"
         user_md.write_text("User instructions")
 
-        # Create project with .git and agent.md
+        # Create project with .git and agent.md in .deepagents/
         project_root = tmp_path / "project"
         project_root.mkdir()
         (project_root / ".git").mkdir()
-        project_md = project_root / "agent.md"
+        (project_root / ".deepagents").mkdir()
+        project_md = project_root / ".deepagents" / "agent.md"
         project_md.write_text("Project instructions")
 
         # Change to project directory for detection

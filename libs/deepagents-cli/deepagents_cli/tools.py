@@ -200,6 +200,61 @@ def parallel_search(
         }
 
 
+def get_web_search_tool():
+    """Get the available web search tool based on configured API keys.
+
+    Returns tavily_search if TAVILY_API_KEY is set, otherwise parallel_search
+    if PARALLEL_API_KEY is set, otherwise None.
+
+    This is kept for backward compatibility. New code should use
+    tavily_search or parallel_search directly.
+    """
+    if tavily_client is not None:
+        return tavily_search
+    if parallel_client is not None:
+        return parallel_search
+    return None
+
+
+def web_search(
+    query: str,
+    max_results: int = 5,
+    topic: Literal["general", "news", "finance"] = "general",
+    include_raw_content: bool = False,
+) -> dict[str, Any]:
+    """Search the web using Tavily for current information and documentation.
+
+    This is a backward compatibility wrapper for tavily_search.
+    For new code, use tavily_search or parallel_search directly.
+
+    This tool searches the web and returns relevant results. After receiving results,
+    you MUST synthesize the information into a natural, helpful response for the user.
+
+    Args:
+        query: The search query (be specific and detailed)
+        max_results: Number of results to return (default: 5)
+        topic: Search topic type - "general" for most queries, "news" for current events
+        include_raw_content: Include full page content (warning: uses more tokens)
+
+    Returns:
+        Dictionary containing:
+        - results: List of search results, each with:
+            - title: Page title
+            - url: Page URL
+            - content: Relevant excerpt from the page
+            - score: Relevance score (0-1)
+        - query: The original search query
+
+    IMPORTANT: After using this tool:
+    1. Read through the 'content' field of each result
+    2. Extract relevant information that answers the user's question
+    3. Synthesize this into a clear, natural language response
+    4. Cite sources by mentioning the page titles or URLs
+    5. NEVER show the raw JSON to the user - always provide a formatted response
+    """
+    return tavily_search(query, max_results, topic, include_raw_content)
+
+
 def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
     """Fetch content from a URL and convert HTML to markdown format.
 

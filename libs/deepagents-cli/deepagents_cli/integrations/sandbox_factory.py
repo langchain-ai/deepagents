@@ -256,6 +256,58 @@ def create_daytona_sandbox(
         except Exception as e:
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
+@contextmanager
+def create_blaxel_sandbox(
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
+    """Create Blaxel sandbox.
+
+    Args:
+        sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        (BlaxelBackend, sandbox_id)
+
+    Raises:
+        ImportError: Blaxel SDK not installed
+        ValueError: BL_API_KEY or BL_WORKSPACE not set
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
+    """
+    from blaxel.core import SyncSandboxInstance
+
+    from deepagents_cli.integrations.blaxel import BlaxelBackend
+
+    if not os.environ.get("BL_API_KEY"):
+        raise ValueError("BL_API_KEY environment variable not set")
+
+    if not os.environ.get("BL_WORKSPACE"):
+        raise ValueError("BL_WORKSPACE environment variable not set")
+
+    if sandbox_id:
+        sandbox = SyncSandboxInstance.get(sandbox_id)
+    else:
+        console.print("[yellow]Starting Blaxel sandbox...[/yellow]")
+        sandbox = SyncSandboxInstance.create()
+        sandbox_id = sandbox.metadata.name
+
+    backend = BlaxelBackend(sandbox)
+    console.print(f"[green]✓ Blaxel sandbox ready: {backend.id}[/green]")
+
+    # Run setup script if provided
+    if setup_script_path:
+        _run_sandbox_setup(backend, setup_script_path)
+    try:
+        yield backend
+    finally:
+        console.print(f"[dim]Deleting Blaxel sandbox {sandbox_id}...[/dim]")
+        try:
+            SyncSandboxInstance.delete(sandbox_id)
+            console.print(f"[dim]✓ Blaxel sandbox {sandbox_id} terminated[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+
 
 _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
@@ -269,6 +321,7 @@ _SANDBOX_PROVIDERS = {
     "modal": create_modal_sandbox,
     "runloop": create_runloop_sandbox,
     "daytona": create_daytona_sandbox,
+    "blaxel": create_blaxel_sandbox,
 }
 
 

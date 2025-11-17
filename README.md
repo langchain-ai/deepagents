@@ -39,62 +39,6 @@ result = agent.invoke({"messages": [{"role": "user", "content": "What is LangGra
 
 The agent created with `create_deep_agent` is compiled [LangGraph StateGraph](https://docs.langchain.com/oss/python/langgraph/overview), so it can used it with streaming, human-in-the-loop, memory, or Studio just like any LangGraph agent. See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
 
-## Recent Updates
-
-- **Nov 2025**: Added [`deepagents-cli`](https://github.com/langchain-ai/deepagents/tree/master/libs/deepagents-cli) package for CLI interface
-- **Examples**: See [deepagents-quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for use-cases
-
-## Built-in Tools
-
-<img src="deepagents_tools.png" alt="deep agent" width="600"/>
-
-Every deep agent created with `create_deep_agent` comes with a standard set of tools:
-
-| Tool Name | Description | Provided By |
-|-----------|-------------|-------------|
-| `write_todos` | Create and manage structured task lists for tracking progress through complex workflows | TodoListMiddleware |
-| `read_todos` | Read the current todo list state | TodoListMiddleware |
-| `ls` | List all files in a directory (requires absolute path) | FilesystemMiddleware |
-| `read_file` | Read content from a file with optional pagination (offset/limit parameters) | FilesystemMiddleware |
-| `write_file` | Create a new file or completely overwrite an existing file | FilesystemMiddleware |
-| `edit_file` | Perform exact string replacements in files | FilesystemMiddleware |
-| `glob` | Find files matching a pattern (e.g., `**/*.py`) | FilesystemMiddleware |
-| `grep` | Search for text patterns within files | FilesystemMiddleware |
-| `execute`* | Run shell commands in a sandboxed environment | FilesystemMiddleware |
-| `task` | Delegate tasks to specialized sub-agents with isolated context windows | SubAgentMiddleware |
-
-The `execute` tool is only available if the backend implements `SandboxBackendProtocol`. By default, it uses the in-memory state backend which does not support command execution. As shown, these tools (along with other capabilities) are provided by default middleware:
-
-| Middleware | Purpose |
-|------------|---------|
-| **TodoListMiddleware** | Task planning and progress tracking |
-| **FilesystemMiddleware** | File operations and context offloading (auto-saves large results) |
-| **SubAgentMiddleware** | Delegate tasks to isolated sub-agents |
-| **SummarizationMiddleware** | Auto-summarizes when context exceeds 170k tokens |
-| **AnthropicPromptCachingMiddleware** | Caches system prompts to reduce costs (Anthropic only) |
-| **PatchToolCallsMiddleware** | Fixes dangling tool calls from interruptions |
-| **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
-
-The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:
-
-#### From [TodoListMiddleware](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)
-- Explains when to use `write_todos` and `read_todos`
-- Guidance on marking tasks completed
-- Best practices for todo list management
-- When NOT to use todos (simple tasks)
-
-### From [FilesystemMiddleware](libs/deepagents/deepagents/middleware/filesystem.py)
-- Lists all filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`*)
-- Explains that file paths must start with `/`
-- Describes each tool's purpose and parameters
-- Notes about context offloading for large tool results
-
-#### From [SubAgentMiddleware](libs/deepagents/deepagents/middleware/subagents.py)
-- Explains the `task()` tool for delegating to sub-agents
-- When to use sub-agents vs when NOT to use them
-- Guidance on parallel execution
-- Subagent lifecycle (spawn → run → return → reconcile)
-
 ## Customizing Deep Agents
 
 There are several parameters you can pass to `create_deep_agent`. 
@@ -247,3 +191,58 @@ agent = create_deep_agent(
     }
 )
 ```
+## Built-in Tools
+
+<img src="deepagents_tools.png" alt="deep agent" width="600"/>
+
+Every deep agent created with `create_deep_agent` comes with a standard set of tools:
+
+| Tool Name | Description | Provided By |
+|-----------|-------------|-------------|
+| `write_todos` | Create and manage structured task lists for tracking progress through complex workflows | TodoListMiddleware |
+| `read_todos` | Read the current todo list state | TodoListMiddleware |
+| `ls` | List all files in a directory (requires absolute path) | FilesystemMiddleware |
+| `read_file` | Read content from a file with optional pagination (offset/limit parameters) | FilesystemMiddleware |
+| `write_file` | Create a new file or completely overwrite an existing file | FilesystemMiddleware |
+| `edit_file` | Perform exact string replacements in files | FilesystemMiddleware |
+| `glob` | Find files matching a pattern (e.g., `**/*.py`) | FilesystemMiddleware |
+| `grep` | Search for text patterns within files | FilesystemMiddleware |
+| `execute`* | Run shell commands in a sandboxed environment | FilesystemMiddleware |
+| `task` | Delegate tasks to specialized sub-agents with isolated context windows | SubAgentMiddleware |
+
+The `execute` tool is only available if the backend implements `SandboxBackendProtocol`. By default, it uses the in-memory state backend which does not support command execution. As shown, these tools (along with other capabilities) are provided by default middleware:
+
+## Built-in Middleware
+
+`deepagents` uses middleware under the hood. Here is the list of the middleware used.
+
+| Middleware | Purpose |
+|------------|---------|
+| **TodoListMiddleware** | Task planning and progress tracking |
+| **FilesystemMiddleware** | File operations and context offloading (auto-saves large results) |
+| **SubAgentMiddleware** | Delegate tasks to isolated sub-agents |
+| **SummarizationMiddleware** | Auto-summarizes when context exceeds 170k tokens |
+| **AnthropicPromptCachingMiddleware** | Caches system prompts to reduce costs (Anthropic only) |
+| **PatchToolCallsMiddleware** | Fixes dangling tool calls from interruptions |
+| **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
+
+## Built-in prompts
+The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:
+
+#### From [TodoListMiddleware](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)
+- Explains when to use `write_todos` and `read_todos`
+- Guidance on marking tasks completed
+- Best practices for todo list management
+- When NOT to use todos (simple tasks)
+
+#### From [FilesystemMiddleware](libs/deepagents/deepagents/middleware/filesystem.py)
+- Lists all filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`*)
+- Explains that file paths must start with `/`
+- Describes each tool's purpose and parameters
+- Notes about context offloading for large tool results
+
+#### From [SubAgentMiddleware](libs/deepagents/deepagents/middleware/subagents.py)
+- Explains the `task()` tool for delegating to sub-agents
+- When to use sub-agents vs when NOT to use them
+- Guidance on parallel execution
+- Subagent lifecycle (spawn → run → return → reconcile)

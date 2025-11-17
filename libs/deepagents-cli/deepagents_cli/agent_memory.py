@@ -247,22 +247,21 @@ class AgentMemoryMiddleware(AgentMiddleware):
 
         return result
 
-    def _build_system_prompt(
-        self,
-        user_memory: str | None,
-        project_memory: str | None,
-        base_system_prompt: str | None,
-    ) -> str:
+    def _build_system_prompt(self, request: ModelRequest) -> str:
         """Build the complete system prompt with memory sections.
 
         Args:
-            user_memory: User memory content (personal preferences), or None if not available.
-            project_memory: Project-specific memory content, or None if not available.
-            base_system_prompt: Base system prompt to append to.
+            request: The model request containing state and base system prompt.
 
         Returns:
             Complete system prompt with memory sections injected.
         """
+        # Extract memory from state
+        state = cast("AgentMemoryState", request.state)
+        user_memory = state.get("user_memory")
+        project_memory = state.get("project_memory")
+        base_system_prompt = request.system_prompt
+
         # Build project memory info for documentation
         if self.project_root and project_memory:
             project_memory_info = f"`{self.project_root}` (detected)"
@@ -311,12 +310,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        state = cast("AgentMemoryState", request.state)
-        system_prompt = self._build_system_prompt(
-            state.get("user_memory"),
-            state.get("project_memory"),
-            request.system_prompt,
-        )
+        system_prompt = self._build_system_prompt(request)
         return handler(request.override(system_prompt=system_prompt))
 
     async def awrap_model_call(
@@ -333,10 +327,5 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        state = cast("AgentMemoryState", request.state)
-        system_prompt = self._build_system_prompt(
-            state.get("user_memory"),
-            state.get("project_memory"),
-            request.system_prompt,
-        )
+        system_prompt = self._build_system_prompt(request)
         return await handler(request.override(system_prompt=system_prompt))

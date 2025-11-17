@@ -144,7 +144,7 @@ class Settings:
     project_deepagents_dir: Path | None
 
     @classmethod
-    def from_environment(cls, start_path: Path | None = None) -> "Settings":
+    def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
         """Create settings by detecting the current environment.
 
         Args:
@@ -205,6 +205,8 @@ class Settings:
         Returns:
             Path to ~/.deepagents/{agent_name}
         """
+        if not agent_name.isidentifier():
+            raise ValueError(f"Invalid agent name: {agent_name!r}. Must be a valid identifier.")
         return Path.home() / ".deepagents" / agent_name
 
     def ensure_agent_dir(self, agent_name: str) -> Path:
@@ -216,6 +218,8 @@ class Settings:
         Returns:
             Path to ~/.deepagents/{agent_name}
         """
+        if not agent_name.isidentifier():
+            raise ValueError(f"Invalid agent name: {agent_name!r}. Must be a valid identifier.")
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
         return agent_dir

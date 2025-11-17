@@ -12,7 +12,7 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.runtime import Runtime
 
-from deepagents_cli.project_utils import find_project_agent_md, find_project_root
+from deepagents_cli.config import _find_project_agent_md, _find_project_root
 
 
 class AgentMemoryState(AgentState):
@@ -218,8 +218,14 @@ class AgentMemoryMiddleware(AgentMiddleware):
         self.agent_dir_display = f"~/.deepagents/{assistant_id}"
         self.agent_dir_absolute = str(self.agent_dir)
         self.system_prompt_template = system_prompt_template or DEFAULT_MEMORY_SNIPPET
-        # Detect project root once at initialization (metadata, not state)
-        self.project_root = find_project_root()
+        # Detect project root at initialization time (supports tests that change cwd)
+        self.project_root = _find_project_root()
+        self.project_agent_md_paths = (
+            _find_project_agent_md(self.project_root) if self.project_root else []
+        )
+        self.project_deepagents_dir = (
+            self.project_root / ".deepagents" if self.project_root else None
+        )
 
     def before_agent(
         self,
@@ -252,18 +258,14 @@ class AgentMemoryMiddleware(AgentMiddleware):
 
         # Load project memory if not already loaded
         if "project_memory" not in state or state.get("project_memory") is None:
-            if self.project_root:
-                project_md_paths = find_project_agent_md(self.project_root)
-                if project_md_paths:
-                    try:
-                        # Combine all project agent.md files (if multiple exist)
-                        contents = []
-                        for path in project_md_paths:
-                            contents.append(path.read_text())
-                        result["project_memory"] = "\n\n".join(contents)
-                    except Exception:
-                        result["project_memory"] = ""
-                else:
+            if self.project_agent_md_paths:
+                try:
+                    # Combine all project agent.md files (if multiple exist)
+                    contents = []
+                    for path in self.project_agent_md_paths:
+                        contents.append(path.read_text())
+                    result["project_memory"] = "\n\n".join(contents)
+                except Exception:
                     result["project_memory"] = ""
             else:
                 result["project_memory"] = ""
@@ -295,8 +297,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
             project_memory_info = "None (not in a git project)"
 
         # Build project deepagents directory path
-        if self.project_root:
-            project_deepagents_dir = f"{self.project_root}/.deepagents"
+        if self.project_deepagents_dir:
+            project_deepagents_dir = str(self.project_deepagents_dir)
         else:
             project_deepagents_dir = "[project-root]/.deepagents (not in a project)"
 

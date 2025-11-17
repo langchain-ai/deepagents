@@ -9,7 +9,14 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 
 from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
 from deepagents_cli.commands import execute_bash_command, handle_command
-from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model, settings
+from deepagents_cli.config import (
+    COLORS,
+    DEEP_AGENTS_ASCII,
+    SessionState,
+    console,
+    create_model,
+    settings,
+)
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (

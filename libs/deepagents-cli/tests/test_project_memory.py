@@ -1,9 +1,10 @@
 """Tests for project-specific memory and dual agent.md loading."""
 
-
+import os
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import Settings
+from deepagents_cli.skills import SkillsMiddleware
 
 
 class TestAgentMemoryMiddleware:
@@ -11,8 +12,6 @@ class TestAgentMemoryMiddleware:
 
     def test_load_user_memory_only(self, tmp_path, monkeypatch):
         """Test loading user agent.md when no project memory exists."""
-        import os
-
         # Mock Path.home() to return tmp_path
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
@@ -65,9 +64,6 @@ class TestAgentMemoryMiddleware:
         project_md = project_root / ".deepagents" / "agent.md"
         project_md.write_text("Project instructions")
 
-        # Change to project directory for detection
-        import os
-
         original_cwd = os.getcwd()
         try:
             os.chdir(project_root)
@@ -110,8 +106,6 @@ class TestSkillsPathResolution:
 
     def test_skills_middleware_paths(self, tmp_path):
         """Test that skills middleware uses correct per-agent paths."""
-        from deepagents_cli.skills import SkillsMiddleware
-
         agent_dir = tmp_path / ".deepagents" / "test_agent"
         skills_dir = agent_dir / "skills"
         skills_dir.mkdir(parents=True)

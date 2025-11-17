@@ -1,7 +1,6 @@
 """Middleware for loading agent-specific long-term memory into the system prompt."""
 
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
@@ -12,7 +11,7 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.runtime import Runtime
 
-from deepagents_cli.config import _find_project_agent_md, _find_project_root
+from deepagents_cli.config import Settings
 
 
 class AgentMemoryState(AgentState):
@@ -174,25 +173,6 @@ class AgentMemoryMiddleware(AgentMiddleware):
     This middleware loads the agent's long-term memory from a file (agent.md)
     and injects it into the system prompt. The memory is loaded once at the
     start of the conversation and stored in state.
-
-    Args:
-        agent_dir: Path to the agent directory containing agent.md.
-        assistant_id: The agent identifier for path references in prompts.
-        system_prompt_template: Optional custom template for how to inject
-            the agent memory into the system prompt. Use {user_memory} and
-            {project_memory} as placeholders. Defaults to a simple section header.
-
-    Example:
-        ```python
-        from deepagents_cli.agent_memory import AgentMemoryMiddleware
-        from pathlib import Path
-
-        # Set up with agent directory path
-        agent_dir = Path.home() / ".deepagents" / "my-agent"
-
-        # Create middleware
-        middleware = AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id="my-agent")
-        ```
     """
 
     state_schema = AgentMemoryState
@@ -200,32 +180,33 @@ class AgentMemoryMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        agent_dir: Path,
+        settings: Settings,
         assistant_id: str,
         system_prompt_template: str | None = None,
     ) -> None:
         """Initialize the agent memory middleware.
 
         Args:
-            agent_dir: Path to the agent directory.
+            settings: Global settings instance with project detection and paths.
             assistant_id: The agent identifier.
             system_prompt_template: Optional custom template for injecting
                 agent memory into system prompt.
         """
-        self.agent_dir = Path(agent_dir).expanduser()
+        self.settings = settings
         self.assistant_id = assistant_id
+
+        # User paths
+        self.agent_dir = settings.get_agent_dir(assistant_id)
         # Store both display path (with ~) and absolute path for file operations
         self.agent_dir_display = f"~/.deepagents/{assistant_id}"
         self.agent_dir_absolute = str(self.agent_dir)
+
+        # Project paths (from settings)
+        self.project_root = settings.project_root
+        self.project_agent_md_paths = settings.project_agent_md_paths
+        self.project_deepagents_dir = settings.project_deepagents_dir
+
         self.system_prompt_template = system_prompt_template or DEFAULT_MEMORY_SNIPPET
-        # Detect project root at initialization time (supports tests that change cwd)
-        self.project_root = _find_project_root()
-        self.project_agent_md_paths = (
-            _find_project_agent_md(self.project_root) if self.project_root else []
-        )
-        self.project_deepagents_dir = (
-            self.project_root / ".deepagents" if self.project_root else None
-        )
 
     def before_agent(
         self,

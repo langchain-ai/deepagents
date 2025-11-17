@@ -1,6 +1,7 @@
 """Configuration, constants, and model creation for the CLI."""
 
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -196,6 +197,14 @@ class Settings:
         """Check if currently in a git project."""
         return self.project_root is not None
 
+    @staticmethod
+    def _is_valid_agent_name(agent_name: str) -> bool:
+        """Validate prevent invalid filesystem paths and security issues."""
+        if not agent_name or not agent_name.strip():
+            return False
+        # Allow only alphanumeric, hyphens, underscores, and whitespace
+        return bool(re.match(r"^[a-zA-Z0-9_\-\s]+$", agent_name))
+
     def get_agent_dir(self, agent_name: str) -> Path:
         """Get the global agent directory path.
 
@@ -205,8 +214,11 @@ class Settings:
         Returns:
             Path to ~/.deepagents/{agent_name}
         """
-        if not agent_name.isidentifier():
-            raise ValueError(f"Invalid agent name: {agent_name!r}. Must be a valid identifier.")
+        if not self._is_valid_agent_name(agent_name):
+            raise ValueError(
+                f"Invalid agent name: {agent_name!r}. "
+                "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
+            )
         return Path.home() / ".deepagents" / agent_name
 
     def ensure_agent_dir(self, agent_name: str) -> Path:
@@ -218,8 +230,11 @@ class Settings:
         Returns:
             Path to ~/.deepagents/{agent_name}
         """
-        if not agent_name.isidentifier():
-            raise ValueError(f"Invalid agent name: {agent_name!r}. Must be a valid identifier.")
+        if not self._is_valid_agent_name(agent_name):
+            raise ValueError(
+                f"Invalid agent name: {agent_name!r}. "
+                "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
+            )
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
         return agent_dir

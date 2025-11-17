@@ -5,18 +5,21 @@ from pathlib import Path
 import pytest
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
-from deepagents_cli.config import _find_project_agent_md, _find_project_root
+from deepagents_cli.config import Settings, _find_project_agent_md, _find_project_root
 
 
 class TestAgentMemoryMiddleware:
     """Test dual memory loading in AgentMemoryMiddleware."""
 
-    def test_load_user_memory_only(self, tmp_path):
+    def test_load_user_memory_only(self, tmp_path, monkeypatch):
         """Test loading user agent.md when no project memory exists."""
         import os
 
+        # Mock Path.home() to return tmp_path
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
         # Create user agent directory
-        agent_dir = tmp_path / ".deepagents" / "test-agent"
+        agent_dir = tmp_path / ".deepagents" / "test_agent"
         agent_dir.mkdir(parents=True)
         user_md = agent_dir / "agent.md"
         user_md.write_text("User instructions")
@@ -30,22 +33,28 @@ class TestAgentMemoryMiddleware:
         try:
             os.chdir(non_project_dir)
 
+            # Create settings (no project detected from non_project_dir)
+            test_settings = Settings.from_environment(start_path=non_project_dir)
+
             # Create middleware
-            middleware = AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id="test-agent")
+            middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
 
             # Simulate before_agent call with no project root
             state = {}
             result = middleware.before_agent(state, None)
 
             assert result["user_memory"] == "User instructions"
-            assert result["project_memory"] == ""
+            assert result["project_memory"] is None
         finally:
             os.chdir(original_cwd)
 
-    def test_load_both_memories(self, tmp_path):
+    def test_load_both_memories(self, tmp_path, monkeypatch):
         """Test loading both user and project agent.md."""
+        # Mock Path.home() to return tmp_path
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
         # Create user agent directory
-        agent_dir = tmp_path / ".deepagents" / "test-agent"
+        agent_dir = tmp_path / ".deepagents" / "test_agent"
         agent_dir.mkdir(parents=True)
         user_md = agent_dir / "agent.md"
         user_md.write_text("User instructions")
@@ -64,8 +73,11 @@ class TestAgentMemoryMiddleware:
         try:
             os.chdir(project_root)
 
+            # Create settings (project detected from project_root)
+            test_settings = Settings.from_environment(start_path=project_root)
+
             # Create middleware
-            middleware = AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id="test-agent")
+            middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
 
             # Simulate before_agent call
             state = {}
@@ -78,10 +90,13 @@ class TestAgentMemoryMiddleware:
 
     def test_memory_not_reloaded_if_already_in_state(self, tmp_path):
         """Test that memory is not reloaded if already in state."""
-        agent_dir = tmp_path / ".deepagents" / "test-agent"
+        agent_dir = tmp_path / ".deepagents" / "test_agent"
         agent_dir.mkdir(parents=True)
 
-        middleware = AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id="test-agent")
+        # Create settings
+        test_settings = Settings.from_environment(start_path=tmp_path)
+
+        middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
 
         # State already has memory
         state = {"user_memory": "Existing memory", "project_memory": "Existing project"}
@@ -106,7 +121,10 @@ class TestRealAgentMemory:
                 "This is expected if you haven't set up your user agent yet."
             )
 
-        middleware = AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id="agent")
+        # Use real settings from environment
+        from deepagents_cli.config import settings
+
+        middleware = AgentMemoryMiddleware(settings=settings, assistant_id="agent")
         state = {}
         result = middleware.before_agent(state, None)
 
@@ -148,15 +166,15 @@ class TestSkillsPathResolution:
         """Test that skills middleware uses correct per-agent paths."""
         from deepagents_cli.skills import SkillsMiddleware
 
-        agent_dir = tmp_path / ".deepagents" / "test-agent"
+        agent_dir = tmp_path / ".deepagents" / "test_agent"
         skills_dir = agent_dir / "skills"
         skills_dir.mkdir(parents=True)
 
-        middleware = SkillsMiddleware(skills_dir=skills_dir, assistant_id="test-agent")
+        middleware = SkillsMiddleware(skills_dir=skills_dir, assistant_id="test_agent")
 
         # Check paths are correctly set
         assert middleware.skills_dir == skills_dir
-        assert middleware.skills_dir_display == "~/.deepagents/test-agent/skills"
+        assert middleware.skills_dir_display == "~/.deepagents/test_agent/skills"
         assert middleware.skills_dir_absolute == str(skills_dir)
 
     def test_skills_dir_per_agent(self, tmp_path):

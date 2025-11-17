@@ -143,9 +143,9 @@ def tavily_search(
 
 
 def parallel_search(
+    objective: str,
     queries: list[str],
     max_results: int = 5,
-    objective: str | None = None,
     max_chars_per_excerpt: int = 1000,
 ) -> SearchResult:
     """Search the web using Parallel for current information and documentation.
@@ -155,11 +155,10 @@ def parallel_search(
     helpful response for the user.
 
     Args:
-        queries: A list of search queries (be specific and detailed)
-        max_results: Number of results to return (default: 5)
         objective: Natural-language description of what the web search is trying to find.
             May include guidance about preferred sources or freshness.
-            At least one of objective or search_queries must be provided.
+        queries: A list of search queries (be specific and detailed)
+        max_results: Number of results to return (default: 5)
         max_chars_per_excerpt: Maximum characters per excerpt (default: 1000)
 
     Returns:
@@ -200,28 +199,12 @@ def parallel_search(
         }
 
 
-def get_web_search_tool():
-    """Get the available web search tool based on configured API keys.
-
-    Returns tavily_search if TAVILY_API_KEY is set, otherwise parallel_search
-    if PARALLEL_API_KEY is set, otherwise None.
-
-    This is kept for backward compatibility. New code should use
-    tavily_search or parallel_search directly.
-    """
-    if tavily_client is not None:
-        return tavily_search
-    if parallel_client is not None:
-        return parallel_search
-    return None
-
-
 def web_search(
     query: str,
     max_results: int = 5,
     topic: Literal["general", "news", "finance"] = "general",
     include_raw_content: bool = False,
-) -> dict[str, Any]:
+):
     """Search the web using Tavily for current information and documentation.
 
     This is a backward compatibility wrapper for tavily_search.

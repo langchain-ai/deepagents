@@ -223,7 +223,9 @@ def _format_edit_file_description(tool_call: ToolCall, state: AgentState, runtim
     )
 
 
-def _format_tavily_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_tavily_search_description(
+    tool_call: ToolCall, state: AgentState, runtime: Runtime
+) -> str:
     """Format tavily_search tool call for approval prompt."""
     args = tool_call["args"]
     query = args.get("query", "unknown")
@@ -238,7 +240,9 @@ def _format_tavily_search_description(tool_call: ToolCall, state: AgentState, ru
     )
 
 
-def _format_parallel_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_parallel_search_description(
+    tool_call: ToolCall, state: AgentState, runtime: Runtime
+) -> str:
     """Format parallel_search tool call for approval prompt."""
     args = tool_call["args"]
     queries = args.get("queries", [])
@@ -246,22 +250,7 @@ def _format_parallel_search_description(tool_call: ToolCall, state: AgentState, 
     objective = args.get("objective")
 
     description = f"Queries: {queries}\nMax results: {max_results}\n"
-    if objective:
-        description += f"Objective: {objective}\n"
-    description += "\n⚠️  This will use Parallel API credits"
-
-    return description
-
-def _format_parallel_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
-    """Format parallel_search tool call for approval prompt."""
-    args = tool_call.get("args", {})
-    queries = args.get("queries", "unknown")
-    max_results = args.get("max_results", 5)
-    objective = args.get("objective")
-
-    description = f"Queries: {queries}\nMax results: {max_results}\n"
-    if objective:
-        description += f"Objective: {objective}\n"
+    description += f"Objective: {objective}\n"
     description += "\n⚠️  This will use Parallel API credits"
 
     return description

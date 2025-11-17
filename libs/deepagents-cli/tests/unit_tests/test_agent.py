@@ -8,7 +8,8 @@ from deepagents_cli.agent import (
     _format_fetch_url_description,
     _format_shell_description,
     _format_task_description,
-    _format_web_search_description,
+    _format_tavily_search_description,
+    _format_parallel_search_description,
     _format_write_file_description,
 )
 
@@ -103,10 +104,10 @@ def test_format_edit_file_description_all_occurrences():
     assert "Action: Replace text (all occurrences)" in description
 
 
-def test_format_web_search_description():
-    """Test web_search description formatting."""
+def test_format_tavily_search_description():
+    """Test tavily_search description formatting."""
     tool_call = {
-        "name": "web_search",
+        "name": "tavily_search",
         "args": {
             "query": "python async programming",
             "max_results": 10,
@@ -117,17 +118,17 @@ def test_format_web_search_description():
     state = Mock()
     runtime = Mock()
 
-    description = _format_web_search_description(tool_call, state, runtime)
+    description = _format_tavily_search_description(tool_call, state, runtime)
 
     assert "Query: python async programming" in description
     assert "Max results: 10" in description
     assert "⚠️  This will use Tavily API credits" in description
 
 
-def test_format_web_search_description_default_max_results():
-    """Test web_search description with default max_results."""
+def test_format_tavily_search_description_default_max_results():
+    """Test tavily_search description with default max_results."""
     tool_call = {
-        "name": "web_search",
+        "name": "tavily_search",
         "args": {
             "query": "langchain tutorial",
         },
@@ -137,10 +138,33 @@ def test_format_web_search_description_default_max_results():
     state = Mock()
     runtime = Mock()
 
-    description = _format_web_search_description(tool_call, state, runtime)
+    description = _format_tavily_search_description(tool_call, state, runtime)
 
     assert "Query: langchain tutorial" in description
     assert "Max results: 5" in description
+
+
+def test_format_parallel_search_description():
+    """Test parallel_search description formatting."""
+    tool_call = {
+        "name": "parallel_search",
+        "args": {
+            "objective": "Learn python async programming",
+            "queries": ["python async programming"],
+            "max_results": 10,
+        },
+        "id": "call-5",
+    }
+
+    state = Mock()
+    runtime = Mock()
+
+    description = _format_parallel_search_description(tool_call, state, runtime)
+
+    assert "Objective: Learn python async programming" in description
+    assert "Queries: ['python async programming']" in description
+    assert "Max results: 10" in description
+    assert "⚠️  This will use Parallel API credits" in description
 
 
 def test_format_fetch_url_description():

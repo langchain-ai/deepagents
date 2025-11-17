@@ -12,7 +12,7 @@ cli/
 ├── __main__.py      # Entry point for `python -m deepagents.cli`
 ├── main.py          # CLI loop, argument parsing, main orchestration
 ├── config.py        # Configuration, constants, colors, model creation
-├── tools.py         # Custom tools (http_request, web_search)
+├── tools.py         # Custom tools (http_request, parallel_search, tavily_search)
 ├── ui.py            # Display logic, TokenTracker, help screens
 ├── input.py         # Input handling, completers, prompt session
 ├── commands.py      # Slash command and bash command handlers

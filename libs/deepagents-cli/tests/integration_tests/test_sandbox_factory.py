@@ -25,3 +25,11 @@ class TestModalIntegration:
             assert sandbox.id is not None
             result = sandbox.execute("echo 'hello'")
             assert result.output.strip() == "hello"
+
+
+class TestBlaxelIntegration:
+    def test_sandbox_creation(self) -> None:
+        with create_sandbox("blaxel") as sandbox:
+            assert sandbox.id is not None
+            result = sandbox.execute("echo 'hello'")
+            assert result.output.strip() == "hello"

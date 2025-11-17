@@ -150,7 +150,7 @@ edit_file '{agent_dir_absolute}/agent.md' ...        # Update user preferences
 ls {project_deepagents_dir}                          # List project memory files
 read_file '{project_deepagents_dir}/agent.md'        # Read project instructions
 edit_file '{project_deepagents_dir}/agent.md' ...    # Update project instructions
-write_file '{project_deepagents_dir}/api-design.md' ...  # Create project memory file
+write_file '{project_deepagents_dir}/agent.md' ...  # Create project memory file
 ```
 
 **Important**:
@@ -246,43 +246,42 @@ class AgentMemoryMiddleware(AgentMiddleware):
         result = {}
 
         # Load user memory if not already loaded
-        if "user_memory" not in state or state.get("user_memory") is None:
+        if not state.get("user_memory"):
             agent_md_path = self.agent_dir / "agent.md"
             try:
-                if agent_md_path.exists():
-                    result["user_memory"] = agent_md_path.read_text()
-                else:
-                    result["user_memory"] = ""
-            except Exception:
-                result["user_memory"] = ""
+                result["user_memory"] = (
+                    agent_md_path.read_text() if agent_md_path.exists() else None
+                )
+            except (OSError, UnicodeDecodeError):
+                # OSError covers FileNotFoundError, PermissionError, etc.
+                result["user_memory"] = None
 
         # Load project memory if not already loaded
-        if "project_memory" not in state or state.get("project_memory") is None:
+        if not state.get("project_memory"):
             if self.project_agent_md_paths:
                 try:
                     # Combine all project agent.md files (if multiple exist)
-                    contents = []
-                    for path in self.project_agent_md_paths:
-                        contents.append(path.read_text())
-                    result["project_memory"] = "\n\n".join(contents)
-                except Exception:
-                    result["project_memory"] = ""
+                    contents = [path.read_text() for path in self.project_agent_md_paths]
+                    result["project_memory"] = "\n\n".join(contents) if contents else None
+                except (OSError, UnicodeDecodeError):
+                    # OSError covers FileNotFoundError, PermissionError, etc.
+                    result["project_memory"] = None
             else:
-                result["project_memory"] = ""
+                result["project_memory"] = None
 
         return result
 
     def _build_system_prompt(
         self,
-        user_memory: str,
-        project_memory: str,
+        user_memory: str | None,
+        project_memory: str | None,
         base_system_prompt: str | None,
     ) -> str:
         """Build the complete system prompt with memory sections.
 
         Args:
-            user_memory: User memory content (personal preferences).
-            project_memory: Project-specific memory content.
+            user_memory: User memory content (personal preferences), or None if not available.
+            project_memory: Project-specific memory content, or None if not available.
             base_system_prompt: Base system prompt to append to.
 
         Returns:
@@ -304,8 +303,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
 
         # Format memory section with both memories
         memory_section = self.system_prompt_template.format(
-            user_memory=user_memory or "(No user agent.md)",
-            project_memory=project_memory or "(No project agent.md)",
+            user_memory=user_memory if user_memory else "(No user agent.md)",
+            project_memory=project_memory if project_memory else "(No project agent.md)",
         )
 
         system_prompt = memory_section
@@ -337,8 +336,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
             The model response from the handler.
         """
         system_prompt = self._build_system_prompt(
-            request.state.get("user_memory", ""),
-            request.state.get("project_memory", ""),
+            request.state.get("user_memory"),
+            request.state.get("project_memory"),
             request.system_prompt,
         )
         return handler(request.override(system_prompt=system_prompt))
@@ -358,8 +357,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
             The model response from the handler.
         """
         system_prompt = self._build_system_prompt(
-            request.state.get("user_memory", ""),
-            request.state.get("project_memory", ""),
+            request.state.get("user_memory"),
+            request.state.get("project_memory"),
             request.system_prompt,
         )
         return await handler(request.override(system_prompt=system_prompt))

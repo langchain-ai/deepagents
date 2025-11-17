@@ -1,15 +1,21 @@
-"""Skills module for deepagents CLI."""
+"""Skills module for deepagents CLI.
 
-from deepagents_cli.skills.skill_loader import SkillLoader, SkillMetadata, load_skills
-from deepagents_cli.skills.skills_commands import create_skill, list_skills, show_skill_info
-from deepagents_cli.skills.skills_middleware import SkillsMiddleware
+Public API:
+- SkillsMiddleware: Middleware for integrating skills into agent execution
+- execute_skills_command: Execute skills subcommands (list/create/info)
+- setup_skills_parser: Setup argparse configuration for skills commands
+
+All other components are internal implementation details.
+"""
+
+from deepagents_cli.skills.commands import (
+    execute_skills_command,
+    setup_skills_parser,
+)
+from deepagents_cli.skills.middleware import SkillsMiddleware
 
 __all__ = [
-    "SkillLoader",
-    "SkillMetadata",
     "SkillsMiddleware",
-    "create_skill",
-    "list_skills",
-    "load_skills",
-    "show_skill_info",
+    "execute_skills_command",
+    "setup_skills_parser",
 ]

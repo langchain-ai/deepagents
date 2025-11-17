@@ -6,13 +6,80 @@ These commands are registered with the CLI via cli.py:
 - deepagents skills info <name>
 """
 
+import argparse
+import re
 from pathlib import Path
+from typing import Any
 
 from deepagents_cli.config import COLORS, console
-from deepagents_cli.skills.skill_loader import SkillLoader
+from deepagents_cli.skills.load import list_skills
 
 
-def list_skills() -> None:
+def _validate_skill_name(skill_name: str) -> tuple[bool, str]:
+    """Validate skill name to prevent path traversal attacks.
+
+    Args:
+        skill_name: The skill name to validate
+
+    Returns:
+        Tuple of (is_valid, error_message). If valid, error_message is empty.
+    """
+    # Check for empty or whitespace-only names
+    if not skill_name or not skill_name.strip():
+        return False, "Skill name cannot be empty"
+
+    # Check for path traversal sequences
+    if ".." in skill_name:
+        return False, "Skill name cannot contain '..' (path traversal)"
+
+    # Check for absolute paths
+    if skill_name.startswith("/") or skill_name.startswith("\\"):
+        return False, "Skill name cannot be an absolute path"
+
+    # Check for path separators
+    if "/" in skill_name or "\\" in skill_name:
+        return False, "Skill name cannot contain path separators"
+
+    # Only allow alphanumeric, hyphens, underscores
+    if not re.match(r"^[a-zA-Z0-9_-]+$", skill_name):
+        return False, "Skill name can only contain letters, numbers, hyphens, and underscores"
+
+    return True, ""
+
+
+def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
+    """Validate that the resolved skill directory is within the base directory.
+
+    Args:
+        skill_dir: The skill directory path to validate
+        base_dir: The base skills directory that should contain skill_dir
+
+    Returns:
+        Tuple of (is_valid, error_message). If valid, error_message is empty.
+    """
+    try:
+        # Resolve both paths to their canonical form
+        resolved_skill = skill_dir.resolve()
+        resolved_base = base_dir.resolve()
+
+        # Check if skill_dir is within base_dir
+        # Use is_relative_to if available (Python 3.9+), otherwise use string comparison
+        if hasattr(resolved_skill, "is_relative_to"):
+            if not resolved_skill.is_relative_to(resolved_base):
+                return False, f"Skill directory must be within {base_dir}"
+        else:
+            # Fallback for older Python versions
+            try:
+                resolved_skill.relative_to(resolved_base)
+            except ValueError:
+                return False, f"Skill directory must be within {base_dir}"
+
+        return True, ""
+    except (OSError, RuntimeError) as e:
+        return False, f"Invalid path: {e}"
+
+
+def _list() -> None:
     """List all available skills for the default agent."""
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
@@ -30,8 +97,7 @@ def list_skills() -> None:
         return
 
     # Load skills
-    loader = SkillLoader(skills_dir=skills_dir)
-    skills = loader.list()
+    skills = list_skills(skills_dir)
 
     if not skills:
         console.print("[yellow]No valid skills found.[/yellow]")
@@ -55,11 +121,27 @@ def list_skills() -> None:
         console.print()
 
 
-def create_skill(skill_name: str) -> None:
+def _create(skill_name: str) -> None:
     """Create a new skill with a template SKILL.md file for the default agent."""
+    # Validate skill name first
+    is_valid, error_msg = _validate_skill_name(skill_name)
+    if not is_valid:
+        console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
+        console.print(
+            "[dim]Skill names must only contain letters, numbers, hyphens, and underscores.[/dim]",
+            style=COLORS["dim"],
+        )
+        return
+
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
     skill_dir = skills_dir / skill_name
+
+    # Validate the resolved path is within skills_dir
+    is_valid_path, path_error = _validate_skill_path(skill_dir, skills_dir)
+    if not is_valid_path:
+        console.print(f"[bold red]Error:[/bold red] {path_error}")
+        return
 
     if skill_dir.exists():
         console.print(
@@ -161,14 +243,13 @@ This skill directory can include supporting files referenced in the instructions
     )
 
 
-def show_skill_info(skill_name: str) -> None:
+def _info(skill_name: str) -> None:
     """Show detailed information about a specific skill for the default agent."""
     # Use default agent's skills directory
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
 
     # Load skills
-    loader = SkillLoader(skills_dir=skills_dir)
-    skills = loader.list()
+    skills = list_skills(skills_dir)
 
     # Find the skill
     skill = next((s for s in skills if s["name"] == skill_name), None)
@@ -202,3 +283,72 @@ def show_skill_info(skill_name: str) -> None:
     console.print("[bold]Full SKILL.md Content:[/bold]\n", style=COLORS["primary"])
     console.print(skill_content, style=COLORS["dim"])
     console.print()
+
+
+def setup_skills_parser(
+    subparsers: Any,
+) -> argparse.ArgumentParser:
+    """Setup the skills subcommand parser with all its subcommands."""
+    skills_parser = subparsers.add_parser(
+        "skills",
+        help="Manage agent skills",
+        description="Manage agent skills - create, list, and view skill information",
+    )
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_command", help="Skills command")
+
+    # Skills list
+    skills_subparsers.add_parser(
+        "list", help="List all available skills", description="List all available skills"
+    )
+
+    # Skills create
+    create_parser = skills_subparsers.add_parser(
+        "create",
+        help="Create a new skill",
+        description="Create a new skill with a template SKILL.md file",
+    )
+    create_parser.add_argument("name", help="Name of the skill to create (e.g., web-research)")
+
+    # Skills info
+    info_parser = skills_subparsers.add_parser(
+        "info",
+        help="Show detailed information about a skill",
+        description="Show detailed information about a specific skill",
+    )
+    info_parser.add_argument("name", help="Name of the skill to show info for")
+    return skills_parser
+
+
+def execute_skills_command(args: argparse.Namespace) -> None:
+    """Execute skills subcommands based on parsed arguments.
+
+    Args:
+        args: Parsed command line arguments with skills_command attribute
+    """
+    if args.skills_command == "list":
+        _list()
+    elif args.skills_command == "create":
+        _create(args.name)
+    elif args.skills_command == "info":
+        _info(args.name)
+    else:
+        # No subcommand provided, show help
+        console.print("[yellow]Please specify a skills subcommand: list, create, or info[/yellow]")
+        console.print("\n[bold]Usage:[/bold]", style=COLORS["primary"])
+        console.print("  deepagents skills <command> [options]\n")
+        console.print("[bold]Available commands:[/bold]", style=COLORS["primary"])
+        console.print("  list              List all available skills")
+        console.print("  create <name>     Create a new skill")
+        console.print("  info <name>       Show detailed information about a skill")
+        console.print("\n[bold]Examples:[/bold]", style=COLORS["primary"])
+        console.print("  deepagents skills list")
+        console.print("  deepagents skills create web-research")
+        console.print("  deepagents skills info web-research")
+        console.print("\n[dim]For more help on a specific command:[/dim]", style=COLORS["dim"])
+        console.print("  deepagents skills <command> --help", style=COLORS["dim"])
+
+
+__all__ = [
+    "execute_skills_command",
+    "setup_skills_parser",
+]

@@ -17,7 +17,7 @@ Skills directory structure (per-agent):
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -26,7 +26,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 
-from deepagents_cli.skills.skill_loader import SkillLoader, SkillMetadata
+from deepagents_cli.skills.load import SkillMetadata, list_skills
 
 
 class SkillsState(AgentState):
@@ -103,8 +103,6 @@ class SkillsMiddleware(AgentMiddleware):
     Args:
         skills_dir: Path to the skills directory (per-agent).
         assistant_id: The agent identifier for path references in prompts.
-        system_prompt_template: Optional custom template for skills documentation.
-            Use {skills_list} for the formatted skills list and {skills_dir_path} for the path.
 
     Example:
         ```python
@@ -127,32 +125,22 @@ class SkillsMiddleware(AgentMiddleware):
         *,
         skills_dir: str | Path,
         assistant_id: str,
-        system_prompt_template: str | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
         Args:
             skills_dir: Path to the skills directory.
             assistant_id: The agent identifier.
-            system_prompt_template: Optional custom template for skills docs.
         """
         self.skills_dir = Path(skills_dir).expanduser()
         self.assistant_id = assistant_id
         # Store both display path (with ~) and absolute path for file operations
         self.skills_dir_display = f"~/.deepagents/{assistant_id}/skills"
         self.skills_dir_absolute = str(self.skills_dir)
-        self.system_prompt_template = system_prompt_template or SKILLS_SYSTEM_PROMPT
-        self.loader = SkillLoader(skills_dir=self.skills_dir)
+        self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 
     def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
-        """Format skills metadata for display in system prompt.
-
-        Args:
-            skills: List of skill metadata.
-
-        Returns:
-            Formatted string with skills list.
-        """
+        """Format skills metadata for display in system prompt."""
         if not skills:
             return f"(No skills available yet. You can create skills in {self.skills_dir_display}/)"
 
@@ -182,27 +170,10 @@ class SkillsMiddleware(AgentMiddleware):
         Returns:
             Updated state with skills_metadata populated.
         """
-        if state.get("skills_metadata") is not None:
-            return None
-        skills = self.loader.list()
+        # We re-load skills on every new interaction with the agent to capture
+        # any changes in the skills directory.
+        skills = list_skills(self.skills_dir)
         return SkillsStateUpdate(skills_metadata=skills)
-
-    async def abefore_agent(
-        self,
-        state: SkillsState,
-        runtime,
-    ) -> SkillsState:
-        """(async) Load skills metadata before agent execution.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context.
-
-        Returns:
-            Updated state with skills_metadata populated.
-        """
-        # Sync version is fine since file operations are fast
-        return self.before_agent(state, runtime)
 
     def wrap_model_call(
         self,
@@ -254,8 +225,9 @@ class SkillsMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Get skills metadata from state
-        skills_metadata = request.state.get("skills_metadata", [])
+        # The state is guaranteed to be SkillsState due to state_schema
+        state = cast("SkillsState", request.state)
+        skills_metadata = state.get("skills_metadata", [])
 
         # Format skills list
         skills_list = self._format_skills_list(skills_metadata)

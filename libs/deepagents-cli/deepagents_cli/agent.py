@@ -22,7 +22,8 @@ from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
-from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions
+from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
+from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.skills import SkillsMiddleware
 
 
@@ -105,7 +106,6 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
 
     if sandbox_type:
         # Get provider-specific working directory
-        from .integrations.sandbox_factory import get_default_working_dir
 
         working_dir = get_default_working_dir(sandbox_type)
 
@@ -308,7 +308,7 @@ def create_agent_with_config(
 
         # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ResumableShellToolMiddleware
         agent_middleware = [
-            AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id=assistant_id),
+            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
             SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
             ResumableShellToolMiddleware(
                 workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
@@ -326,7 +326,7 @@ def create_agent_with_config(
         # NOTE: File operations (ls, read, write, edit, glob, grep) and execute tool
         # are automatically provided by create_deep_agent when backend is a SandboxBackend.
         agent_middleware = [
-            AgentMemoryMiddleware(agent_dir=agent_dir, assistant_id=assistant_id),
+            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
             SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
         ]
 

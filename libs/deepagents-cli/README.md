@@ -30,17 +30,11 @@ Projects can override or extend the global configuration with project-specific i
 ```
 my-project/
   ├── .git/
-  ├── agent.md              # Option 1: Auto-loaded project instructions (root)
   └── .deepagents/
-      ├── agent.md          # Option 2: Auto-loaded project instructions (preferred)
-      ├── api-design.md     # Additional project memory files
-      ├── architecture.md
-      └── deployment.md
+      └── agent.md
 ```
 
-The CLI automatically detects project roots (via `.git`) and loads project-specific `agent.md` from:
-1. `[project-root]/.deepagents/agent.md` (checked first)
-2. `[project-root]/agent.md` (fallback)
+The CLI automatically detects project roots (via `.git`) and loads project-specific `agent.md` from `[project-root]/.deepagents/agent.md`.
 
 Both global and project agent.md files are loaded together, allowing you to:
 - Keep general coding style/preferences in global agent.md
@@ -53,8 +47,8 @@ The CLI uses middleware to dynamically construct the system prompt on each model
 1. **AgentMemoryMiddleware** (runs first):
    - **Prepends** the contents of both agent.md files:
      ```xml
-     <global_agent_memory>[~/.deepagents/{agent}/agent.md content]</global_agent_memory>
-     <project_agent_memory>[{project}/.deepagents/agent.md content]</project_agent_memory>
+     <user_memory>[~/.deepagents/{agent}/agent.md content]</user_memory>
+     <project_memory>[{project}/.deepagents/agent.md content]</project_memory>
      ```
    - **Appends** memory management instructions (how to read/write memory files, decision framework)
 
@@ -69,8 +63,8 @@ The CLI uses middleware to dynamically construct the system prompt on each model
 
 **Final prompt structure:**
 ```
-<global_agent_memory>...</global_agent_memory>
-<project_agent_memory>...</project_agent_memory>
+<user_memory>...</user_memory>
+<project_memory>...</project_memory>
 
 [Base system prompt]
 

@@ -30,17 +30,11 @@ Projects can override or extend the global configuration with project-specific i
 ```
 my-project/
   ├── .git/
-  ├── agent.md              # Option 1: Auto-loaded project instructions (root)
   └── .deepagents/
-      ├── agent.md          # Option 2: Auto-loaded project instructions (preferred)
-      ├── api-design.md     # Additional project memory files
-      ├── architecture.md
-      └── deployment.md
+      └── agent.md
 ```
 
-The CLI automatically detects project roots (via `.git`) and loads project-specific `agent.md` from:
-1. `[project-root]/.deepagents/agent.md` (checked first)
-2. `[project-root]/agent.md` (fallback)
+The CLI automatically detects project roots (via `.git`) and loads project-specific `agent.md` from `[project-root]/.deepagents/agent.md`.
 
 Both global and project agent.md files are loaded together, allowing you to:
 - Keep general coding style/preferences in global agent.md

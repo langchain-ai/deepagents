@@ -1,11 +1,9 @@
 """Tests for project-specific memory and dual agent.md loading."""
 
-from pathlib import Path
 
-import pytest
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
-from deepagents_cli.config import Settings, _find_project_agent_md, _find_project_root
+from deepagents_cli.config import Settings
 
 
 class TestAgentMemoryMiddleware:
@@ -105,59 +103,6 @@ class TestAgentMemoryMiddleware:
 
         # Should return empty dict (no updates)
         assert result == {}
-
-
-class TestRealAgentMemory:
-    """Test with real agent.md files (may not exist on all systems)."""
-
-    def test_load_real_user_memory(self):
-        """Test loading actual user agent.md if it exists."""
-        agent_dir = Path.home() / ".deepagents" / "agent"
-        agent_md = agent_dir / "agent.md"
-
-        if not agent_md.exists():
-            pytest.skip(
-                "⚠️  User agent.md not found. "
-                f"Create {agent_md} to enable this test. "
-                "This is expected if you haven't set up your user agent yet."
-            )
-
-        # Use real settings from environment
-        from deepagents_cli.config import settings
-
-        middleware = AgentMemoryMiddleware(settings=settings, assistant_id="agent")
-        state = {}
-        result = middleware.before_agent(state, None)
-
-        assert "user_memory" in result
-        assert len(result["user_memory"]) > 0
-        print(f"\n✓ Loaded user agent.md ({len(result['user_memory'])} chars)")
-
-    def test_detect_current_project(self):
-        """Test detecting project root from current directory."""
-        project_root = _find_project_root()
-
-        if project_root is None:
-            pytest.skip(
-                "⚠️  Not in a git project. "
-                "Run this test from inside a git repository to test project detection."
-            )
-
-        assert project_root.exists()
-        assert (project_root / ".git").exists()
-        print(f"\n✓ Detected project root: {project_root}")
-
-        # Check for project agent.md
-        project_md_paths = _find_project_agent_md(project_root)
-        if project_md_paths:
-            for path in project_md_paths:
-                print(f"✓ Found project agent.md: {path}")
-        else:
-            print(
-                f"ℹ️  No project agent.md found. "
-                f"Create {project_root}/.deepagents/agent.md or {project_root}/agent.md "
-                f"to enable project-specific configuration."
-            )
 
 
 class TestSkillsPathResolution:

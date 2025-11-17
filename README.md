@@ -2,12 +2,12 @@
 
 Agents can increasingly tackle long-horizon tasks, [with agent task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)! But, long horizon tasks often span dozens of tool calls, which present cost and reliability challenges. Popular agents such as [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8) use some common principles to address these challenges, including **planning** (prior to task execution), **computer access** (giving the able access to a shell and a filesystem), and **sub-agent delegation** (isolated task execution). `deepagents` is a simple agent harness that implements these tools, but is open source and easily extendable with your own custom tools and instructions.
 
+<img src="deepagents_banner.png" alt="deep agent" width="100%"/>
+
 ## 📚 Resources
 
 - **[Documentation](https://docs.langchain.com/oss/python/deepagents/overview)** - Full overview and API reference
 - **[Quickstarts Repo](https://github.com/langchain-ai/deepagents-quickstarts)** - Examples and use-cases
-
-<img src="deepagents_banner.png" alt="deep agent" width="600"/>
 
 ## 🚀 Quickstart
 

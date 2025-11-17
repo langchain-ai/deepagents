@@ -11,6 +11,8 @@ Agents can increasingly tackle long-horizon tasks, [with agent task length doubl
 
 ## Quickstart
 
+You can give `deepagents` custom tools. Below, we'll optionally provide the `tavily` tool to search the web. This tool will be added to the `deepagents` build-in tools (see below).
+
 ```bash
 pip install deepagents tavily-python
 ```
@@ -19,7 +21,6 @@ Set `TAVILY_API_KEY` in your environment ([get one here](https://www.tavily.com/
 
 ```python
 import os
-from tavily import TavilyClient
 from deepagents import create_deep_agent
 
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
@@ -36,7 +37,7 @@ agent = create_deep_agent(
 result = agent.invoke({"messages": [{"role": "user", "content": "What is LangGraph?"}]})
 ```
 
-The agent created with `create_deep_agent` is a LangGraph graph—use it with streaming, human-in-the-loop, memory, or Studio just like any LangGraph agent. See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
+The agent created with `create_deep_agent` is compiled [LangGraph StateGraph](https://docs.langchain.com/oss/python/langgraph/overview), so it can used it with streaming, human-in-the-loop, memory, or Studio just like any LangGraph agent. See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
 
 ## Built-in Tools
 

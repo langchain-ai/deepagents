@@ -2,6 +2,7 @@
 
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import dotenv
@@ -63,6 +64,7 @@ class SessionState:
         self.auto_approve = auto_approve
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
+        self.thread_id = str(uuid.uuid4())
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return new state."""

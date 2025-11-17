@@ -1,15 +1,15 @@
 # 🚀🧠 Deepagents
 
-Agents can increasingly tackle long-horizon tasks, [with agent task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)! But, long horizon tasks often span dozens of tool calls, which present cost and reliability challenges. Popular agents such as [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8) use some common principles to address these challenges, including **planning** (prior to task execution), **computer access** (giving the able access to a shell and a filesystem), and **sub-agent delegation** (isolated task execution). `deepagents` is a simple agent harness that implements these tools, but is open source and easily extendable with your own custom tools and instructions. See our [docs](https://docs.langchain.com/oss/python/deepagents/overview) for a full overview.
+Agents can increasingly tackle long-horizon tasks, [with agent task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)! But, long horizon tasks often span dozens of tool calls, which present cost and reliability challenges. Popular agents such as [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8) use some common principles to address these challenges, including **planning** (prior to task execution), **computer access** (giving the able access to a shell and a filesystem), and **sub-agent delegation** (isolated task execution). `deepagents` is a simple agent harness that implements these tools, but is open source and easily extendable with your own custom tools and instructions.
+
+## 📚 Resources
+
+- **[Documentation](https://docs.langchain.com/oss/python/deepagents/overview)** - Full overview and API reference
+- **[Quickstarts Repo](https://github.com/langchain-ai/deepagents-quickstarts)** - Examples and use-cases
 
 <img src="deepagents_banner.png" alt="deep agent" width="600"/>
 
-## Updates
-
-- **Nov 2025**: Added [`deepagents-cli`](https://github.com/langchain-ai/deepagents/tree/master/libs/deepagents-cli) package for CLI interface
-- **Examples**: See [deepagents-quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for use-cases
-
-## Quickstart
+## 🚀 Quickstart
 
 You can give `deepagents` custom tools. Below, we'll optionally provide the `tavily` tool to search the web. This tool will be added to the `deepagents` build-in tools (see below).
 
@@ -38,6 +38,11 @@ result = agent.invoke({"messages": [{"role": "user", "content": "What is LangGra
 ```
 
 The agent created with `create_deep_agent` is compiled [LangGraph StateGraph](https://docs.langchain.com/oss/python/langgraph/overview), so it can used it with streaming, human-in-the-loop, memory, or Studio just like any LangGraph agent. See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
+
+## Recent Updates
+
+- **Nov 2025**: Added [`deepagents-cli`](https://github.com/langchain-ai/deepagents/tree/master/libs/deepagents-cli) package for CLI interface
+- **Examples**: See [deepagents-quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for use-cases
 
 ## Built-in Tools
 
@@ -70,6 +75,26 @@ The `execute` tool is only available if the backend implements `SandboxBackendPr
 | **PatchToolCallsMiddleware** | Fixes dangling tool calls from interruptions |
 | **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
 
+The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:
+
+#### From [TodoListMiddleware](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)
+- Explains when to use `write_todos` and `read_todos`
+- Guidance on marking tasks completed
+- Best practices for todo list management
+- When NOT to use todos (simple tasks)
+
+### From [FilesystemMiddleware](libs/deepagents/deepagents/middleware/filesystem.py)
+- Lists all filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`*)
+- Explains that file paths must start with `/`
+- Describes each tool's purpose and parameters
+- Notes about context offloading for large tool results
+
+#### From [SubAgentMiddleware](libs/deepagents/deepagents/middleware/subagents.py)
+- Explains the `task()` tool for delegating to sub-agents
+- When to use sub-agents vs when NOT to use them
+- Guidance on parallel execution
+- Subagent lifecycle (spawn → run → return → reconcile)
+
 ## Customizing Deep Agents
 
 There are several parameters you can pass to `create_deep_agent`. 
@@ -90,25 +115,7 @@ agent = create_deep_agent(
 
 ### `system_prompt`
 
-You can provide a `system_prompt` parameter to `create_deep_agent()`. This custom prompt is **appended to** default instructions that are automatically injected by middleware. The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:
-
-#### From [TodoListMiddleware](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)
-- Explains when to use `write_todos` and `read_todos`
-- Guidance on marking tasks completed
-- Best practices for todo list management
-- When NOT to use todos (simple tasks)
-
-#### From [FilesystemMiddleware](libs/deepagents/deepagents/middleware/filesystem.py)
-- Lists all filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`*)
-- Explains that file paths must start with `/`
-- Describes each tool's purpose and parameters
-- Notes about context offloading for large tool results
-
-#### From [SubAgentMiddleware](libs/deepagents/deepagents/middleware/subagents.py)
-- Explains the `task()` tool for delegating to sub-agents
-- When to use sub-agents vs when NOT to use them
-- Guidance on parallel execution
-- Subagent lifecycle (spawn → run → return → reconcile)
+You can provide a `system_prompt` parameter to `create_deep_agent()`. This custom prompt is **appended to** default instructions that are automatically injected by middleware. 
 
 When writing a custom system prompt, you should:
 - ✅ Define domain-specific workflows (e.g., research methodology, data analysis steps)
@@ -240,11 +247,3 @@ agent = create_deep_agent(
     }
 )
 ```
-
-## Sync vs Async
-
-Prior versions of deepagents separated sync and async agent factories. 
-
-`async_create_deep_agent` has been folded in to `create_deep_agent`.
-
-**You should use `create_deep_agent` as the factory for both sync and async agents**

@@ -7,9 +7,78 @@ database, etc.) and provide a uniform interface for file operations.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeAlias, TypedDict, runtime_checkable
+from typing import Any, Literal, Protocol, TypeAlias, TypedDict, runtime_checkable
 
 from langchain.tools import ToolRuntime
+
+FileOperationError = Literal[
+    "file_not_found",  # Download: file doesn't exist
+    "parent_not_found",  # Upload: parent directory doesn't exist
+    "permission_denied",  # Both: access denied
+    "is_directory",  # Download: tried to download directory as file
+    "invalid_path",  # Both: path syntax malformed (null bytes, invalid chars, too long)
+]
+"""Standardized error codes for file upload/download operations.
+
+These represent common, recoverable errors that an LLM can understand and potentially fix:
+- file_not_found: The requested file doesn't exist (download)
+- parent_not_found: The parent directory doesn't exist (upload)
+- permission_denied: Access denied for the operation
+- is_directory: Attempted to download a directory as a file
+- invalid_path: Path syntax is malformed or contains invalid characters
+"""
+
+
+@dataclass
+class FileDownloadResponse:
+    """Result of a single file download operation.
+
+    Supports partial success in batch operations - if an LLM requests multiple
+    files and some paths are incorrect, the valid files can still be downloaded
+    while errors are reported for invalid paths.
+
+    Attributes:
+        path: The file path that was requested. Included for easy correlation
+            when processing batch results, especially useful for error messages.
+        content: File contents as bytes on success, None on failure.
+        error: Standardized error code on failure, None on success.
+            Uses FileOperationError literal for structured, LLM-actionable error reporting.
+
+    Examples:
+        >>> # Success
+        >>> FileDownloadResponse(path="/app/config.json", content=b"{...}", error=None)
+        >>> # Failure
+        >>> FileDownloadResponse(path="/wrong/path.txt", content=None, error="file_not_found")
+    """
+
+    path: str
+    content: bytes | None = None
+    error: FileOperationError | None = None
+
+
+@dataclass
+class FileUploadResponse:
+    """Result of a single file upload operation.
+
+    Supports partial success in batch operations - if an LLM attempts to upload
+    multiple files and some operations fail (e.g., permission denied), successful
+    uploads still complete while errors are reported for failures.
+
+    Attributes:
+        path: The file path that was requested. Included for easy correlation
+            when processing batch results and for clear error messages.
+        error: Standardized error code on failure, None on success.
+            Uses FileOperationError literal for structured, LLM-actionable error reporting.
+
+    Examples:
+        >>> # Success
+        >>> FileUploadResponse(path="/app/data.txt", error=None)
+        >>> # Failure
+        >>> FileUploadResponse(path="/readonly/file.txt", error="permission_denied")
+    """
+
+    path: str
+    error: FileOperationError | None = None
 
 
 class FileInfo(TypedDict, total=False):
@@ -94,9 +163,9 @@ class BackendProtocol(Protocol):
 
     All file data is represented as dicts with the following structure:
     {
-        "content": list[str],      # Lines of text content
-        "created_at": str,         # ISO format timestamp
-        "modified_at": str,        # ISO format timestamp
+        "content": list[str], # Lines of text content
+        "created_at": str, # ISO format timestamp
+        "modified_at": str, # ISO format timestamp
     }
     """
 
@@ -142,109 +211,6 @@ class BackendProtocol(Protocol):
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
-        ...
-
-
-@dataclass
-class ExecuteResponse:
-    """Result of code execution.
-
-    Simplified schema optimized for LLM consumption.
-    """
-
-    output: str
-    """Combined stdout and stderr output of the executed command."""
-
-    exit_code: int | None = None
-    """The process exit code. 0 indicates success, non-zero indicates failure."""
-
-    truncated: bool = False
-    """Whether the output was truncated due to backend limitations."""
-
-
-@dataclass
-class FileDownloadResponse:
-    """Result of a single file download operation.
-
-    Supports partial success in batch operations - if an LLM requests multiple
-    files and some paths are incorrect, the valid files can still be downloaded
-    while errors are reported for invalid paths.
-
-    Attributes:
-        path: The file path that was requested. Included for easy correlation
-            when processing batch results, especially useful for error messages.
-        content: File contents as bytes on success, None on failure.
-        error: Human-readable error message on failure, None on success.
-            Stored as string rather than exception for LLM consumption - allows
-            the error to be serialized in tool responses so LLMs can read the
-            error and correct mistakes (e.g., fix an incorrect file path).
-
-    Examples:
-        >>> # Success
-        >>> FileDownloadResponse(path="/app/config.json", content=b"{...}", error=None)
-        >>> # Failure
-        >>> FileDownloadResponse(path="/wrong/path.txt", content=None, error="No such file or directory: /wrong/path.txt")
-    """
-
-    path: str
-    content: bytes | None = None
-    error: str | None = None
-
-
-@dataclass
-class FileUploadResponse:
-    """Result of a single file upload operation.
-
-    Supports partial success in batch operations - if an LLM attempts to upload
-    multiple files and some operations fail (e.g., permission denied), successful
-    uploads still complete while errors are reported for failures.
-
-    Attributes:
-        path: The file path that was requested. Included for easy correlation
-            when processing batch results and for clear error messages.
-        error: Human-readable error message on failure, None on success.
-            Stored as string rather than exception for LLM consumption - allows
-            the error to be serialized in tool responses so LLMs can read the
-            error and correct mistakes (e.g., fix permission issues or paths).
-
-    Examples:
-        >>> # Success
-        >>> FileUploadResponse(path="/app/data.txt", error=None)
-        >>> # Failure
-        >>> FileUploadResponse(path="/readonly/file.txt", error="Permission denied: /readonly/file.txt")
-    """
-
-    path: str
-    error: str | None = None
-
-
-@runtime_checkable
-class SandboxBackendProtocol(BackendProtocol, Protocol):
-    """Protocol for sandboxed backends with isolated runtime.
-
-    Sandboxed backends run in isolated environments (e.g., separate processes,
-    containers) and communicate via defined interfaces.
-    """
-
-    def execute(
-        self,
-        command: str,
-    ) -> ExecuteResponse:
-        """Execute a command in the process.
-
-        Simplified interface optimized for LLM consumption.
-
-        Args:
-            command: Full shell command string to execute.
-
-        Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
-        """
-        ...
-
-    @property
-    def id(self) -> str:
-        """Unique identifier for the sandbox backend instance."""
         ...
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -297,6 +263,53 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
             Response order matches input order (response[i] for paths[i]).
             Check the error field to determine success/failure per file.
         """
+        ...
+
+
+@dataclass
+class ExecuteResponse:
+    """Result of code execution.
+
+    Simplified schema optimized for LLM consumption.
+    """
+
+    output: str
+    """Combined stdout and stderr output of the executed command."""
+
+    exit_code: int | None = None
+    """The process exit code. 0 indicates success, non-zero indicates failure."""
+
+    truncated: bool = False
+    """Whether the output was truncated due to backend limitations."""
+
+
+@runtime_checkable
+class SandboxBackendProtocol(BackendProtocol, Protocol):
+    """Protocol for sandboxed backends with isolated runtime.
+
+    Sandboxed backends run in isolated environments (e.g., separate processes,
+    containers) and communicate via defined interfaces.
+    """
+
+    def execute(
+        self,
+        command: str,
+    ) -> ExecuteResponse:
+        """Execute a command in the process.
+
+        Simplified interface optimized for LLM consumption.
+
+        Args:
+            command: Full shell command string to execute.
+
+        Returns:
+            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+        """
+        ...
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend instance."""
         ...
 
 

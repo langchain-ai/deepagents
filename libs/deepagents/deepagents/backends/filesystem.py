@@ -16,7 +16,15 @@ from pathlib import Path
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    EditResult,
+    FileDownloadResponse,
+    FileInfo,
+    FileUploadResponse,
+    GrepMatch,
+    WriteResult,
+)
 from deepagents.backends.utils import (
     check_empty_content,
     format_content_with_line_numbers,
@@ -481,3 +489,94 @@ class FilesystemBackend(BackendProtocol):
 
         results.sort(key=lambda x: x.get("path", ""))
         return results
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the filesystem.
+
+        Args:
+            files: List of (path, content) tuples where content is bytes.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order.
+        """
+        responses: list[FileUploadResponse] = []
+        for path, content in files:
+            try:
+                resolved_path = self._resolve_path(path)
+
+                # Create parent directories if needed
+                resolved_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Write binary content securely
+                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                fd = os.open(resolved_path, flags, 0o644)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(content)
+
+                responses.append(FileUploadResponse(path=path, error=None))
+            except FileNotFoundError:
+                responses.append(FileUploadResponse(path=path, error="parent_not_found"))
+            except PermissionError:
+                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+            except (ValueError, OSError) as e:
+                # ValueError from _resolve_path for path traversal, OSError for other file errors
+                if isinstance(e, ValueError) or "invalid" in str(e).lower():
+                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
+                else:
+                    # Generic error fallback
+                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
+
+        return responses
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the filesystem.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+        """
+        responses: list[FileDownloadResponse] = []
+        for path in paths:
+            try:
+                resolved_path = self._resolve_path(path)
+
+                if not resolved_path.exists():
+                    responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                    continue
+
+                if resolved_path.is_dir():
+                    responses.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
+                    continue
+
+                # Read binary content securely
+                try:
+                    fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    with os.fdopen(fd, "rb") as f:
+                        content = f.read()
+                except OSError:
+                    # Fallback if O_NOFOLLOW fails
+                    with open(resolved_path, "rb") as f:
+                        content = f.read()
+
+                responses.append(FileDownloadResponse(path=path, content=content, error=None))
+            except FileNotFoundError:
+                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+            except PermissionError:
+                responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
+            except IsADirectoryError:
+                responses.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
+            except (ValueError, OSError) as e:
+                # ValueError from _resolve_path for path traversal
+                if isinstance(e, ValueError) or "invalid" in str(e).lower():
+                    responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
+                else:
+                    # Generic error fallback
+                    responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
+
+        return responses

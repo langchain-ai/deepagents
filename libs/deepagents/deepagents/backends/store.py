@@ -5,7 +5,15 @@ from typing import Any
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    EditResult,
+    FileDownloadResponse,
+    FileInfo,
+    FileUploadResponse,
+    GrepMatch,
+    WriteResult,
+)
 from deepagents.backends.utils import (
     _glob_search_files,
     create_file_data,
@@ -376,3 +384,79 @@ class StoreBackend(BackendProtocol):
                 }
             )
         return infos
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the store.
+
+        Args:
+            files: List of (path, content) tuples where content is bytes.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+        responses: list[FileUploadResponse] = []
+
+        for path, content in files:
+            try:
+                # Convert bytes to string
+                try:
+                    content_str = content.decode("utf-8")
+                except UnicodeDecodeError:
+                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
+                    continue
+
+                # Create file data
+                file_data = create_file_data(content_str)
+                store_value = self._convert_file_data_to_store_value(file_data)
+
+                # Store the file
+                store.put(namespace, path, store_value)
+                responses.append(FileUploadResponse(path=path, error=None))
+
+            except Exception:
+                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+
+        return responses
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the store.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+        responses: list[FileDownloadResponse] = []
+
+        for path in paths:
+            try:
+                item = store.get(namespace, path)
+
+                if item is None:
+                    responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                    continue
+
+                # Convert store item to file data
+                try:
+                    file_data = self._convert_store_item_to_file_data(item)
+                except ValueError:
+                    responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
+                    continue
+
+                # Convert file data to bytes
+                content_str = file_data_to_string(file_data)
+                content_bytes = content_str.encode("utf-8")
+
+                responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
+
+            except Exception:
+                responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
+
+        return responses

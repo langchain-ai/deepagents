@@ -218,3 +218,207 @@ def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     saved_file = root / "large_tool_results" / "test_fs_123"
     assert saved_file.exists()
     assert saved_file.read_text() == large_content
+
+
+def test_filesystem_upload_single_file(tmp_path: Path):
+    """Test uploading a single binary file."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    test_path = "/test_upload.bin"
+    test_content = b"Hello, Binary World!"
+
+    responses = be.upload_files([(test_path, test_content)])
+
+    assert len(responses) == 1
+    assert responses[0].path == test_path
+    assert responses[0].error is None
+
+    # Verify file exists and content matches
+    uploaded_file = root / "test_upload.bin"
+    assert uploaded_file.exists()
+    assert uploaded_file.read_bytes() == test_content
+
+
+def test_filesystem_upload_multiple_files(tmp_path: Path):
+    """Test uploading multiple files in one call."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    files = [
+        ("/file1.bin", b"Content 1"),
+        ("/file2.bin", b"Content 2"),
+        ("/subdir/file3.bin", b"Content 3"),
+    ]
+
+    responses = be.upload_files(files)
+
+    assert len(responses) == 3
+    for i, (path, content) in enumerate(files):
+        assert responses[i].path == path
+        assert responses[i].error is None
+
+    # Verify all files created
+    assert (root / "file1.bin").read_bytes() == b"Content 1"
+    assert (root / "file2.bin").read_bytes() == b"Content 2"
+    assert (root / "subdir" / "file3.bin").read_bytes() == b"Content 3"
+
+
+def test_filesystem_download_single_file(tmp_path: Path):
+    """Test downloading a single file."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Create a file manually
+    test_file = root / "test_download.bin"
+    test_content = b"Download me!"
+    test_file.write_bytes(test_content)
+
+    responses = be.download_files(["/test_download.bin"])
+
+    assert len(responses) == 1
+    assert responses[0].path == "/test_download.bin"
+    assert responses[0].content == test_content
+    assert responses[0].error is None
+
+
+def test_filesystem_download_multiple_files(tmp_path: Path):
+    """Test downloading multiple files in one call."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Create several files
+    files = {
+        root / "file1.txt": b"File 1",
+        root / "file2.txt": b"File 2",
+        root / "subdir" / "file3.txt": b"File 3",
+    }
+
+    for path, content in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    paths = ["/file1.txt", "/file2.txt", "/subdir/file3.txt"]
+    responses = be.download_files(paths)
+
+    assert len(responses) == 3
+    assert responses[0].path == "/file1.txt"
+    assert responses[0].content == b"File 1"
+    assert responses[0].error is None
+
+    assert responses[1].path == "/file2.txt"
+    assert responses[1].content == b"File 2"
+    assert responses[1].error is None
+
+    assert responses[2].path == "/subdir/file3.txt"
+    assert responses[2].content == b"File 3"
+    assert responses[2].error is None
+
+
+def test_filesystem_upload_download_roundtrip(tmp_path: Path):
+    """Test upload followed by download for data integrity."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Test with binary content including special bytes
+    test_path = "/roundtrip.bin"
+    test_content = bytes(range(256))  # All possible byte values
+
+    # Upload
+    upload_responses = be.upload_files([(test_path, test_content)])
+    assert upload_responses[0].error is None
+
+    # Download
+    download_responses = be.download_files([test_path])
+    assert download_responses[0].error is None
+    assert download_responses[0].content == test_content
+
+
+def test_filesystem_download_errors(tmp_path: Path):
+    """Test download error handling."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Test file_not_found
+    responses = be.download_files(["/nonexistent.txt"])
+    assert len(responses) == 1
+    assert responses[0].path == "/nonexistent.txt"
+    assert responses[0].content is None
+    assert responses[0].error == "file_not_found"
+
+    # Test is_directory
+    (root / "testdir").mkdir()
+    responses = be.download_files(["/testdir"])
+    assert responses[0].error == "is_directory"
+    assert responses[0].content is None
+
+    # Test invalid_path (path traversal)
+    responses = be.download_files(["/../etc/passwd"])
+    assert len(responses) == 1
+    assert responses[0].error == "invalid_path"
+    assert responses[0].content is None
+
+
+def test_filesystem_upload_errors(tmp_path: Path):
+    """Test upload error handling."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Test invalid_path (path traversal)
+    responses = be.upload_files([("/../bad/path.txt", b"content")])
+    assert len(responses) == 1
+    assert responses[0].error == "invalid_path"
+
+
+def test_filesystem_partial_success_upload(tmp_path: Path):
+    """Test partial success in batch upload."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    files = [
+        ("/valid1.txt", b"Valid content 1"),
+        ("/../invalid.txt", b"Invalid path"),  # Path traversal
+        ("/valid2.txt", b"Valid content 2"),
+    ]
+
+    responses = be.upload_files(files)
+
+    assert len(responses) == 3
+    # First file should succeed
+    assert responses[0].error is None
+    assert (root / "valid1.txt").exists()
+
+    # Second file should fail
+    assert responses[1].error == "invalid_path"
+
+    # Third file should still succeed (partial success)
+    assert responses[2].error is None
+    assert (root / "valid2.txt").exists()
+
+
+def test_filesystem_partial_success_download(tmp_path: Path):
+    """Test partial success in batch download."""
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Create one valid file
+    valid_file = root / "exists.txt"
+    valid_content = b"I exist!"
+    valid_file.write_bytes(valid_content)
+
+    paths = ["/exists.txt", "/doesnotexist.txt", "/../invalid"]
+    responses = be.download_files(paths)
+
+    assert len(responses) == 3
+
+    # First should succeed
+    assert responses[0].error is None
+    assert responses[0].content == valid_content
+
+    # Second should fail with file_not_found
+    assert responses[1].error == "file_not_found"
+    assert responses[1].content is None
+
+    # Third should fail with invalid_path
+    assert responses[2].error == "invalid_path"
+    assert responses[2].content is None

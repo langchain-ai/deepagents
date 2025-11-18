@@ -9,14 +9,22 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 
 from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
 from deepagents_cli.commands import execute_bash_command, handle_command
-from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, SessionState, console, create_model
+from deepagents_cli.config import (
+    COLORS,
+    DEEP_AGENTS_ASCII,
+    SessionState,
+    console,
+    create_model,
+    settings,
+)
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
     create_sandbox,
     get_default_working_dir,
 )
-from deepagents_cli.tools import fetch_url, http_request, tavily_client, web_search
+from deepagents_cli.skills import execute_skills_command, setup_skills_parser
+from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.ui import TokenTracker, show_help
 
 
@@ -84,6 +92,9 @@ def parse_args():
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
+    # Skills command - setup delegated to skills module
+    setup_skills_parser(subparsers)
+
     # Default interactive mode
     parser.add_argument(
         "--agent",
@@ -135,10 +146,17 @@ async def simple_cli(
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
 
-    if backend and isinstance(backend, SandboxBackendProtocol):
-        sandbox_id: str | None = backend.id
-    else:
-        sandbox_id = None
+    # Extract sandbox ID from backend if using sandbox mode
+    sandbox_id: str | None = None
+    if backend:
+        from deepagents.backends.composite import CompositeBackend
+
+        # Check if it's a CompositeBackend with a sandbox default backend
+        if isinstance(backend, CompositeBackend):
+            if isinstance(backend.default, SandboxBackendProtocol):
+                sandbox_id = backend.default.id
+        elif isinstance(backend, SandboxBackendProtocol):
+            sandbox_id = backend.id
 
     # Display sandbox info persistently (survives console.clear())
     if sandbox_type and sandbox_id:
@@ -149,7 +167,7 @@ async def simple_cli(
             )
         console.print()
 
-    if tavily_client is None:
+    if not settings.has_tavily:
         console.print(
             "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
             style=COLORS["dim"],
@@ -254,7 +272,7 @@ async def _run_agent_session(
     """
     # Create agent with conditional tools
     tools = [http_request, fetch_url]
-    if tavily_client is not None:
+    if settings.has_tavily:
         tools.append(web_search)
 
     agent, composite_backend = create_agent_with_config(
@@ -266,8 +284,8 @@ async def _run_agent_session(
     from .token_utils import calculate_baseline_tokens
 
     agent_dir = Path.home() / ".deepagents" / assistant_id
-    system_prompt = get_system_prompt(sandbox_type=sandbox_type)
-    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt)
+    system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
+    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, assistant_id)
 
     await simple_cli(
         agent,
@@ -358,6 +376,8 @@ def cli_main() -> None:
             list_agents()
         elif args.command == "reset":
             reset_agent(args.agent, args.source_agent)
+        elif args.command == "skills":
+            execute_skills_command(args)
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve)

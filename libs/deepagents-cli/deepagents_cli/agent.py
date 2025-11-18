@@ -8,15 +8,23 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
-from deepagents.middleware.resumable_shell import ResumableShellToolMiddleware
-from langchain.agents.middleware import HostExecutionPolicy, InterruptOnConfig
+from langchain.agents.middleware import (
+    HostExecutionPolicy,
+    InterruptOnConfig,
+)
+from langchain.agents.middleware.types import AgentState
+from langchain.messages import ToolCall
 from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
+from langgraph.runtime import Runtime
 
+from deepagents_cli._internal import ResumableShellToolMiddleware
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
-from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions
+from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
+from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
+from deepagents_cli.skills import SkillsMiddleware
 
 
 def list_agents() -> None:
@@ -83,19 +91,21 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(sandbox_type: str | None = None) -> str:
+def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
     """Get the base system prompt for the agent.
 
     Args:
+        assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
                      If None, agent is operating in local mode.
 
     Returns:
         The system prompt string (without agent.md content)
     """
+    agent_dir_path = f"~/.deepagents/{assistant_id}"
+
     if sandbox_type:
         # Get provider-specific working directory
-        from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 
         working_dir = get_default_working_dir(sandbox_type)
 
@@ -108,28 +118,35 @@ All code execution and file operations happen in this sandbox environment.
 **Important:**
 - The CLI is running locally on the user's machine, but you execute code remotely
 - Use `{working_dir}` as your working directory for all operations
-- The local `/memories/` directory is still accessible for persistent storage
 
 """
     else:
-        working_dir_section = f"""### Current Working Directory
+        cwd = Path.cwd()
+        working_dir_section = f"""<env>
+Working directory: {cwd}
+</env>
 
-The filesystem backend is currently operating in: `{Path.cwd()}`
+### Current Working Directory
+
+The filesystem backend is currently operating in: `{cwd}`
+
+### File System and Paths
+
+**IMPORTANT - Path Handling:**
+- All file paths must be absolute paths (e.g., `{cwd}/file.txt`)
+- Use the working directory from <env> to construct absolute paths
+- Example: To create a file in your working directory, use `{cwd}/research_project/file.md`
+- Never use relative paths - always construct full absolute paths
 
 """
 
     return (
         working_dir_section
-        + """### Memory System Reminder
+        + f"""### Skills Directory
 
-Your long-term memory is stored in /memories/ and persists across sessions.
-
-**IMPORTANT - Check memories before answering:**
-- When asked "what do you know about X?" → Run `ls /memories/` FIRST, then read relevant files
-- When starting a task → Check if you have guides or examples in /memories/
-- At the beginning of new sessions → Consider checking `ls /memories/` to see what context you have
-
-Base your answers on saved knowledge (from /memories/) when available, supplemented by general knowledge.
+Your skills are stored at: `{agent_dir_path}/skills/`
+Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:
+Example: `bash python {agent_dir_path}/skills/web-research/script.py`
 
 ### Human-in-the-Loop Tool Approval
 
@@ -170,6 +187,83 @@ The todo list is a planning tool - use it judiciously to avoid overwhelming the 
     )
 
 
+def _format_write_file_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format write_file tool call for approval prompt."""
+    args = tool_call["args"]
+    file_path = args.get("file_path", "unknown")
+    content = args.get("content", "")
+
+    action = "Overwrite" if os.path.exists(file_path) else "Create"
+    line_count = len(content.splitlines())
+
+    return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
+
+
+def _format_edit_file_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format edit_file tool call for approval prompt."""
+    args = tool_call["args"]
+    file_path = args.get("file_path", "unknown")
+    replace_all = bool(args.get("replace_all", False))
+
+    return (
+        f"File: {file_path}\n"
+        f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})"
+    )
+
+
+def _format_web_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format web_search tool call for approval prompt."""
+    args = tool_call["args"]
+    query = args.get("query", "unknown")
+    max_results = args.get("max_results", 5)
+
+    return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
+
+
+def _format_fetch_url_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format fetch_url tool call for approval prompt."""
+    args = tool_call["args"]
+    url = args.get("url", "unknown")
+    timeout = args.get("timeout", 30)
+
+    return f"URL: {url}\nTimeout: {timeout}s\n\n⚠️  Will fetch and convert web content to markdown"
+
+
+def _format_task_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format task (subagent) tool call for approval prompt."""
+    args = tool_call["args"]
+    description = args.get("description", "unknown")
+    prompt = args.get("prompt", "")
+
+    # Truncate prompt if too long
+    prompt_preview = prompt[:300]
+    if len(prompt) > 300:
+        prompt_preview += "..."
+
+    return (
+        f"Task: {description}\n\n"
+        f"Instructions to subagent:\n"
+        f"{'─' * 40}\n"
+        f"{prompt_preview}\n"
+        f"{'─' * 40}\n\n"
+        f"⚠️  Subagent will have access to file operations and shell commands"
+    )
+
+
+def _format_shell_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format shell tool call for approval prompt."""
+    args = tool_call["args"]
+    command = args.get("command", "N/A")
+    return f"Shell Command: {command}\nWorking Directory: {os.getcwd()}"
+
+
+def _format_execute_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+    """Format execute tool call for approval prompt."""
+    args = tool_call["args"]
+    command = args.get("command", "N/A")
+    return f"Execute Command: {command}\nLocation: Remote Sandbox"
+
+
 def create_agent_with_config(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -199,145 +293,80 @@ def create_agent_with_config(
         source_content = get_default_coding_instructions()
         agent_md.write_text(source_content)
 
-    # Long-term backend for /memories/ route (always local, persists across sessions)
-    long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
+    # Skills directory - per-agent
+    skills_dir = agent_dir / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
-        # ========== LOCAL MODE (current behavior) ==========
-        # Backend: Local filesystem for code + local /memories/
+        # ========== LOCAL MODE ==========
+        # Backend: Local filesystem for code (no virtual routes)
         composite_backend = CompositeBackend(
             default=FilesystemBackend(),  # Current working directory
-            routes={"/memories/": long_term_backend},  # Agent memories
+            routes={},  # No virtualization - use real paths
         )
 
-        # Middleware: ResumableShellToolMiddleware provides "shell" tool
+        # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ResumableShellToolMiddleware
         agent_middleware = [
-            AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
+            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
+            SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
             ResumableShellToolMiddleware(
                 workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
             ),
         ]
     else:
         # ========== REMOTE SANDBOX MODE ==========
-        # Backend: Remote sandbox for code + local /memories/
+        # Backend: Remote sandbox for code (no /memories/ route needed with filesystem-based memory)
         composite_backend = CompositeBackend(
             default=sandbox,  # Remote sandbox (ModalBackend, etc.)
-            routes={"/memories/": long_term_backend},  # Agent memories (still local!)
+            routes={},  # No virtualization
         )
 
-        # Middleware: create_deep_agent automatically provides file tools + execute
-        # when a SandboxBackend is passed, so we only add AgentMemoryMiddleware
-        agent_middleware = [
-            AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
-        ]
+        # Middleware: AgentMemoryMiddleware and SkillsMiddleware
         # NOTE: File operations (ls, read, write, edit, glob, grep) and execute tool
         # are automatically provided by create_deep_agent when backend is a SandboxBackend.
-        # No need to add FilesystemMiddleware or ShellToolMiddleware manually.
+        agent_middleware = [
+            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
+            SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
+        ]
 
-    # Get the system prompt (sandbox-aware)
-    system_prompt = get_system_prompt(sandbox_type=sandbox_type)
-
-    # Helper functions for formatting tool descriptions in HITL prompts
-    def format_write_file_description(tool_call: dict) -> str:
-        """Format write_file tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        file_path = args.get("file_path", "unknown")
-        content = args.get("content", "")
-
-        action = "Overwrite" if os.path.exists(file_path) else "Create"
-        line_count = len(content.splitlines())
-
-        return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
-
-    def format_edit_file_description(tool_call: dict) -> str:
-        """Format edit_file tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        file_path = args.get("file_path", "unknown")
-        replace_all = bool(args.get("replace_all", False))
-
-        return (
-            f"File: {file_path}\n"
-            f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})"
-        )
-
-    def format_web_search_description(tool_call: dict) -> str:
-        """Format web_search tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        query = args.get("query", "unknown")
-        max_results = args.get("max_results", 5)
-
-        return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
-
-    def format_fetch_url_description(tool_call: dict) -> str:
-        """Format fetch_url tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        url = args.get("url", "unknown")
-        timeout = args.get("timeout", 30)
-
-        return (
-            f"URL: {url}\nTimeout: {timeout}s\n\n⚠️  Will fetch and convert web content to markdown"
-        )
-
-    def format_task_description(tool_call: dict) -> str:
-        """Format task (subagent) tool call for approval prompt."""
-        args = tool_call.get("args", {})
-        description = args.get("description", "unknown")
-        prompt = args.get("prompt", "")
-
-        # Truncate prompt if too long
-        prompt_preview = prompt[:300]
-        if len(prompt) > 300:
-            prompt_preview += "..."
-
-        return (
-            f"Task: {description}\n\n"
-            f"Instructions to subagent:\n"
-            f"{'─' * 40}\n"
-            f"{prompt_preview}\n"
-            f"{'─' * 40}\n\n"
-            f"⚠️  Subagent will have access to file operations and shell commands"
-        )
+    # Get the system prompt (sandbox-aware and with skills)
+    system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
 
     # Configure human-in-the-loop for potentially destructive tools
     shell_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: (
-            f"Shell Command: {tool_call['args'].get('command', 'N/A')}\n"
-            f"Working Directory: {os.getcwd()}"
-        ),
+        "description": _format_shell_description,
     }
 
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: (
-            f"Execute Command: {tool_call['args'].get('command', 'N/A')}\nLocation: Remote Sandbox"
-        ),
+        "description": _format_execute_description,
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_write_file_description(tool_call),
+        "description": _format_write_file_description,
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_edit_file_description(tool_call),
+        "description": _format_edit_file_description,
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_web_search_description(tool_call),
+        "description": _format_web_search_description,
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_fetch_url_description(tool_call),
+        "description": _format_fetch_url_description,
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": lambda tool_call, state, runtime: format_task_description(tool_call),
+        "description": _format_task_description,
     }
 
     agent = create_deep_agent(

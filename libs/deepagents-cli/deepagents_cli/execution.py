@@ -209,7 +209,7 @@ async def execute_task(
         final_input = prompt_text
 
     config = {
-        "configurable": {"thread_id": "main"},
+        "configurable": {"thread_id": session_state.thread_id},
         "metadata": {"assistant_id": assistant_id} if assistant_id else {},
     }
 

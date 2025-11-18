@@ -22,7 +22,9 @@ from langgraph.runtime import Runtime
 
 from deepagents_cli._internal import ResumableShellToolMiddleware
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
-from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions
+from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
+from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
+from deepagents_cli.skills import SkillsMiddleware
 
 
 def list_agents() -> None:
@@ -89,19 +91,21 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(sandbox_type: str | None = None) -> str:
+def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
     """Get the base system prompt for the agent.
 
     Args:
+        assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
                      If None, agent is operating in local mode.
 
     Returns:
         The system prompt string (without agent.md content)
     """
+    agent_dir_path = f"~/.deepagents/{assistant_id}"
+
     if sandbox_type:
         # Get provider-specific working directory
-        from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 
         working_dir = get_default_working_dir(sandbox_type)
 
@@ -114,28 +118,35 @@ All code execution and file operations happen in this sandbox environment.
 **Important:**
 - The CLI is running locally on the user's machine, but you execute code remotely
 - Use `{working_dir}` as your working directory for all operations
-- The local `/memories/` directory is still accessible for persistent storage
 
 """
     else:
-        working_dir_section = f"""### Current Working Directory
+        cwd = Path.cwd()
+        working_dir_section = f"""<env>
+Working directory: {cwd}
+</env>
 
-The filesystem backend is currently operating in: `{Path.cwd()}`
+### Current Working Directory
+
+The filesystem backend is currently operating in: `{cwd}`
+
+### File System and Paths
+
+**IMPORTANT - Path Handling:**
+- All file paths must be absolute paths (e.g., `{cwd}/file.txt`)
+- Use the working directory from <env> to construct absolute paths
+- Example: To create a file in your working directory, use `{cwd}/research_project/file.md`
+- Never use relative paths - always construct full absolute paths
 
 """
 
     return (
         working_dir_section
-        + """### Memory System Reminder
+        + f"""### Skills Directory
 
-Your long-term memory is stored in /memories/ and persists across sessions.
-
-**IMPORTANT - Check memories before answering:**
-- When asked "what do you know about X?" → Run `ls /memories/` FIRST, then read relevant files
-- When starting a task → Check if you have guides or examples in /memories/
-- At the beginning of new sessions → Consider checking `ls /memories/` to see what context you have
-
-Base your answers on saved knowledge (from /memories/) when available, supplemented by general knowledge.
+Your skills are stored at: `{agent_dir_path}/skills/`
+Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:
+Example: `bash python {agent_dir_path}/skills/web-research/script.py`
 
 ### Human-in-the-Loop Tool Approval
 
@@ -282,44 +293,45 @@ def create_agent_with_config(
         source_content = get_default_coding_instructions()
         agent_md.write_text(source_content)
 
-    # Long-term backend for /memories/ route (always local, persists across sessions)
-    long_term_backend = FilesystemBackend(root_dir=agent_dir, virtual_mode=True)
+    # Skills directory - per-agent
+    skills_dir = agent_dir / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
-        # ========== LOCAL MODE (current behavior) ==========
-        # Backend: Local filesystem for code + local /memories/
+        # ========== LOCAL MODE ==========
+        # Backend: Local filesystem for code (no virtual routes)
         composite_backend = CompositeBackend(
             default=FilesystemBackend(),  # Current working directory
-            routes={"/memories/": long_term_backend},  # Agent memories
+            routes={},  # No virtualization - use real paths
         )
 
-        # Middleware: ResumableShellToolMiddleware provides "shell" tool
+        # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ResumableShellToolMiddleware
         agent_middleware = [
-            AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
+            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
+            SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
             ResumableShellToolMiddleware(
                 workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
             ),
         ]
     else:
         # ========== REMOTE SANDBOX MODE ==========
-        # Backend: Remote sandbox for code + local /memories/
+        # Backend: Remote sandbox for code (no /memories/ route needed with filesystem-based memory)
         composite_backend = CompositeBackend(
             default=sandbox,  # Remote sandbox (ModalBackend, etc.)
-            routes={"/memories/": long_term_backend},  # Agent memories (still local!)
+            routes={},  # No virtualization
         )
 
-        # Middleware: create_deep_agent automatically provides file tools + execute
-        # when a SandboxBackend is passed, so we only add AgentMemoryMiddleware
-        agent_middleware = [
-            AgentMemoryMiddleware(backend=long_term_backend, memory_path="/memories/"),
-        ]
+        # Middleware: AgentMemoryMiddleware and SkillsMiddleware
         # NOTE: File operations (ls, read, write, edit, glob, grep) and execute tool
         # are automatically provided by create_deep_agent when backend is a SandboxBackend.
-        # No need to add FilesystemMiddleware or ShellToolMiddleware manually.
+        agent_middleware = [
+            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
+            SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
+        ]
 
-    # Get the system prompt (sandbox-aware)
-    system_prompt = get_system_prompt(sandbox_type=sandbox_type)
+    # Get the system prompt (sandbox-aware and with skills)
+    system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
 
     # Configure human-in-the-loop for potentially destructive tools
     shell_interrupt_config: InterruptOnConfig = {

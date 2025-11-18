@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import dotenv
+from langchain_core.language_models import BaseChatModel
 from rich.console import Console
 
 dotenv.load_dotenv()
@@ -293,7 +294,7 @@ def get_default_coding_instructions() -> str:
     return default_prompt_path.read_text()
 
 
-def create_model():
+def create_model() -> BaseChatModel:
     """Create the appropriate model based on available API keys.
 
     Uses the global settings instance to determine which model to create.
@@ -319,7 +320,9 @@ def create_model():
         console.print(f"[dim]Using Anthropic model: {model_name}[/dim]")
         return ChatAnthropic(
             model_name=model_name,
-            max_tokens=20000,
+            # The attribute exists, but it has a Pydantic alias which
+            # causes issues in IDEs/type checkers.
+            max_tokens=20_000,  # type: ignore[arg-type]
         )
     console.print("[bold red]Error:[/bold red] No API key configured.")
     console.print("\nPlease set one of the following environment variables:")

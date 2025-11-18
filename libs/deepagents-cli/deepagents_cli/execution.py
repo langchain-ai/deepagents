@@ -41,7 +41,7 @@ def prompt_for_tool_approval(
     assistant_id: str | None,
 ) -> Decision | dict:
     """Prompt user to approve/reject a tool action with arrow key navigation.
-    
+
     Returns:
         Decision (ApproveDecision or RejectDecision) OR
         dict with {"type": "auto_approve_all"} to switch to auto-approve mode
@@ -566,19 +566,26 @@ async def execute_task(
                                 action_request,
                                 assistant_id,
                             )
-                            
+
                             # Check if user wants to switch to auto-approve mode
-                            if isinstance(decision, dict) and decision.get("type") == "auto_approve_all":
+                            if (
+                                isinstance(decision, dict)
+                                and decision.get("type") == "auto_approve_all"
+                            ):
                                 # Switch to auto-approve mode
                                 session_state.auto_approve = True
                                 console.print()
                                 console.print("[bold blue]✓ Auto-approve mode enabled[/bold blue]")
-                                console.print("[dim]All future tool actions will be automatically approved.[/dim]")
+                                console.print(
+                                    "[dim]All future tool actions will be automatically approved.[/dim]"
+                                )
                                 console.print()
-                                
+
                                 # Approve this action and all remaining actions in the batch
                                 decisions.append({"type": "approve"})
-                                for remaining_action in hitl_request["action_requests"][action_index + 1:]:
+                                for remaining_action in hitl_request["action_requests"][
+                                    action_index + 1 :
+                                ]:
                                     decisions.append({"type": "approve"})
                                 break
                             else:

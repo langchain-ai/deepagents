@@ -81,6 +81,10 @@ class ModalBackend(BaseSandbox):
         Returns:
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order.
+
+        TODO: Implement proper error handling with standardized FileOperationError codes.
+        Need to determine what exceptions Modal's sandbox.open() actually raises.
+        Currently only implements happy path.
         """
         # This implementation relies on the Modal sandbox file API.
         # https://modal.com/doc/guide/sandbox-files
@@ -88,27 +92,9 @@ class ModalBackend(BaseSandbox):
         # We're OK using it here as it's targeting the CLI application.
         responses = []
         for path in paths:
-            try:
-                with self._sandbox.open(path, "rb") as f:
-                    content = f.read()
-                responses.append(FileDownloadResponse(path=path, content=content, error=None))
-            except FileNotFoundError:
-                responses.append(
-                    FileDownloadResponse(path=path, content=None, error="file_not_found")
-                )
-            except PermissionError:
-                responses.append(
-                    FileDownloadResponse(path=path, content=None, error="permission_denied")
-                )
-            except IsADirectoryError:
-                responses.append(
-                    FileDownloadResponse(path=path, content=None, error="is_directory")
-                )
-            except (ValueError, OSError):
-                # Covers null bytes, invalid characters, path too long, etc.
-                responses.append(
-                    FileDownloadResponse(path=path, content=None, error="invalid_path")
-                )
+            with self._sandbox.open(path, "rb") as f:
+                content = f.read()
+            responses.append(FileDownloadResponse(path=path, content=content, error=None))
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -123,6 +109,10 @@ class ModalBackend(BaseSandbox):
         Returns:
             List of FileUploadResponse objects, one per input file.
             Response order matches input order.
+
+        TODO: Implement proper error handling with standardized FileOperationError codes.
+        Need to determine what exceptions Modal's sandbox.open() actually raises.
+        Currently only implements happy path.
         """
         # This implementation relies on the Modal sandbox file API.
         # https://modal.com/doc/guide/sandbox-files
@@ -130,16 +120,7 @@ class ModalBackend(BaseSandbox):
         # We're OK using it here as it's targeting the CLI application.
         responses = []
         for path, content in files:
-            try:
-                with self._sandbox.open(path, "wb") as f:
-                    f.write(content)
-                responses.append(FileUploadResponse(path=path, error=None))
-            except FileNotFoundError:
-                # Parent directory doesn't exist
-                responses.append(FileUploadResponse(path=path, error="parent_not_found"))
-            except PermissionError:
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
-            except (ValueError, OSError):
-                # Covers null bytes, invalid characters, path too long, etc.
-                responses.append(FileUploadResponse(path=path, error="invalid_path"))
+            with self._sandbox.open(path, "wb") as f:
+                f.write(content)
+            responses.append(FileUploadResponse(path=path, error=None))
         return responses

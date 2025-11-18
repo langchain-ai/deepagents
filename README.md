@@ -166,6 +166,8 @@ agent = create_deep_agent(
 )
 ```
 
+See the [subagents documentation](https://docs.langchain.com/oss/python/deepagents/subagents) for more details.
+
 ### `interrupt_on`
 
 Some tools may be sensitive and require human approval before execution. Deepagents supports human-in-the-loop workflows through LangGraph’s interrupt capabilities. You can configure which tools require approval using a checkpointer.
@@ -191,6 +193,57 @@ agent = create_deep_agent(
     }
 )
 ```
+
+See the [human-in-the-loop documentation](https://docs.langchain.com/oss/python/deepagents/human-in-the-loop) for more details.
+
+### `backend`
+
+Deep agents use pluggable backends to control how filesystem operations work. By default, files are stored in the agent's ephemeral state. You can configure different backends for local disk access, persistent cross-conversation storage, or hybrid routing.
+
+```python
+from deepagents import create_deep_agent
+from deepagents.backends import FilesystemBackend
+
+agent = create_deep_agent(
+    backend=FilesystemBackend(root_dir="/path/to/project"),
+)
+```
+
+Available backends include:
+- **StateBackend** (default): Ephemeral files stored in agent state
+- **FilesystemBackend**: Real disk operations under a root directory
+- **StoreBackend**: Persistent storage using LangGraph Store
+- **CompositeBackend**: Route different paths to different backends
+
+See the [backends documentation](https://docs.langchain.com/oss/python/deepagents/backends) for more details.
+
+### Long-term Memory
+
+Deep agents can maintain persistent memory across conversations using a `CompositeBackend` that routes specific paths to durable storage. 
+
+This enables hybrid memory where working files remain ephemeral while important data (like user preferences or knowledge bases) persists across threads.
+
+```python
+from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from langgraph.store.memory import InMemoryStore
+
+agent = create_deep_agent(
+    backend=CompositeBackend(
+        default=StateBackend(),
+        routes={"/memories/": StoreBackend(store=InMemoryStore())},
+    ),
+)
+```
+
+Files under `/memories/` will persist across all conversations, while other paths remain temporary. Use cases include:
+- Preserving user preferences across sessions
+- Building knowledge bases from multiple conversations
+- Self-improving instructions based on feedback
+- Maintaining research progress across sessions
+
+See the [long-term memory documentation](https://docs.langchain.com/oss/python/deepagents/long-term-memory) for more details.
+
 ## Built-in Tools
 
 <img src="deepagents_tools.png" alt="deep agent" width="600"/>
@@ -212,6 +265,8 @@ Every deep agent created with `create_deep_agent` comes with a standard set of t
 
 The `execute` tool is only available if the backend implements `SandboxBackendProtocol`. By default, it uses the in-memory state backend which does not support command execution. As shown, these tools (along with other capabilities) are provided by default middleware:
 
+See the [agent harness documentation](https://docs.langchain.com/oss/python/deepagents/harness) for more details on built-in tools and capabilities.
+
 ## Built-in Middleware
 
 `deepagents` uses middleware under the hood. Here is the list of the middleware used.
@@ -227,6 +282,7 @@ The `execute` tool is only available if the backend implements `SandboxBackendPr
 | **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
 
 ## Built-in prompts
+
 The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:
 
 #### From [TodoListMiddleware](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)

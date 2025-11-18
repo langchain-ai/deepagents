@@ -94,19 +94,20 @@ class ModalBackend(BaseSandbox):
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except FileNotFoundError:
                 responses.append(
-                    FileDownloadResponse(path=path, content=None, error=f"File not found: {path}")
+                    FileDownloadResponse(path=path, content=None, error="file_not_found")
                 )
             except PermissionError:
                 responses.append(
-                    FileDownloadResponse(
-                        path=path, content=None, error=f"Permission denied: {path}"
-                    )
+                    FileDownloadResponse(path=path, content=None, error="permission_denied")
                 )
-            except Exception as e:
+            except IsADirectoryError:
                 responses.append(
-                    FileDownloadResponse(
-                        path=path, content=None, error=f"Error downloading {path}: {e}"
-                    )
+                    FileDownloadResponse(path=path, content=None, error="is_directory")
+                )
+            except (ValueError, OSError):
+                # Covers null bytes, invalid characters, path too long, etc.
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="invalid_path")
                 )
         return responses
 
@@ -134,16 +135,11 @@ class ModalBackend(BaseSandbox):
                     f.write(content)
                 responses.append(FileUploadResponse(path=path, error=None))
             except FileNotFoundError:
-                responses.append(
-                    FileUploadResponse(
-                        path=path,
-                        error=f"Directory not found for path: {path}",
-                    )
-                )
+                # Parent directory doesn't exist
+                responses.append(FileUploadResponse(path=path, error="parent_not_found"))
             except PermissionError:
-                responses.append(FileUploadResponse(path=path, error=f"Permission denied: {path}"))
-            except Exception as e:
-                responses.append(
-                    FileUploadResponse(path=path, error=f"Error uploading {path}: {e}")
-                )
+                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+            except (ValueError, OSError):
+                # Covers null bytes, invalid characters, path too long, etc.
+                responses.append(FileUploadResponse(path=path, error="invalid_path"))
         return responses

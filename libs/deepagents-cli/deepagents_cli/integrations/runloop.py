@@ -89,16 +89,16 @@ class RunloopBackend(BaseSandbox):
         Downloads files individually using the Runloop API. Returns a list of
         FileDownloadResponse objects preserving order and reporting per-file
         errors rather than raising exceptions.
+
+        TODO: Implement proper error handling with standardized FileOperationError codes.
+        Currently only implements happy path.
         """
         responses: list[FileDownloadResponse] = []
         for path in paths:
-            try:
-                # devboxes.download_file returns a BinaryAPIResponse which exposes .read()
-                resp = self._client.devboxes.download_file(self._devbox_id, path=path)
-                content = resp.read()
-                responses.append(FileDownloadResponse(path=path, content=content, error=None))
-            except Exception as e:
-                responses.append(FileDownloadResponse(path=path, content=None, error=str(e)))
+            # devboxes.download_file returns a BinaryAPIResponse which exposes .read()
+            resp = self._client.devboxes.download_file(self._devbox_id, path=path)
+            content = resp.read()
+            responses.append(FileDownloadResponse(path=path, content=content, error=None))
 
         return responses
 
@@ -108,14 +108,14 @@ class RunloopBackend(BaseSandbox):
         Uploads files individually using the Runloop API. Returns a list of
         FileUploadResponse objects preserving order and reporting per-file
         errors rather than raising exceptions.
+
+        TODO: Implement proper error handling with standardized FileOperationError codes.
+        Currently only implements happy path.
         """
         responses: list[FileUploadResponse] = []
         for path, content in files:
-            try:
-                # The Runloop client expects 'file' as bytes or a file-like object
-                self._client.devboxes.upload_file(self._devbox_id, path=path, file=content)
-                responses.append(FileUploadResponse(path=path, error=None))
-            except Exception as e:
-                responses.append(FileUploadResponse(path=path, error=str(e)))
+            # The Runloop client expects 'file' as bytes or a file-like object
+            self._client.devboxes.upload_file(self._devbox_id, path=path, file=content)
+            responses.append(FileUploadResponse(path=path, error=None))
 
         return responses

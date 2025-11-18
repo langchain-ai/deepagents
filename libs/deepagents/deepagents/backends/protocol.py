@@ -33,9 +33,10 @@ These represent common, recoverable errors that an LLM can understand and potent
 class FileDownloadResponse:
     """Result of a single file download operation.
 
-    Supports partial success in batch operations - if an LLM requests multiple
-    files and some paths are incorrect, the valid files can still be downloaded
-    while errors are reported for invalid paths.
+    The response is designed to allow partial success in batch operations.
+    The errors are standardized using FileOperationError literals
+    for certain recoverable conditions for use cases that involve
+    LLMs performing file operations.
 
     Attributes:
         path: The file path that was requested. Included for easy correlation
@@ -60,9 +61,10 @@ class FileDownloadResponse:
 class FileUploadResponse:
     """Result of a single file upload operation.
 
-    Supports partial success in batch operations - if an LLM attempts to upload
-    multiple files and some operations fail (e.g., permission denied), successful
-    uploads still complete while errors are reported for failures.
+    The response is designed to allow partial success in batch operations.
+    The errors are standardized using FileOperationError literals
+    for certain recoverable conditions for use cases that involve
+    LLMs performing file operations.
 
     Attributes:
         path: The file path that was requested. Included for easy correlation
@@ -216,13 +218,8 @@ class BackendProtocol(Protocol):
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
-        This is NOT meant to be used by LLMs directly. LLMs should use write/edit
-        methods for file content manipulation. This method is provided to allow
-        users to define custom tools that use upload functionality as needed.
-
-        Supports partial success - individual file uploads may fail without
-        affecting others. Implementations must catch exceptions per-file and
-        return error messages in FileUploadResponse objects rather than raising.
+        This API is designed to allow developers to use it either directly or
+        by exposing it to LLMs via custom tools.
 
         Args:
             files: List of (path, content) tuples to upload.
@@ -247,13 +244,8 @@ class BackendProtocol(Protocol):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the sandbox.
 
-        This is NOT meant to be used by LLMs directly. LLMs should use read/grep
-        methods for file content retrieval. This method is provided to allow
-        users to define custom tools that use download functionality as needed.
-
-        Supports partial success - individual file downloads may fail without
-        affecting others. Implementations must catch exceptions per-file and
-        return error messages in FileDownloadResponse objects rather than raising.
+        This API is designed to allow developers to use it either directly or
+        by exposing it to LLMs via custom tools.
 
         Args:
             paths: List of file paths to download.

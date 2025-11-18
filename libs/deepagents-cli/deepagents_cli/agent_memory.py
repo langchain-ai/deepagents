@@ -1,52 +1,80 @@
 """Middleware for loading agent-specific long-term memory into the system prompt."""
 
 from collections.abc import Awaitable, Callable
-from typing import NotRequired
+from typing import NotRequired, TypedDict, cast
 
-from deepagents.backends.protocol import BackendProtocol
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ModelRequest,
     ModelResponse,
 )
+from langgraph.runtime import Runtime
+
+from deepagents_cli.config import Settings
 
 
 class AgentMemoryState(AgentState):
     """State for the agent memory middleware."""
 
-    agent_memory: NotRequired[str | None]
-    """Long-term memory content for the agent."""
+    user_memory: NotRequired[str]
+    """Personal preferences from ~/.deepagents/{agent}/ (applies everywhere)."""
+
+    project_memory: NotRequired[str]
+    """Project-specific context (loaded from project root)."""
 
 
-AGENT_MEMORY_FILE_PATH = "/agent.md"
+class AgentMemoryStateUpdate(TypedDict):
+    """A state update for the agent memory middleware."""
+
+    user_memory: NotRequired[str]
+    """Personal preferences from ~/.deepagents/{agent}/ (applies everywhere)."""
+
+    project_memory: NotRequired[str]
+    """Project-specific context (loaded from project root)."""
+
 
 # Long-term Memory Documentation
+# Note: Claude Code loads CLAUDE.md files hierarchically and combines them (not precedence-based):
+# - Loads recursively from cwd up to (but not including) root directory
+# - Multiple files are combined hierarchically: enterprise → project → user
+# - Both [project-root]/CLAUDE.md and [project-root]/.claude/CLAUDE.md are loaded if both exist
+# - Files higher in hierarchy load first, providing foundation for more specific memories
+# We will follow that pattern for deepagents-cli
 LONGTERM_MEMORY_SYSTEM_PROMPT = """
 
 ## Long-term Memory
 
-You have access to a long-term memory system using the {memory_path} path prefix.
-Files stored in {memory_path} persist across sessions and conversations.
+Your long-term memory is stored in files on the filesystem and persists across sessions.
 
-Your system prompt is loaded from {memory_path}agent.md at startup. You can update your own instructions by editing this file.
+**User Memory Location**: `{agent_dir_absolute}` (displays as `{agent_dir_display}`)
+**Project Memory Location**: {project_memory_info}
+
+Your system prompt is loaded from TWO sources at startup:
+1. **User agent.md**: `{agent_dir_absolute}/agent.md` - Your personal preferences across all projects
+2. **Project agent.md**: Loaded from project root if available - Project-specific instructions
+
+Project-specific agent.md is loaded from these locations (both combined if both exist):
+- `[project-root]/.deepagents/agent.md` (preferred)
+- `[project-root]/agent.md` (fallback, but also included if both exist)
 
 **When to CHECK/READ memories (CRITICAL - do this FIRST):**
-- **At the start of ANY new session**: Run `ls {memory_path}` to see what you know
-- **BEFORE answering questions**: If asked "what do you know about X?" or "how do I do Y?", check `ls {memory_path}` for relevant files FIRST
-- **When user asks you to do something**: Check if you have guides, examples, or patterns in {memory_path} before proceeding
-- **When user references past work or conversations**: Search {memory_path} for related content
-- **If you're unsure**: Check your memories rather than guessing or using only general knowledge
+- **At the start of ANY new session**: Check both user and project memories
+  - User: `ls {agent_dir_absolute}`
+  - Project: `ls {project_deepagents_dir}` (if in a project)
+- **BEFORE answering questions**: If asked "what do you know about X?" or "how do I do Y?", check project memories FIRST, then user
+- **When user asks you to do something**: Check if you have project-specific guides or examples
+- **When user references past work**: Search project memory files for related context
 
 **Memory-first response pattern:**
-1. User asks a question → Run `ls {memory_path}` to check for relevant files
-2. If relevant files exist → Read them with `read_file {memory_path}[filename]`
-3. Base your answer on saved knowledge (from memories) supplemented by general knowledge
-4. If no relevant memories exist → Use general knowledge, then consider if this is worth saving
+1. User asks a question → Check project directory first: `ls {project_deepagents_dir}`
+2. If relevant files exist → Read them with `read_file '{project_deepagents_dir}/[filename]'`
+3. Check user memory if needed → `ls {agent_dir_absolute}`
+4. Base your answer on saved knowledge supplemented by general knowledge
 
 **When to update memories:**
-- **IMMEDIATELY when the user describes your role or how you should behave** (e.g., "you are a web researcher", "you are an expert in X")
-- **IMMEDIATELY when the user gives feedback on your work** - Before continuing, update memories to capture what was wrong and how to do it better
+- **IMMEDIATELY when the user describes your role or how you should behave**
+- **IMMEDIATELY when the user gives feedback on your work** - Update memories to capture what was wrong and how to do it better
 - When the user explicitly asks you to remember something
 - When patterns or preferences emerge (coding styles, conventions, workflows)
 - After significant work where context would help in future sessions
@@ -56,27 +84,87 @@ Your system prompt is loaded from {memory_path}agent.md at startup. You can upda
 - Each correction is a chance to improve permanently - don't just fix the immediate issue, update your instructions
 - When user says "you should remember X" or "be careful about Y", treat this as HIGH PRIORITY - update memories IMMEDIATELY
 - Look for the underlying principle behind corrections, not just the specific mistake
-- If it's something you "should have remembered", identify where that instruction should live permanently
 
-**What to store where:**
-- **{memory_path}agent.md**: Update this to modify your core instructions and behavioral patterns
-- **Other {memory_path} files**: Use for project-specific context, reference information, or structured notes
-  - If you create additional memory files, add references to them in {memory_path}agent.md so you remember to consult them
+## Deciding Where to Store Memory
 
-The portion of your system prompt that comes from {memory_path}agent.md is marked with `<agent_memory>` tags so you can identify what instructions come from your persistent memory.
+When writing or updating agent memory, decide whether each fact, configuration, or behavior belongs in:
 
-Example: `ls {memory_path}` to see what memories you have
-Example: `read_file '{memory_path}deep-agents-guide.md'` to recall saved knowledge
-Example: `edit_file('{memory_path}agent.md', ...)` to update your instructions
-Example: `write_file('{memory_path}project_context.md', ...)` for project-specific notes, then reference it in agent.md
+### User Agent File: `{agent_dir_absolute}/agent.md`
+→ Describes the agent's **personality, style, and universal behavior** across all projects.
 
-Remember: To interact with the longterm filesystem, you must prefix the filename with the {memory_path} path."""
+**Store here:**
+- Your general tone and communication style
+- Universal coding preferences (formatting, comment style, etc.)
+- General workflows and methodologies you follow
+- Tool usage patterns that apply everywhere
+- Personal preferences that don't change per-project
+
+**Examples:**
+- "Be concise and direct in responses"
+- "Always use type hints in Python"
+- "Prefer functional programming patterns"
+
+### Project Agent File: `{project_deepagents_dir}/agent.md`
+→ Describes **how this specific project works** and **how the agent should behave here only.**
+
+**Store here:**
+- Project-specific architecture and design patterns
+- Coding conventions specific to this codebase
+- Project structure and organization
+- Testing strategies for this project
+- Deployment processes and workflows
+- Team conventions and guidelines
+
+**Examples:**
+- "This project uses FastAPI with SQLAlchemy"
+- "Tests go in tests/ directory mirroring src/ structure"
+- "All API changes require updating OpenAPI spec"
+
+### Project Memory Files: `{project_deepagents_dir}/*.md`
+→ Use for **project-specific reference information** and structured notes.
+
+**Store here:**
+- API design documentation
+- Architecture decisions and rationale
+- Deployment procedures
+- Common debugging patterns
+- Onboarding information
+
+**Examples:**
+- `{project_deepagents_dir}/api-design.md` - REST API patterns used
+- `{project_deepagents_dir}/architecture.md` - System architecture overview
+- `{project_deepagents_dir}/deployment.md` - How to deploy this project
+
+### File Operations:
+
+**User memory:**
+```
+ls {agent_dir_absolute}                              # List user memory files
+read_file '{agent_dir_absolute}/agent.md'            # Read user preferences
+edit_file '{agent_dir_absolute}/agent.md' ...        # Update user preferences
+```
+
+**Project memory (preferred for project-specific information):**
+```
+ls {project_deepagents_dir}                          # List project memory files
+read_file '{project_deepagents_dir}/agent.md'        # Read project instructions
+edit_file '{project_deepagents_dir}/agent.md' ...    # Update project instructions
+write_file '{project_deepagents_dir}/agent.md' ...  # Create project memory file
+```
+
+**Important**:
+- Project memory files are stored in `.deepagents/` inside the project root
+- Always use absolute paths for file operations
+- Check project memories BEFORE user when answering project-specific questions"""
 
 
-DEFAULT_MEMORY_SNIPPET = """<agent_memory>
-{agent_memory}
-</agent_memory>
-"""
+DEFAULT_MEMORY_SNIPPET = """<user_memory>
+{user_memory}
+</user_memory>
+
+<project_memory>
+{project_memory}
+</project_memory>"""
 
 
 class AgentMemoryMiddleware(AgentMiddleware):
@@ -85,26 +173,6 @@ class AgentMemoryMiddleware(AgentMiddleware):
     This middleware loads the agent's long-term memory from a file (agent.md)
     and injects it into the system prompt. The memory is loaded once at the
     start of the conversation and stored in state.
-
-    Args:
-        backend: Backend to use for loading the agent memory file.
-        system_prompt_template: Optional custom template for how to inject
-            the agent memory into the system prompt. Use {agent_memory} as
-            a placeholder. Defaults to a simple section header.
-
-    Example:
-        ```python
-        from deepagents.middleware.agent_memory import AgentMemoryMiddleware
-        from deepagents.memory.backends import FilesystemBackend
-        from pathlib import Path
-
-        # Set up backend pointing to agent's directory
-        agent_dir = Path.home() / ".deepagents" / "my-agent"
-        backend = FilesystemBackend(root_dir=agent_dir)
-
-        # Create middleware
-        middleware = AgentMemoryMiddleware(backend=backend)
-        ```
     """
 
     state_schema = AgentMemoryState
@@ -112,60 +180,121 @@ class AgentMemoryMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        backend: BackendProtocol,
-        memory_path: str,
+        settings: Settings,
+        assistant_id: str,
         system_prompt_template: str | None = None,
     ) -> None:
         """Initialize the agent memory middleware.
 
         Args:
-            backend: Backend to use for loading the agent memory file.
+            settings: Global settings instance with project detection and paths.
+            assistant_id: The agent identifier.
             system_prompt_template: Optional custom template for injecting
                 agent memory into system prompt.
         """
-        self.backend = backend
-        self.memory_path = memory_path
+        self.settings = settings
+        self.assistant_id = assistant_id
+
+        # User paths
+        self.agent_dir = settings.get_agent_dir(assistant_id)
+        # Store both display path (with ~) and absolute path for file operations
+        self.agent_dir_display = f"~/.deepagents/{assistant_id}"
+        self.agent_dir_absolute = str(self.agent_dir)
+
+        # Project paths (from settings)
+        self.project_root = settings.project_root
+
         self.system_prompt_template = system_prompt_template or DEFAULT_MEMORY_SNIPPET
 
     def before_agent(
         self,
         state: AgentMemoryState,
-        runtime,
-    ) -> AgentMemoryState:
+        runtime: Runtime,
+    ) -> AgentMemoryStateUpdate:
         """Load agent memory from file before agent execution.
 
-        Args:
-            state: Current agent state.
-            handler: Handler function to call after loading memory.
+        Loads both user agent.md and project-specific agent.md if available.
+        Only loads if not already present in state.
 
-        Returns:
-            Updated state with agent_memory populated.
-        """
-        # Only load memory if it hasn't been loaded yet
-        if "agent_memory" not in state or state.get("agent_memory") is None:
-            file_data = self.backend.read(AGENT_MEMORY_FILE_PATH)
-            return {"agent_memory": file_data}
-        return None
-
-    async def abefore_agent(
-        self,
-        state: AgentMemoryState,
-        runtime,
-    ) -> AgentMemoryState:
-        """(async) Load agent memory from file before agent execution.
+        Dynamically checks for file existence on every call to catch user updates.
 
         Args:
             state: Current agent state.
-            handler: Handler function to call after loading memory.
+            runtime: Runtime context.
 
         Returns:
-            Updated state with agent_memory populated.
+            Updated state with user_memory and project_memory populated.
         """
-        # Only load memory if it hasn't been loaded yet
-        if "agent_memory" not in state or state.get("agent_memory") is None:
-            file_data = self.backend.read(AGENT_MEMORY_FILE_PATH)
-            return {"agent_memory": file_data}
-        return None
+        result: AgentMemoryStateUpdate = {}
+
+        # Load user memory if not already in state
+        if "user_memory" not in state:
+            user_path = self.settings.get_user_agent_md_path(self.assistant_id)
+            if user_path.exists():
+                try:
+                    result["user_memory"] = user_path.read_text()
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        # Load project memory if not already in state
+        if "project_memory" not in state:
+            project_path = self.settings.get_project_agent_md_path()
+            if project_path and project_path.exists():
+                try:
+                    result["project_memory"] = project_path.read_text()
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        return result
+
+    def _build_system_prompt(self, request: ModelRequest) -> str:
+        """Build the complete system prompt with memory sections.
+
+        Args:
+            request: The model request containing state and base system prompt.
+
+        Returns:
+            Complete system prompt with memory sections injected.
+        """
+        # Extract memory from state
+        state = cast("AgentMemoryState", request.state)
+        user_memory = state.get("user_memory")
+        project_memory = state.get("project_memory")
+        base_system_prompt = request.system_prompt
+
+        # Build project memory info for documentation
+        if self.project_root and project_memory:
+            project_memory_info = f"`{self.project_root}` (detected)"
+        elif self.project_root:
+            project_memory_info = f"`{self.project_root}` (no agent.md found)"
+        else:
+            project_memory_info = "None (not in a git project)"
+
+        # Build project deepagents directory path
+        if self.project_root:
+            project_deepagents_dir = str(self.project_root / ".deepagents")
+        else:
+            project_deepagents_dir = "[project-root]/.deepagents (not in a project)"
+
+        # Format memory section with both memories
+        memory_section = self.system_prompt_template.format(
+            user_memory=user_memory if user_memory else "(No user agent.md)",
+            project_memory=project_memory if project_memory else "(No project agent.md)",
+        )
+
+        system_prompt = memory_section
+
+        if base_system_prompt:
+            system_prompt += "\n\n" + base_system_prompt
+
+        system_prompt += "\n\n" + LONGTERM_MEMORY_SYSTEM_PROMPT.format(
+            agent_dir_absolute=self.agent_dir_absolute,
+            agent_dir_display=self.agent_dir_display,
+            project_memory_info=project_memory_info,
+            project_deepagents_dir=project_deepagents_dir,
+        )
+
+        return system_prompt
 
     def wrap_model_call(
         self,
@@ -181,21 +310,8 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Get agent memory from state
-        agent_memory = request.state.get("agent_memory", "")
-
-        memory_section = self.system_prompt_template.format(agent_memory=agent_memory)
-        if request.system_prompt:
-            request.system_prompt = memory_section + "\n\n" + request.system_prompt
-        else:
-            request.system_prompt = memory_section
-        request.system_prompt = (
-            request.system_prompt
-            + "\n\n"
-            + LONGTERM_MEMORY_SYSTEM_PROMPT.format(memory_path=self.memory_path)
-        )
-
-        return handler(request)
+        system_prompt = self._build_system_prompt(request)
+        return handler(request.override(system_prompt=system_prompt))
 
     async def awrap_model_call(
         self,
@@ -211,18 +327,5 @@ class AgentMemoryMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        # Get agent memory from state
-        agent_memory = request.state.get("agent_memory", "")
-
-        memory_section = self.system_prompt_template.format(agent_memory=agent_memory)
-        if request.system_prompt:
-            request.system_prompt = memory_section + "\n\n" + request.system_prompt
-        else:
-            request.system_prompt = memory_section
-        request.system_prompt = (
-            request.system_prompt
-            + "\n\n"
-            + LONGTERM_MEMORY_SYSTEM_PROMPT.format(memory_path=self.memory_path)
-        )
-
-        return await handler(request)
+        system_prompt = self._build_system_prompt(request)
+        return await handler(request.override(system_prompt=system_prompt))

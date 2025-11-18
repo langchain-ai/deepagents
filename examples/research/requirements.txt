@@ -1,3 +1,0 @@
--e ../../
-langgraph-cli[inmem]
-tavily-python

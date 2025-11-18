@@ -1,18 +1,15 @@
 """Custom tools for the CLI agent."""
 
-import os
 from typing import Any, Literal
 
 import requests
 from markdownify import markdownify
 from tavily import TavilyClient
 
+from deepagents_cli.config import settings
+
 # Initialize Tavily client if API key is available
-tavily_client = (
-    TavilyClient(api_key=os.environ.get("TAVILY_API_KEY"))
-    if os.environ.get("TAVILY_API_KEY")
-    else None
-)
+tavily_client = TavilyClient(api_key=settings.tavily_api_key) if settings.has_tavily else None
 
 
 def http_request(

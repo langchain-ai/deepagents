@@ -400,24 +400,14 @@ class StoreBackend(BackendProtocol):
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
-            try:
-                # Convert bytes to string
-                try:
-                    content_str = content.decode("utf-8")
-                except UnicodeDecodeError:
-                    responses.append(FileUploadResponse(path=path, error="invalid_path"))
-                    continue
+            content_str = content.decode("utf-8")
+            # Create file data
+            file_data = create_file_data(content_str)
+            store_value = self._convert_file_data_to_store_value(file_data)
 
-                # Create file data
-                file_data = create_file_data(content_str)
-                store_value = self._convert_file_data_to_store_value(file_data)
-
-                # Store the file
-                store.put(namespace, path, store_value)
-                responses.append(FileUploadResponse(path=path, error=None))
-
-            except Exception:
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+            # Store the file
+            store.put(namespace, path, store_value)
+            responses.append(FileUploadResponse(path=path, error=None))
 
         return responses
 
@@ -436,27 +426,17 @@ class StoreBackend(BackendProtocol):
         responses: list[FileDownloadResponse] = []
 
         for path in paths:
-            try:
-                item = store.get(namespace, path)
+            item = store.get(namespace, path)
 
-                if item is None:
-                    responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
-                    continue
+            if item is None:
+                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                continue
 
-                # Convert store item to file data
-                try:
-                    file_data = self._convert_store_item_to_file_data(item)
-                except ValueError:
-                    responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
-                    continue
+            file_data = self._convert_store_item_to_file_data(item)
+            # Convert file data to bytes
+            content_str = file_data_to_string(file_data)
+            content_bytes = content_str.encode("utf-8")
 
-                # Convert file data to bytes
-                content_str = file_data_to_string(file_data)
-                content_bytes = content_str.encode("utf-8")
-
-                responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
-
-            except Exception:
-                responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
+            responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
 
         return responses

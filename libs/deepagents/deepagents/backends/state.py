@@ -186,6 +186,3 @@ class StateBackend(BackendProtocol):
                 }
             )
         return infos
-
-
-# Provider classes removed: prefer callables like `lambda rt: StateBackend(rt)`

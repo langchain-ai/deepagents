@@ -506,7 +506,7 @@ class FilesystemBackend(BackendProtocol):
 
                 responses.append(FileUploadResponse(path=path, error=None))
             except FileNotFoundError:
-                responses.append(FileUploadResponse(path=path, error="parent_not_found"))
+                responses.append(FileUploadResponse(path=path, error="file_not_found"))
             except PermissionError:
                 responses.append(FileUploadResponse(path=path, error="permission_denied"))
             except (ValueError, OSError) as e:

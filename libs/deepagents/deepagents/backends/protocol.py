@@ -13,10 +13,9 @@ from langchain.tools import ToolRuntime
 
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist
-    "parent_not_found",  # Upload: parent directory doesn't exist
     "permission_denied",  # Both: access denied
     "is_directory",  # Download: tried to download directory as file
-    "invalid_path",  # Both: path syntax malformed (null bytes, invalid chars, too long)
+    "invalid_path",  # Both: path syntax malformed (parent dir missing, invalid chars)
 ]
 """Standardized error codes for file upload/download operations.
 

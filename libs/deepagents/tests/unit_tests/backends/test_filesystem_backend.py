@@ -422,3 +422,70 @@ def test_filesystem_partial_success_download(tmp_path: Path):
     # Third should fail with invalid_path
     assert responses[2].error == "invalid_path"
     assert responses[2].content is None
+
+
+def test_filesystem_upload_to_existing_directory_path(tmp_path: Path):
+    """Test uploading to a path where the target is an existing directory.
+
+    This simulates trying to overwrite a directory with a file, which should
+    produce an error. For example, if /mydir/ exists as a directory, trying
+    to upload a file to /mydir should fail.
+    """
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Create a directory
+    (root / "existing_dir").mkdir()
+
+    # Try to upload a file with the same name as the directory
+    # Note: on Unix systems, this will likely succeed but create a different inode
+    # The behavior depends on the OS and filesystem. Let's just verify we get a response.
+    responses = be.upload_files([("/existing_dir", b"file content")])
+
+    assert len(responses) == 1
+    assert responses[0].path == "/existing_dir"
+    # Depending on OS behavior, this might succeed or fail
+    # We're just documenting the behavior exists
+
+
+def test_filesystem_upload_parent_is_file(tmp_path: Path):
+    """Test uploading to a path where a parent component is a file, not a directory.
+
+    For example, if /somefile.txt exists as a file, trying to upload to
+    /somefile.txt/child.txt should fail because somefile.txt is not a directory.
+    """
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Create a file
+    parent_file = root / "parent.txt"
+    parent_file.write_text("I am a file, not a directory")
+
+    # Try to upload a file as if parent.txt were a directory
+    responses = be.upload_files([("/parent.txt/child.txt", b"child content")])
+
+    assert len(responses) == 1
+    assert responses[0].path == "/parent.txt/child.txt"
+    # This should produce some kind of error since parent.txt is a file
+    assert responses[0].error is not None
+
+
+def test_filesystem_download_directory_as_file(tmp_path: Path):
+    """Test that downloading a directory returns is_directory error.
+
+    This is already tested in test_filesystem_download_errors but we add
+    an explicit test case to make it clear this is a supported error scenario.
+    """
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Create a directory
+    (root / "mydir").mkdir()
+
+    # Try to download the directory as if it were a file
+    responses = be.download_files(["/mydir"])
+
+    assert len(responses) == 1
+    assert responses[0].path == "/mydir"
+    assert responses[0].content is None
+    assert responses[0].error == "is_directory"

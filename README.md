@@ -101,7 +101,7 @@ You can also connect MCP tools via [langchain-mcp-adapters](https://github.com/l
 
 ```python
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from deepagents import create_deep_agent
+from deepagents import async_create_deep_agent
 
 async def main():
     mcp_client = MultiServerMCPClient(...)

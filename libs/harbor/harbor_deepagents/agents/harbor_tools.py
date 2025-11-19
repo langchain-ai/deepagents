@@ -2,12 +2,11 @@
 
 from typing import Annotated
 
-from langchain_core.tools import tool
-
 from harbor.environments.base import BaseEnvironment
+from langchain_core.tools import tool, BaseTool
 
 
-def create_harbor_environment_tools(environment: BaseEnvironment) -> list:
+def create_harbor_environment_tools(environment: BaseEnvironment) -> list[BaseTool]:
     """Create tools that allow DeepAgent to interact with Harbor environment.
 
     These tools wrap Harbor's environment API to provide:

@@ -5,15 +5,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
-
-from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
-from langchain_anthropic import ChatAnthropic
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage
-from langsmith import Client
-from pydantic import BaseModel
+from typing import Any
 
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
@@ -28,10 +20,15 @@ from harbor.models.trajectories import (
     ToolCall,
     Trajectory,
 )
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import BaseMessage
+from langsmith import Client
 
+from deepagents import create_deep_agent
+from deepagents.backends import FilesystemBackend
 from harbor_deepagents.agents.harbor_tools import create_harbor_environment_tools
-from harbor_deepagents.agents.langsmith_integration import send_harbor_feedback
 from harbor_deepagents.agents.prompts import HARBOR_SYSTEM_PROMPT
+from harbor_deepagents.agents.tracing import send_harbor_feedback
 
 
 class DeepAgentHarbor(BaseAgent):
@@ -62,7 +59,7 @@ class DeepAgentHarbor(BaseAgent):
 
         if model_name is None:
             # Use DeepAgents default
-            model_name = "claude-sonnet-4-5-20250929"
+            model_name = "anthropic:claude-sonnet-4-5-20250929"
 
         self._model_name = model_name
         self._max_iterations = max_iterations
@@ -71,28 +68,7 @@ class DeepAgentHarbor(BaseAgent):
         self._session_id = str(uuid.uuid4())
         self._environment: BaseEnvironment | None = None
         self._system_prompt = system_prompt or HARBOR_SYSTEM_PROMPT
-
-        # Initialize LLM based on provider prefix (LangSmith will trace if LANGCHAIN_TRACING_V2=true)
-        if model_name.startswith("openai/") or model_name.startswith("gpt-"):
-            # OpenAI models: openai/gpt-4o or gpt-4o-mini
-            actual_model = model_name.split("/")[-1] if "/" in model_name else model_name
-            self._llm = ChatOpenAI(
-                model=actual_model,
-                temperature=temperature,
-            )
-        elif model_name.startswith("anthropic/") or model_name.startswith("claude-"):
-            # Anthropic models: anthropic/claude-sonnet-4-5-20250929 or claude-sonnet-4-5-20250929
-            actual_model = model_name.split("/")[-1] if "/" in model_name else model_name
-            self._llm = ChatAnthropic(
-                model=actual_model,
-                temperature=temperature,
-            )
-        else:
-            # Default to Anthropic for backward compatibility
-            self._llm = ChatAnthropic(
-                model=model_name,
-                temperature=temperature,
-            )
+        self._model = init_chat_model(model_name, temperature=temperature)
 
         # Trajectory tracking (ATIF format)
         self._trajectory_steps: list[Step] = []

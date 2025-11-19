@@ -49,7 +49,7 @@ requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "harbor_deepagents"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

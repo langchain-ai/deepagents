@@ -1,10 +1,14 @@
 """CompositeBackend: Route operations to different backends based on path prefix."""
 
+from collections import defaultdict
+
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
     ExecuteResponse,
+    FileDownloadResponse,
     FileInfo,
+    FileUploadResponse,
     GrepMatch,
     SandboxBackendProtocol,
     WriteResult,
@@ -247,3 +251,86 @@ class CompositeBackend:
             "Default backend doesn't support command execution (SandboxBackendProtocol). "
             "To enable execution, provide a default backend that implements SandboxBackendProtocol."
         )
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files, batching by backend for efficiency.
+
+        Groups files by their target backend, calls each backend's upload_files
+        once with all files for that backend, then merges results in original order.
+
+        Args:
+            files: List of (path, content) tuples to upload.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order.
+        """
+        # Pre-allocate result list
+        results: list[FileUploadResponse | None] = [None] * len(files)
+
+        # Group files by backend, tracking original indices
+        from collections import defaultdict
+
+        backend_batches: dict[BackendProtocol, list[tuple[int, str, bytes]]] = defaultdict(list)
+
+        for idx, (path, content) in enumerate(files):
+            backend, stripped_path = self._get_backend_and_key(path)
+            backend_batches[backend].append((idx, stripped_path, content))
+
+        # Process each backend's batch
+        for backend, batch in backend_batches.items():
+            # Extract data for backend call
+            indices, stripped_paths, contents = zip(*batch, strict=False)
+            batch_files = list(zip(stripped_paths, contents, strict=False))
+
+            # Call backend once with all its files
+            batch_responses = backend.upload_files(batch_files)
+
+            # Place responses at original indices with original paths
+            for i, orig_idx in enumerate(indices):
+                results[orig_idx] = FileUploadResponse(
+                    path=files[orig_idx][0],  # Original path
+                    error=batch_responses[i].error if i < len(batch_responses) else None,
+                )
+
+        return results  # type: ignore[return-value]
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files, batching by backend for efficiency.
+
+        Groups paths by their target backend, calls each backend's download_files
+        once with all paths for that backend, then merges results in original order.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+        """
+        # Pre-allocate result list
+        results: list[FileDownloadResponse | None] = [None] * len(paths)
+
+        backend_batches: dict[BackendProtocol, list[tuple[int, str]]] = defaultdict(list)
+
+        for idx, path in enumerate(paths):
+            backend, stripped_path = self._get_backend_and_key(path)
+            backend_batches[backend].append((idx, stripped_path))
+
+        # Process each backend's batch
+        for backend, batch in backend_batches.items():
+            # Extract data for backend call
+            indices, stripped_paths = zip(*batch, strict=False)
+
+            # Call backend once with all its paths
+            batch_responses = backend.download_files(list(stripped_paths))
+
+            # Place responses at original indices with original paths
+            for i, orig_idx in enumerate(indices):
+                results[orig_idx] = FileDownloadResponse(
+                    path=paths[orig_idx],  # Original path
+                    content=batch_responses[i].content if i < len(batch_responses) else None,
+                    error=batch_responses[i].error if i < len(batch_responses) else None,
+                )
+
+        return results  # type: ignore[return-value]

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+)
 from deepagents.backends.sandbox import BaseSandbox
 
 if TYPE_CHECKING:
@@ -64,3 +68,59 @@ class ModalBackend(BaseSandbox):
             exit_code=process.returncode,
             truncated=False,  # Modal doesn't provide truncation info
         )
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the Modal sandbox.
+
+        Supports partial success - individual downloads may fail without
+        affecting others.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+
+        TODO: Implement proper error handling with standardized FileOperationError codes.
+        Need to determine what exceptions Modal's sandbox.open() actually raises.
+        Currently only implements happy path.
+        """
+        # This implementation relies on the Modal sandbox file API.
+        # https://modal.com/doc/guide/sandbox-files
+        # The API is currently in alpha and is not recommended for production use.
+        # We're OK using it here as it's targeting the CLI application.
+        responses = []
+        for path in paths:
+            with self._sandbox.open(path, "rb") as f:
+                content = f.read()
+            responses.append(FileDownloadResponse(path=path, content=content, error=None))
+        return responses
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the Modal sandbox.
+
+        Supports partial success - individual uploads may fail without
+        affecting others.
+
+        Args:
+            files: List of (path, content) tuples to upload.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order.
+
+        TODO: Implement proper error handling with standardized FileOperationError codes.
+        Need to determine what exceptions Modal's sandbox.open() actually raises.
+        Currently only implements happy path.
+        """
+        # This implementation relies on the Modal sandbox file API.
+        # https://modal.com/doc/guide/sandbox-files
+        # The API is currently in alpha and is not recommended for production use.
+        # We're OK using it here as it's targeting the CLI application.
+        responses = []
+        for path, content in files:
+            with self._sandbox.open(path, "wb") as f:
+                f.write(content)
+            responses.append(FileUploadResponse(path=path, error=None))
+        return responses

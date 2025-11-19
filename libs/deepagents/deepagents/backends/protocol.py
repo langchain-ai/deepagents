@@ -7,9 +7,79 @@ database, etc.) and provide a uniform interface for file operations.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeAlias, TypedDict, runtime_checkable
+from typing import Any, Literal, Protocol, TypeAlias, TypedDict, runtime_checkable
 
 from langchain.tools import ToolRuntime
+
+FileOperationError = Literal[
+    "file_not_found",  # Download: file doesn't exist
+    "permission_denied",  # Both: access denied
+    "is_directory",  # Download: tried to download directory as file
+    "invalid_path",  # Both: path syntax malformed (parent dir missing, invalid chars)
+]
+"""Standardized error codes for file upload/download operations.
+
+These represent common, recoverable errors that an LLM can understand and potentially fix:
+- file_not_found: The requested file doesn't exist (download)
+- parent_not_found: The parent directory doesn't exist (upload)
+- permission_denied: Access denied for the operation
+- is_directory: Attempted to download a directory as a file
+- invalid_path: Path syntax is malformed or contains invalid characters
+"""
+
+
+@dataclass
+class FileDownloadResponse:
+    """Result of a single file download operation.
+
+    The response is designed to allow partial success in batch operations.
+    The errors are standardized using FileOperationError literals
+    for certain recoverable conditions for use cases that involve
+    LLMs performing file operations.
+
+    Attributes:
+        path: The file path that was requested. Included for easy correlation
+            when processing batch results, especially useful for error messages.
+        content: File contents as bytes on success, None on failure.
+        error: Standardized error code on failure, None on success.
+            Uses FileOperationError literal for structured, LLM-actionable error reporting.
+
+    Examples:
+        >>> # Success
+        >>> FileDownloadResponse(path="/app/config.json", content=b"{...}", error=None)
+        >>> # Failure
+        >>> FileDownloadResponse(path="/wrong/path.txt", content=None, error="file_not_found")
+    """
+
+    path: str
+    content: bytes | None = None
+    error: FileOperationError | None = None
+
+
+@dataclass
+class FileUploadResponse:
+    """Result of a single file upload operation.
+
+    The response is designed to allow partial success in batch operations.
+    The errors are standardized using FileOperationError literals
+    for certain recoverable conditions for use cases that involve
+    LLMs performing file operations.
+
+    Attributes:
+        path: The file path that was requested. Included for easy correlation
+            when processing batch results and for clear error messages.
+        error: Standardized error code on failure, None on success.
+            Uses FileOperationError literal for structured, LLM-actionable error reporting.
+
+    Examples:
+        >>> # Success
+        >>> FileUploadResponse(path="/app/data.txt", error=None)
+        >>> # Failure
+        >>> FileUploadResponse(path="/readonly/file.txt", error="permission_denied")
+    """
+
+    path: str
+    error: FileOperationError | None = None
 
 
 class FileInfo(TypedDict, total=False):
@@ -94,9 +164,9 @@ class BackendProtocol(Protocol):
 
     All file data is represented as dicts with the following structure:
     {
-        "content": list[str],      # Lines of text content
-        "created_at": str,         # ISO format timestamp
-        "modified_at": str,        # ISO format timestamp
+        "content": list[str], # Lines of text content
+        "created_at": str, # ISO format timestamp
+        "modified_at": str, # ISO format timestamp
     }
     """
 
@@ -144,6 +214,48 @@ class BackendProtocol(Protocol):
         """Edit a file by replacing string occurrences. Returns EditResult."""
         ...
 
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the sandbox.
+
+        This API is designed to allow developers to use it either directly or
+        by exposing it to LLMs via custom tools.
+
+        Args:
+            files: List of (path, content) tuples to upload.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order (response[i] for files[i]).
+            Check the error field to determine success/failure per file.
+
+        Examples:
+            ```python
+            responses = sandbox.upload_files(
+                [
+                    ("/app/config.json", b"{...}"),
+                    ("/app/data.txt", b"content"),
+                ]
+            )
+            ```
+        """
+        ...
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the sandbox.
+
+        This API is designed to allow developers to use it either directly or
+        by exposing it to LLMs via custom tools.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order (response[i] for paths[i]).
+            Check the error field to determine success/failure per file.
+        """
+        ...
+
 
 @dataclass
 class ExecuteResponse:
@@ -188,7 +300,7 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
 
     @property
     def id(self) -> str:
-        """Unique identifier for the sandbox backend."""
+        """Unique identifier for the sandbox backend instance."""
         ...
 
 

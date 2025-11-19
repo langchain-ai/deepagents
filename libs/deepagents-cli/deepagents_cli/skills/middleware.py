@@ -241,8 +241,8 @@ class SkillsMiddleware(AgentMiddleware):
 
         # Inject into system prompt
         if request.system_prompt:
-            request.system_prompt = request.system_prompt + "\n\n" + skills_section
+            system_prompt = request.system_prompt + "\n\n" + skills_section
         else:
-            request.system_prompt = skills_section
+            system_prompt = skills_section
 
-        return await handler(request)
+        return await handler(request.override(system_prompt=system_prompt))

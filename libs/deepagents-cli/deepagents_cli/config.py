@@ -129,12 +129,14 @@ class Settings:
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
         tavily_api_key: Tavily API key if available
+        parallel_api_key: Parallel API key if available
     """
 
     # API keys
     openai_api_key: str | None
     anthropic_api_key: str | None
     tavily_api_key: str | None
+    parallel_api_key: str | None
 
     # Project information
     project_root: Path | None
@@ -153,6 +155,7 @@ class Settings:
         openai_key = os.environ.get("OPENAI_API_KEY")
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
+        parallel_key = os.environ.get("PARALLEL_API_KEY")
 
         # Detect project
         project_root = _find_project_root(start_path)
@@ -161,6 +164,7 @@ class Settings:
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             tavily_api_key=tavily_key,
+            parallel_api_key=parallel_key,
             project_root=project_root,
         )
 
@@ -178,6 +182,11 @@ class Settings:
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
         return self.tavily_api_key is not None
+
+    @property
+    def has_parallel(self) -> bool:
+        """Check if Parallel API key is configured."""
+        return self.parallel_api_key is not None
 
     @property
     def has_project(self) -> bool:

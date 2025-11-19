@@ -36,7 +36,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
 
     Examples:
         read_file(path="/long/path/file.py") → "read_file(file.py)"
-        web_search(query="how to code", max_results=5) → 'web_search("how to code")'
+        parallel_search(objective="how to code", max_results=5) → 'parallel_search("how to code")'
         shell(command="pip install foo") → 'shell("pip install foo")'
     """
 
@@ -79,12 +79,19 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             path = abbreviate_path(str(path_value))
             return f"{tool_name}({path})"
 
-    elif tool_name == "web_search":
-        # Web search: show the query string
+    elif tool_name == "tavily_search":
+        # Tavily search: show the query string
         if "query" in tool_args:
             query = str(tool_args["query"])
             query = truncate_value(query, 100)
             return f'{tool_name}("{query}")'
+
+    elif tool_name == "parallel_search":
+        # Parallel search: show the objective
+        if "objective" in tool_args:
+            objective = str(tool_args["objective"])
+            objective = truncate_value(objective, 100)
+            return f'{tool_name}("{objective}")'
 
     elif tool_name == "grep":
         # Grep: show the search pattern

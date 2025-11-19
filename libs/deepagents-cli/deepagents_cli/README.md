@@ -12,7 +12,7 @@ cli/
 ├── __main__.py      # Entry point for `python -m deepagents.cli`
 ├── main.py          # CLI loop, argument parsing, main orchestration
 ├── config.py        # Configuration, constants, colors, model creation
-├── tools.py         # Custom tools (http_request, web_search)
+├── tools.py         # Custom tools (http_request, parallel_search, tavily_search)
 ├── ui.py            # Display logic, TokenTracker, help screens
 ├── input.py         # Input handling, completers, prompt session
 ├── commands.py      # Slash command and bash command handlers
@@ -44,9 +44,10 @@ cli/
 ### `tools.py` - Custom Agent Tools
 - **Purpose**: Additional tools for the agent beyond built-in filesystem operations
 - **Tools**:
+  - `fetch_url()` - Fetch and convert web content to markdown
   - `http_request()` - Make HTTP requests to APIs
-  - `web_search()` - Search the web using Tavily API
-  - `tavily_client` - Initialized Tavily client (if API key available)
+  - `parallel_search()` - Search the web using Parallel API (if PARALLEL_API_KEY is set)
+  - `tavily_search()` - Search the web using Tavily API (if TAVILY_API_KEY is set)
 
 ### `ui.py` - Display & Rendering
 - **Purpose**: All UI rendering and display logic

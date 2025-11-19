@@ -210,7 +210,8 @@ async def execute_task(
         "grep": "🔎",
         "shell": "⚡",
         "execute": "🔧",
-        "web_search": "🌐",
+        "parallel_search": "🌐",
+        "tavily_search": "🌐",
         "http_request": "🌍",
         "task": "🤖",
         "write_todos": "📋",
@@ -372,7 +373,7 @@ async def execute_task(
                                 status.start()
                                 spinner_active = True
 
-                        # For all other tools (web_search, http_request, etc.),
+                        # For all other tools (parallel_search, http_request, etc.),
                         # results are hidden from user - agent will process and respond
                         continue
 

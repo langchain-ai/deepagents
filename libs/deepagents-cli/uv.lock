@@ -704,6 +704,7 @@ dependencies = [
     { name = "langchain-openai" },
     { name = "markdownify" },
     { name = "modal" },
+    { name = "parallel-web" },
     { name = "prompt-toolkit" },
     { name = "python-dotenv" },
     { name = "requests" },
@@ -745,6 +746,7 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=0.1.0" },
     { name = "markdownify", specifier = ">=0.13.0" },
     { name = "modal", specifier = ">=0.65.0" },
+    { name = "parallel-web" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "python-dotenv" },
     { name = "requests" },
@@ -1834,6 +1836,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a1/d4/1fc4078c65507b51b96ca8f8c3ba19e6a61c8253c72794544580a7b6c24d/packaging-25.0.tar.gz", hash = "sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f", size = 165727, upload-time = "2025-04-19T11:48:59.673Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl", hash = "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484", size = 66469, upload-time = "2025-04-19T11:48:57.875Z" },
+]
+
+[[package]]
+name = "parallel-web"
+version = "0.3.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fd/c7/2d784abf966cc87aaa07bff44f109bf659a1ef9998ce4a0ce13b05600594/parallel_web-0.3.4.tar.gz", hash = "sha256:eae6e20b87a43f475bb05df7295e506989c6bd38d322380da204d2ed0bb6e556", size = 131133, upload-time = "2025-11-13T00:29:34.215Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/eb/6e/c21754fe48505d2bc112d322cf8de7bd84f035a6f331d86acb548d0b0387/parallel_web-0.3.4-py3-none-any.whl", hash = "sha256:2804e84ebba789e475901c9aeb88c10045c2d07a2afd9bbc05e317725785c720", size = 137028, upload-time = "2025-11-13T00:29:32.037Z" },
 ]
 
 [[package]]

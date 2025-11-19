@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from harbor_deepagents.cli import main as _main
+from harbor_deepagents.cli import run_tb_daytona as _run_tb_daytona
+from harbor_deepagents.cli import run_tb_docker as _run_tb_docker
 import os
 import sys
 from pathlib import Path
@@ -26,9 +29,6 @@ def _maybe_add_src_path() -> None:
 
 _maybe_add_src_path()
 
-from harbor_deepagents.cli import main as _main
-from harbor_deepagents.cli import run_tb_daytona as _run_tb_daytona
-from harbor_deepagents.cli import run_tb_docker as _run_tb_docker
 
 
 def main() -> None:

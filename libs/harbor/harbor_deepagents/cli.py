@@ -1,6 +1,4 @@
-"""
-Command-line entry point for running Harbor + DeepAgents harness workflows via uv.
-"""
+"""Command-line entry point for running Harbor + DeepAgents harness workflows."""
 
 from __future__ import annotations
 
@@ -14,10 +12,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from dotenv import load_dotenv
-from langsmith import Client
 from rich.console import Console
 
-from harbor_deepagents.agents.langsmith_integration import send_harbor_feedback
+from harbor_deepagents.agents.tracing import send_harbor_feedback
 
 console = Console()
 
@@ -31,7 +28,7 @@ TERMINAL_BENCH_DATASET = "terminal-bench@2.0"
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Harbor DeepAgents harness with simple uv-friendly commands.",
+        description="Run Harbor DeepAgents harness.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -104,6 +101,7 @@ def load_environment(env_file: Optional[str], skip: bool) -> None:
 
 
 def resolve_config(suite: str, env_type: str, explicit: Optional[str]) -> Path:
+    """Determine the Harbor config path based on CLI args."""
     if explicit:
         return Path(explicit)
     if suite == "terminal-bench":
@@ -115,6 +113,7 @@ def resolve_config(suite: str, env_type: str, explicit: Optional[str]) -> Path:
 
 
 def determine_model(cli_model: Optional[str]) -> str:
+    """Get the model name from CLI or environment."""
     model = cli_model or os.environ.get("MODEL_NAME")
     if not model:
         console.print(
@@ -125,6 +124,7 @@ def determine_model(cli_model: Optional[str]) -> str:
 
 
 def infer_provider(model: str) -> Optional[str]:
+    """Infer the LLM provider from the model name."""
     lowered = model.lower()
     if lowered.startswith(("openai/", "gpt-")):
         return "openai"

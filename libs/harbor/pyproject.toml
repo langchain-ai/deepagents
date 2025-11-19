@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
+test = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "ipython>=8.30.0",

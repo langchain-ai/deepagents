@@ -193,8 +193,6 @@ class FilesystemBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return results
 
-    # Removed legacy ls() convenience to keep lean surface
-
     def read(
         self,
         file_path: str,
@@ -534,7 +532,8 @@ class FilesystemBackend(BackendProtocol):
         for path in paths:
             try:
                 resolved_path = self._resolve_path(path)
-                # Do not follow symlinks when opening
+                # Use flags to optionally prevent symlink following if
+                # supported by the OS
                 fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                 with os.fdopen(fd, "rb") as f:
                     content = f.read()

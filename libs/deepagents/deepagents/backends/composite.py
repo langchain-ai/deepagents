@@ -1,5 +1,7 @@
 """CompositeBackend: Route operations to different backends based on path prefix."""
 
+from collections import defaultdict
+
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
@@ -308,9 +310,6 @@ class CompositeBackend:
         """
         # Pre-allocate result list
         results: list[FileDownloadResponse | None] = [None] * len(paths)
-
-        # Group paths by backend, tracking original indices
-        from collections import defaultdict
 
         backend_batches: dict[BackendProtocol, list[tuple[int, str]]] = defaultdict(list)
 

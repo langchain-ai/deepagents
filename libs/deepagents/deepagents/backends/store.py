@@ -248,8 +248,6 @@ class StoreBackend(BackendProtocol):
         infos.sort(key=lambda x: x.get("path", ""))
         return infos
 
-    # Removed legacy ls() convenience to keep lean surface
-
     def read(
         self,
         file_path: str,

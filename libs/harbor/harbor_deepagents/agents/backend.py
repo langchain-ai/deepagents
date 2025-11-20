@@ -24,7 +24,7 @@ class HarborSandbox(BaseSandbox):
         output = (result.stdout or "") + "\n stderr: " + (result.stderr or "")
         return ExecuteResponse(
             output=output,
-            exit_code=result.returncode,
+            exit_code=result.return_code,
         )
 
     @property

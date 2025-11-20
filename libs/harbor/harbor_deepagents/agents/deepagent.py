@@ -21,7 +21,7 @@ from harbor.models.trajectories import (
 )
 from langchain.chat_models import init_chat_model
 from langchain.messages import UsageMetadata
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 
@@ -62,7 +62,6 @@ class DeepAgentsWrapper(BaseAgent):
 
         # Trajectory tracking (ATIF format)
         self._trajectory_steps: list[Step] = []
-        self._step_counter = 0
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
         self._total_cost = 0.0
@@ -99,10 +98,6 @@ class DeepAgentsWrapper(BaseAgent):
             environment: Harbor environment (Docker, Modal, etc.)
             context: Context to populate with metrics
         """
-        self._add_step(
-            source="user",
-            message=instruction,
-        )
         backend = HarborSandbox(environment)
         deep_agent = create_deep_agent(
             model=self._model,
@@ -125,9 +120,89 @@ class DeepAgentsWrapper(BaseAgent):
             {"messages": [{"role": "user", "content": instruction}]}, # type: ignore
             config=config,
         )
-        messages = result['messages']
-        # Process messages into ATIF steps
-        self._process_message(messages)
+
+        # Create trajectory
+
+        steps = [
+            Step(
+                step_id=0,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                source="system",
+                message="Agent initialized and ready to execute the task.",
+            ),
+            Step(
+                step_id=1,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                source="user",
+                message=instruction
+            )
+        ]
+
+        observations = []
+
+        current_step: Step | None = None
+
+        for msg in result['messages']:
+            if isinstance(msg, AIMessage):
+                if current_step:
+                    steps.append(current_step)
+                    current_step = Step(
+                        step_id=steps[-1].step_id + 1,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        source="agent",
+                    )
+
+                atf_tool_calls = []
+                message = ""
+                for cb in msg.content_blocks:
+                    if cb['type'] == "text":
+                        message += cb['text']
+                    elif cb['type'] == "reasoning":
+                        message += cb['reasoning']
+                    elif cb["type"] == "tool_call":
+                        atf_tool_calls.append(
+                            ToolCall(
+                                tool_call_id=cb['id'],
+                                function_name=cb['name'],
+                                arguments=cb['args']
+                            )
+                        )
+                    else:
+                        # TODO: Add server side tool call results.
+                        continue
+
+                if observations:
+                    observation = Observation(
+                        results=observations
+                    )
+
+                    step = Step(
+                        step_id=steps[-1].step_id + 1,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        source="agent",
+                        message=message,
+                        tool_calls=atf_tool_calls,
+                        observation=observation,
+                    )
+
+                    # Reset observations for the next step
+                    observations = []
+
+            elif isinstance(msg, ToolMessage):
+                # TODO: Merge the observation into the previous step
+                observations.append(
+                    ObservationResult(
+                        source_call_id=msg.tool_call_id,
+                        content=str(msg.content),
+                    )
+                )
+            elif isinstance(msg, HumanMessage):
+                pass
+            else:
+                raise NotImplementedError(
+                    f"Message type {type(msg)} not supported for step conversion"
+                )
+
 
 
         # # Store task name for feedback
@@ -207,52 +282,6 @@ class DeepAgentsWrapper(BaseAgent):
 
     def _process_message(self, msg: BaseMessage) -> None:
         """Process LangChain messages into ATIF trajectory steps."""
-        if isinstance(msg, AIMessage):
-            atf_tool_calls = []
-            message = ""
-            for cb in msg.content_blocks:
-                if cb['type'] == "text":
-                    message += cb['text']
-                elif cb['type'] == "reasoning":
-                    message += cb['reasoning']
-                elif cb["type"] == "tool_call":
-                    atf_tool_calls.append(
-                        ToolCall(
-                            tool_call_id=cb['id'],
-                            function_name=cb['name'],
-                            arguments=cb['args']
-                        )
-                    )
-                else:
-                    # TODO: Add server side tool call results.
-                    continue
-            self._add_step(
-                source="agent",
-                tool_calls=atf_tool_calls,
-                message=message,
-            )
-            # # Extract usage metadata if available
-            # if msg.usage_metadata:
-            #     self._update_token_usage(msg.usage_metadata)
-
-        elif isinstance(msg, ToolMessage):
-            # TODO: Merge the observation into the previous step
-            observation = [
-                ObservationResult(
-                    source_call_id=msg.tool_call_id,
-                    content=str(msg.content),
-                )
-            ]
-
-            self._add_step(
-                source="agent",
-                observation=Observation(results=observation),
-                message="",
-            )
-        else:
-            raise NotImplementedError(
-                f"Message type {type(msg)} not supported for step conversion"
-            )
 
     def _update_token_usage(self, usage_metadata: UsageMetadata) -> None:
         """Update token usage from message metadata."""
@@ -285,27 +314,6 @@ class DeepAgentsWrapper(BaseAgent):
 
         self._total_cost += input_cost + output_cost
 
-    def _add_step(
-        self,
-        source: Literal["system", "user", "agent"],
-        message: str,
-        tool_calls: list[ToolCall] | None = None,
-        observation: Observation | None = None,
-        metrics: Metrics | None = None,
-    ) -> None:
-        """Add a step to the ATIF trajectory."""
-        self._step_counter += 1
-        step = Step(
-            step_id=self._step_counter,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            source=source,
-            message=message,
-            tool_calls=tool_calls,
-            observation=observation,
-            metrics=metrics,
-        )
-
-        self._trajectory_steps.append(step)
 
 
     # def send_verification_feedback(self, reward: float) -> None:

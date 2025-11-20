@@ -293,9 +293,14 @@ def create_agent_with_config(
         source_content = get_default_coding_instructions()
         agent_md.write_text(source_content)
 
-    # Skills directory - per-agent
+    # Skills directory - per-agent (user-level)
     skills_dir = agent_dir / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
+
+    # Project-level skills directory (if in a project)
+    project_skills_dir = None
+    if settings.project_root:
+        project_skills_dir = settings.project_root / ".deepagents" / "skills"
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
@@ -309,7 +314,11 @@ def create_agent_with_config(
         # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ResumableShellToolMiddleware
         agent_middleware = [
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
-            SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
+            SkillsMiddleware(
+                skills_dir=skills_dir,
+                assistant_id=assistant_id,
+                project_skills_dir=project_skills_dir,
+            ),
             ResumableShellToolMiddleware(
                 workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
             ),
@@ -327,7 +336,11 @@ def create_agent_with_config(
         # are automatically provided by create_deep_agent when backend is a SandboxBackend.
         agent_middleware = [
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
-            SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
+            SkillsMiddleware(
+                skills_dir=skills_dir,
+                assistant_id=assistant_id,
+                project_skills_dir=project_skills_dir,
+            ),
         ]
 
     # Get the system prompt (sandbox-aware and with skills)

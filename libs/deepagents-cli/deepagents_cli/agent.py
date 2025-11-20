@@ -230,21 +230,25 @@ def _format_fetch_url_description(tool_call: ToolCall, state: AgentState, runtim
 
 
 def _format_task_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
-    """Format task (subagent) tool call for approval prompt."""
+    """Format task (subagent) tool call for approval prompt.
+
+    The task tool signature is: task(description: str, subagent_type: str)
+    The description contains all instructions that will be sent to the subagent.
+    """
     args = tool_call["args"]
     description = args.get("description", "unknown")
-    prompt = args.get("prompt", "")
+    subagent_type = args.get("subagent_type", "unknown")
 
-    # Truncate prompt if too long
-    prompt_preview = prompt[:300]
-    if len(prompt) > 300:
-        prompt_preview += "..."
+    # Truncate description if too long for display
+    description_preview = description
+    if len(description) > 500:
+        description_preview = description[:500] + "..."
 
     return (
-        f"Task: {description}\n\n"
-        f"Instructions to subagent:\n"
+        f"Subagent Type: {subagent_type}\n\n"
+        f"Task Instructions:\n"
         f"{'─' * 40}\n"
-        f"{prompt_preview}\n"
+        f"{description_preview}\n"
         f"{'─' * 40}\n\n"
         f"⚠️  Subagent will have access to file operations and shell commands"
     )

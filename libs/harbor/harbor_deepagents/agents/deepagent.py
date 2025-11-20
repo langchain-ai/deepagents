@@ -60,8 +60,6 @@ class DeepAgentsWrapper(BaseAgent):
         self._environment: BaseEnvironment | None = None
         self._model = init_chat_model(model_name, temperature=temperature)
 
-        # Trajectory tracking (ATIF format)
-        self._trajectory_steps: list[Step] = []
         self._total_prompt_tokens = 0
         self._total_completion_tokens = 0
         self._total_cost = 0.0
@@ -125,13 +123,13 @@ class DeepAgentsWrapper(BaseAgent):
 
         steps = [
             Step(
-                step_id=0,
+                step_id=1,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 source="system",
                 message="Agent initialized and ready to execute the task.",
             ),
             Step(
-                step_id=1,
+                step_id=2,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 source="user",
                 message=instruction
@@ -254,7 +252,7 @@ class DeepAgentsWrapper(BaseAgent):
             total_prompt_tokens=self._total_prompt_tokens or None,
             total_completion_tokens=self._total_completion_tokens or None,
             total_cost_usd=self._total_cost or None,
-            total_steps=len(self._trajectory_steps),
+            total_steps=len(steps),
         )
 
         trajectory = Trajectory(
@@ -270,7 +268,7 @@ class DeepAgentsWrapper(BaseAgent):
                     "langsmith_run_id": self._langsmith_run_id,  # Store for feedback
                 },
             ),
-            steps=self._trajectory_steps,
+            steps=steps,
             final_metrics=final_metrics,
         )
 

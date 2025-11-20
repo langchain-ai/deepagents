@@ -188,8 +188,8 @@ def test_format_task_description():
     tool_call = {
         "name": "task",
         "args": {
-            "description": "Analyze code structure",
-            "prompt": "Please analyze the codebase and identify the main components.",
+            "description": "Analyze code structure and identify the main components.",
+            "subagent_type": "general-purpose",
         },
         "id": "call-9",
     }
@@ -199,20 +199,20 @@ def test_format_task_description():
 
     description = _format_task_description(tool_call, state, runtime)
 
-    assert "Task: Analyze code structure" in description
-    assert "Instructions to subagent:" in description
-    assert "Please analyze the codebase and identify the main components." in description
+    assert "Subagent Type: general-purpose" in description
+    assert "Task Instructions:" in description
+    assert "Analyze code structure and identify the main components." in description
     assert "⚠️  Subagent will have access to file operations and shell commands" in description
 
 
-def test_format_task_description_truncates_long_prompt():
-    """Test task description truncates long prompts."""
-    long_prompt = "x" * 500  # 500 characters
+def test_format_task_description_truncates_long_description():
+    """Test task description truncates long descriptions."""
+    long_description = "x" * 600  # 600 characters
     tool_call = {
         "name": "task",
         "args": {
-            "description": "Long task",
-            "prompt": long_prompt,
+            "description": long_description,
+            "subagent_type": "general-purpose",
         },
         "id": "call-10",
     }
@@ -222,10 +222,10 @@ def test_format_task_description_truncates_long_prompt():
 
     description = _format_task_description(tool_call, state, runtime)
 
-    assert "Task: Long task" in description
+    assert "Subagent Type: general-purpose" in description
     assert "..." in description
-    # Prompt should be truncated to 300 chars + "..."
-    assert len(description) < len(long_prompt) + 200
+    # Description should be truncated to 500 chars + "..."
+    assert len(description) < len(long_description) + 300
 
 
 def test_format_shell_description():

@@ -7,23 +7,18 @@ requires-python = ">=3.12"
 dependencies = [
     # Harbor runtime
     "harbor>=0.1.12",
-
     # LangChain + DeepAgents (upgraded to 0.2.5 for LocalFilesystemBackend support)
     "langchain>=1.0.2",
     "langchain-anthropic>=1.0.0",
     "langchain-openai>=1.0.0",
     "deepagents>=0.2.5",
     "openai>=1.109.1,<2.0.0",
-
     # LangSmith for observability
     "langsmith>=0.4.0",
-
     # Additional tools
     "tavily-python>=0.5.0",
-
     # Modal for cloud execution
     "modal>=0.64.0",
-
     # Utilities
     "python-dotenv>=1.0.0",
     "rich>=13.0.0",
@@ -59,6 +54,9 @@ override-dependencies = [
     "openai>=1.109.1,<2.0.0",
     "e2b==2.4.3",
 ]
+
+[tool.uv.sources]
+deepagents = { path = "../deepagents" }
 
 [tool.ruff]
 line-length = 100

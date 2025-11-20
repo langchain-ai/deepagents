@@ -415,17 +415,35 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.2.5"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.7"
+source = { directory = "../deepagents" }
 dependencies = [
     { name = "langchain" },
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
     { name = "wcmatch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/81/2b/37edbe9c42602d7e09e16a048dca004efe0f93f2319a22267d4b18bf1223/deepagents-0.2.5.tar.gz", hash = "sha256:784f665b4f9d8d0101afdbfa7de36303ee1d968febe51ca241d9541bb9d6335d", size = 76847, upload-time = "2025-11-04T22:39:06.707Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/ff/73c4eb9e18bda614ea55c561db26e307662c7cfd02b69eb81fdc66ea518b/deepagents-0.2.5-py3-none-any.whl", hash = "sha256:0a7881a6284188d66b5a7ecc8143e655a1b81fa8192a61cae82abdb599adf5eb", size = 86574, upload-time = "2025-11-04T22:39:05.492Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "langchain", specifier = ">=1.0.2,<2.0.0" },
+    { name = "langchain-anthropic", specifier = ">=1.0.0,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.0.0,<2.0.0" },
+    { name = "wcmatch" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "build" },
+    { name = "langchain-openai" },
+    { name = "twine" },
+]
+test = [
+    { name = "mypy", specifier = ">=1.18.1,<1.19.0" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-xdist" },
+    { name = "ruff", specifier = ">=0.12.2,<0.13.0" },
 ]
 
 [[package]]
@@ -777,7 +795,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "deepagents", specifier = ">=0.2.5" },
+    { name = "deepagents", directory = "../deepagents" },
     { name = "e2b", specifier = "==2.4.3" },
     { name = "harbor", specifier = ">=0.1.12" },
     { name = "ipython", marker = "extra == 'test'", specifier = ">=8.30.0" },

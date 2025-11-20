@@ -38,9 +38,9 @@ See Also:
 __version__ = "1.0.0"
 
 from harbor_deepagents.agents import DeepAgentHarbor
-from harbor_deepagents.utils import LangSmithTrajectoryExporter
+# from harbor_deepagents.utils import LangSmithTrajectoryExporter
 
 __all__ = [
     "DeepAgentHarbor",
-    "LangSmithTrajectoryExporter",
+    # "LangSmithTrajectoryExporter",
 ]

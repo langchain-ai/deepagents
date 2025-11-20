@@ -84,7 +84,7 @@ class DeepAgentsWrapper(BaseAgent):
         self._environment = environment
 
     def version(self) -> str | None:
-        return "1.0.0"
+        return "0.0.1"
 
     async def run(
         self,

@@ -343,7 +343,10 @@ def _info(skill_name: str, project: bool = False) -> None:
     source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
     source_color = "green" if skill["source"] == "project" else "cyan"
 
-    console.print(f"\n[bold]Skill: {skill['name']}[/bold] [bold {source_color}]({source_label})[/bold {source_color}]\n", style=COLORS["primary"])
+    console.print(
+        f"\n[bold]Skill: {skill['name']}[/bold] [bold {source_color}]({source_label})[/bold {source_color}]\n",
+        style=COLORS["primary"],
+    )
     console.print(f"[bold]Description:[/bold] {skill['description']}\n", style=COLORS["dim"])
     console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=COLORS["dim"])
 

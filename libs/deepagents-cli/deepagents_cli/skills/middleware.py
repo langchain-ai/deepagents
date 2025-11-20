@@ -127,9 +127,7 @@ class SkillsMiddleware(AgentMiddleware):
 
         # Create middleware with both user and project skills
         middleware = SkillsMiddleware(
-            skills_dir=user_dir,
-            assistant_id="agent",
-            project_skills_dir=project_dir
+            skills_dir=user_dir, assistant_id="agent", project_skills_dir=project_dir
         )
         ```
     """

@@ -139,19 +139,20 @@ class DeepAgentsWrapper(BaseAgent):
         ]
 
         observations = []
-
-        current_step: Step | None = None
+        pending_step: Step | None = None
 
         for msg in result['messages']:
             if isinstance(msg, AIMessage):
-                if current_step:
-                    steps.append(current_step)
-                    current_step = Step(
-                        step_id=steps[-1].step_id + 1,
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                        source="agent",
-                    )
+                # If there's a pending step with tool calls, add it now with observations
+                if pending_step is not None:
+                    if pending_step.tool_calls and observations:
+                        # Add observations to the pending step
+                        pending_step.observation = Observation(results=observations)
+                        observations = []
+                    steps.append(pending_step)
+                    pending_step = None
 
+                # Extract content and tool calls from current AIMessage
                 atf_tool_calls = []
                 message = ""
                 for cb in msg.content_blocks:
@@ -171,25 +172,24 @@ class DeepAgentsWrapper(BaseAgent):
                         # TODO: Add server side tool call results.
                         continue
 
-                if observations:
-                    observation = Observation(
-                        results=observations
-                    )
+                # Create new step
+                new_step = Step(
+                    step_id=steps[-1].step_id + 1 if steps else 0,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    source="agent",
+                    message=message,
+                    tool_calls=atf_tool_calls if atf_tool_calls else None,
+                )
 
-                    step = Step(
-                        step_id=steps[-1].step_id + 1,
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                        source="agent",
-                        message=message,
-                        tool_calls=atf_tool_calls,
-                        observation=observation,
-                    )
-
-                    # Reset observations for the next step
-                    observations = []
+                # If this AIMessage has tool calls, make it pending (wait for observations)
+                # Otherwise, add it immediately
+                if atf_tool_calls:
+                    pending_step = new_step
+                else:
+                    steps.append(new_step)
 
             elif isinstance(msg, ToolMessage):
-                # TODO: Merge the observation into the previous step
+                # Collect observations for the pending step
                 observations.append(
                     ObservationResult(
                         source_call_id=msg.tool_call_id,
@@ -202,6 +202,12 @@ class DeepAgentsWrapper(BaseAgent):
                 raise NotImplementedError(
                     f"Message type {type(msg)} not supported for step conversion"
                 )
+
+        # Add any remaining pending step
+        if pending_step is not None:
+            if pending_step.tool_calls and observations:
+                pending_step.observation = Observation(results=observations)
+            steps.append(pending_step)
 
 
 

@@ -267,7 +267,7 @@ class FileOpTracker:
             return
 
         record.args.update(args)
-        
+
         # If we haven't captured before_content yet, try again now that we might have the path
         if record.before_content is None and record.tool_name in {"write_file", "edit_file"}:
             path_str = str(record.args.get("file_path") or record.args.get("path") or "")

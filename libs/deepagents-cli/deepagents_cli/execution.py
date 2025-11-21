@@ -495,7 +495,9 @@ async def execute_task(
                             if buffer_id is not None:
                                 if buffer_id not in displayed_tool_ids:
                                     displayed_tool_ids.add(buffer_id)
-                                    file_op_tracker.start_operation(buffer_name, parsed_args, buffer_id)
+                                    file_op_tracker.start_operation(
+                                        buffer_name, parsed_args, buffer_id
+                                    )
                                 else:
                                     file_op_tracker.update_args(buffer_id, parsed_args)
                             tool_call_buffers.pop(buffer_key, None)

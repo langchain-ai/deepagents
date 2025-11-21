@@ -474,8 +474,6 @@ async def execute_task(
                             buffer_id = buffer.get("id")
                             if buffer_name is None:
                                 continue
-                            # if buffer_id is not None and buffer_id in displayed_tool_ids:
-                            #     continue
 
                             parsed_args = buffer.get("args")
                             if isinstance(parsed_args, str):

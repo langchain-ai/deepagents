@@ -213,3 +213,5 @@ __marimo__/
 .claude
 
 .idea
+libs/deepagents-cli/uploaded_files/
+old_repo/

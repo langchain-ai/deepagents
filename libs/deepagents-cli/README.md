@@ -2,6 +2,9 @@
 
 This is the CLI for deepagents
 
+uv run python -m deepagents_cli
+
+
 ## Memory & Configuration Structure
 
 

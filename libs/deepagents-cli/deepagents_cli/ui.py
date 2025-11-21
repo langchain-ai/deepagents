@@ -437,8 +437,8 @@ def format_diff_rich(diff_lines: list[str]) -> str:
 
     # Rich colors with backgrounds for better visibility
     # White text on dark backgrounds for additions/deletions
-    addition_color = "white on dark_green"
-    deletion_color = "white on dark_red"
+    addition_color = "green"
+    deletion_color = "red"
     context_color = "dim"
 
     for line in diff_lines:

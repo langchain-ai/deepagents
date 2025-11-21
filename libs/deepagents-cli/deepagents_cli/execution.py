@@ -474,8 +474,8 @@ async def execute_task(
                             buffer_id = buffer.get("id")
                             if buffer_name is None:
                                 continue
-                            if buffer_id is not None and buffer_id in displayed_tool_ids:
-                                continue
+                            # if buffer_id is not None and buffer_id in displayed_tool_ids:
+                            #     continue
 
                             parsed_args = buffer.get("args")
                             if isinstance(parsed_args, str):
@@ -495,8 +495,11 @@ async def execute_task(
 
                             flush_text_buffer(final=True)
                             if buffer_id is not None:
-                                displayed_tool_ids.add(buffer_id)
-                                file_op_tracker.start_operation(buffer_name, parsed_args, buffer_id)
+                                if buffer_id not in displayed_tool_ids:
+                                    displayed_tool_ids.add(buffer_id)
+                                    file_op_tracker.start_operation(buffer_name, parsed_args, buffer_id)
+                                else:
+                                    file_op_tracker.update_args(buffer_id, parsed_args)
                             tool_call_buffers.pop(buffer_key, None)
                             icon = tool_icons.get(buffer_name, "🔧")
 

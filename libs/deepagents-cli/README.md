@@ -4,6 +4,7 @@ This is the CLI for deepagents
 
 ## Memory & Configuration Structure
 
+
 The CLI uses a dual-scope memory system with both **global** (per-agent) and **project-specific** configuration:
 
 ### Global Configuration

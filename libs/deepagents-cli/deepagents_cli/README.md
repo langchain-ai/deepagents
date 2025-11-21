@@ -9,7 +9,7 @@ The CLI is organized into focused modules:
 ```
 cli/
 ├── __init__.py      # Package exports
-├── __main__.py      # Entry point for `python -m deepagents.cli`
+├── __main__.py      # Entry point for `python -m deepagents_cli`
 ├── main.py          # CLI loop, argument parsing, main orchestration
 ├── config.py        # Configuration, constants, colors, model creation
 ├── tools.py         # Custom tools (http_request, web_search)
@@ -177,8 +177,8 @@ To modify the CLI:
 ## Running During Development
 
 ```bash
-# From project root
-uv run python -m deepagents.cli
+# From project root (libs/deepagents-cli)
+uv run python -m deepagents_cli
 
 # Or install in editable mode
 uv pip install -e .
@@ -190,7 +190,7 @@ deepagents
 The CLI is registered in `pyproject.toml` as:
 ```toml
 [project.scripts]
-deepagents = "deepagents.cli:cli_main"
+deepagents = "deepagents_cli:cli_main"
 ```
 
 This means when users install the package, they can run `deepagents` directly.

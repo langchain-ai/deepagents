@@ -27,6 +27,29 @@ from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.skills import SkillsMiddleware
 
 
+def get_agent_working_directory() -> Path:
+    """Get the agent working directory from environment variable or default to current directory.
+    
+    Returns:
+        Path to the working directory for the FilesystemBackend.
+        If AGENT_WORKING_DIRECTORY is set, uses that (relative to project root or absolute).
+        Otherwise, uses the current working directory.
+    """
+    working_dir = os.environ.get("AGENT_WORKING_DIRECTORY")
+    if working_dir:
+        # If it's an absolute path, use it directly
+        if os.path.isabs(working_dir):
+            return Path(working_dir).resolve()
+        # Otherwise, treat it as relative to the project root or current directory
+        # Try project root first if available
+        if settings.project_root:
+            return (settings.project_root / working_dir).resolve()
+        # Fallback to current directory
+        return (Path.cwd() / working_dir).resolve()
+    # Default to current working directory
+    return Path.cwd()
+
+
 def list_agents() -> None:
     """List all available agents."""
     agents_dir = Path.home() / ".deepagents"
@@ -121,21 +144,22 @@ All code execution and file operations happen in this sandbox environment.
 
 """
     else:
-        cwd = Path.cwd()
+        # Get the actual working directory (may be from environment variable)
+        agent_working_dir = get_agent_working_directory()
         working_dir_section = f"""<env>
-Working directory: {cwd}
+Working directory: {agent_working_dir}
 </env>
 
 ### Current Working Directory
 
-The filesystem backend is currently operating in: `{cwd}`
+The filesystem backend is currently operating in: `{agent_working_dir}`
 
 ### File System and Paths
 
 **IMPORTANT - Path Handling:**
-- All file paths must be absolute paths (e.g., `{cwd}/file.txt`)
+- All file paths must be absolute paths (e.g., `{agent_working_dir}/file.txt`)
 - Use the working directory from <env> to construct absolute paths
-- Example: To create a file in your working directory, use `{cwd}/research_project/file.md`
+- Example: To create a file in your working directory, use `{agent_working_dir}/research_project/file.md`
 - Never use relative paths - always construct full absolute paths
 
 """
@@ -300,9 +324,12 @@ def create_agent_with_config(
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
+        # Get working directory from environment variable or use current directory
+        agent_working_dir = get_agent_working_directory()
+        
         # Backend: Local filesystem for code (no virtual routes)
         composite_backend = CompositeBackend(
-            default=FilesystemBackend(),  # Current working directory
+            default=FilesystemBackend(root_dir=str(agent_working_dir)),  # Use configured working directory
             routes={},  # No virtualization - use real paths
         )
 
@@ -311,7 +338,7 @@ def create_agent_with_config(
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
             SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
             ResumableShellToolMiddleware(
-                workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
+                workspace_root=str(agent_working_dir), execution_policy=HostExecutionPolicy()
             ),
         ]
     else:

@@ -34,7 +34,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 
-from deepagents_cli.skills.load import SkillMetadata, load_skills
+from deepagents_cli.skills.load import SkillMetadata, list_skills
 
 
 class SkillsState(AgentState):
@@ -115,21 +115,6 @@ class SkillsMiddleware(AgentMiddleware):
         skills_dir: Path to the user-level skills directory (per-agent).
         assistant_id: The agent identifier for path references in prompts.
         project_skills_dir: Optional path to project-level skills directory.
-
-    Example:
-        ```python
-        from pathlib import Path
-        from deepagents_cli.skills import SkillsMiddleware
-
-        # Set up skills directories
-        user_dir = Path.home() / ".deepagents" / "agent" / "skills"
-        project_dir = Path.cwd() / ".deepagents" / "skills"
-
-        # Create middleware with both user and project skills
-        middleware = SkillsMiddleware(
-            skills_dir=user_dir, assistant_id="agent", project_skills_dir=project_dir
-        )
-        ```
     """
 
     state_schema = SkillsState
@@ -216,7 +201,7 @@ class SkillsMiddleware(AgentMiddleware):
         """
         # We re-load skills on every new interaction with the agent to capture
         # any changes in the skills directories.
-        skills = load_skills(
+        skills = list_skills(
             user_skills_dir=self.skills_dir,
             project_skills_dir=self.project_skills_dir,
         )

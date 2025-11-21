@@ -87,7 +87,7 @@ def _is_safe_path(path: Path, base_dir: Path) -> bool:
         return False
 
 
-def _parse_skill_metadata(skill_md_path: Path, source: str = "user") -> SkillMetadata | None:
+def _parse_skill_metadata(skill_md_path: Path, source: str) -> SkillMetadata | None:
     """Parse YAML frontmatter from a SKILL.md file.
 
     Args:
@@ -140,8 +140,8 @@ def _parse_skill_metadata(skill_md_path: Path, source: str = "user") -> SkillMet
         return None
 
 
-def list_skills(skills_dir: Path, source: str = "user") -> list[SkillMetadata]:
-    """List all skills from the skills directory.
+def _list_skills(skills_dir: Path, source: str) -> list[SkillMetadata]:
+    """List all skills from a single skills directory (internal helper).
 
     Scans the skills directory for subdirectories containing SKILL.md files,
     parses YAML frontmatter, and returns skill metadata.
@@ -159,17 +159,6 @@ def list_skills(skills_dir: Path, source: str = "user") -> list[SkillMetadata]:
 
     Returns:
         List of skill metadata dictionaries with name, description, path, and source.
-
-    Example:
-        ```python
-        from pathlib import Path
-        from deepagents_cli.skills.load import list_skills
-
-        skills_dir = Path.home() / ".deepagents" / "skills"
-        skills = list_skills(skills_dir)
-        for skill in skills:
-            print(f"{skill['name']}: {skill['description']}")
-        ```
     """
     # Check if skills directory exists
     skills_dir = skills_dir.expanduser()
@@ -212,12 +201,13 @@ def list_skills(skills_dir: Path, source: str = "user") -> list[SkillMetadata]:
     return skills
 
 
-def load_skills(
-    user_skills_dir: Path | None = None, project_skills_dir: Path | None = None
+def list_skills(
+    *, user_skills_dir: Path | None = None, project_skills_dir: Path | None = None
 ) -> list[SkillMetadata]:
-    """Load skills from both user and project directories.
+    """List skills from user and/or project directories.
 
-    Project skills with the same name as user skills will override them.
+    When both directories are provided, project skills with the same name as
+    user skills will override them.
 
     Args:
         user_skills_dir: Path to the user-level skills directory.
@@ -230,24 +220,24 @@ def load_skills(
     Example:
         ```python
         from pathlib import Path
-        from deepagents_cli.skills.load import load_skills
+        from deepagents_cli.skills.load import list_skills
 
         user_dir = Path.home() / ".deepagents" / "agent" / "skills"
         project_dir = Path.cwd() / ".deepagents" / "skills"
-        skills = load_skills(user_dir, project_dir)
+        skills = list_skills(user_dir, project_dir)
         ```
     """
     all_skills: dict[str, SkillMetadata] = {}
 
     # Load user skills first (foundation)
     if user_skills_dir:
-        user_skills = list_skills(user_skills_dir, source="user")
+        user_skills = _list_skills(user_skills_dir, source="user")
         for skill in user_skills:
             all_skills[skill["name"]] = skill
 
     # Load project skills second (override/augment)
     if project_skills_dir:
-        project_skills = list_skills(project_skills_dir, source="project")
+        project_skills = _list_skills(project_skills_dir, source="project")
         for skill in project_skills:
             # Project skills override user skills with the same name
             all_skills[skill["name"]] = skill

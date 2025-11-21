@@ -327,10 +327,12 @@ def create_agent_with_config(
         # Get working directory from environment variable or use current directory
         agent_working_dir = get_agent_working_directory()
         
-        # Backend: Local filesystem for code (no virtual routes)
+        # Backend: Local filesystem for code with /memories/ route to permanent filesystem storage
+        # FilesystemBackend with virtual_mode=True allows /memories/ paths to map to the memories directory
         composite_backend = CompositeBackend(
-            default=FilesystemBackend(root_dir=str(agent_working_dir)),  # Use configured working directory
-            routes={},  # No virtualization - use real paths
+            default=FilesystemBackend(root_dir=str(agent_working_dir), virtual_mode=True),  # Use configured working directory
+            routes={
+            },
         )
 
         # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ResumableShellToolMiddleware
@@ -343,7 +345,8 @@ def create_agent_with_config(
         ]
     else:
         # ========== REMOTE SANDBOX MODE ==========
-        # Backend: Remote sandbox for code (no /memories/ route needed with filesystem-based memory)
+        # Backend: Remote sandbox for code with /memories/ route to permanent filesystem storage
+        # Even in sandbox mode, memories are stored locally on the filesystem
         composite_backend = CompositeBackend(
             default=sandbox,  # Remote sandbox (ModalBackend, etc.)
             routes={},  # No virtualization

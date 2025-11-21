@@ -11,6 +11,8 @@ import dotenv
 from langchain_core.language_models import BaseChatModel
 from rich.console import Console
 
+from deepagents_cli.llm import llm_openrouter_medium_fast_min_reasoning
+
 dotenv.load_dotenv()
 
 # Color scheme
@@ -138,6 +140,7 @@ class Settings:
     anthropic_api_key: str | None
     openrouter_api_key: str | None
     openrouter_base_url: str | None
+    google_ai_studio_api_key: str | None
     tavily_api_key: str | None
 
     # Project information
@@ -158,6 +161,7 @@ class Settings:
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         openrouter_key = os.environ.get("OPENROUTER_API_KEY")
         openrouter_base = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        google_ai_studio_key = os.environ.get("GOOGLE_AI_STUDIO_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
 
         # Detect project
@@ -168,6 +172,7 @@ class Settings:
             anthropic_api_key=anthropic_key,
             openrouter_api_key=openrouter_key,
             openrouter_base_url=openrouter_base,
+            google_ai_studio_api_key=google_ai_studio_key,
             tavily_api_key=tavily_key,
             project_root=project_root,
         )
@@ -186,6 +191,11 @@ class Settings:
     def has_openrouter(self) -> bool:
         """Check if OpenRouter API key is configured."""
         return self.openrouter_api_key is not None
+
+    @property
+    def has_google_ai_studio(self) -> bool:
+        """Check if Google AI Studio API key is configured."""
+        return self.google_ai_studio_api_key is not None
 
     @property
     def has_tavily(self) -> bool:
@@ -311,10 +321,10 @@ def create_model() -> BaseChatModel:
     """Create the appropriate model based on available API keys.
 
     Uses the global settings instance to determine which model to create.
-    Priority: OpenAI > Anthropic > OpenRouter
+    Priority: Google AI Studio (Gemini) > OpenAI > Anthropic > OpenRouter
 
     Returns:
-        ChatModel instance (OpenAI, Anthropic, or OpenRouter)
+        ChatModel instance (Google Gemini, OpenAI, Anthropic, or OpenRouter)
 
     Raises:
         SystemExit if no API key is configured
@@ -341,20 +351,22 @@ def create_model() -> BaseChatModel:
     if settings.has_openrouter:
         from langchain_openai import ChatOpenAI
 
-        model_name = os.environ.get("OPENROUTER_MODEL", "@preset/frontier-affordable")
-        console.print(f"[dim]Using OpenRouter model: {model_name}[/dim]")
-        return ChatOpenAI(
-            api_key=settings.openrouter_api_key,
-            base_url=settings.openrouter_base_url,
-            model=model_name,
-            temperature=0.1,
-        )
+        # model_name = os.environ.get("OPENROUTER_MODEL", "llm_openrouter_medium_fast_min_reasoning")
+        # console.print(f"[dim]Using OpenRouter model: {model_name}[/dim]")
+        # return ChatOpenAI(
+        #     api_key=settings.openrouter_api_key,
+        #     base_url=settings.openrouter_base_url,
+        #     model=model_name,
+        #     temperature=0.1,
+        # )
+        return llm_openrouter_medium_fast_min_reasoning
     console.print("[bold red]Error:[/bold red] No API key configured.")
     console.print("\nPlease set one of the following environment variables:")
-    console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
-    console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-    console.print("  - OPENROUTER_API_KEY  (for OpenRouter models)")
+    console.print("  - GOOGLE_AI_STUDIO_API_KEY  (for Google Gemini models - default)")
+    console.print("  - OPENAI_API_KEY           (for OpenAI models like gpt-5-mini)")
+    console.print("  - ANTHROPIC_API_KEY        (for Claude models)")
+    console.print("  - OPENROUTER_API_KEY       (for OpenRouter models)")
     console.print("\nExample:")
-    console.print("  export OPENAI_API_KEY=your_api_key_here")
+    console.print("  export GOOGLE_AI_STUDIO_API_KEY=your_api_key_here")
     console.print("\nOr add it to your .env file.")
     sys.exit(1)

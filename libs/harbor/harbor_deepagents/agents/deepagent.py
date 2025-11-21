@@ -4,7 +4,6 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
 
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
@@ -12,7 +11,6 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,
-    Metrics,
     Observation,
     ObservationResult,
     Step,

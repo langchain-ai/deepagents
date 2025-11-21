@@ -20,6 +20,9 @@ test_integration:
 test_watch:
 	uv run ptw . -- $(TEST_FILE)
 
+run_harbor:
+	harbor run --agent-import-path harbor_deepagents.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp
+
 
 ######################
 # LINTING AND FORMATTING

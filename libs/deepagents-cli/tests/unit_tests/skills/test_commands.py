@@ -1,5 +1,7 @@
 """Unit tests for skills command sanitization and validation."""
 
+from pathlib import Path
+
 import pytest
 
 from deepagents_cli.skills.commands import _validate_name, _validate_skill_path
@@ -112,7 +114,7 @@ class TestValidateSkillName:
 class TestValidateSkillPath:
     """Test skill path validation to ensure paths stay within bounds."""
 
-    def test_valid_path_within_base(self, tmp_path):
+    def test_valid_path_within_base(self, tmp_path: Path) -> None:
         """Test that valid paths within base directory are accepted."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -122,7 +124,7 @@ class TestValidateSkillPath:
         assert is_valid, f"Valid path was rejected: {error}"
         assert error == ""
 
-    def test_path_traversal_outside_base(self, tmp_path):
+    def test_path_traversal_outside_base(self, tmp_path: Path) -> None:
         """Test that paths outside base directory are blocked."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -133,7 +135,7 @@ class TestValidateSkillPath:
         assert not is_valid, "Path outside base directory was accepted"
         assert error != ""
 
-    def test_symlink_path_traversal(self, tmp_path):
+    def test_symlink_path_traversal(self, tmp_path: Path) -> None:
         """Test that symlinks pointing outside base are detected."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -153,7 +155,7 @@ class TestValidateSkillPath:
             # Symlink creation might fail on some systems
             pytest.skip("Symlink creation not supported")
 
-    def test_nonexistent_path_validation(self, tmp_path):
+    def test_nonexistent_path_validation(self, tmp_path: Path) -> None:
         """Test validation of paths that don't exist yet."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -168,7 +170,7 @@ class TestValidateSkillPath:
 class TestIntegrationSecurity:
     """Integration tests for security across the command flow."""
 
-    def test_combined_validation(self, tmp_path):
+    def test_combined_validation(self, tmp_path: Path) -> None:
         """Test that both name and path validation work together."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()

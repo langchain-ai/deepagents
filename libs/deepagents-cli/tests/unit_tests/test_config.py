@@ -1,12 +1,14 @@
 """Tests for config module including project discovery utilities."""
 
+from pathlib import Path
+
 from deepagents_cli.config import _find_project_agent_md, _find_project_root
 
 
 class TestProjectRootDetection:
     """Test project root detection via .git directory."""
 
-    def test_find_project_root_with_git(self, tmp_path):
+    def test_find_project_root_with_git(self, tmp_path: Path) -> None:
         """Test that project root is found when .git directory exists."""
         # Create a mock project structure
         project_root = tmp_path / "my-project"
@@ -22,7 +24,7 @@ class TestProjectRootDetection:
         result = _find_project_root(subdir)
         assert result == project_root
 
-    def test_find_project_root_no_git(self, tmp_path):
+    def test_find_project_root_no_git(self, tmp_path: Path) -> None:
         """Test that None is returned when no .git directory exists."""
         # Create directory without .git
         no_git_dir = tmp_path / "no-git"
@@ -31,7 +33,7 @@ class TestProjectRootDetection:
         result = _find_project_root(no_git_dir)
         assert result is None
 
-    def test_find_project_root_nested_git(self, tmp_path):
+    def test_find_project_root_nested_git(self, tmp_path: Path) -> None:
         """Test that nearest .git directory is found (not parent repos)."""
         # Create nested git repos
         outer_repo = tmp_path / "outer"
@@ -50,7 +52,7 @@ class TestProjectRootDetection:
 class TestProjectAgentMdFinding:
     """Test finding project-specific agent.md files."""
 
-    def test_find_agent_md_in_deepagents_dir(self, tmp_path):
+    def test_find_agent_md_in_deepagents_dir(self, tmp_path: Path) -> None:
         """Test finding agent.md in .deepagents/ directory."""
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -65,7 +67,7 @@ class TestProjectAgentMdFinding:
         assert len(result) == 1
         assert result[0] == agent_md
 
-    def test_find_agent_md_in_root(self, tmp_path):
+    def test_find_agent_md_in_root(self, tmp_path: Path) -> None:
         """Test finding agent.md in project root (fallback)."""
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -78,7 +80,7 @@ class TestProjectAgentMdFinding:
         assert len(result) == 1
         assert result[0] == agent_md
 
-    def test_both_agent_md_files_combined(self, tmp_path):
+    def test_both_agent_md_files_combined(self, tmp_path: Path) -> None:
         """Test that both agent.md files are returned when both exist."""
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -98,7 +100,7 @@ class TestProjectAgentMdFinding:
         assert result[0] == deepagents_md
         assert result[1] == root_md
 
-    def test_find_agent_md_not_found(self, tmp_path):
+    def test_find_agent_md_not_found(self, tmp_path: Path) -> None:
         """Test that empty list is returned when no agent.md exists."""
         project_root = tmp_path / "project"
         project_root.mkdir()

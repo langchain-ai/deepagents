@@ -8,7 +8,7 @@ from deepagents_cli.skills.load import list_skills
 class TestListSkillsSingleDirectory:
     """Test list_skills function for loading skills from a single directory."""
 
-    def test_list_skills_empty_directory(self, tmp_path):
+    def test_list_skills_empty_directory(self, tmp_path: Path) -> None:
         """Test listing skills from an empty directory."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -16,7 +16,7 @@ class TestListSkillsSingleDirectory:
         skills = list_skills(user_skills_dir=skills_dir, project_skills_dir=None)
         assert skills == []
 
-    def test_list_skills_with_valid_skill(self, tmp_path):
+    def test_list_skills_with_valid_skill(self, tmp_path: Path) -> None:
         """Test listing a valid skill with proper YAML frontmatter."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -42,7 +42,7 @@ This is a test skill.
         assert skills[0]["source"] == "user"
         assert Path(skills[0]["path"]) == skill_md
 
-    def test_list_skills_source_parameter(self, tmp_path):
+    def test_list_skills_source_parameter(self, tmp_path: Path) -> None:
         """Test that source parameter is correctly set for project skills."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -64,7 +64,7 @@ description: A project skill
         assert len(skills) == 1
         assert skills[0]["source"] == "project"
 
-    def test_list_skills_missing_frontmatter(self, tmp_path):
+    def test_list_skills_missing_frontmatter(self, tmp_path: Path) -> None:
         """Test that skills without YAML frontmatter are skipped."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -78,7 +78,7 @@ description: A project skill
         skills = list_skills(user_skills_dir=skills_dir, project_skills_dir=None)
         assert skills == []
 
-    def test_list_skills_missing_required_fields(self, tmp_path):
+    def test_list_skills_missing_required_fields(self, tmp_path: Path) -> None:
         """Test that skills with incomplete frontmatter are skipped."""
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -104,7 +104,7 @@ Content
         skills = list_skills(user_skills_dir=skills_dir, project_skills_dir=None)
         assert skills == []
 
-    def test_list_skills_nonexistent_directory(self, tmp_path):
+    def test_list_skills_nonexistent_directory(self, tmp_path: Path) -> None:
         """Test listing skills from a non-existent directory."""
         skills_dir = tmp_path / "nonexistent"
         skills = list_skills(user_skills_dir=skills_dir, project_skills_dir=None)
@@ -114,7 +114,7 @@ Content
 class TestListSkillsMultipleDirectories:
     """Test list_skills function for loading from multiple directories."""
 
-    def test_list_skills_user_only(self, tmp_path):
+    def test_list_skills_user_only(self, tmp_path: Path) -> None:
         """Test loading skills from user directory only."""
         user_dir = tmp_path / "user_skills"
         user_dir.mkdir()
@@ -133,7 +133,7 @@ Content
         assert skills[0]["name"] == "user-skill"
         assert skills[0]["source"] == "user"
 
-    def test_list_skills_project_only(self, tmp_path):
+    def test_list_skills_project_only(self, tmp_path: Path) -> None:
         """Test loading skills from project directory only."""
         project_dir = tmp_path / "project_skills"
         project_dir.mkdir()
@@ -152,7 +152,7 @@ Content
         assert skills[0]["name"] == "project-skill"
         assert skills[0]["source"] == "project"
 
-    def test_list_skills_both_sources(self, tmp_path):
+    def test_list_skills_both_sources(self, tmp_path: Path) -> None:
         """Test loading skills from both user and project directories."""
         user_dir = tmp_path / "user_skills"
         user_dir.mkdir()
@@ -192,7 +192,7 @@ Content
         assert user_skill["source"] == "user"
         assert project_skill["source"] == "project"
 
-    def test_list_skills_project_overrides_user(self, tmp_path):
+    def test_list_skills_project_overrides_user(self, tmp_path: Path) -> None:
         """Test that project skills override user skills with the same name."""
         user_dir = tmp_path / "user_skills"
         user_dir.mkdir()
@@ -227,7 +227,7 @@ Content
         assert skill["description"] == "Project version"
         assert skill["source"] == "project"
 
-    def test_list_skills_empty_directories(self, tmp_path):
+    def test_list_skills_empty_directories(self, tmp_path: Path) -> None:
         """Test loading from empty directories."""
         user_dir = tmp_path / "user_skills"
         user_dir.mkdir()
@@ -242,7 +242,7 @@ Content
         skills = list_skills(user_skills_dir=None, project_skills_dir=None)
         assert skills == []
 
-    def test_list_skills_multiple_user_skills(self, tmp_path):
+    def test_list_skills_multiple_user_skills(self, tmp_path: Path) -> None:
         """Test loading multiple skills from user directory."""
         user_dir = tmp_path / "user_skills"
         user_dir.mkdir()
@@ -263,7 +263,7 @@ Content
         skill_names = {s["name"] for s in skills}
         assert skill_names == {"skill-0", "skill-1", "skill-2"}
 
-    def test_list_skills_mixed_valid_invalid(self, tmp_path):
+    def test_list_skills_mixed_valid_invalid(self, tmp_path: Path) -> None:
         """Test loading with a mix of valid and invalid skills."""
         user_dir = tmp_path / "user_skills"
         user_dir.mkdir()

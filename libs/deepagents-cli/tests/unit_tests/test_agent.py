@@ -1,5 +1,6 @@
 """Unit tests for agent formatting functions."""
 
+from pathlib import Path
 from unittest.mock import Mock
 
 from deepagents_cli.agent import (
@@ -13,7 +14,7 @@ from deepagents_cli.agent import (
 )
 
 
-def test_format_write_file_description_create_new_file(tmp_path):
+def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
     """Test write_file description for creating a new file."""
     new_file = tmp_path / "new_file.py"
     tool_call = {
@@ -35,7 +36,7 @@ def test_format_write_file_description_create_new_file(tmp_path):
     assert "Lines: 2" in description
 
 
-def test_format_write_file_description_overwrite_existing_file(tmp_path):
+def test_format_write_file_description_overwrite_existing_file(tmp_path: Path) -> None:
     """Test write_file description for overwriting an existing file."""
     existing_file = tmp_path / "existing.py"
     existing_file.write_text("old content")

@@ -11,8 +11,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
+from langgraph.prebuilt.tool_node import ContextT
 from langgraph.types import Command
-from langchain.tools.tool_node import ContextT
 
 
 class SubAgent(TypedDict):

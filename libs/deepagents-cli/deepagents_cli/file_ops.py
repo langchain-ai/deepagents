@@ -156,7 +156,7 @@ def build_approval_preview(
         content = str(args.get("content", ""))
         before = _safe_read(physical_path) if physical_path and physical_path.exists() else ""
         after = content
-        diff = compute_unified_diff(before or "", after, display_path, max_lines=None)
+        diff = compute_unified_diff(before or "", after, display_path, max_lines=100)
         additions = 0
         if diff:
             additions = sum(
@@ -260,6 +260,23 @@ class FileOpTracker:
             record.before_content = _safe_read(record.physical_path) or ""
         self.active[tool_call_id] = record
 
+    def update_args(self, tool_call_id: str, args: dict[str, Any]) -> None:
+        """Update arguments for an active operation and retry capturing before_content."""
+        record = self.active.get(tool_call_id)
+        if not record:
+            return
+
+        record.args.update(args)
+
+        # If we haven't captured before_content yet, try again now that we might have the path
+        if record.before_content is None and record.tool_name in {"write_file", "edit_file"}:
+            path_str = str(record.args.get("file_path") or record.args.get("path") or "")
+            if path_str:
+                record.display_path = format_display_path(path_str)
+                record.physical_path = resolve_physical_path(path_str, self.assistant_id)
+                if record.physical_path:
+                    record.before_content = _safe_read(record.physical_path) or ""
+
     def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:
         tool_call_id = getattr(tool_message, "tool_call_id", None)
         record = self.active.get(tool_call_id)
@@ -318,7 +335,7 @@ class FileOpTracker:
                 record.before_content or "",
                 record.after_content,
                 record.display_path,
-                max_lines=None,
+                max_lines=100,
             )
             record.diff = diff
             if diff:
@@ -342,7 +359,7 @@ class FileOpTracker:
                     record.before_content or "",
                     record.after_content,
                     record.display_path,
-                    max_lines=None,
+                    max_lines=100,
                 )
             if record.diff is None and before_lines != record.metrics.lines_written:
                 record.metrics.lines_added = max(record.metrics.lines_written - before_lines, 0)

@@ -2,7 +2,7 @@
 
 Agents can increasingly tackle long-horizon tasks, [with agent task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)! But, long horizon tasks often span dozens of tool calls, which present cost and reliability challenges. Popular agents such as [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8) use some common principles to address these challenges, including **planning** (prior to task execution), **computer access** (giving the able access to a shell and a filesystem), and **sub-agent delegation** (isolated task execution). `deepagents` is a simple agent harness that implements these tools, but is open source and easily extendable with your own custom tools and instructions.
 
-<img src="deepagents_banner.png" alt="deep agent" width="100%"/>
+<img src=".github/images/deepagents_banner.png" alt="deep agent" width="100%"/>
 
 ## 📚 Resources
 
@@ -41,7 +41,7 @@ The agent created with `create_deep_agent` is compiled [LangGraph StateGraph](ht
 
 ## Customizing Deep Agents
 
-There are several parameters you can pass to `create_deep_agent`. 
+There are several parameters you can pass to `create_deep_agent`.
 
 ### `model`
 
@@ -59,9 +59,10 @@ agent = create_deep_agent(
 
 ### `system_prompt`
 
-You can provide a `system_prompt` parameter to `create_deep_agent()`. This custom prompt is **appended to** default instructions that are automatically injected by middleware. 
+You can provide a `system_prompt` parameter to `create_deep_agent()`. This custom prompt is **appended to** default instructions that are automatically injected by middleware.
 
 When writing a custom system prompt, you should:
+
 - ✅ Define domain-specific workflows (e.g., research methodology, data analysis steps)
 - ✅ Provide concrete examples for your use case
 - ✅ Add specialized guidance (e.g., "batch similar research tasks into a single TODO")
@@ -69,6 +70,7 @@ When writing a custom system prompt, you should:
 - ✅ Explain how tools work together in your workflow
 
 **Don't:**
+
 - ❌ Re-explain what standard tools do (already covered by middleware)
 - ❌ Duplicate middleware instructions about tool usage
 - ❌ Contradict default instructions (work with them, not against them)
@@ -210,6 +212,7 @@ agent = create_deep_agent(
 ```
 
 Available backends include:
+
 - **StateBackend** (default): Ephemeral files stored in agent state
 - **FilesystemBackend**: Real disk operations under a root directory
 - **StoreBackend**: Persistent storage using LangGraph Store
@@ -219,7 +222,7 @@ See the [backends documentation](https://docs.langchain.com/oss/python/deepagent
 
 ### Long-term Memory
 
-Deep agents can maintain persistent memory across conversations using a `CompositeBackend` that routes specific paths to durable storage. 
+Deep agents can maintain persistent memory across conversations using a `CompositeBackend` that routes specific paths to durable storage.
 
 This enables hybrid memory where working files remain ephemeral while important data (like user preferences or knowledge bases) persists across threads.
 
@@ -237,6 +240,7 @@ agent = create_deep_agent(
 ```
 
 Files under `/memories/` will persist across all conversations, while other paths remain temporary. Use cases include:
+
 - Preserving user preferences across sessions
 - Building knowledge bases from multiple conversations
 - Self-improving instructions based on feedback
@@ -246,7 +250,7 @@ See the [long-term memory documentation](https://docs.langchain.com/oss/python/d
 
 ## Built-in Tools
 
-<img src="deepagents_tools.png" alt="deep agent" width="600"/>
+<img src=".github/images/deepagents_tools.png" alt="deep agent" width="600"/>
 
 Every deep agent created with `create_deep_agent` comes with a standard set of tools:
 
@@ -286,18 +290,21 @@ See the [agent harness documentation](https://docs.langchain.com/oss/python/deep
 The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:
 
 #### From [TodoListMiddleware](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)
+
 - Explains when to use `write_todos` and `read_todos`
 - Guidance on marking tasks completed
 - Best practices for todo list management
 - When NOT to use todos (simple tasks)
 
 #### From [FilesystemMiddleware](libs/deepagents/deepagents/middleware/filesystem.py)
+
 - Lists all filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`*)
 - Explains that file paths must start with `/`
 - Describes each tool's purpose and parameters
 - Notes about context offloading for large tool results
 
 #### From [SubAgentMiddleware](libs/deepagents/deepagents/middleware/subagents.py)
+
 - Explains the `task()` tool for delegating to sub-agents
 - When to use sub-agents vs when NOT to use them
 - Guidance on parallel execution

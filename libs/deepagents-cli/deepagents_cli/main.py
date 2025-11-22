@@ -197,10 +197,19 @@ async def simple_cli(
         )
         console.print()
 
-    console.print(
-        "  Tips: Enter to submit, Alt+Enter for newline, Ctrl+E for editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt",
-        style=f"dim {COLORS['dim']}",
-    )
+    # Localize modifier names and show key symbols (macOS vs others)
+    if sys.platform == "darwin":
+        tips = (
+            "  Tips: ⏎ Enter to submit, ⌥ Option + ⏎ Enter for newline (or Esc+Enter), "
+            "⌃E to open editor, ⌃T to toggle auto-approve, ⌃C to interrupt"
+        )
+    else:
+        tips = (
+            "  Tips: Enter to submit, Alt+Enter (or Esc+Enter) for newline, "
+            "Ctrl+E to open editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt"
+        )
+    console.print(tips, style=f"dim {COLORS['dim']}")
+
     console.print()
 
     # Create prompt session and token tracker

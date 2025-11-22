@@ -167,9 +167,9 @@ Shell commands require user approval with an interactive arrow-key menu.
 
 ### Multi-line Input
 
-- **Enter** - Submit (or accept completion if menu is open)
-- **Option+Enter (macOS) / Alt+Enter** - Insert newline (or ESC then Enter)
-- **Ctrl+E** - Open in external editor (nano by default)
+- **⏎ Enter** - Submit (or accept completion if menu is open)
+- **⌥ Option + ⏎ Enter (macOS) / Alt + Enter** - Insert newline (or ESC then Enter)
+- **⌃E Ctrl + E** - Open in external editor (nano by default)
 
 ## Agent Storage
 

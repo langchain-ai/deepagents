@@ -113,44 +113,44 @@ class FilesystemBackend(BackendProtocol):
 
                 if not self.virtual_mode:
                     # Non-virtual mode: use absolute paths
+                    # Normalize path separators for cross-platform compatibility
+                    normalized_path = abs_path.replace("\\", "/")
                     if is_file:
                         try:
                             st = child_path.stat()
                             results.append(
                                 {
-                                    "path": abs_path,
+                                    "path": normalized_path,
                                     "is_dir": False,
                                     "size": int(st.st_size),
                                     "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
                                 }
                             )
                         except OSError:
-                            results.append({"path": abs_path, "is_dir": False})
+                            results.append({"path": normalized_path, "is_dir": False})
                     elif is_dir:
                         try:
                             st = child_path.stat()
                             results.append(
                                 {
-                                    "path": abs_path + "/",
+                                    "path": normalized_path + "/",
                                     "is_dir": True,
                                     "size": 0,
                                     "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
                                 }
                             )
                         except OSError:
-                            results.append({"path": abs_path + "/", "is_dir": True})
+                            results.append({"path": normalized_path + "/", "is_dir": True})
                 else:
                     # Virtual mode: strip cwd prefix
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        # Path is outside cwd, return as-is or skip
-                        relative_path = abs_path
+                    try:
+                        # Use pathlib for robust cross-platform path handling
+                        relative_path = Path(abs_path).resolve().relative_to(self.cwd).as_posix()
+                    except ValueError:
+                        # Path is outside cwd - keep as absolute to maintain sandbox boundary
+                        relative_path = abs_path.replace("\\", "/")
 
-                    virt_path = "/" + relative_path
+                    virt_path = "/" + relative_path if not relative_path.startswith("/") else relative_path
 
                     if is_file:
                         try:
@@ -441,29 +441,30 @@ class FilesystemBackend(BackendProtocol):
                     continue
                 abs_path = str(matched_path)
                 if not self.virtual_mode:
+                    # Normalize path separators for cross-platform compatibility
+                    normalized_path = abs_path.replace("\\", "/")
                     try:
                         st = matched_path.stat()
                         results.append(
                             {
-                                "path": abs_path,
+                                "path": normalized_path,
                                 "is_dir": False,
                                 "size": int(st.st_size),
                                 "modified_at": datetime.fromtimestamp(st.st_mtime).isoformat(),
                             }
                         )
                     except OSError:
-                        results.append({"path": abs_path, "is_dir": False})
+                        results.append({"path": normalized_path, "is_dir": False})
                 else:
-                    cwd_str = str(self.cwd)
-                    if not cwd_str.endswith("/"):
-                        cwd_str += "/"
-                    if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
-                    else:
-                        relative_path = abs_path
-                    virt = "/" + relative_path
+                    # Virtual mode: strip cwd prefix
+                    try:
+                        # Use pathlib for robust cross-platform path handling
+                        relative_path = Path(abs_path).resolve().relative_to(self.cwd).as_posix()
+                    except ValueError:
+                        # Path is outside cwd - keep as absolute to maintain sandbox boundary
+                        relative_path = abs_path.replace("\\", "/")
+
+                    virt = "/" + relative_path if not relative_path.startswith("/") else relative_path
                     try:
                         st = matched_path.stat()
                         results.append(

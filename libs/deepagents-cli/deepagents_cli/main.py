@@ -120,6 +120,11 @@ def parse_args():
         "--sandbox-setup",
         help="Path to setup script to run in sandbox after creation",
     )
+    parser.add_argument(
+        "--no-splash",
+        action="store_true",
+        help="Disable the startup splash screen",
+    )
 
     return parser.parse_args()
 
@@ -132,6 +137,7 @@ async def simple_cli(
     backend=None,
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
+    no_splash: bool = False,
 ):
     """Main CLI loop.
 
@@ -141,10 +147,12 @@ async def simple_cli(
                      If None, running in local mode.
         sandbox_id: ID of the active sandbox
         setup_script_path: Path to setup script that was run (if any)
+        no_splash: If True, skip displaying the startup splash screen
     """
     console.clear()
-    console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
-    console.print()
+    if not no_splash:
+        console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
+        console.print()
 
     # Extract sandbox ID from backend if using sandbox mode
     sandbox_id: str | None = None
@@ -295,6 +303,7 @@ async def _run_agent_session(
         backend=composite_backend,
         sandbox_type=sandbox_type,
         setup_script_path=setup_script_path,
+        no_splash=session_state.no_splash,
     )
 
 
@@ -380,7 +389,7 @@ def cli_main() -> None:
             execute_skills_command(args)
         else:
             # Create session state from args
-            session_state = SessionState(auto_approve=args.auto_approve)
+            session_state = SessionState(auto_approve=args.auto_approve, no_splash=args.no_splash)
 
             # API key validation happens in create_model()
             asyncio.run(

@@ -13,19 +13,45 @@ from deepagents.backends.state import StateBackend
 
 
 class CompositeBackend:
+    """Route file operations to different backends based on path prefix.
+    
+    Routes are automatically normalized to end with / for consistent behavior.
+    
+    Example:
+        composite = CompositeBackend(
+            default=FilesystemBackend(root_dir="/tmp"),
+            routes={
+                "/workspace": workspace_backend,  # Normalized to /workspace/
+                "/memory/": memory_backend,
+            }
+        )
+    """
+    
     def __init__(
         self,
         default: BackendProtocol | StateBackend,
         routes: dict[str, BackendProtocol],
     ) -> None:
+        """Initialize CompositeBackend.
+        
+        Args:
+            default: Backend to use for paths not matching any route.
+            routes: Mapping of path prefixes to backends. Prefixes are normalized to end with /.
+        """
         # Default backend
         self.default = default
 
+        # Normalize route prefixes to end with / (e.g., "/workspace" → "/workspace/")
+        normalized_routes = {}
+        for route_prefix, backend in routes.items():
+            normalized_prefix = route_prefix if route_prefix.endswith("/") else route_prefix + "/"
+            normalized_routes[normalized_prefix] = backend
+
         # Virtual routes
-        self.routes = routes
+        self.routes = normalized_routes
 
         # Sort routes by length (longest first) for correct prefix matching
-        self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
+        self.sorted_routes = sorted(normalized_routes.items(), key=lambda x: len(x[0]), reverse=True)
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         """Determine which backend handles this key and strip prefix.

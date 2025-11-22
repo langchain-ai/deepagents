@@ -171,11 +171,10 @@ def prompt_for_tool_approval(
     # Return decision based on selection
     if selected == 0:
         return ApproveDecision(type="approve")
-    elif selected == 1:
+    if selected == 1:
         return RejectDecision(type="reject", message="User rejected the command")
-    else:
-        # Return special marker for auto-approve mode
-        return {"type": "auto_approve_all"}
+    # Return special marker for auto-approve mode
+    return {"type": "auto_approve_all"}
 
 
 async def execute_task(
@@ -591,8 +590,7 @@ async def execute_task(
                                 ]:
                                     decisions.append({"type": "approve"})
                                 break
-                            else:
-                                decisions.append(decision)
+                            decisions.append(decision)
 
                             # Mark file operations as HIL-approved if user approved
                             if decision.get("type") == "approve":

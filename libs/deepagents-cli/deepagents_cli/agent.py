@@ -268,6 +268,53 @@ def _format_execute_description(tool_call: ToolCall, state: AgentState, runtime:
     return f"Execute Command: {command}\nLocation: Remote Sandbox"
 
 
+def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
+    """Configure human-in-the-loop interrupt_on settings for destructive tools."""
+    shell_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_shell_description,
+    }
+
+    execute_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_execute_description,
+    }
+
+    write_file_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_write_file_description,
+    }
+
+    edit_file_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_edit_file_description,
+    }
+
+    web_search_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_web_search_description,
+    }
+
+    fetch_url_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_fetch_url_description,
+    }
+
+    task_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_task_description,
+    }
+    return {
+        "shell": shell_interrupt_config,
+        "execute": execute_interrupt_config,
+        "write_file": write_file_interrupt_config,
+        "edit_file": edit_file_interrupt_config,
+        "web_search": web_search_interrupt_config,
+        "fetch_url": fetch_url_interrupt_config,
+        "task": task_interrupt_config,
+    }
+
+
 def create_agent_with_config(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -348,41 +395,7 @@ def create_agent_with_config(
     # Get the system prompt (sandbox-aware and with skills)
     system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
 
-    # Configure human-in-the-loop for potentially destructive tools
-    shell_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_shell_description,
-    }
-
-    execute_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_execute_description,
-    }
-
-    write_file_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_write_file_description,
-    }
-
-    edit_file_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_edit_file_description,
-    }
-
-    web_search_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_web_search_description,
-    }
-
-    fetch_url_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_fetch_url_description,
-    }
-
-    task_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_task_description,
-    }
+    interrupt_on = _add_interrupt_on()
 
     agent = create_deep_agent(
         model=model,
@@ -390,15 +403,7 @@ def create_agent_with_config(
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,
-        interrupt_on={
-            "shell": shell_interrupt_config,
-            "execute": execute_interrupt_config,
-            "write_file": write_file_interrupt_config,
-            "edit_file": edit_file_interrupt_config,
-            "web_search": web_search_interrupt_config,
-            "fetch_url": fetch_url_interrupt_config,
-            "task": task_interrupt_config,
-        },
+        interrupt_on=interrupt_on,
     ).with_config(config)
 
     agent.checkpointer = InMemorySaver()

@@ -66,4 +66,3 @@ class TestValidatePath:
         """Test that backslashes in relative paths are normalized to forward slashes."""
         # Relative paths with backslashes should be normalized
         assert _validate_path("foo\\bar\\baz") == "/foo/bar/baz"
-

@@ -223,9 +223,7 @@ def create_daytona_sandbox(
             "Connecting to existing Daytona sandbox by ID not yet supported. "
             "Create a new sandbox by omitting --sandbox-id."
         )
-        raise NotImplementedError(
-            msg
-        )
+        raise NotImplementedError(msg)
 
     console.print("[yellow]Starting Daytona sandbox...[/yellow]")
 
@@ -308,9 +306,7 @@ def create_sandbox(
             f"Unknown sandbox provider: {provider}. "
             f"Available providers: {', '.join(get_available_sandbox_types())}"
         )
-        raise ValueError(
-            msg
-        )
+        raise ValueError(msg)
 
     sandbox_provider = _SANDBOX_PROVIDERS[provider]
 

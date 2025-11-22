@@ -240,9 +240,7 @@ class Settings:
                 f"Invalid agent name: {agent_name!r}. "
                 "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
         return Path.home() / ".deepagents" / agent_name
 
     def ensure_agent_dir(self, agent_name: str) -> Path:
@@ -259,9 +257,7 @@ class Settings:
                 f"Invalid agent name: {agent_name!r}. "
                 "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
         return agent_dir

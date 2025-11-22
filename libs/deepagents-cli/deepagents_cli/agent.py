@@ -321,7 +321,9 @@ def create_agent_with_config(
                 project_skills_dir=project_skills_dir,
             ),
             ResumableShellToolMiddleware(
-                workspace_root=os.getcwd(), execution_policy=HostExecutionPolicy()
+                workspace_root=os.getcwd(),
+                execution_policy=HostExecutionPolicy(),
+                env=os.environ,
             ),
         ]
     else:

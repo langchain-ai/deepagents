@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 # Unix-only terminal control modules (not available on Windows)
 try:
@@ -100,7 +101,6 @@ def prompt_for_tool_approval(
 
             # Open diff in VS Code
             if before_content or after_content:
-                from pathlib import Path
                 open_diff_in_vscode(
                     Path(file_path_str),
                     before_content,

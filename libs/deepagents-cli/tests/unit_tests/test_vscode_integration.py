@@ -51,12 +51,13 @@ class TestOpenDiffInVSCode:
             # Check that subprocess.run was called with correct arguments
             call_args = mock_run.call_args[0][0]
             assert call_args[0] == "code"
-            assert call_args[1] == "--diff"
-            assert "test_BEFORE.py" in call_args[2]
-            assert "test_AFTER.py" in call_args[3]
+            assert call_args[1] == "--wait"  # --wait is always added
+            assert call_args[2] == "--diff"
+            assert "test_BEFORE.py" in call_args[3]
+            assert "test_AFTER.py" in call_args[4]
 
     def test_open_diff_with_wait_flag(self, tmp_path: Path) -> None:
-        """Test that --wait flag is added when wait=True."""
+        """Test that --wait flag is always present (backwards compatibility test)."""
         with (
             patch("shutil.which", return_value="/usr/bin/code"),
             patch("subprocess.run") as mock_run,
@@ -68,7 +69,7 @@ class TestOpenDiffInVSCode:
                 "test.py",
                 "before",
                 "after",
-                wait=True,
+                wait=True,  # This parameter is now ignored, but kept for backwards compatibility
             )
 
             call_args = mock_run.call_args[0][0]
@@ -134,8 +135,9 @@ class TestOpenDiffInVSCode:
             )
 
             call_args = mock_run.call_args[0][0]
-            assert ".tsx" in call_args[2]
+            # With --wait flag, file paths are at indices 3 and 4
             assert ".tsx" in call_args[3]
+            assert ".tsx" in call_args[4]
 
 
 class TestOpenFileInVSCode:

@@ -1,5 +1,6 @@
 """VS Code integration for previewing code changes as diffs."""
 
+import atexit
 import os
 import shutil
 import subprocess
@@ -33,11 +34,15 @@ def open_diff_in_vscode(
     in VS Code's diff view. The temporary files are created with appropriate
     extensions to enable syntax highlighting.
 
+    Uses --wait flag to block until VS Code closes the diff, ensuring files
+    are fully read before cleanup. An atexit handler is registered as a safety
+    fallback to clean up temporary files if the process exits unexpectedly.
+
     Args:
         file_path: The target file path (used for naming and syntax highlighting).
         before_content: The original content (before changes).
         after_content: The new content (after changes).
-        wait: If True, wait for VS Code window to close before returning.
+        wait: Deprecated parameter, kept for backwards compatibility. --wait is always used.
 
     Returns:
         True if VS Code was opened successfully, False otherwise.
@@ -55,6 +60,16 @@ def open_diff_in_vscode(
     temp_dir = Path(tempfile.mkdtemp(prefix="deepagents_diff_"))
     temp_dir.mkdir(parents=True, exist_ok=True)
 
+    # Register atexit handler for cleanup as a safety fallback
+    def cleanup_temp_dir():
+        try:
+            shutil.rmtree(temp_dir)
+        except OSError:
+            # Ignore errors during cleanup
+            pass
+
+    atexit.register(cleanup_temp_dir)
+
     try:
         # Create temporary files with appropriate names
         before_file = temp_dir / f"{file_path.stem}_BEFORE{extension}"
@@ -64,14 +79,11 @@ def open_diff_in_vscode(
         before_file.write_text(before_content, encoding="utf-8")
         after_file.write_text(after_content, encoding="utf-8")
 
-        # Build VS Code command
-        cmd = ["code", "--diff", str(before_file), str(after_file)]
+        # Build VS Code command with --wait flag to block until VS Code closes
+        # This ensures files are fully read before cleanup
+        cmd = ["code", "--wait", "--diff", str(before_file), str(after_file)]
 
-        # Add --wait flag if requested
-        if wait:
-            cmd.insert(1, "--wait")
-
-        # Open diff in VS Code
+        # Open diff in VS Code (blocks until user closes the diff)
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -91,16 +103,15 @@ def open_diff_in_vscode(
         console.print(f"[yellow]Error opening VS Code diff: {e}[/yellow]")
         return False
     finally:
-        # Clean up temporary files (unless VS Code is still using them)
-        if not wait:
-            # Small delay to allow VS Code to read files
-            import time
-            time.sleep(0.5)
-            try:
-                shutil.rmtree(temp_dir)
-            except OSError:
-                # If cleanup fails, files will be cleaned up by OS eventually
-                pass
+        # Clean up temporary files immediately after VS Code closes
+        # (--wait ensures VS Code has finished reading the files)
+        try:
+            shutil.rmtree(temp_dir)
+            # Unregister atexit handler since we cleaned up successfully
+            atexit.unregister(cleanup_temp_dir)
+        except OSError:
+            # If cleanup fails, atexit handler will attempt cleanup on process exit
+            pass
 
 
 def open_file_in_vscode(file_path: str | Path) -> bool:

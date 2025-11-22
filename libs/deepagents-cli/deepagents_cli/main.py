@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -138,7 +139,7 @@ async def simple_cli(
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
     no_splash: bool = False,
-):
+) -> None:
     """Main CLI loop.
 
     Args:
@@ -205,10 +206,19 @@ async def simple_cli(
         )
         console.print()
 
-    console.print(
-        "  Tips: Enter to submit, Alt+Enter for newline, Ctrl+E for editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt",
-        style=f"dim {COLORS['dim']}",
-    )
+    # Localize modifier names and show key symbols (macOS vs others)
+    if sys.platform == "darwin":
+        tips = (
+            "  Tips: ⏎ Enter to submit, ⌥ Option + ⏎ Enter for newline (or Esc+Enter), "
+            "⌃E to open editor, ⌃T to toggle auto-approve, ⌃C to interrupt"
+        )
+    else:
+        tips = (
+            "  Tips: Enter to submit, Alt+Enter (or Esc+Enter) for newline, "
+            "Ctrl+E to open editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt"
+        )
+    console.print(tips, style=f"dim {COLORS['dim']}")
+
     console.print()
 
     # Create prompt session and token tracker
@@ -265,7 +275,7 @@ async def _run_agent_session(
     sandbox_backend=None,
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
-):
+) -> None:
     """Helper to create agent and run CLI session.
 
     Extracted to avoid duplication between sandbox and local modes.
@@ -291,7 +301,7 @@ async def _run_agent_session(
     from .agent import get_system_prompt
     from .token_utils import calculate_baseline_tokens
 
-    agent_dir = Path.home() / ".deepagents" / assistant_id
+    agent_dir = settings.get_agent_dir(assistant_id)
     system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, assistant_id)
 
@@ -313,7 +323,7 @@ async def main(
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
-):
+) -> None:
     """Main entry point with conditional sandbox support.
 
     Args:
@@ -373,6 +383,11 @@ async def main(
 
 def cli_main() -> None:
     """Entry point for console script."""
+    # Fix for gRPC fork issue on macOS
+    # https://github.com/grpc/grpc/issues/37642
+    if sys.platform == "darwin":
+        os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
     # Check dependencies first
     check_cli_dependencies()
 

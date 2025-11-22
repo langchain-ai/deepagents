@@ -2,7 +2,7 @@
 
 import pytest
 
-from deepagents_cli.skills.commands import _validate_skill_name, _validate_skill_path
+from deepagents_cli.skills.commands import _validate_name, _validate_skill_path
 
 
 class TestValidateSkillName:
@@ -20,7 +20,7 @@ class TestValidateSkillName:
             "skill_with_underscores",
         ]
         for name in valid_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert is_valid, f"Valid name '{name}' was rejected: {error}"
             assert error == ""
 
@@ -37,7 +37,7 @@ class TestValidateSkillName:
             "..",
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Malicious name '{name}' was accepted"
             assert error != ""
             assert ".." in error or "traversal" in error.lower()
@@ -51,7 +51,7 @@ class TestValidateSkillName:
             "/tmp/exploit",
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Absolute path '{name}' was accepted"
             assert error != ""
 
@@ -64,7 +64,7 @@ class TestValidateSkillName:
             "parent\\child",
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Path with separator '{name}' was accepted"
             assert error != ""
 
@@ -91,7 +91,7 @@ class TestValidateSkillName:
             'skill"quote',  # double quote
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Invalid character in '{name}' was accepted"
             assert error != ""
 
@@ -104,7 +104,7 @@ class TestValidateSkillName:
             "\n",
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Empty/whitespace name '{name}' was accepted"
             assert error != ""
 
@@ -183,7 +183,7 @@ class TestIntegrationSecurity:
 
         for skill_name, attack_type in attack_vectors:
             # First, name validation should catch it
-            is_valid_name, name_error = _validate_skill_name(skill_name)
+            is_valid_name, name_error = _validate_name(skill_name)
 
             if is_valid_name:
                 # If name validation doesn't catch it, path validation must

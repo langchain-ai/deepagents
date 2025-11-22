@@ -298,13 +298,10 @@ def create_agent_with_config(
         agent_md.write_text(source_content)
 
     # Skills directory - per-agent (user-level)
-    skills_dir = agent_dir / "skills"
-    skills_dir.mkdir(parents=True, exist_ok=True)
+    skills_dir = settings.ensure_user_skills_dir(assistant_id)
 
     # Project-level skills directory (if in a project)
-    project_skills_dir = None
-    if settings.project_root:
-        project_skills_dir = settings.project_root / ".deepagents" / "skills"
+    project_skills_dir = settings.get_project_skills_dir()
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:

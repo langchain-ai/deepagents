@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+from deepagents.backends.utils import perform_string_replacement
+
 # Unix-only terminal control modules (not available on Windows)
 try:
     import termios
@@ -89,18 +91,25 @@ def prompt_for_tool_approval(
                     except (OSError, UnicodeDecodeError):
                         before_content = ""
 
-                # Apply the edit to get after_content
+                # Apply the edit to get after_content with validation
                 old_string = str(args.get("old_string", ""))
                 new_string = str(args.get("new_string", ""))
                 replace_all = args.get("replace_all", False)
 
-                if replace_all:
-                    after_content = before_content.replace(old_string, new_string)
-                else:
-                    after_content = before_content.replace(old_string, new_string, 1)
+                # Use perform_string_replacement to validate and apply the edit
+                # This ensures the diff preview matches what will actually be applied
+                replacement = perform_string_replacement(before_content, old_string, new_string, replace_all)
 
-            # Open diff in VS Code
-            if before_content or after_content:
+                # If replacement failed, skip VS Code diff preview
+                if isinstance(replacement, str):
+                    # replacement is an error message - don't show diff for invalid edits
+                    after_content = None
+                else:
+                    # replacement is (after_content, occurrences) tuple
+                    after_content, occurrences = replacement
+
+            # Open diff in VS Code (skip if validation failed)
+            if after_content is not None and (before_content or after_content):
                 success = open_diff_in_vscode(
                     Path(file_path_str),
                     before_content,

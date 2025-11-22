@@ -101,12 +101,14 @@ def prompt_for_tool_approval(
 
             # Open diff in VS Code
             if before_content or after_content:
-                open_diff_in_vscode(
+                success = open_diff_in_vscode(
                     Path(file_path_str),
                     before_content,
                     after_content,
                     wait=False,
                 )
+                # open_diff_in_vscode prints its own error messages
+                # Silent failure is acceptable for this optional preview feature
 
     body_lines = []
     if preview:

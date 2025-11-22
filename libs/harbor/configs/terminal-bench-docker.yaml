@@ -1,0 +1,40 @@
+# Harbor Configuration for Terminal Bench 2.0
+#
+# Run all tasks:
+#   harbor run --config configs/terminal-bench.yaml -d terminal-bench@2.0 --env daytona
+#
+# Run single task:
+#   harbor run --config configs/terminal-bench.yaml -d terminal-bench@2.0 --task-name prove-plus-comm --env daytona
+#
+# Or use pure CLI (no config file):
+#   harbor run \
+#     -d terminal-bench@2.0 \
+#     --agent-import-path harbor_deepagents.agents.deepagent_harbor:DeepAgentHarbor \
+#     -m anthropic/claude-sonnet-4-5-20250929 \
+#     --task-name prove-plus-comm \
+#     --env daytona
+
+job_name: deepagent-terminal-bench-docker
+
+agents:
+  - import_path: harbor_deepagents.agents.deepagent_harbor:DeepAgentHarbor
+    model_name: openai/gpt-5-mini
+    kwargs:
+      max_iterations: 500
+      temperature: 0.0
+      verbose: true
+
+n_attempts: 2
+
+orchestrator:
+  type: local
+  n_concurrent_trials: 2  # run trials simultaenously, beware of local resource consumption
+  quiet: false
+  retry:
+    max_retries: 0
+    min_wait_sec: 1
+    max_wait_sec: 60
+    wait_multiplier: 2
+
+environment:
+  type: docker  # 'docker' for local 'daytona' for cloud environments (requires DAYTONA_API_KEY)

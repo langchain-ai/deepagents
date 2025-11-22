@@ -1,0 +1,51 @@
+# Harbor Job Configuration for DeepAgents
+# Run with: harbor run --config configs/job.yaml
+
+# Job metadata
+job_name: deepagents-web-scraper
+
+# Tasks to evaluate
+tasks:
+  - path: tasks/web-scraper-task
+
+# Agent configuration using import_path
+# This allows Harbor to load our custom agent without modifying core code
+agents:
+  - import_path: harbor_deepagents.agents.deepagent_harbor:DeepAgentHarbor
+    model_name: openai/gpt-5-mini  # Can also use: sonnet-4.5, openai/gpt-4o, etc.
+    kwargs:
+      max_iterations: 100
+      temperature: 0.0
+      verbose: true
+
+# Number of attempts per task-agent combination
+n_attempts: 1
+
+# Orchestrator configuration (local execution)
+orchestrator:
+  type: local
+  n_concurrent_trials: 1
+  quiet: false
+  retry:
+    max_retries: 0
+    min_wait_sec: 1
+    max_wait_sec: 60
+    wait_multiplier: 2
+
+# Environment configuration
+# Options: docker (local), modal (cloud), e2b, daytona, runloop
+# environment:
+#   type: daytona  # Changed from docker to daytona
+#   force_build: false
+#   delete: false
+
+environment:
+  type: docker
+
+# Timeout multiplier (applies to all timeouts)
+timeout_multiplier: 1.0
+
+# Metrics to compute
+metrics:
+  - type: mean
+    kwargs: {}

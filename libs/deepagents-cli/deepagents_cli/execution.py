@@ -433,7 +433,9 @@ async def execute_task(
                                 # For now, skip it or handle minimally
 
                         # Handle tool call chunks
-                        elif block_type == "tool_call_chunk":
+                        # Some models (OpenAI, Anthropic) stream tool_call_chunks
+                        # Others (Gemini) don't stream them and just return the full tool_call
+                        elif block_type in ("tool_call_chunk", "tool_call"):
                             chunk_name = block.get("name")
                             chunk_args = block.get("args")
                             chunk_id = block.get("id")

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -364,6 +365,11 @@ async def main(
 
 def cli_main() -> None:
     """Entry point for console script."""
+    # Fix for gRPC fork issue on macOS
+    # https://github.com/grpc/grpc/issues/37642
+    if sys.platform == "darwin":
+        os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
     # Check dependencies first
     check_cli_dependencies()
 

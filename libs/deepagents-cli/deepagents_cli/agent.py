@@ -11,6 +11,7 @@ from deepagents.backends.sandbox import SandboxBackendProtocol
 from langchain.agents.middleware import (
     HostExecutionPolicy,
     InterruptOnConfig,
+    ShellToolMiddleware,
 )
 from langchain.agents.middleware.types import AgentState
 from langchain.messages import ToolCall
@@ -20,7 +21,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
-from deepagents_cli._internal import ResumableShellToolMiddleware
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
@@ -319,7 +319,7 @@ def create_agent_with_config(
                 assistant_id=assistant_id,
                 project_skills_dir=project_skills_dir,
             ),
-            ResumableShellToolMiddleware(
+            ShellToolMiddleware(
                 workspace_root=os.getcwd(),
                 execution_policy=HostExecutionPolicy(),
                 env=os.environ,

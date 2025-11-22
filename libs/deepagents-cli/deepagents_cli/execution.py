@@ -3,8 +3,14 @@
 import asyncio
 import json
 import sys
-import termios
-import tty
+
+# Unix-only terminal control modules (not available on Windows)
+try:
+    import termios
+    import tty
+    HAS_TERMIOS = True
+except ImportError:
+    HAS_TERMIOS = False
 
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
@@ -22,7 +28,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 from deepagents_cli.config import COLORS, console
-from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
+from deepagents_cli.file_ops import FileOpTracker, build_approval_preview, resolve_physical_path
 from deepagents_cli.input import parse_file_mentions
 from deepagents_cli.ui import (
     TokenTracker,
@@ -32,6 +38,7 @@ from deepagents_cli.ui import (
     render_file_operation,
     render_todo_list,
 )
+from deepagents_cli.vscode_integration import open_diff_in_vscode
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 
@@ -39,8 +46,14 @@ _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 def prompt_for_tool_approval(
     action_request: ActionRequest,
     assistant_id: str | None,
+    vscode_diff_preview: bool = False,
 ) -> Decision | dict:
     """Prompt user to approve/reject a tool action with arrow key navigation.
+
+    Args:
+        action_request: The action request to approve.
+        assistant_id: The assistant ID for path resolution.
+        vscode_diff_preview: If True, open diff in VS Code before prompting.
 
     Returns:
         Decision (ApproveDecision or RejectDecision) OR
@@ -50,6 +63,50 @@ def prompt_for_tool_approval(
     name = action_request["name"]
     args = action_request["args"]
     preview = build_approval_preview(name, args, assistant_id) if name else None
+
+    # If VS Code diff preview is enabled and this is a file operation, open diff in VS Code
+    if vscode_diff_preview and name in {"write_file", "edit_file"} and preview:
+        file_path_str = str(args.get("file_path") or args.get("path") or "")
+        if file_path_str:
+            physical_path = resolve_physical_path(file_path_str, assistant_id)
+
+            # Get before and after content
+            if name == "write_file":
+                before_content = ""
+                if physical_path and physical_path.exists():
+                    try:
+                        before_content = physical_path.read_text()
+                    except (OSError, UnicodeDecodeError):
+                        before_content = ""
+                after_content = str(args.get("content", ""))
+
+            elif name == "edit_file":
+                before_content = ""
+                if physical_path and physical_path.exists():
+                    try:
+                        before_content = physical_path.read_text()
+                    except (OSError, UnicodeDecodeError):
+                        before_content = ""
+
+                # Apply the edit to get after_content
+                old_string = str(args.get("old_string", ""))
+                new_string = str(args.get("new_string", ""))
+                replace_all = args.get("replace_all", False)
+
+                if replace_all:
+                    after_content = before_content.replace(old_string, new_string)
+                else:
+                    after_content = before_content.replace(old_string, new_string, 1)
+
+            # Open diff in VS Code
+            if before_content or after_content:
+                from pathlib import Path
+                open_diff_in_vscode(
+                    Path(file_path_str),
+                    before_content,
+                    after_content,
+                    wait=False,
+                )
 
     body_lines = []
     if preview:
@@ -77,86 +134,99 @@ def prompt_for_tool_approval(
     options = ["approve", "reject", "auto-accept all going forward"]
     selected = 0  # Start with approve selected
 
-    try:
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-
+    if HAS_TERMIOS:
         try:
-            tty.setraw(fd)
-            # Hide cursor during menu interaction
-            sys.stdout.write("\033[?25l")
-            sys.stdout.flush()
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
 
-            # Initial render flag
-            first_render = True
-
-            while True:
-                if not first_render:
-                    # Move cursor back to start of menu (up 3 lines, then to start of line)
-                    sys.stdout.write("\033[3A\r")
-
-                first_render = False
-
-                # Display options vertically with ANSI color codes
-                for i, option in enumerate(options):
-                    sys.stdout.write("\r\033[K")  # Clear line from cursor to end
-
-                    if i == selected:
-                        if option == "approve":
-                            # Green bold with filled checkbox
-                            sys.stdout.write("\033[1;32m☑ Approve\033[0m\n")
-                        elif option == "reject":
-                            # Red bold with filled checkbox
-                            sys.stdout.write("\033[1;31m☑ Reject\033[0m\n")
-                        else:
-                            # Blue bold with filled checkbox for auto-accept
-                            sys.stdout.write("\033[1;34m☑ Auto-accept all going forward\033[0m\n")
-                    elif option == "approve":
-                        # Dim with empty checkbox
-                        sys.stdout.write("\033[2m☐ Approve\033[0m\n")
-                    elif option == "reject":
-                        # Dim with empty checkbox
-                        sys.stdout.write("\033[2m☐ Reject\033[0m\n")
-                    else:
-                        # Dim with empty checkbox
-                        sys.stdout.write("\033[2m☐ Auto-accept all going forward\033[0m\n")
-
+            try:
+                tty.setraw(fd)
+                # Hide cursor during menu interaction
+                sys.stdout.write("\033[?25l")
                 sys.stdout.flush()
 
-                # Read key
-                char = sys.stdin.read(1)
+                # Initial render flag
+                first_render = True
 
-                if char == "\x1b":  # ESC sequence (arrow keys)
-                    next1 = sys.stdin.read(1)
-                    next2 = sys.stdin.read(1)
-                    if next1 == "[":
-                        if next2 == "B":  # Down arrow
-                            selected = (selected + 1) % len(options)
-                        elif next2 == "A":  # Up arrow
-                            selected = (selected - 1) % len(options)
-                elif char in {"\r", "\n"}:  # Enter
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
-                    break
-                elif char == "\x03":  # Ctrl+C
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
-                    raise KeyboardInterrupt
-                elif char.lower() == "a":
-                    selected = 0
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
-                    break
-                elif char.lower() == "r":
-                    selected = 1
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
-                    break
+                while True:
+                    if not first_render:
+                        # Move cursor back to start of menu (up 3 lines, then to start of line)
+                        sys.stdout.write("\033[3A\r")
 
-        finally:
-            # Show cursor again
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    first_render = False
 
-    except (termios.error, AttributeError):
-        # Fallback for non-Unix systems
+                    # Display options vertically with ANSI color codes
+                    for i, option in enumerate(options):
+                        sys.stdout.write("\r\033[K")  # Clear line from cursor to end
+
+                        if i == selected:
+                            if option == "approve":
+                                # Green bold with filled checkbox
+                                sys.stdout.write("\033[1;32m☑ Approve\033[0m\n")
+                            elif option == "reject":
+                                # Red bold with filled checkbox
+                                sys.stdout.write("\033[1;31m☑ Reject\033[0m\n")
+                            else:
+                                # Blue bold with filled checkbox for auto-accept
+                                sys.stdout.write("\033[1;34m☑ Auto-accept all going forward\033[0m\n")
+                        elif option == "approve":
+                            # Dim with empty checkbox
+                            sys.stdout.write("\033[2m☐ Approve\033[0m\n")
+                        elif option == "reject":
+                            # Dim with empty checkbox
+                            sys.stdout.write("\033[2m☐ Reject\033[0m\n")
+                        else:
+                            # Dim with empty checkbox
+                            sys.stdout.write("\033[2m☐ Auto-accept all going forward\033[0m\n")
+
+                    sys.stdout.flush()
+
+                    # Read key
+                    char = sys.stdin.read(1)
+
+                    if char == "\x1b":  # ESC sequence (arrow keys)
+                        next1 = sys.stdin.read(1)
+                        next2 = sys.stdin.read(1)
+                        if next1 == "[":
+                            if next2 == "B":  # Down arrow
+                                selected = (selected + 1) % len(options)
+                            elif next2 == "A":  # Up arrow
+                                selected = (selected - 1) % len(options)
+                    elif char in {"\r", "\n"}:  # Enter
+                        sys.stdout.write("\r\n")  # Move to start of line and add newline
+                        break
+                    elif char == "\x03":  # Ctrl+C
+                        sys.stdout.write("\r\n")  # Move to start of line and add newline
+                        raise KeyboardInterrupt
+                    elif char.lower() == "a":
+                        selected = 0
+                        sys.stdout.write("\r\n")  # Move to start of line and add newline
+                        break
+                    elif char.lower() == "r":
+                        selected = 1
+                        sys.stdout.write("\r\n")  # Move to start of line and add newline
+                        break
+
+            finally:
+                # Show cursor again
+                sys.stdout.write("\033[?25h")
+                sys.stdout.flush()
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+        except (termios.error, AttributeError):
+            # Fallback for non-Unix systems
+            console.print("  ☐ (A)pprove  (default)")
+            console.print("  ☐ (R)eject")
+            console.print("  ☐ (Auto)-accept all going forward")
+            choice = input("\nChoice (A/R/Auto, default=Approve): ").strip().lower()
+            if choice in {"r", "reject"}:
+                selected = 1
+            elif choice in {"auto", "auto-accept"}:
+                selected = 2
+            else:
+                selected = 0
+    else:
+        # Fallback for Windows (no termios available)
         console.print("  ☐ (A)pprove  (default)")
         console.print("  ☐ (R)eject")
         console.print("  ☐ (Auto)-accept all going forward")
@@ -569,6 +639,7 @@ async def execute_task(
                             decision = prompt_for_tool_approval(
                                 action_request,
                                 assistant_id,
+                                vscode_diff_preview=session_state.vscode_diff_preview,
                             )
 
                             # Check if user wants to switch to auto-approve mode

@@ -29,7 +29,7 @@ class TestAgentMemoryMiddleware:
         non_project_dir.mkdir()
 
         # Change to non-project directory for test
-        original_cwd = os.getcwd()
+        original_cwd = Path.cwd()
         try:
             os.chdir(non_project_dir)
 
@@ -67,7 +67,7 @@ class TestAgentMemoryMiddleware:
         project_md = project_root / ".deepagents" / "agent.md"
         project_md.write_text("Project instructions")
 
-        original_cwd = os.getcwd()
+        original_cwd = Path.cwd()
         try:
             os.chdir(project_root)
 

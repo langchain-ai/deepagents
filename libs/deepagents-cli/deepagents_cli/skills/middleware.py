@@ -184,8 +184,8 @@ class SkillsMiddleware(AgentMiddleware):
 
     def before_agent(
         self,
-        state: SkillsState,
-        runtime,
+        _state: SkillsState,
+        _runtime,
     ) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution.
 

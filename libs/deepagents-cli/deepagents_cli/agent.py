@@ -69,7 +69,8 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 
         if not source_md.exists():
             console.print(
-                f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found or has no agent.md"
+                f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
+                "or has no agent.md"
             )
             return
 
@@ -187,19 +188,23 @@ The todo list is a planning tool - use it judiciously to avoid overwhelming the 
     )
 
 
-def _format_write_file_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_write_file_description(
+    tool_call: ToolCall, _state: AgentState, _runtime: Runtime
+) -> str:
     """Format write_file tool call for approval prompt."""
     args = tool_call["args"]
     file_path = args.get("file_path", "unknown")
     content = args.get("content", "")
 
-    action = "Overwrite" if os.path.exists(file_path) else "Create"
+    action = "Overwrite" if Path(file_path).exists() else "Create"
     line_count = len(content.splitlines())
 
     return f"File: {file_path}\nAction: {action} file\nLines: {line_count}"
 
 
-def _format_edit_file_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_edit_file_description(
+    tool_call: ToolCall, _state: AgentState, _runtime: Runtime
+) -> str:
     """Format edit_file tool call for approval prompt."""
     args = tool_call["args"]
     file_path = args.get("file_path", "unknown")
@@ -211,7 +216,9 @@ def _format_edit_file_description(tool_call: ToolCall, state: AgentState, runtim
     )
 
 
-def _format_web_search_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_web_search_description(
+    tool_call: ToolCall, _state: AgentState, _runtime: Runtime
+) -> str:
     """Format web_search tool call for approval prompt."""
     args = tool_call["args"]
     query = args.get("query", "unknown")
@@ -220,7 +227,9 @@ def _format_web_search_description(tool_call: ToolCall, state: AgentState, runti
     return f"Query: {query}\nMax results: {max_results}\n\n⚠️  This will use Tavily API credits"
 
 
-def _format_fetch_url_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_fetch_url_description(
+    tool_call: ToolCall, _state: AgentState, _runtime: Runtime
+) -> str:
     """Format fetch_url tool call for approval prompt."""
     args = tool_call["args"]
     url = args.get("url", "unknown")
@@ -229,7 +238,7 @@ def _format_fetch_url_description(tool_call: ToolCall, state: AgentState, runtim
     return f"URL: {url}\nTimeout: {timeout}s\n\n⚠️  Will fetch and convert web content to markdown"
 
 
-def _format_task_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_task_description(tool_call: ToolCall, _state: AgentState, _runtime: Runtime) -> str:
     """Format task (subagent) tool call for approval prompt.
 
     The task tool signature is: task(description: str, subagent_type: str)
@@ -254,14 +263,14 @@ def _format_task_description(tool_call: ToolCall, state: AgentState, runtime: Ru
     )
 
 
-def _format_shell_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_shell_description(tool_call: ToolCall, _state: AgentState, _runtime: Runtime) -> str:
     """Format shell tool call for approval prompt."""
     args = tool_call["args"]
     command = args.get("command", "N/A")
-    return f"Shell Command: {command}\nWorking Directory: {os.getcwd()}"
+    return f"Shell Command: {command}\nWorking Directory: {Path.cwd()}"
 
 
-def _format_execute_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
+def _format_execute_description(tool_call: ToolCall, _state: AgentState, _runtime: Runtime) -> str:
     """Format execute tool call for approval prompt."""
     args = tool_call["args"]
     command = args.get("command", "N/A")
@@ -367,7 +376,7 @@ def create_agent_with_config(
                 project_skills_dir=project_skills_dir,
             ),
             ShellToolMiddleware(
-                workspace_root=os.getcwd(),
+                workspace_root=str(Path.cwd()),
                 execution_policy=HostExecutionPolicy(),
                 env=os.environ,
             ),

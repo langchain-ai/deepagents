@@ -42,7 +42,7 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
     Yields:
         tuple: (working_directory: Path, console_output: str)
     """
-    original_dir = os.getcwd()
+    original_dir = Path.cwd()
     os.chdir(tmp_path)
 
     # Capture console output
@@ -69,35 +69,37 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
 
             # Mock console to capture output
             # Use patch.object() to fail immediately if attributes don't exist
-            with patch.object(main_module, "console", captured_console):
-                with patch.object(config_module, "console", captured_console):
-                    # Import after patching
-                    from deepagents_cli.agent import create_agent_with_config
-                    from deepagents_cli.config import create_model
+            with (
+                patch.object(main_module, "console", captured_console),
+                patch.object(config_module, "console", captured_console),
+            ):
+                # Import after patching
+                from deepagents_cli.agent import create_agent_with_config
+                from deepagents_cli.config import create_model
 
-                    # Create real agent with real model (will use env var or fail gracefully)
-                    model = create_model()
-                    agent, backend = create_agent_with_config(
-                        model=model,
-                        assistant_id="test_agent",
-                        tools=[],
-                        sandbox=None,
-                        sandbox_type=None,
-                    )
+                # Create real agent with real model (will use env var or fail gracefully)
+                model = create_model()
+                agent, backend = create_agent_with_config(
+                    model=model,
+                    assistant_id="test_agent",
+                    tools=[],
+                    sandbox=None,
+                    sandbox_type=None,
+                )
 
-                    # Create session state with auto-approve
-                    session_state = SessionState(auto_approve=True)
+                # Create session state with auto-approve
+                session_state = SessionState(auto_approve=True)
 
-                    # Run the CLI
-                    await simple_cli(
-                        agent=agent,
-                        assistant_id="test_agent",
-                        session_state=session_state,
-                        baseline_tokens=0,
-                        backend=backend,
-                        sandbox_type=None,
-                        setup_script_path=None,
-                    )
+                # Run the CLI
+                await simple_cli(
+                    agent=agent,
+                    assistant_id="test_agent",
+                    session_state=session_state,
+                    baseline_tokens=0,
+                    backend=backend,
+                    sandbox_type=None,
+                    setup_script_path=None,
+                )
 
             # Verify that our mocks were actually used (ensures patching worked)
             mock_prompt.assert_called_once()

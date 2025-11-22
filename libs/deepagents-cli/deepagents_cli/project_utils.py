@@ -18,7 +18,7 @@ def find_project_root(start_path: Path | None = None) -> Path | None:
     current = Path(start_path or Path.cwd()).resolve()
 
     # Walk up the directory tree
-    for parent in [current] + list(current.parents):
+    for parent in [current, *list(current.parents)]:
         git_dir = parent / ".git"
         if git_dir.exists():
             return parent

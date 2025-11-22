@@ -3,9 +3,12 @@
 try:
     import runloop_api_client
 except ImportError:
-    raise ImportError(
+    msg = (
         "runloop_api_client package is required for RunloopBackend. "
         "Install with `pip install runloop_api_client`."
+    )
+    raise ImportError(
+        msg
     )
 
 import os
@@ -37,12 +40,14 @@ class RunloopBackend(BaseSandbox):
                          (defaults to RUNLOOP_API_KEY environment variable)
         """
         if client and api_key:
-            raise ValueError("Provide either client or bearer_token, not both.")
+            msg = "Provide either client or bearer_token, not both."
+            raise ValueError(msg)
 
         if client is None:
             api_key = api_key or os.environ.get("RUNLOOP_API_KEY", None)
             if api_key is None:
-                raise ValueError("Either client or bearer_token must be provided.")
+                msg = "Either client or bearer_token must be provided."
+                raise ValueError(msg)
             client = Runloop(bearer_token=api_key)
 
         self._client = client

@@ -132,7 +132,7 @@ async def simple_cli(
     backend=None,
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
-):
+) -> None:
     """Main CLI loop.
 
     Args:
@@ -266,7 +266,7 @@ async def _run_agent_session(
     sandbox_backend=None,
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
-):
+) -> None:
     """Helper to create agent and run CLI session.
 
     Extracted to avoid duplication between sandbox and local modes.
@@ -313,7 +313,7 @@ async def main(
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
-):
+) -> None:
     """Main entry point with conditional sandbox support.
 
     Args:

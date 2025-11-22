@@ -1,5 +1,6 @@
 """Middleware for loading agent-specific long-term memory into the system prompt."""
 
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict, cast
 
@@ -231,19 +232,15 @@ class AgentMemoryMiddleware(AgentMiddleware):
         if "user_memory" not in state:
             user_path = self.settings.get_user_agent_md_path(self.assistant_id)
             if user_path.exists():
-                try:
+                with contextlib.suppress(OSError, UnicodeDecodeError):
                     result["user_memory"] = user_path.read_text()
-                except (OSError, UnicodeDecodeError):
-                    pass
 
         # Load project memory if not already in state
         if "project_memory" not in state:
             project_path = self.settings.get_project_agent_md_path()
             if project_path and project_path.exists():
-                try:
+                with contextlib.suppress(OSError, UnicodeDecodeError):
                     result["project_memory"] = project_path.read_text()
-                except (OSError, UnicodeDecodeError):
-                    pass
 
         return result
 

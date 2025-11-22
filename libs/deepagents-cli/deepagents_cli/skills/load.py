@@ -24,8 +24,10 @@ description: Structured approach to conducting thorough web research
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Maximum size for SKILL.md files (10MB)
 MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024

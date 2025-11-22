@@ -184,7 +184,7 @@ async def execute_task(
     session_state,
     token_tracker: TokenTracker | None = None,
     backend=None,
-):
+) -> None:
     """Execute any task by passing it directly to the AI agent."""
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
@@ -282,7 +282,7 @@ async def execute_task(
                 if not isinstance(chunk, tuple) or len(chunk) != 3:
                     continue
 
-                namespace, current_stream_mode, data = chunk
+                _namespace, current_stream_mode, data = chunk
 
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
@@ -331,7 +331,7 @@ async def execute_task(
                     if not isinstance(data, tuple) or len(data) != 2:
                         continue
 
-                    message, metadata = data
+                    message, _metadata = data
 
                     if isinstance(message, HumanMessage):
                         content = message.text
@@ -585,7 +585,7 @@ async def execute_task(
 
                                 # Approve this action and all remaining actions in the batch
                                 decisions.append({"type": "approve"})
-                                for remaining_action in hitl_request["action_requests"][
+                                for _remaining_action in hitl_request["action_requests"][
                                     action_index + 1 :
                                 ]:
                                     decisions.append({"type": "approve"})

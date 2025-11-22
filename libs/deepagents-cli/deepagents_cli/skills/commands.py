@@ -33,7 +33,7 @@ def _validate_name(name: str) -> tuple[bool, str]:
         return False, "name cannot contain '..' (path traversal)"
 
     # Check for absolute paths
-    if name.startswith("/") or name.startswith("\\"):
+    if name.startswith(("/", "\\")):
         return False, "name cannot be an absolute path"
 
     # Check for path separators

@@ -75,7 +75,7 @@ def _find_project_root(start_path: Path | None = None) -> Path | None:
     current = Path(start_path or Path.cwd()).resolve()
 
     # Walk up the directory tree
-    for parent in [current] + list(current.parents):
+    for parent in [current, *list(current.parents)]:
         git_dir = parent / ".git"
         if git_dir.exists():
             return parent
@@ -236,9 +236,12 @@ class Settings:
             Path to ~/.deepagents/{agent_name}
         """
         if not self._is_valid_agent_name(agent_name):
-            raise ValueError(
+            msg = (
                 f"Invalid agent name: {agent_name!r}. "
                 "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
+            )
+            raise ValueError(
+                msg
             )
         return Path.home() / ".deepagents" / agent_name
 
@@ -252,9 +255,12 @@ class Settings:
             Path to ~/.deepagents/{agent_name}
         """
         if not self._is_valid_agent_name(agent_name):
-            raise ValueError(
+            msg = (
                 f"Invalid agent name: {agent_name!r}. "
                 "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
+            )
+            raise ValueError(
+                msg
             )
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)

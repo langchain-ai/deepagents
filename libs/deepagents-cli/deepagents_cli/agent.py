@@ -29,7 +29,7 @@ from deepagents_cli.skills import SkillsMiddleware
 
 def list_agents() -> None:
     """List all available agents."""
-    agents_dir = Path.home() / ".deepagents"
+    agents_dir = settings.user_deepagents_dir
 
     if not agents_dir.exists() or not any(agents_dir.iterdir()):
         console.print("[yellow]No agents found.[/yellow]")
@@ -60,7 +60,7 @@ def list_agents() -> None:
 
 def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     """Reset an agent to default or copy from another agent."""
-    agents_dir = Path.home() / ".deepagents"
+    agents_dir = settings.user_deepagents_dir
     agent_dir = agents_dir / agent_name
 
     if source_agent:
@@ -290,8 +290,7 @@ def create_agent_with_config(
         2-tuple of graph and backend
     """
     # Setup agent directory for persistent memory (same for both local and remote modes)
-    agent_dir = Path.home() / ".deepagents" / assistant_id
-    agent_dir.mkdir(parents=True, exist_ok=True)
+    agent_dir = settings.ensure_agent_dir(assistant_id)
     agent_md = agent_dir / "agent.md"
     if not agent_md.exists():
         source_content = get_default_coding_instructions()

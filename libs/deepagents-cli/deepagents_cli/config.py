@@ -184,6 +184,15 @@ class Settings:
         """Check if currently in a git project."""
         return self.project_root is not None
 
+    @property
+    def user_deepagents_dir(self) -> Path:
+        """Get the base user-level .deepagents directory.
+
+        Returns:
+            Path to ~/.deepagents
+        """
+        return Path.home() / ".deepagents"
+
     def get_user_agent_md_path(self, agent_name: str) -> Path:
         """Get user-level agent.md path for a specific agent.
 

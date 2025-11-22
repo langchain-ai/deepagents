@@ -292,7 +292,7 @@ async def _run_agent_session(
     from .agent import get_system_prompt
     from .token_utils import calculate_baseline_tokens
 
-    agent_dir = Path.home() / ".deepagents" / assistant_id
+    agent_dir = settings.get_agent_dir(assistant_id)
     system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, assistant_id)
 

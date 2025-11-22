@@ -216,16 +216,6 @@ def list_skills(
     Returns:
         Merged list of skill metadata from both sources, with project skills
         taking precedence over user skills when names conflict.
-
-    Example:
-        ```python
-        from pathlib import Path
-        from deepagents_cli.skills.load import list_skills
-
-        user_dir = Path.home() / ".deepagents" / "agent" / "skills"
-        project_dir = Path.cwd() / ".deepagents" / "skills"
-        skills = list_skills(user_dir, project_dir)
-        ```
     """
     all_skills: dict[str, SkillMetadata] = {}
 

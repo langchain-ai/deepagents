@@ -10,6 +10,8 @@ from typing import Any, Literal
 from deepagents.backends.protocol import BACKEND_TYPES
 from deepagents.backends.utils import perform_string_replacement
 
+from deepagents_cli.config import settings
+
 FileOpStatus = Literal["pending", "success", "error"]
 
 
@@ -118,7 +120,7 @@ def resolve_physical_path(path_str: str | None, assistant_id: str | None) -> Pat
         return None
     try:
         if assistant_id and path_str.startswith("/memories/"):
-            agent_dir = Path.home() / ".deepagents" / assistant_id
+            agent_dir = settings.get_agent_dir(assistant_id)
             suffix = path_str.removeprefix("/memories/").lstrip("/")
             return (agent_dir / suffix).resolve()
         path = Path(path_str)

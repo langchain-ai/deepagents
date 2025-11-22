@@ -103,6 +103,145 @@ class TestAgentMemoryMiddleware:
         # Should return empty dict (no updates)
         assert result == {}
 
+    def test_load_agents_md_single_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test loading a single AGENTS.md file."""
+        # Mock Path.home() to return tmp_path
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+        # Create user agent directory
+        agent_dir = tmp_path / ".deepagents" / "test_agent"
+        agent_dir.mkdir(parents=True)
+
+        # Create project with .git
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+
+        # Create a subdirectory
+        subdir = project_root / "subdir"
+        subdir.mkdir()
+
+        # Create AGENTS.md in subdir
+        agents_md = subdir / "AGENTS.md"
+        agents_md.write_text("# Build Instructions\n\nRun `npm install` to install dependencies.")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(subdir)
+
+            # Create settings (project detected from subdir)
+            test_settings = Settings.from_environment(start_path=subdir)
+
+            # Create middleware
+            middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
+
+            # Simulate before_agent call
+            state = {}
+            result = middleware.before_agent(state, None)
+
+            assert "agents_md_memory" in result
+            assert "Build Instructions" in result["agents_md_memory"]
+            assert "npm install" in result["agents_md_memory"]
+        finally:
+            os.chdir(original_cwd)
+
+    def test_load_agents_md_hierarchical(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test loading multiple AGENTS.md files hierarchically."""
+        # Mock Path.home() to return tmp_path
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+        # Create user agent directory
+        agent_dir = tmp_path / ".deepagents" / "test_agent"
+        agent_dir.mkdir(parents=True)
+
+        # Create project with .git
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+
+        # Create nested structure
+        packages = project_root / "packages"
+        packages.mkdir()
+
+        pkg_a = packages / "pkg-a"
+        pkg_a.mkdir()
+
+        # Create AGENTS.md at both levels
+        packages_agents_md = packages / "AGENTS.md"
+        packages_agents_md.write_text("# Monorepo Instructions\n\nThis is a monorepo.")
+
+        pkg_a_agents_md = pkg_a / "AGENTS.md"
+        pkg_a_agents_md.write_text("# Package A Instructions\n\nThis is package A.")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(pkg_a)
+
+            # Create settings (project detected from pkg_a)
+            test_settings = Settings.from_environment(start_path=pkg_a)
+
+            # Create middleware
+            middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
+
+            # Simulate before_agent call
+            state = {}
+            result = middleware.before_agent(state, None)
+
+            assert "agents_md_memory" in result
+            # Should contain both files' content
+            assert "Package A Instructions" in result["agents_md_memory"]
+            assert "Monorepo Instructions" in result["agents_md_memory"]
+            # Files should be separated by horizontal rule
+            assert "---" in result["agents_md_memory"]
+        finally:
+            os.chdir(original_cwd)
+
+    def test_load_all_three_memory_types(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test loading user memory, project memory, and AGENTS.md together."""
+        # Mock Path.home() to return tmp_path
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+        # Create user agent directory with agent.md
+        agent_dir = tmp_path / ".deepagents" / "test_agent"
+        agent_dir.mkdir(parents=True)
+        user_md = agent_dir / "agent.md"
+        user_md.write_text("User preferences")
+
+        # Create project with .git and project agent.md
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        (project_root / ".deepagents").mkdir()
+        project_md = project_root / ".deepagents" / "agent.md"
+        project_md.write_text("Project preferences")
+
+        # Create AGENTS.md
+        agents_md = project_root / "src" / "AGENTS.md"
+        agents_md.parent.mkdir()
+        agents_md.write_text("# Agent Configuration\n\nUse TypeScript.")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(agents_md.parent)
+
+            # Create settings
+            test_settings = Settings.from_environment(start_path=agents_md.parent)
+
+            # Create middleware
+            middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
+
+            # Simulate before_agent call
+            state = {}
+            result = middleware.before_agent(state, None)
+
+            # All three types should be loaded
+            assert result["user_memory"] == "User preferences"
+            assert result["project_memory"] == "Project preferences"
+            assert "agents_md_memory" in result
+            assert "Agent Configuration" in result["agents_md_memory"]
+        finally:
+            os.chdir(original_cwd)
+
 
 class TestSkillsPathResolution:
     """Test skills path resolution with per-agent structure."""

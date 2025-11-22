@@ -85,6 +85,54 @@ agent = create_deep_agent(
 
 See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
 
+### AGENTS.md Support
+
+DeepAgents CLI automatically loads [AGENTS.md](https://agents.md/) configuration files, a standardized format for providing AI coding agents with project-specific context and instructions. This feature works alongside the existing `agent.md` files:
+
+**What is AGENTS.md?**
+- An open-source standard for AI agent configuration (20,000+ projects use it)
+- Provides build steps, tests, coding conventions, and project-specific guidance
+- Works across multiple AI coding agents (Cursor, Aider, GitHub Copilot, etc.)
+
+**How it works in deepagents:**
+- Automatically discovers AGENTS.md files hierarchically from your current directory
+- Supports monorepos: nested AGENTS.md files provide subproject-specific context
+- Combines with user and project `agent.md` files for comprehensive agent configuration
+- Files are loaded from most specific (current directory) to least specific (near project root)
+
+**Example structure:**
+```
+my-project/
+├── AGENTS.md                  # Not loaded (at project root)
+├── packages/
+│   ├── AGENTS.md             # Loaded: General package guidelines
+│   └── package-a/
+│       ├── AGENTS.md         # Loaded: Package A specific instructions
+│       └── src/              # ← You are here
+```
+
+When working in `packages/package-a/src/`, the agent automatically loads both AGENTS.md files (from `package-a` and `packages`), combining them with your personal and project agent.md preferences.
+
+**Creating an AGENTS.md file:**
+```markdown
+# Project Name
+
+## Build
+Run `npm install` to install dependencies.
+Run `npm run build` to build the project.
+
+## Testing
+Run `npm test` to run the test suite.
+All tests must pass before committing.
+
+## Code Style
+- Use TypeScript for all new code
+- Follow the existing code style
+- Add JSDoc comments for public APIs
+```
+
+No configuration needed - just create an AGENTS.md file and deepagents will automatically include it in the agent's context.
+
 ### `tools`
 
 Provide custom tools to your agent (in addition to [Built-in Tools](#built-in-tools)):

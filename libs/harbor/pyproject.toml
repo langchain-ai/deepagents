@@ -1,6 +1,6 @@
 [project]
 name = "deepagents-harbor"
-version = "0.1.0"
+version = "0.0.1"
 description = "Harbor integration with LangChain DeepAgents and LangSmith tracing"
 readme = "README.md"
 requires-python = ">=3.12"

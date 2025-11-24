@@ -1,5 +1,3 @@
-import json
-
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
 from langchain_core.messages import (
@@ -125,7 +123,7 @@ class TestFilesystemMiddleware:
         result = ls_tool.invoke(
             {"runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}), "path": "/"}
         )
-        assert json.loads(result) == ["/test.txt", "/test2.txt"]
+        assert result == str(["/test.txt", "/test2.txt"])
 
     def test_ls_shortterm_with_path(self):
         state = FilesystemState(
@@ -161,7 +159,7 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        result = json.loads(result_raw)
+        result = result_raw
         # ls should only return files directly in /pokemon/, not in subdirectories
         assert "/pokemon/test2.txt" in result
         assert "/pokemon/charmander.txt" in result
@@ -204,7 +202,7 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        result = json.loads(result_raw)
+        result = result_raw
         # ls should list both files and directories at root level
         assert "/test.txt" in result
         assert "/pokemon/" in result
@@ -248,13 +246,9 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        result = json.loads(result_raw)
+        result = result_raw
         # Standard glob: *.py only matches files in root directory, not subdirectories
-        assert "/test.py" in result
-        assert "/test.txt" not in result
-        assert "/pokemon/charmander.py" not in result
-        assert len(result) == 1
-        assert result[0] == "/test.py"
+        assert result == str(["/test.py"])
 
     def test_glob_search_shortterm_wildcard_pattern(self):
         state = FilesystemState(
@@ -285,7 +279,7 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        result = json.loads(result_raw)
+        result = result_raw
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
         assert "/tests/test_main.py" in result
@@ -320,7 +314,7 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        result = json.loads(result_raw)
+        result = result_raw
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" not in result
         assert "/tests/test_main.py" not in result
@@ -354,7 +348,7 @@ class TestFilesystemMiddleware:
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        result = json.loads(result_raw)
+        result = result_raw
         assert "/test.py" in result
         assert "/test.pyi" in result
         assert "/test.txt" not in result
@@ -379,7 +373,7 @@ class TestFilesystemMiddleware:
             }
         )
         print(glob_search_tool)
-        assert json.loads(result) == []
+        assert result == str([])
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -407,13 +401,14 @@ class TestFilesystemMiddleware:
         )
 
         # Result should be truncated
-        result = json.loads(result_raw)
-        assert isinstance(result, list)
-        assert len(result) < 2000  # Should be truncated to fewer files
+        result = result_raw
+        assert isinstance(result, str)
+        assert len(result.split(", ")) < 2000  # Should be truncated to fewer files
         # Last element should be the truncation message
         from deepagents.backends.utils import TRUNCATION_GUIDANCE
 
-        assert result[-1] == TRUNCATION_GUIDANCE
+        # Need to do the :-2 to account for the wrapping list characters
+        assert result[:-2].endswith(TRUNCATION_GUIDANCE)
 
     def test_grep_search_shortterm_files_with_matches(self):
         state = FilesystemState(

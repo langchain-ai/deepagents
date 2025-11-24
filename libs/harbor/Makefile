@@ -20,9 +20,12 @@ test_integration:
 test_watch:
 	uv run ptw . -- $(TEST_FILE)
 
-run_harbor:
-	harbor run --agent-import-path harbor_deepagents.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp
 
+# Use runloop for now -- works without async
+#run:
+#	harbor run --agent-import-path harbor_deepagents.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env runloop
+run:
+	harbor run --agent-import-path harbor_deepagents.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env docker
 
 ######################
 # LINTING AND FORMATTING

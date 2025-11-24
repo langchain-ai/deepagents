@@ -20,11 +20,10 @@ from harbor.models.trajectories import (
 from langchain.chat_models import init_chat_model
 from langchain.messages import UsageMetadata
 from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
-from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 
 from deepagents import create_deep_agent
-from harbor_deepagents.agents.backend import HarborSandbox
+from harbor_deepagents.agents.backend import HarborSandbox, HarborSandbox2
 
 
 class DeepAgentsWrapper(BaseAgent):
@@ -94,7 +93,7 @@ class DeepAgentsWrapper(BaseAgent):
             environment: Harbor environment (Docker, Modal, etc.)
             context: Context to populate with metrics
         """
-        backend = HarborSandbox(environment)
+        backend = HarborSandbox2(environment)
         deep_agent = create_deep_agent(
             model=self._model,
             backend=backend
@@ -281,9 +280,6 @@ class DeepAgentsWrapper(BaseAgent):
             context.n_input_tokens = trajectory.final_metrics.total_prompt_tokens
             context.n_output_tokens = trajectory.final_metrics.total_completion_tokens
             context.cost_usd = trajectory.final_metrics.total_cost_usd
-
-    def _process_message(self, msg: BaseMessage) -> None:
-        """Process LangChain messages into ATIF trajectory steps."""
 
     def _update_token_usage(self, usage_metadata: UsageMetadata) -> None:
         """Update token usage from message metadata."""

@@ -326,11 +326,13 @@ def _ls_tool_generator(
     tool_description = custom_description or LIST_FILES_TOOL_DESCRIPTION
 
     @tool(description=tool_description)
-    def ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> list[str]:
+    def ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
         resolved_backend = _get_backend(backend, runtime)
         validated_path = _validate_path(path)
         infos = resolved_backend.ls_info(validated_path)
-        return [fi.get("path", "") for fi in infos]
+        paths = [fi.get("path", "") for fi in infos]
+        result = truncate_if_too_long(paths)
+        return str(result)
 
     return ls
 
@@ -470,10 +472,12 @@ def _glob_tool_generator(
     tool_description = custom_description or GLOB_TOOL_DESCRIPTION
 
     @tool(description=tool_description)
-    def glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> list[str]:
+    def glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
         resolved_backend = _get_backend(backend, runtime)
         infos = resolved_backend.glob_info(pattern, path=path)
-        return [fi.get("path", "") for fi in infos]
+        paths = [fi.get("path", "") for fi in infos]
+        result = truncate_if_too_long(paths)
+        return str(result)
 
     return glob
 

@@ -260,8 +260,22 @@ class FileOpTracker:
             tool_call_id=tool_call_id,
             args=args,
         )
-        if tool_name in {"write_file", "edit_file"} and record.physical_path:
-            record.before_content = _safe_read(record.physical_path) or ""
+        if tool_name in {"write_file", "edit_file"}:
+            if self.backend and path_str:
+                try:
+                    responses = self.backend.download_files([path_str])
+                    if (
+                        responses
+                        and responses[0].content is not None
+                        and responses[0].error is None
+                    ):
+                        record.before_content = responses[0].content.decode("utf-8")
+                    else:
+                        record.before_content = ""
+                except Exception:
+                    record.before_content = ""
+            elif record.physical_path:
+                record.before_content = _safe_read(record.physical_path) or ""
         self.active[tool_call_id] = record
 
     def update_args(self, tool_call_id: str, args: dict[str, Any]) -> None:
@@ -278,7 +292,20 @@ class FileOpTracker:
             if path_str:
                 record.display_path = format_display_path(path_str)
                 record.physical_path = resolve_physical_path(path_str, self.assistant_id)
-                if record.physical_path:
+                if self.backend:
+                    try:
+                        responses = self.backend.download_files([path_str])
+                        if (
+                            responses
+                            and responses[0].content is not None
+                            and responses[0].error is None
+                        ):
+                            record.before_content = responses[0].content.decode("utf-8")
+                        else:
+                            record.before_content = ""
+                    except Exception:
+                        record.before_content = ""
+                elif record.physical_path:
                     record.before_content = _safe_read(record.physical_path) or ""
 
     def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:
@@ -390,9 +417,15 @@ class FileOpTracker:
             try:
                 file_path = record.args.get("file_path") or record.args.get("path")
                 if file_path:
-                    result = self.backend.read(file_path)
-                    # BackendProtocol.read() returns error string starting with "Error:" on failure
-                    record.after_content = None if result.startswith("Error:") else result
+                    responses = self.backend.download_files([file_path])
+                    if (
+                        responses
+                        and responses[0].content is not None
+                        and responses[0].error is None
+                    ):
+                        record.after_content = responses[0].content.decode("utf-8")
+                    else:
+                        record.after_content = None
                 else:
                     record.after_content = None
             except Exception:

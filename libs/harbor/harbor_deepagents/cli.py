@@ -174,9 +174,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         console.print(f"[red]Config file not found: {config_path}[/]")
         sys.exit(1)
 
-    dataset = args.dataset or (
-        TERMINAL_BENCH_DATASET if args.suite == "terminal-bench" else None
-    )
+    dataset = args.dataset or (TERMINAL_BENCH_DATASET if args.suite == "terminal-bench" else None)
 
     model = determine_model(args.model)
     os.environ["MODEL_NAME"] = model
@@ -235,9 +233,7 @@ def generate_job_name(config_path: Path, task_name: Optional[str], model: str) -
     task_segment = task_name or "all-tasks"
     model_segment = model.split("/")[-1]
     slug = "-".join(
-        _slugify(segment)
-        for segment in (base, task_segment, model_segment, timestamp)
-        if segment
+        _slugify(segment) for segment in (base, task_segment, model_segment, timestamp) if segment
     )
     return slug or f"harbor-job-{timestamp}"
 
@@ -282,11 +278,7 @@ def send_feedback_for_job(job_name: Optional[str]) -> None:
         if not run_id:
             continue
 
-        reward = (
-            trial_result.get("verifier_result", {})
-            .get("rewards", {})
-            .get("reward")
-        )
+        reward = trial_result.get("verifier_result", {}).get("rewards", {}).get("reward")
         if reward is None:
             continue
 

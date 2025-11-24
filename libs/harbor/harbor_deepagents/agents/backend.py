@@ -5,8 +5,6 @@ import base64
 import shlex
 import threading
 
-from harbor.environments.base import BaseEnvironment
-
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
@@ -16,6 +14,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.sandbox import BaseSandbox
+from harbor.environments.base import BaseEnvironment
 
 _loop = asyncio.new_event_loop()
 

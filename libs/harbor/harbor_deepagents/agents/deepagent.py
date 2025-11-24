@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from deepagents import create_deep_agent
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -19,11 +20,10 @@ from harbor.models.trajectories import (
 )
 from langchain.chat_models import init_chat_model
 from langchain.messages import UsageMetadata
-from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from deepagents import create_deep_agent
-from harbor_deepagents.agents.backend import HarborSandbox, HarborSandboxFallback
+from harbor_deepagents.agents.backend import HarborSandboxFallback
 
 
 class DeepAgentsWrapper(BaseAgent):
@@ -57,10 +57,6 @@ class DeepAgentsWrapper(BaseAgent):
         self._environment: BaseEnvironment | None = None
         self._model = init_chat_model(model_name, temperature=temperature)
 
-        self._total_prompt_tokens = 0
-        self._total_completion_tokens = 0
-        self._total_cost = 0.0
-
         # LangSmith run tracking for feedback
         self._langsmith_run_id: str | None = None
         self._task_name: str | None = None
@@ -93,11 +89,13 @@ class DeepAgentsWrapper(BaseAgent):
             environment: Harbor environment (Docker, Modal, etc.)
             context: Context to populate with metrics
         """
+        # Track token usage and cost for this run
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_cost = 0.0
+
         backend = HarborSandboxFallback(environment)
-        deep_agent = create_deep_agent(
-            model=self._model,
-            backend=backend
-        )
+        deep_agent = create_deep_agent(model=self._model, backend=backend)
 
         config: RunnableConfig = {
             "run_name": f"harbor-deepagent-{self._session_id[:8]}",
@@ -112,7 +110,7 @@ class DeepAgentsWrapper(BaseAgent):
 
         # Invoke deep agent with LangSmith tracing
         result = await deep_agent.ainvoke(
-            {"messages": [{"role": "user", "content": instruction}]}, # type: ignore
+            {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
             config=config,
         )
 
@@ -129,15 +127,20 @@ class DeepAgentsWrapper(BaseAgent):
                 step_id=2,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 source="user",
-                message=instruction
-            )
+                message=instruction,
+            ),
         ]
 
         observations = []
         pending_step: Step | None = None
 
-        for msg in result['messages']:
+        for msg in result["messages"]:
             if isinstance(msg, AIMessage):
+                # Extract usage metadata from AIMessage
+                if hasattr(msg, "usage_metadata") and msg.usage_metadata:
+                    usage: UsageMetadata = msg.usage_metadata
+                    total_prompt_tokens += usage.input_tokens
+                    total_completion_tokens += usage.output_tokens
                 # If there's a pending step with tool calls, add it now with observations
                 if pending_step is not None:
                     if pending_step.tool_calls and observations:
@@ -151,16 +154,16 @@ class DeepAgentsWrapper(BaseAgent):
                 atf_tool_calls = []
                 message = ""
                 for cb in msg.content_blocks:
-                    if cb['type'] == "text":
-                        message += cb['text']
-                    elif cb['type'] == "reasoning":
-                        message += cb['reasoning']
+                    if cb["type"] == "text":
+                        message += cb["text"]
+                    elif cb["type"] == "reasoning":
+                        message += cb["reasoning"]
                     elif cb["type"] == "tool_call":
                         atf_tool_calls.append(
                             ToolCall(
-                                tool_call_id=cb['id'],
-                                function_name=cb['name'],
-                                arguments=cb['args']
+                                tool_call_id=cb["id"],
+                                function_name=cb["name"],
+                                arguments=cb["args"],
                             )
                         )
                     else:
@@ -204,51 +207,19 @@ class DeepAgentsWrapper(BaseAgent):
                 pending_step.observation = Observation(results=observations)
             steps.append(pending_step)
 
-
-
-        # # Store task name for feedback
-        # self._task_name = instruction[:100]  # Truncate for readability
-        #
-        # # Query LangSmith to get the run_id by searching for our unique run_name
-        # self._langsmith_run_id = self._session_id  # Default fallback
-        #
-        # if os.getenv("LANGCHAIN_TRACING_V2"):
-        #     client = Client()
-        #     project_name = os.getenv("LANGCHAIN_PROJECT", "default")
-        #     run_name = f"harbor-deepagent-{self._session_id[:8]}"
-        #     # Search by exact run_name which is unique
-        #     runs = list(client.list_runs(
-        #         project_name=project_name,
-        #         filter=f'eq(name, "{run_name}")',
-        #         limit=1,
-        #     ))
-        #     if runs:
-        #         self._langsmith_run_id = str(runs[0].id)
-        #         if self._verbose:
-        #             print(f"✓ Found LangSmith run_id: {self._langsmith_run_id}")
-        #
-
-        ### Extract messages from result
-        ###
-        ### # Extract final output
-        ### final_message = self._extract_final_message(messages) or "Task completed"
-        ### last_step = self._trajectory_steps[-1] if self._trajectory_steps else None
-        ### if not (
-        ###     last_step
-        ###     and last_step.source == "agent"
-        ###     and (last_step.message or "").strip() == final_message.strip()
-        ### ):
-        ###     self._add_step(
-        ###         source="agent",
-        ###         message=final_message,
-        ###     )
+        # Calculate total cost
+        if total_prompt_tokens > 0 or total_completion_tokens > 0:
+            total_cost = _get_cost(
+                self._model_name,
+                total_prompt_tokens,
+                total_completion_tokens,
+            )
 
         # Build and save trajectory
-
         final_metrics = FinalMetrics(
-            total_prompt_tokens=self._total_prompt_tokens or None,
-            total_completion_tokens=self._total_completion_tokens or None,
-            total_cost_usd=self._total_cost or None,
+            total_prompt_tokens=total_prompt_tokens or None,
+            total_completion_tokens=total_completion_tokens or None,
+            total_cost_usd=total_cost or None,
             total_steps=len(steps),
         )
 
@@ -262,7 +233,6 @@ class DeepAgentsWrapper(BaseAgent):
                 extra={
                     "framework": "deepagents",
                     "langchain_version": "1.0+",
-                    "langsmith_run_id": self._langsmith_run_id,  # Store for feedback
                 },
             ),
             steps=steps,
@@ -272,42 +242,36 @@ class DeepAgentsWrapper(BaseAgent):
         trajectory_path = self.logs_dir / "trajectory.json"
         trajectory_path.write_text(json.dumps(trajectory.to_json_dict(), indent=2))
 
-        if self._verbose:
-            print(f"✓ Trajectory saved to {trajectory_path}")
 
-        # Populate context with metrics
-        if trajectory.final_metrics:
-            context.n_input_tokens = trajectory.final_metrics.total_prompt_tokens
-            context.n_output_tokens = trajectory.final_metrics.total_completion_tokens
-            context.cost_usd = trajectory.final_metrics.total_cost_usd
+def _get_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
+    """Calculate cost based on model name and token usage.
 
-    def _update_token_usage(self, usage_metadata: UsageMetadata) -> None:
-        """Update token usage from message metadata."""
-        input_tokens = usage_metadata.get("input_tokens", 0)
-        output_tokens = usage_metadata.get("output_tokens", 0)
+    Args:
+        model_name: The model identifier (e.g., 'openai/gpt-4o', 'anthropic:claude-sonnet-4-5')
+        input_tokens: Number of input tokens
+        output_tokens: Number of output tokens
 
-        self._total_prompt_tokens += input_tokens
-        self._total_completion_tokens += output_tokens
-
-        # Estimate cost based on model provider
-        if self._model_name.startswith("openai/") or self._model_name.startswith("gpt-"):
-            # OpenAI pricing (approximate, as of Nov 2025)
-            if "gpt-5-mini" in self._model_name or "gpt-4o-mini" in self._model_name:
-                # Mini models: $0.15 per 1M input, $0.60 per 1M output
-                input_cost = input_tokens * 0.00000015
-                output_cost = output_tokens * 0.0000006
-            elif "gpt-5" in self._model_name or "gpt-4o" in self._model_name:
-                # Standard models: $2.50 per 1M input, $10 per 1M output
-                input_cost = input_tokens * 0.0000025
-                output_cost = output_tokens * 0.00001
-            else:
-                # Default OpenAI pricing
-                input_cost = input_tokens * 0.0000015
-                output_cost = output_tokens * 0.000006
+    Returns:
+        Total cost in USD
+    """
+    if model_name.startswith("openai/") or model_name.startswith("gpt-"):
+        # OpenAI pricing (approximate, as of Nov 2025)
+        if "gpt-5-mini" in model_name or "gpt-4o-mini" in model_name:
+            # Mini models: $0.15 per 1M input, $0.60 per 1M output
+            input_cost = input_tokens * 0.00000015
+            output_cost = output_tokens * 0.0000006
+        elif "gpt-5" in model_name or "gpt-4o" in model_name:
+            # Standard models: $2.50 per 1M input, $10 per 1M output
+            input_cost = input_tokens * 0.0000025
+            output_cost = output_tokens * 0.00001
         else:
-            # Anthropic pricing (Claude Sonnet)
-            # $3 per 1M input, $15 per 1M output
-            input_cost = input_tokens * 0.000003
-            output_cost = output_tokens * 0.000015
+            # Default OpenAI pricing
+            input_cost = input_tokens * 0.0000015
+            output_cost = output_tokens * 0.000006
+    else:
+        # Anthropic pricing (Claude Sonnet)
+        # $3 per 1M input, $15 per 1M output
+        input_cost = input_tokens * 0.000003
+        output_cost = output_tokens * 0.000015
 
-        self._total_cost += input_cost + output_cost
+    return input_cost + output_cost

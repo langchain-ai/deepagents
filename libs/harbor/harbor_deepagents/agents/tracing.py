@@ -3,8 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any
-from typing import Optional
+from typing import Any, Optional
 
 from langsmith import Client
 
@@ -82,7 +81,6 @@ def get_langsmith_url(run_id: str) -> str:
     """
     project_name = os.getenv("LANGCHAIN_PROJECT", "default")
     return f"https://smith.langchain.com/o/default/projects/p/{project_name}/r/{run_id}"
-
 
 
 class LangSmithTrajectoryExporter:

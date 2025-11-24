@@ -92,7 +92,6 @@ class DeepAgentsWrapper(BaseAgent):
         # Track token usage and cost for this run
         total_prompt_tokens = 0
         total_completion_tokens = 0
-        total_cost = 0.0
 
         backend = HarborSandboxFallback(environment)
         deep_agent = create_deep_agent(model=self._model, backend=backend)
@@ -137,10 +136,10 @@ class DeepAgentsWrapper(BaseAgent):
         for msg in result["messages"]:
             if isinstance(msg, AIMessage):
                 # Extract usage metadata from AIMessage
-                if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                    usage: UsageMetadata = msg.usage_metadata
-                    total_prompt_tokens += usage.input_tokens
-                    total_completion_tokens += usage.output_tokens
+                usage: UsageMetadata = msg.usage_metadata
+                if usage:
+                    total_prompt_tokens += usage['input_tokens']
+                    total_completion_tokens += usage['output_tokens']
                 # If there's a pending step with tool calls, add it now with observations
                 if pending_step is not None:
                     if pending_step.tool_calls and observations:
@@ -207,19 +206,10 @@ class DeepAgentsWrapper(BaseAgent):
                 pending_step.observation = Observation(results=observations)
             steps.append(pending_step)
 
-        # Calculate total cost
-        if total_prompt_tokens > 0 or total_completion_tokens > 0:
-            total_cost = _get_cost(
-                self._model_name,
-                total_prompt_tokens,
-                total_completion_tokens,
-            )
-
         # Build and save trajectory
         final_metrics = FinalMetrics(
             total_prompt_tokens=total_prompt_tokens or None,
             total_completion_tokens=total_completion_tokens or None,
-            total_cost_usd=total_cost or None,
             total_steps=len(steps),
         )
 
@@ -241,37 +231,3 @@ class DeepAgentsWrapper(BaseAgent):
 
         trajectory_path = self.logs_dir / "trajectory.json"
         trajectory_path.write_text(json.dumps(trajectory.to_json_dict(), indent=2))
-
-
-def _get_cost(model_name: str, input_tokens: int, output_tokens: int) -> float:
-    """Calculate cost based on model name and token usage.
-
-    Args:
-        model_name: The model identifier (e.g., 'openai/gpt-4o', 'anthropic:claude-sonnet-4-5')
-        input_tokens: Number of input tokens
-        output_tokens: Number of output tokens
-
-    Returns:
-        Total cost in USD
-    """
-    if model_name.startswith("openai/") or model_name.startswith("gpt-"):
-        # OpenAI pricing (approximate, as of Nov 2025)
-        if "gpt-5-mini" in model_name or "gpt-4o-mini" in model_name:
-            # Mini models: $0.15 per 1M input, $0.60 per 1M output
-            input_cost = input_tokens * 0.00000015
-            output_cost = output_tokens * 0.0000006
-        elif "gpt-5" in model_name or "gpt-4o" in model_name:
-            # Standard models: $2.50 per 1M input, $10 per 1M output
-            input_cost = input_tokens * 0.0000025
-            output_cost = output_tokens * 0.00001
-        else:
-            # Default OpenAI pricing
-            input_cost = input_tokens * 0.0000015
-            output_cost = output_tokens * 0.000006
-    else:
-        # Anthropic pricing (Claude Sonnet)
-        # $3 per 1M input, $15 per 1M output
-        input_cost = input_tokens * 0.000003
-        output_cost = output_tokens * 0.000015
-
-    return input_cost + output_cost

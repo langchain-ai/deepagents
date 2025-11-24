@@ -136,8 +136,8 @@ class DeepAgentsWrapper(BaseAgent):
                 # Extract usage metadata from AIMessage
                 usage: UsageMetadata = msg.usage_metadata
                 if usage:
-                    total_prompt_tokens += usage['input_tokens']
-                    total_completion_tokens += usage['output_tokens']
+                    total_prompt_tokens += usage["input_tokens"]
+                    total_completion_tokens += usage["output_tokens"]
                 # If there's a pending step with tool calls, add it now with observations
                 if pending_step is not None:
                     if pending_step.tool_calls and observations:

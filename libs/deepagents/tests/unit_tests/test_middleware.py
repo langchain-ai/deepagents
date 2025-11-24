@@ -1,3 +1,5 @@
+import json
+
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
 from langchain_core.messages import (
@@ -123,7 +125,7 @@ class TestFilesystemMiddleware:
         result = ls_tool.invoke(
             {"runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}), "path": "/"}
         )
-        assert result == ["/test.txt", "/test2.txt"]
+        assert json.loads(result) == ["/test.txt", "/test2.txt"]
 
     def test_ls_shortterm_with_path(self):
         state = FilesystemState(
@@ -153,12 +155,13 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        result = ls_tool.invoke(
+        result_raw = ls_tool.invoke(
             {
                 "path": "/pokemon/",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
+        result = json.loads(result_raw)
         # ls should only return files directly in /pokemon/, not in subdirectories
         assert "/pokemon/test2.txt" in result
         assert "/pokemon/charmander.txt" in result
@@ -195,12 +198,13 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
-        result = ls_tool.invoke(
+        result_raw = ls_tool.invoke(
             {
                 "path": "/",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
+        result = json.loads(result_raw)
         # ls should list both files and directories at root level
         assert "/test.txt" in result
         assert "/pokemon/" in result
@@ -238,12 +242,13 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         print(glob_search_tool)
-        result = glob_search_tool.invoke(
+        result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.py",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
+        result = json.loads(result_raw)
         # Standard glob: *.py only matches files in root directory, not subdirectories
         assert "/test.py" in result
         assert "/test.txt" not in result
@@ -274,12 +279,13 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = glob_search_tool.invoke(
+        result_raw = glob_search_tool.invoke(
             {
                 "pattern": "**/*.py",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
+        result = json.loads(result_raw)
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" in result
         assert "/tests/test_main.py" in result
@@ -307,13 +313,14 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = glob_search_tool.invoke(
+        result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.py",
                 "path": "/src",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
+        result = json.loads(result_raw)
         assert "/src/main.py" in result
         assert "/src/utils/helper.py" not in result
         assert "/tests/test_main.py" not in result
@@ -341,12 +348,13 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = glob_search_tool.invoke(
+        result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.{py,pyi}",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
+        result = json.loads(result_raw)
         assert "/test.py" in result
         assert "/test.pyi" in result
         assert "/test.txt" not in result
@@ -371,7 +379,7 @@ class TestFilesystemMiddleware:
             }
         )
         print(glob_search_tool)
-        assert result == []
+        assert json.loads(result) == []
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -391,7 +399,7 @@ class TestFilesystemMiddleware:
         state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        result = glob_search_tool.invoke(
+        result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.txt",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
@@ -399,6 +407,7 @@ class TestFilesystemMiddleware:
         )
 
         # Result should be truncated
+        result = json.loads(result_raw)
         assert isinstance(result, list)
         assert len(result) < 2000  # Should be truncated to fewer files
         # Last element should be the truncation message

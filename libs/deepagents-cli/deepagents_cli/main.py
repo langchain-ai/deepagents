@@ -126,6 +126,11 @@ def parse_args():
         action="store_true",
         help="Disable the startup splash screen",
     )
+    parser.add_argument(
+        "--vscode-diff",
+        action="store_true",
+        help="Enable VS Code diff preview for code changes (requires VS Code CLI)",
+    )
 
     return parser.parse_args()
 
@@ -404,7 +409,11 @@ def cli_main() -> None:
             execute_skills_command(args)
         else:
             # Create session state from args
-            session_state = SessionState(auto_approve=args.auto_approve, no_splash=args.no_splash)
+            session_state = SessionState(
+                auto_approve=args.auto_approve,
+                no_splash=args.no_splash,
+                vscode_diff_preview=args.vscode_diff,
+            )
 
             # API key validation happens in create_model()
             asyncio.run(

@@ -115,6 +115,51 @@ deepagents skills create my-skill
 deepagents skills info web-research
 ```
 
+## VS Code Diff Preview
+
+The CLI supports optional VS Code integration to preview code changes as side-by-side diffs before approval.
+
+### Requirements
+
+- VS Code installed with the `code` command in your PATH
+- Enable via `--vscode-diff` flag when starting the CLI
+
+### Usage
+
+Start the CLI with VS Code diff preview enabled:
+
+```bash
+deepagents --vscode-diff
+```
+
+### How It Works
+
+When the agent suggests file changes (write_file or edit_file operations):
+
+1. VS Code automatically opens showing a side-by-side diff
+2. You can review the changes in VS Code with full syntax highlighting and editor features
+3. Return to the terminal to approve or reject the changes
+4. Temporary files are automatically cleaned up
+
+### Benefits
+
+- **Visual Feedback**: See proposed changes with syntax highlighting and editor context
+- **Editor Features**: Use VS Code's search, navigation, and inspection tools while reviewing
+- **Side-by-Side Comparison**: Clearly see what's being added, removed, or modified
+- **Faster Review**: Review changes in your familiar editor environment
+
+### Example
+
+```bash
+# Start CLI with VS Code diff preview
+deepagents --vscode-diff
+
+# When agent suggests a file change:
+# 1. VS Code opens with diff view
+# 2. Terminal shows approval prompt
+# 3. Review in VS Code, then approve/reject in terminal
+```
+
 ## Development
 
 ### Running Tests

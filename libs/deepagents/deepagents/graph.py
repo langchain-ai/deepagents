@@ -98,6 +98,18 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
 
+    if (
+        model.profile is not None
+        and isinstance(model.profile, dict)
+        and "max_input_tokens" in model.profile
+        and isinstance(model.profile["max_input_tokens"], int)
+    ):
+        trigger = ("fraction", 0.85)
+        keep = ("fraction", 0.10)
+    else:
+        trigger = ("tokens", 170000)
+        keep = ("messages", 6)
+
     deepagent_middleware = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
@@ -110,8 +122,9 @@ def create_deep_agent(
                 FilesystemMiddleware(backend=backend),
                 SummarizationMiddleware(
                     model=model,
-                    max_tokens_before_summary=170000,
-                    messages_to_keep=6,
+                    trigger=trigger,
+                    keep=keep,
+                    trim_tokens_to_summarize=None,
                 ),
                 AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
                 PatchToolCallsMiddleware(),
@@ -121,8 +134,9 @@ def create_deep_agent(
         ),
         SummarizationMiddleware(
             model=model,
-            max_tokens_before_summary=170000,
-            messages_to_keep=6,
+            trigger=trigger,
+            keep=keep,
+            trim_tokens_to_summarize=None,
         ),
         AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
         PatchToolCallsMiddleware(),

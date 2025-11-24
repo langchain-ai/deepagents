@@ -127,15 +127,15 @@ View traces at https://smith.langchain.com - Harbor reward scores are automatica
 
 ## Customizing Your Agent
 
-**System Prompt:** Edit [src/harbor_deepagents/agents/prompts.py](src/harbor_deepagents/agents/prompts.py).
+**System Prompt:** Edit [src/deepagents_harbor/agents/prompts.py](src/deepagents_harbor/agents/prompts.py).
 
 **Model:** Update `model_name` inside [configs/job.yaml](configs/job.yaml) (or any Harbor config).
 - OpenAI: `openai/gpt-5-mini`, `openai/gpt-4o`
 - Anthropic: `anthropic/claude-sonnet-4-5-20250929`
 
 **Drop-in custom agent:**
-1. Start from [src/harbor_deepagents/agents/custom_agent.py](src/harbor_deepagents/agents/custom_agent.py). It subclasses `DeepAgentHarbor` but lets you swap prompts or override methods without touching the base harness.
-2. Point your Harbor config at `harbor_deepagents.agents.custom_agent:CustomDeepAgent`. The stock [configs/job.yaml](configs/job.yaml) includes comments showing where to flip the `import_path`.
+1. Start from [src/deepagents_harbor/agents/custom_agent.py](src/deepagents_harbor/agents/custom_agent.py). It subclasses `DeepAgentHarbor` but lets you swap prompts or override methods without touching the base harness.
+2. Point your Harbor config at `deepagents_harbor.agents.custom_agent:CustomDeepAgent`. The stock [configs/job.yaml](configs/job.yaml) includes comments showing where to flip the `import_path`.
 3. Iterate entirely in-source: run `uv run harness --config configs/job.yaml --dry-run` to verify Harbor resolves the agent, then drop `--dry-run` to execute tasks. LangSmith tracing keeps working so long as your `.env` provides the usual keys.
 
 ## Creating Custom Tasks

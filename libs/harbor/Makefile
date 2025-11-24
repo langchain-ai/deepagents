@@ -23,16 +23,16 @@ test_watch:
 
 # Use runloop for now -- works without async
 #run:
-#	harbor run --agent-import-path harbor_deepagents.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env runloop
+#	harbor run --agent-import-path deepagents_harbor.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env runloop
 run:
-	harbor run --agent-import-path harbor_deepagents.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env docker
+	harbor run --agent-import-path deepagents_harbor.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env docker
 
 ######################
 # LINTING AND FORMATTING
 ######################
 
 # Define a variable for Python and notebook files.
-lint format: PYTHON_FILES=harbor_deepagents/ tests/
+lint format: PYTHON_FILES=deepagents_harbor/ tests/
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
 
 lint lint_diff:

@@ -14,7 +14,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 from dotenv import load_dotenv
 from rich.console import Console
 
-from harbor_deepagents.agents.tracing import send_harbor_feedback
+from deepagents_harbor.agents.tracing import send_harbor_feedback
 
 console = Console()
 

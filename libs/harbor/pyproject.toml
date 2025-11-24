@@ -1,5 +1,5 @@
 [project]
-name = "harbor-deepagents"
+name = "deepagents-harbor"
 version = "0.1.0"
 description = "Harbor integration with LangChain DeepAgents and LangSmith tracing"
 readme = "README.md"
@@ -35,19 +35,17 @@ test = [
 ]
 
 [project.scripts]
-harness = "harbor_deepagents.cli:main"
-tb-docker = "harbor_deepagents.cli:run_tb_docker"
-tb-daytona = "harbor_deepagents.cli:run_tb_daytona"
+harness = "deepagents_harbor.cli:main"
+tb-docker = "deepagents_harbor.cli:run_tb_docker"
+tb-daytona = "deepagents_harbor.cli:run_tb_daytona"
 
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-package-dir = {"" = "harbor_deepagents"}
-
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["deepagents_harbor*"]
 
 [tool.uv]
 override-dependencies = [

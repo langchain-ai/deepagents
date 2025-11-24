@@ -11,7 +11,7 @@ tasks:
 # Agent configuration using import_path
 # This allows Harbor to load our custom agent without modifying core code
 agents:
-  - import_path: harbor_deepagents.agents.deepagent_harbor:DeepAgentHarbor
+  - import_path: deepagents_harbor.agents.deepagent:DeepAgentsWrapper
     model_name: openai/gpt-5-mini  # Can also use: sonnet-4.5, openai/gpt-4o, etc.
     kwargs:
       max_iterations: 100

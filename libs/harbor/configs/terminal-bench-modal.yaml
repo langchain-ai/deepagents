@@ -9,13 +9,13 @@
 # Or use pure CLI (no config file):
 #   harbor run \
 #     -d terminal-bench@2.0 \
-#     --agent-import-path harbor_deepagents.agents.deepagent_harbor:DeepAgentHarbor \
+#     --agent-import-path deepagents_harbor.agents.deepagent:DeepAgentsWrapper \
 #     -m anthropic/claude-sonnet-4-5-20250929 \
 #     --task-name prove-plus-comm \
 #     --env modal
 
 agents:
-  - import_path: harbor_deepagents.agents.deepagent_harbor:DeepAgentHarbor
+  - import_path: deepagents_harbor.agents.deepagent:DeepAgentsWrapper
     model_name: openai/gpt-5-mini
     kwargs:
       max_iterations: 500

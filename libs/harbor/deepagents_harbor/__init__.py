@@ -1,4 +1,4 @@
-from harbor_deepagents.agents import DeepAgentsWrapper
+from deepagents_harbor.agents import DeepAgentsWrapper
 
 __all__ = [
     "DeepAgentsWrapper",

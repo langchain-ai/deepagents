@@ -77,8 +77,7 @@ def create_langsmith_dataset(
     version: str = "head",
     registry_url: Optional[str] = None,
     overwrite: bool = False,
-    output_dir: Optional[Path] = None,
-):
+) -> None:
     """
     Create a LangSmith dataset from Harbor tasks.
 
@@ -90,11 +89,8 @@ def create_langsmith_dataset(
         output_dir: Directory to cache downloaded tasks (uses temp dir if not specified)
     """
     langsmith_client = Client()
-
-    # Use temp directory if output_dir not specified
-    if output_dir is None:
-        output_dir = Path(tempfile.mkdtemp(prefix="harbor_tasks_"))
-        print(f"Using temporary directory: {output_dir}")
+    output_dir = Path(tempfile.mkdtemp(prefix="harbor_tasks_"))
+    print(f"Using temporary directory: {output_dir}")
 
     # Download from Harbor registry
     print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
@@ -130,47 +126,25 @@ def create_langsmith_dataset(
     print(f"\nSuccessfully created dataset '{dataset_name}' with {len(examples)} examples")
     print(f"Dataset ID: {dataset.id}")
 
-    return dataset
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Create a LangSmith dataset by downloading tasks from Harbor registry."
     )
+    parser.add_argument("dataset_name", type=str, help="Dataset name (e.g., 'terminal-bench')")
     parser.add_argument(
-        "dataset_name",
-        type=str,
-        help="Dataset name (e.g., 'terminal-bench')"
+        "--version", type=str, default="head", help="Dataset version (default: 'head')"
     )
     parser.add_argument(
-        "--version",
-        type=str,
-        default="head",
-        help="Dataset version (default: 'head')"
+        "--registry-url", type=str, help="URL of Harbor registry (uses default if not specified)"
     )
-    parser.add_argument(
-        "--registry-url",
-        type=str,
-        help="URL of Harbor registry (uses default if not specified)"
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite cached remote tasks"
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        help="Directory to cache downloaded tasks (uses temp dir if not specified)"
-    )
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite cached remote tasks")
 
     args = parser.parse_args()
 
-    # Create the dataset
-    dataset = create_langsmith_dataset(
+    create_langsmith_dataset(
         dataset_name=args.dataset_name,
         version=args.version,
         registry_url=args.registry_url,
         overwrite=args.overwrite,
-        output_dir=args.output_dir,
     )

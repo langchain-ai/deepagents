@@ -25,9 +25,8 @@ def run_loop(loop: asyncio.AbstractEventLoop) -> None:
     loop.run_forever()
 
 
-_thread = threading.Thread(
-    target=run_loop, args=(_loop,), daemon=True, name="HarborSandboxLoop"
-)
+# Temporary work-around. We need to transition to full async support.
+_thread = threading.Thread(target=run_loop, args=(_loop,), daemon=True, name="HarborSandboxLoop")
 _thread.start()
 
 
@@ -57,14 +56,15 @@ class HarborSandbox(BaseSandbox):
         """Unique identifier for the sandbox backend."""
         return self.environment.session_id
 
-class HarborSandbox2(SandboxBackendProtocol):
+
+class HarborSandboxFallback(SandboxBackendProtocol):
     def __init__(self, environment: BaseEnvironment) -> None:
         """Initialize HarborSandbox with the given environment."""
         self.environment = environment
 
     def execute(
-            self,
-            command: str,
+        self,
+        command: str,
     ) -> ExecuteResponse:
         """Execute a bash command in the task environment."""
         coro = self.environment.exec(command)
@@ -84,10 +84,10 @@ class HarborSandbox2(SandboxBackendProtocol):
         return self.environment.session_id
 
     def read(
-            self,
-            file_path: str,
-            offset: int = 0,
-            limit: int = 2000,
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
     ) -> str:
         """Read file content with line numbers using shell commands."""
         # Escape file path for shell
@@ -119,9 +119,9 @@ awk -v offset={offset} -v limit={limit} '
         return result.output.rstrip()
 
     def write(
-            self,
-            file_path: str,
-            content: str,
+        self,
+        file_path: str,
+        content: str,
     ) -> WriteResult:
         """Create a new file using shell commands."""
         # Encode content as base64 to avoid escaping issues
@@ -146,11 +146,11 @@ echo '{content_b64}' | base64 -d > {safe_path}
         return WriteResult(path=file_path, files_update=None)
 
     def edit(
-            self,
-            file_path: str,
-            old_string: str,
-            new_string: str,
-            replace_all: bool = False,
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences using shell commands."""
         # Encode strings as base64 to avoid escaping issues
@@ -194,14 +194,16 @@ echo "$count"
         if exit_code == 1:
             return EditResult(error=f"Error: String not found in file: '{old_string}'")
         if exit_code == 2:
-            return EditResult(error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.")
+            return EditResult(
+                error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."
+            )
         if exit_code == 3:
             return EditResult(error=f"Error: File '{file_path}' not found")
         if exit_code != 0:
             return EditResult(error=f"Error editing file: {output}")
 
         try:
-            count = int(output.split('\n')[0])
+            count = int(output.split("\n")[0])
         except (ValueError, IndexError):
             count = 1
 
@@ -242,10 +244,10 @@ done
         return file_infos
 
     def grep_raw(
-            self,
-            pattern: str,
-            path: str | None = None,
-            glob: str | None = None,
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
     ) -> list[GrepMatch] | str:
         """Search for pattern in files using grep."""
         search_path = shlex.quote(path or ".")
@@ -329,6 +331,3 @@ done
                 )
 
         return file_infos
-
-
-

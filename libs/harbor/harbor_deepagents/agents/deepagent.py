@@ -23,7 +23,7 @@ from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from deepagents import create_deep_agent
-from harbor_deepagents.agents.backend import HarborSandbox, HarborSandbox2
+from harbor_deepagents.agents.backend import HarborSandbox, HarborSandboxFallback
 
 
 class DeepAgentsWrapper(BaseAgent):
@@ -93,7 +93,7 @@ class DeepAgentsWrapper(BaseAgent):
             environment: Harbor environment (Docker, Modal, etc.)
             context: Context to populate with metrics
         """
-        backend = HarborSandbox2(environment)
+        backend = HarborSandboxFallback(environment)
         deep_agent = create_deep_agent(
             model=self._model,
             backend=backend
@@ -311,36 +311,3 @@ class DeepAgentsWrapper(BaseAgent):
             output_cost = output_tokens * 0.000015
 
         self._total_cost += input_cost + output_cost
-
-
-
-    # def send_verification_feedback(self, reward: float) -> None:
-    #     """Send Harbor verification results to LangSmith as feedback.
-    #
-    #     This should be called after Harbor's verifier runs to push the
-    #     reward score to LangSmith, making it visible in the trace UI.
-    #
-    #     Args:
-    #         reward: Reward score from Harbor verifier (0.0 to 1.0)
-    #
-    #     Example:
-    #         >>> agent = DeepAgentHarbor(...)
-    #         >>> await agent.run(instruction, environment, context)
-    #         >>> # After Harbor verifies the task:
-    #         >>> agent.send_verification_feedback(reward=1.0)
-    #     """
-    #     if not self._langsmith_run_id or not self._task_name:
-    #         if self._verbose:
-    #             print("Warning: No run_id or task_name available for feedback")
-    #         return
-    #
-    #     send_harbor_feedback(
-    #         run_id=self._langsmith_run_id,
-    #         task_name=self._task_name,
-    #         reward=reward,
-    #         agent_cost_usd=self._total_cost,
-    #         total_steps=len(self._trajectory_steps),
-    #     )
-    #
-    #     if self._verbose:
-    #         print(f"✓ Sent feedback to LangSmith: reward={reward * 100:.0f}%")

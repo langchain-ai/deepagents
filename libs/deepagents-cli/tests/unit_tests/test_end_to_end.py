@@ -119,7 +119,6 @@ class TestDeepAgentsCLIEndToEnd:
                 assistant_id="test-agent",
                 tools=[],
             )
-            agent.checkpointer = None
 
             # Invoke the agent with a simple message
             result = agent.invoke(
@@ -174,7 +173,6 @@ class TestDeepAgentsCLIEndToEnd:
                 assistant_id="test-agent",
                 tools=[sample_tool],
             )
-            agent.checkpointer = None
 
             # Invoke the agent
             result = agent.invoke(
@@ -231,7 +229,6 @@ class TestDeepAgentsCLIEndToEnd:
                 assistant_id="test-agent",
                 tools=[],
             )
-            agent.checkpointer = None
 
             # Invoke the agent
             result = agent.invoke(
@@ -292,7 +289,6 @@ class TestDeepAgentsCLIEndToEnd:
                 assistant_id="test-agent",
                 tools=[sample_tool],
             )
-            agent.checkpointer = None
 
             # Invoke the agent
             result = agent.invoke(

@@ -9,9 +9,7 @@ from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from langchain.agents.middleware import (
-    HostExecutionPolicy,
     InterruptOnConfig,
-    ShellToolMiddleware,
 )
 from langchain.agents.middleware.types import AgentState
 from langchain.messages import ToolCall
@@ -24,6 +22,7 @@ from langgraph.runtime import Runtime
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
+from deepagents_cli.shell import ShellMiddleware
 from deepagents_cli.skills import SkillsMiddleware
 
 
@@ -367,7 +366,7 @@ def create_agent_with_config(
             routes={},  # No virtualization - use real paths
         )
 
-        # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ResumableShellToolMiddleware
+        # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ShellToolMiddleware
         agent_middleware = [
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
             SkillsMiddleware(
@@ -375,9 +374,8 @@ def create_agent_with_config(
                 assistant_id=assistant_id,
                 project_skills_dir=project_skills_dir,
             ),
-            ShellToolMiddleware(
+            ShellMiddleware(
                 workspace_root=str(Path.cwd()),
-                execution_policy=HostExecutionPolicy(),
                 env=os.environ,
             ),
         ]

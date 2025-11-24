@@ -264,7 +264,11 @@ class FileOpTracker:
             if self.backend and path_str:
                 try:
                     responses = self.backend.download_files([path_str])
-                    if responses and responses[0].content is not None and responses[0].error is None:
+                    if (
+                        responses
+                        and responses[0].content is not None
+                        and responses[0].error is None
+                    ):
                         record.before_content = responses[0].content.decode("utf-8")
                     else:
                         record.before_content = ""
@@ -291,7 +295,11 @@ class FileOpTracker:
                 if self.backend:
                     try:
                         responses = self.backend.download_files([path_str])
-                        if responses and responses[0].content is not None and responses[0].error is None:
+                        if (
+                            responses
+                            and responses[0].content is not None
+                            and responses[0].error is None
+                        ):
                             record.before_content = responses[0].content.decode("utf-8")
                         else:
                             record.before_content = ""
@@ -410,7 +418,11 @@ class FileOpTracker:
                 file_path = record.args.get("file_path") or record.args.get("path")
                 if file_path:
                     responses = self.backend.download_files([file_path])
-                    if responses and responses[0].content is not None and responses[0].error is None:
+                    if (
+                        responses
+                        and responses[0].content is not None
+                        and responses[0].error is None
+                    ):
                         record.after_content = responses[0].content.decode("utf-8")
                     else:
                         record.after_content = None

@@ -33,6 +33,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langgraph.runtime import Runtime
 
 from deepagents_cli.skills.load import SkillMetadata, list_skills
 
@@ -182,11 +183,7 @@ class SkillsMiddleware(AgentMiddleware):
 
         return "\n".join(lines)
 
-    def before_agent(
-        self,
-        _state: SkillsState,
-        _runtime,
-    ) -> SkillsStateUpdate | None:
+    def before_agent(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution.
 
         This runs once at session start to discover available skills from both

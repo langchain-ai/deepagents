@@ -468,7 +468,8 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Update the system prompt to include instructions on using subagents."""
         if self.system_prompt is not None:
-            request.system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
+            system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
+            return handler(request.override(system_prompt=system_prompt))
         return handler(request)
 
     async def awrap_model_call(
@@ -478,5 +479,6 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """(async) Update the system prompt to include instructions on using subagents."""
         if self.system_prompt is not None:
-            request.system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
+            system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
+            return await handler(request.override(system_prompt=system_prompt))
         return await handler(request)

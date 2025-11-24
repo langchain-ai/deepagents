@@ -79,7 +79,7 @@ class FilePathCompleter(Completer):
 class CommandCompleter(Completer):
     """Activate command completion only when line starts with '/'."""
 
-    def get_completions(self, document, complete_event):
+    def get_completions(self, document, _complete_event):
         """Get command completions when / is at the start."""
         text = document.text_before_cursor
 
@@ -173,7 +173,7 @@ def get_bottom_toolbar(
     return toolbar
 
 
-def create_prompt_session(assistant_id: str, session_state: SessionState) -> PromptSession:
+def create_prompt_session(_assistant_id: str, session_state: SessionState) -> PromptSession:
     """Create a configured PromptSession with all features."""
     # Set default editor if not already set
     if "EDITOR" not in os.environ:

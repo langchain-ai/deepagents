@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langchain_core.messages import SystemMessage
 
-from deepagents_cli.config import console
+from deepagents_cli.config import console, settings
 
 
 def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assistant_id: str) -> int:
@@ -90,7 +90,7 @@ def get_memory_system_prompt(
     # Import from agent_memory middleware
     from .agent_memory import LONGTERM_MEMORY_SYSTEM_PROMPT
 
-    agent_dir = Path.home() / ".deepagents" / assistant_id
+    agent_dir = settings.get_agent_dir(assistant_id)
     agent_dir_absolute = str(agent_dir)
     agent_dir_display = f"~/.deepagents/{assistant_id}"
 

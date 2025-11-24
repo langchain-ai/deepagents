@@ -248,8 +248,8 @@ class TestFilesystemMiddleware:
         assert "/test.py" in result
         assert "/test.txt" not in result
         assert "/pokemon/charmander.py" not in result
-        assert len(result) == 1
-        assert result[0] == "/test.py"
+        # Result is now a string, not a list
+        assert result == "/test.py"
 
     def test_glob_search_shortterm_wildcard_pattern(self):
         state = FilesystemState(
@@ -371,7 +371,8 @@ class TestFilesystemMiddleware:
             }
         )
         print(glob_search_tool)
-        assert result == []
+        # Result is now a string, not a list
+        assert result == ""
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -399,12 +400,13 @@ class TestFilesystemMiddleware:
         )
 
         # Result should be truncated
-        assert isinstance(result, list)
-        assert len(result) < 2000  # Should be truncated to fewer files
-        # Last element should be the truncation message
+        assert isinstance(result, str)
+        # Should be truncated - check that truncation message appears
         from deepagents.backends.utils import TRUNCATION_GUIDANCE
 
-        assert result[-1] == TRUNCATION_GUIDANCE
+        assert TRUNCATION_GUIDANCE in result
+        # Result should not contain all 2000 files
+        assert result.count("\n") < 2000
 
     def test_grep_search_shortterm_files_with_matches(self):
         state = FilesystemState(

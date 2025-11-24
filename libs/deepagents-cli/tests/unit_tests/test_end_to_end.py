@@ -1,5 +1,6 @@
 """End-to-end unit tests for deepagents-cli with fake LLM models."""
 
+import uuid
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,7 +12,6 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
-import uuid
 
 from deepagents_cli.agent import create_agent_with_config
 
@@ -108,7 +108,7 @@ class TestDeepAgentsCLIEndToEnd:
             # Invoke the agent with a simple message
             result = agent.invoke(
                 {"messages": [HumanMessage(content="Hello, agent!")]},
-                {"configurable": {"thread_id": str(uuid.uuid4())}}
+                {"configurable": {"thread_id": str(uuid.uuid4())}},
             )
 
             # Verify the agent executed correctly

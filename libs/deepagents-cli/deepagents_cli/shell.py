@@ -123,61 +123,15 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
             else:
                 status = "success"
 
-            artifact = {
-                "exit_code": result.returncode,
-                "timed_out": False,
-            }
-
         except subprocess.TimeoutExpired:
             output = f"Error: Command timed out after {self._timeout:.1f} seconds."
             status = "error"
-            artifact = {
-                "exit_code": None,
-                "timed_out": True,
-            }
 
-        except Exception as error:
-            output = f"Error: {error}"
-            status = "error"
-            artifact = {
-                "exit_code": None,
-                "timed_out": False,
-            }
-
-        return self._format_tool_message(
-            output,
-            tool_call_id,
-            status=status,
-            artifact=artifact,
-        )
-
-    def _format_tool_message(
-        self,
-        content: str,
-        tool_call_id: str | None,
-        *,
-        status: str,
-        artifact: dict[str, Any],
-    ) -> ToolMessage | str:
-        """Format the tool response as a ToolMessage or plain string.
-
-        Args:
-            content: The output content.
-            tool_call_id: The tool call ID if available.
-            status: The execution status (`'success'` or `'error'`).
-            artifact: Additional metadata about the execution.
-
-        Returns:
-            A ToolMessage if tool_call_id is provided, otherwise a plain string.
-        """
-        if tool_call_id is None:
-            return content
         return ToolMessage(
-            content=content,
+            content=output,
             tool_call_id=tool_call_id,
             name=self._tool_name,
             status=status,
-            artifact=artifact,
         )
 
 

@@ -54,7 +54,6 @@ class DeepAgentsWrapper(BaseAgent):
         self._temperature = temperature
         self._verbose = verbose
         self._session_id = str(uuid.uuid4())
-        self._environment: BaseEnvironment | None = None
         self._model = init_chat_model(model_name, temperature=temperature)
 
         # LangSmith run tracking for feedback
@@ -71,7 +70,7 @@ class DeepAgentsWrapper(BaseAgent):
         Args:
             environment: Harbor environment (Docker, Modal, etc.)
         """
-        self._environment = environment
+        pass
 
     def version(self) -> str | None:
         return "0.0.1"
@@ -114,7 +113,6 @@ class DeepAgentsWrapper(BaseAgent):
         )
 
         # Create trajectory
-
         steps = [
             Step(
                 step_id=1,

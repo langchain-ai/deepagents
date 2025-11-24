@@ -34,11 +34,6 @@ test = [
     "ruff>=0.8.0",
 ]
 
-[project.scripts]
-harness = "deepagents_harbor.cli:main"
-tb-docker = "deepagents_harbor.cli:run_tb_docker"
-tb-daytona = "deepagents_harbor.cli:run_tb_daytona"
-
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"

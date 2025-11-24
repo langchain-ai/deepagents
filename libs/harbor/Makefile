@@ -25,7 +25,7 @@ test_watch:
 #run:
 #	harbor run --agent-import-path deepagents_harbor.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env runloop
 run:
-	harbor run --agent-import-path deepagents_harbor.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env docker
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env docker
 
 ######################
 # LINTING AND FORMATTING

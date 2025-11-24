@@ -260,8 +260,12 @@ class FileOpTracker:
             tool_call_id=tool_call_id,
             args=args,
         )
-        if tool_name in {"write_file", "edit_file"} and record.physical_path:
-            record.before_content = _safe_read(record.physical_path) or ""
+        if tool_name in {"write_file", "edit_file"}:
+            if self.backend and path_str:
+                result = self.backend.read(path_str)
+                record.before_content = "" if result.startswith("Error:") else result
+            elif record.physical_path:
+                record.before_content = _safe_read(record.physical_path) or ""
         self.active[tool_call_id] = record
 
     def update_args(self, tool_call_id: str, args: dict[str, Any]) -> None:
@@ -278,7 +282,10 @@ class FileOpTracker:
             if path_str:
                 record.display_path = format_display_path(path_str)
                 record.physical_path = resolve_physical_path(path_str, self.assistant_id)
-                if record.physical_path:
+                if self.backend:
+                    result = self.backend.read(path_str)
+                    record.before_content = "" if result.startswith("Error:") else result
+                elif record.physical_path:
                     record.before_content = _safe_read(record.physical_path) or ""
 
     def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:

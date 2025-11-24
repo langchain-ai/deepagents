@@ -1,7 +1,11 @@
 """Unit tests for agent formatting functions."""
 
+import uuid
 from pathlib import Path
 from unittest.mock import Mock
+
+import pytest
+from langgraph.checkpoint.memory import MemorySaver
 
 from deepagents_cli.agent import (
     _format_edit_file_description,
@@ -11,7 +15,9 @@ from deepagents_cli.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    create_agent_with_config,
 )
+from deepagents_cli.config import create_model
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -265,3 +271,62 @@ def test_format_execute_description():
 
     assert "Execute Command: python script.py" in description
     assert "Location: Remote Sandbox" in description
+
+
+def test_run_command_calls_shell_tool():
+    """Test that 'run make format' calls shell tool with 'make format' command.
+    
+    This test verifies that when a user says "run make format", the agent
+    correctly interprets this as a shell command and calls the shell tool
+    with just "make format" (not including the word "run").
+    
+    The test stops at the interrupt (HITL approval point) before the shell
+    tool is actually executed, to verify the correct command is being passed.
+    """
+    # Create agent with shell tool enabled (no auto-approve to trigger interrupt)
+    model = create_model()
+    checkpointer = MemorySaver()
+    agent, _backend = create_agent_with_config(
+        model=model,
+        assistant_id="test_agent",
+        tools=[],
+        sandbox=None,
+        sandbox_type=None,
+    )
+    agent.checkpointer = checkpointer
+    
+    # Create config with thread_id
+    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    
+    # Invoke agent with "run make format" command
+    result = agent.invoke(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "run make format",
+                }
+            ]
+        },
+        config=config,
+    )
+    
+    # Verify that an interrupt occurred (shell tool requires approval)
+    assert "__interrupt__" in result, "Expected shell tool to trigger HITL interrupt"
+    assert result["__interrupt__"] is not None
+    
+    # Extract interrupt information
+    interrupts = result["__interrupt__"]
+    assert len(interrupts) > 0, "Expected at least one interrupt"
+    
+    interrupt_value = interrupts[0].value
+    action_requests = interrupt_value.get("action_requests", [])
+    
+    # Verify that a shell tool call is present
+    shell_calls = [req for req in action_requests if req.get("name") == "shell"]
+    assert len(shell_calls) > 0, "Expected at least one shell tool call"
+    
+    # Verify the shell command is "make format" (not "run make format")
+    shell_call = shell_calls[0]
+    command = shell_call.get("args", {}).get("command", "")
+    assert command == "make format", f"Expected shell command to be 'make format', got: {command}"

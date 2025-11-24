@@ -210,7 +210,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
     def before_agent(
         self,
         state: AgentMemoryState,
-        _runtime: Runtime,
+        runtime: Runtime,
     ) -> AgentMemoryStateUpdate:
         """Load agent memory from file before agent execution.
 

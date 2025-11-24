@@ -78,8 +78,12 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
             ):
                 # Import after patching
                 from deepagents_cli.agent import create_agent_with_config
+                from deepagents_cli.config import create_model
 
+                # Create real agent with real model (will use env var or fail gracefully)
+                model = create_model()
                 agent, backend = create_agent_with_config(
+                    model=model,
                     assistant_id="test_agent",
                     tools=[],
                     sandbox=None,

@@ -1,6 +1,5 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
-import typing
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -18,12 +17,13 @@ def sample_tool(sample_input: str) -> str:
     """A sample tool that returns the input string."""
     return sample_input
 
+
 class FixedGenericFakeChatModel(GenericFakeChatModel):
     """Fixed version of GenericFakeChatModel that properly handles bind_tools."""
 
     def bind_tools(
         self,
-        tools: Sequence[typing.Dict[str, Any] | type | Callable | BaseTool],
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
         *,
         tool_choice: str | None = None,
         **kwargs: Any,

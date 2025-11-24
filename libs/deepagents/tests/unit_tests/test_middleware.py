@@ -373,6 +373,39 @@ class TestFilesystemMiddleware:
         print(glob_search_tool)
         assert result == []
 
+    def test_glob_search_truncates_large_results(self):
+        """Test that glob results are truncated when they exceed token limit."""
+        # Create a large number of files that will exceed TOOL_RESULT_TOKEN_LIMIT
+        # TOOL_RESULT_TOKEN_LIMIT = 20000, * 4 chars/token = 80000 chars
+        # Create files with long paths to exceed this limit
+        files = {}
+        # Create 2000 files with 50-char paths = 100,000 chars total (exceeds 80k limit)
+        for i in range(2000):
+            path = f"/very_long_file_name_to_increase_size_{i:04d}.txt"
+            files[path] = FileData(
+                content=["content"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            )
+
+        state = FilesystemState(messages=[], files=files)
+        middleware = FilesystemMiddleware()
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        result = glob_search_tool.invoke(
+            {
+                "pattern": "*.txt",
+                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+
+        # Result should be truncated
+        assert isinstance(result, list)
+        assert len(result) < 2000  # Should be truncated to fewer files
+        # Last element should be the truncation message
+        from deepagents.backends.utils import TRUNCATION_GUIDANCE
+
+        assert result[-1] == TRUNCATION_GUIDANCE
+
     def test_grep_search_shortterm_files_with_matches(self):
         state = FilesystemState(
             messages=[],

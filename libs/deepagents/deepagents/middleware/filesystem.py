@@ -473,7 +473,7 @@ def _glob_tool_generator(
     def glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> list[str]:
         resolved_backend = _get_backend(backend, runtime)
         infos = resolved_backend.glob_info(pattern, path=path)
-        return [fi.get("path", "") for fi in infos]
+        return truncate_if_too_long([fi.get("path", "") for fi in infos])
 
     return glob
 

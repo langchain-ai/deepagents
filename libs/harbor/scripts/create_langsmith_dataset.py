@@ -5,14 +5,16 @@ Downloads tasks from the Harbor registry and creates a LangSmith dataset.
 """
 
 import argparse
+import hashlib
 import tempfile
-import toml
+import uuid
 from pathlib import Path
 from typing import Optional
 
-from langsmith import Client
+import toml
 from harbor.models.dataset_item import DownloadedDatasetItem
 from harbor.registry.client import RegistryClient
+from langsmith import Client
 
 
 def _read_instruction(task_path: Path) -> str:
@@ -31,14 +33,26 @@ def _read_task_metadata(task_path: Path) -> dict:
     return {}
 
 
-def _extract_task_name(task_path: Path) -> str:
-    """Extract the task name from the directory path."""
-    return task_path.name
+def _create_uuid_from_task_id(task_id: str) -> str:
+    """Create a deterministic UUID from a task ID string using hash.
+
+    Args:
+        task_id: The task ID string to hash
+
+    Returns:
+        A UUID string generated from the hash of the task ID
+    """
+    # Create SHA-256 hash of the task_id
+    hash_bytes = hashlib.sha256(task_id.encode('utf-8')).digest()
+
+    # Use first 16 bytes to create a UUID
+    task_uuid = uuid.UUID(bytes=hash_bytes[:16])
+
+    return str(task_uuid)
 
 
 def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> list:
-    """
-    Scan downloaded tasks and extract all task information.
+    """Scan downloaded tasks and extract all task information.
 
     Args:
         downloaded_tasks: List of DownloadedDatasetItem objects from Harbor
@@ -53,13 +67,15 @@ def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> lis
 
         instruction = _read_instruction(task_path)
         metadata = _read_task_metadata(task_path)
-        task_name = _extract_task_name(task_path)
+        task_name = downloaded_task.id.name
         task_id = str(downloaded_task.id)
+        task_uuid = _create_uuid_from_task_id(task_id)
 
         if instruction:
             example = {
                 "inputs": {
                     "task_id": task_id,
+                    "task_uuid": task_uuid,
                     "task_name": task_name,
                     "instruction": instruction,
                     "metadata": metadata.get("metadata", {}),
@@ -67,7 +83,7 @@ def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> lis
                 "outputs": {},
             }
             examples.append(example)
-            print(f"Added task: {task_name} (ID: {task_id})")
+            print(f"Added task: {task_name} (ID: {task_id}, UUID: {task_uuid})")
 
     return examples
 
@@ -94,13 +110,7 @@ def create_langsmith_dataset(
 
     # Download from Harbor registry
     print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
-
-    if registry_url:
-        registry_client = RegistryClient(url=registry_url)
-    else:
-        # Use default registry
-        registry_client = RegistryClient()
-
+    registry_client = RegistryClient()
     downloaded_tasks = registry_client.download_dataset(
         name=dataset_name,
         version=version,
@@ -135,9 +145,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--version", type=str, default="head", help="Dataset version (default: 'head')"
     )
-    parser.add_argument(
-        "--registry-url", type=str, help="URL of Harbor registry (uses default if not specified)"
-    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite cached remote tasks")
 
     args = parser.parse_args()
@@ -145,6 +152,5 @@ if __name__ == "__main__":
     create_langsmith_dataset(
         dataset_name=args.dataset_name,
         version=args.version,
-        registry_url=args.registry_url,
         overwrite=args.overwrite,
     )

@@ -6,6 +6,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from deepagents.backends import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -62,6 +64,19 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
         mock_settings_obj.ensure_agent_dir.return_value = agent_dir
         mock_settings_obj.ensure_user_skills_dir.return_value = skills_dir
         mock_settings_obj.get_project_skills_dir.return_value = None
+
+        # Mock methods that get called during agent execution to return real Path objects
+        # This prevents MagicMock objects from being stored in state (which would fail serialization)
+        def get_user_agent_md_path(agent_id: str) -> Path:
+            return tmp_path / "agents" / agent_id / "agent.md"
+
+        def get_agent_dir(agent_id: str) -> Path:
+            return tmp_path / "agents" / agent_id
+
+        mock_settings_obj.get_user_agent_md_path = get_user_agent_md_path
+        mock_settings_obj.get_project_agent_md_path.return_value = None
+        mock_settings_obj.get_agent_dir = get_agent_dir
+        mock_settings_obj.project_root = None
 
         yield agent_dir
 
@@ -316,12 +331,5 @@ class TestDeepAgentsCLIEndToEnd:
                 tools=[],
             )
 
-            # Verify backend is a CompositeBackend
-            from deepagents.backends import CompositeBackend
-
             assert isinstance(backend, CompositeBackend)
-
-            # Verify the backend has the default FilesystemBackend
-            from deepagents.backends.filesystem import FilesystemBackend
-
             assert isinstance(backend.default, FilesystemBackend)

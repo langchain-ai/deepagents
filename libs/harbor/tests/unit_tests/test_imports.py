@@ -1,4 +1,4 @@
-"""Place holder unit tests for imports here."""
+"""Placeholder unit tests for imports here."""
 
 
 def test_placeholder() -> None:

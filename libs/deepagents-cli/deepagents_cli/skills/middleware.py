@@ -33,6 +33,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langchain_core.messages import SystemMessage
 
 from deepagents_cli.skills.load import SkillMetadata, list_skills
 
@@ -236,12 +237,18 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
         )
 
-        if request.system_prompt:
-            system_prompt = request.system_prompt + "\n\n" + skills_section
+        if request.system_message is not None:
+            new_system_content = [
+                *request.system_message.content_blocks,
+                {"type": "text", "text": f"\n\n{skills_section}"},
+            ]
         else:
-            system_prompt = skills_section
+            new_system_content = [{"type": "text", "text": skills_section}]
+        new_system_message = SystemMessage(
+            content=cast("list[str | dict[str, str]]", new_system_content)
+        )
 
-        return handler(request.override(system_prompt=system_prompt))
+        return handler(request.override(system_message=new_system_message))
 
     async def awrap_model_call(
         self,
@@ -271,10 +278,15 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
         )
 
-        # Inject into system prompt
-        if request.system_prompt:
-            system_prompt = request.system_prompt + "\n\n" + skills_section
+        if request.system_message is not None:
+            new_system_content = [
+                *request.system_message.content_blocks,
+                {"type": "text", "text": f"\n\n{skills_section}"},
+            ]
         else:
-            system_prompt = skills_section
+            new_system_content = [{"type": "text", "text": skills_section}]
+        new_system_message = SystemMessage(
+            content=cast("list[str | dict[str, str]]", new_system_content)
+        )
 
-        return await handler(request.override(system_prompt=system_prompt))
+        return await handler(request.override(system_message=new_system_message))

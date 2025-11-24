@@ -22,7 +22,8 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     """
     script_path = Path(setup_script_path)
     if not script_path.exists():
-        raise FileNotFoundError(f"Setup script not found: {setup_script_path}")
+        msg = f"Setup script not found: {setup_script_path}"
+        raise FileNotFoundError(msg)
 
     console.print(f"[dim]Running setup script: {setup_script_path}...[/dim]")
 
@@ -39,7 +40,8 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     if result.exit_code != 0:
         console.print(f"[red]❌ Setup script failed (exit {result.exit_code}):[/red]")
         console.print(f"[dim]{result.output}[/dim]")
-        raise RuntimeError("Setup failed - aborting")
+        msg = "Setup failed - aborting"
+        raise RuntimeError(msg)
 
     console.print("[green]✓ Setup complete[/green]")
 
@@ -83,7 +85,8 @@ def create_modal_sandbox(
             # Poll until running (Modal requires this)
             for _ in range(90):  # 180s timeout (90 * 2s)
                 if sandbox.poll() is not None:  # Sandbox terminated unexpectedly
-                    raise RuntimeError("Modal sandbox terminated unexpectedly during startup")
+                    msg = "Modal sandbox terminated unexpectedly during startup"
+                    raise RuntimeError(msg)
                 # Check if sandbox is ready by attempting a simple command
                 try:
                     process = sandbox.exec("echo", "ready", timeout=5)
@@ -96,7 +99,8 @@ def create_modal_sandbox(
             else:
                 # Timeout - cleanup and fail
                 sandbox.terminate()
-                raise RuntimeError("Modal sandbox failed to start within 180 seconds")
+                msg = "Modal sandbox failed to start within 180 seconds"
+                raise RuntimeError(msg)
 
         backend = ModalBackend(sandbox)
         console.print(f"[green]✓ Modal sandbox ready: {backend.id}[/green]")
@@ -142,7 +146,8 @@ def create_runloop_sandbox(
 
     bearer_token = os.environ.get("RUNLOOP_API_KEY")
     if not bearer_token:
-        raise ValueError("RUNLOOP_API_KEY environment variable not set")
+        msg = "RUNLOOP_API_KEY environment variable not set"
+        raise ValueError(msg)
 
     client = Runloop(bearer_token=bearer_token)
 
@@ -165,7 +170,8 @@ def create_runloop_sandbox(
         else:
             # Timeout - cleanup and fail
             client.devboxes.shutdown(id=devbox.id)
-            raise RuntimeError("Devbox failed to start within 180 seconds")
+            msg = "Devbox failed to start within 180 seconds"
+            raise RuntimeError(msg)
 
     console.print(f"[green]✓ Runloop devbox ready: {sandbox_id}[/green]")
 
@@ -209,13 +215,15 @@ def create_daytona_sandbox(
 
     api_key = os.environ.get("DAYTONA_API_KEY")
     if not api_key:
-        raise ValueError("DAYTONA_API_KEY environment variable not set")
+        msg = "DAYTONA_API_KEY environment variable not set"
+        raise ValueError(msg)
 
     if sandbox_id:
-        raise NotImplementedError(
+        msg = (
             "Connecting to existing Daytona sandbox by ID not yet supported. "
             "Create a new sandbox by omitting --sandbox-id."
         )
+        raise NotImplementedError(msg)
 
     console.print("[yellow]Starting Daytona sandbox...[/yellow]")
 
@@ -238,7 +246,8 @@ def create_daytona_sandbox(
             # Clean up if possible
             sandbox.delete()
         finally:
-            raise RuntimeError("Daytona sandbox failed to start within 180 seconds")
+            msg = "Daytona sandbox failed to start within 180 seconds"
+            raise RuntimeError(msg)
 
     backend = DaytonaBackend(sandbox)
     console.print(f"[green]✓ Daytona sandbox ready: {backend.id}[/green]")
@@ -293,10 +302,11 @@ def create_sandbox(
         (SandboxBackend, sandbox_id)
     """
     if provider not in _SANDBOX_PROVIDERS:
-        raise ValueError(
+        msg = (
             f"Unknown sandbox provider: {provider}. "
             f"Available providers: {', '.join(get_available_sandbox_types())}"
         )
+        raise ValueError(msg)
 
     sandbox_provider = _SANDBOX_PROVIDERS[provider]
 
@@ -327,7 +337,8 @@ def get_default_working_dir(provider: str) -> str:
     """
     if provider in _PROVIDER_TO_WORKING_DIR:
         return _PROVIDER_TO_WORKING_DIR[provider]
-    raise ValueError(f"Unknown sandbox provider: {provider}")
+    msg = f"Unknown sandbox provider: {provider}"
+    raise ValueError(msg)
 
 
 __all__ = [

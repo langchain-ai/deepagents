@@ -1,7 +1,7 @@
 """CLI commands for skill management.
 
 These commands are registered with the CLI via cli.py:
-- deepagents skills list
+- deepagents skills list --agent <agent> [--project]
 - deepagents skills create <name>
 - deepagents skills info <name>
 """
@@ -11,38 +11,38 @@ import re
 from pathlib import Path
 from typing import Any
 
-from deepagents_cli.config import COLORS, console
+from deepagents_cli.config import COLORS, Settings, console
 from deepagents_cli.skills.load import list_skills
 
 
-def _validate_skill_name(skill_name: str) -> tuple[bool, str]:
-    """Validate skill name to prevent path traversal attacks.
+def _validate_name(name: str) -> tuple[bool, str]:
+    """Validate name to prevent path traversal attacks.
 
     Args:
-        skill_name: The skill name to validate
+        name: The name to validate
 
     Returns:
         Tuple of (is_valid, error_message). If valid, error_message is empty.
     """
     # Check for empty or whitespace-only names
-    if not skill_name or not skill_name.strip():
-        return False, "Skill name cannot be empty"
+    if not name or not name.strip():
+        return False, "cannot be empty"
 
     # Check for path traversal sequences
-    if ".." in skill_name:
-        return False, "Skill name cannot contain '..' (path traversal)"
+    if ".." in name:
+        return False, "name cannot contain '..' (path traversal)"
 
     # Check for absolute paths
-    if skill_name.startswith("/") or skill_name.startswith("\\"):
-        return False, "Skill name cannot be an absolute path"
+    if name.startswith(("/", "\\")):
+        return False, "name cannot be an absolute path"
 
     # Check for path separators
-    if "/" in skill_name or "\\" in skill_name:
-        return False, "Skill name cannot contain path separators"
+    if "/" in name or "\\" in name:
+        return False, "name cannot contain path separators"
 
     # Only allow alphanumeric, hyphens, underscores
-    if not re.match(r"^[a-zA-Z0-9_-]+$", skill_name):
-        return False, "Skill name can only contain letters, numbers, hyphens, and underscores"
+    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+        return False, "name can only contain letters, numbers, hyphens, and underscores"
 
     return True, ""
 
@@ -79,52 +79,98 @@ def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
         return False, f"Invalid path: {e}"
 
 
-def _list() -> None:
-    """List all available skills for the default agent."""
-    # Use default agent's skills directory
-    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
+def _list(agent: str, *, project: bool = False) -> None:
+    """List all available skills for the specified agent.
 
-    if not skills_dir.exists() or not any(skills_dir.iterdir()):
-        console.print("[yellow]No skills found.[/yellow]")
-        console.print(
-            "[dim]Skills will be created in ~/.deepagents/agent/skills/ when you add them.[/dim]",
-            style=COLORS["dim"],
-        )
-        console.print(
-            "\n[dim]Create your first skill:\n  deepagents skills create my-skill[/dim]",
-            style=COLORS["dim"],
-        )
-        return
+    Args:
+        agent: Agent identifier for skills (default: agent).
+        project: If True, show only project skills.
+            If False, show all skills (user + project).
+    """
+    settings = Settings.from_environment()
+    user_skills_dir = settings.get_user_skills_dir(agent)
+    project_skills_dir = settings.get_project_skills_dir()
 
-    # Load skills
-    skills = list_skills(skills_dir)
+    # If --project flag is used, only show project skills
+    if project:
+        if not project_skills_dir:
+            console.print("[yellow]Not in a project directory.[/yellow]")
+            console.print(
+                "[dim]Project skills require a .git directory in the project root.[/dim]",
+                style=COLORS["dim"],
+            )
+            return
 
-    if not skills:
-        console.print("[yellow]No valid skills found.[/yellow]")
-        console.print(
-            "[dim]Skills must have a SKILL.md file with YAML frontmatter (name, description).[/dim]",
-            style=COLORS["dim"],
-        )
-        return
+        if not project_skills_dir.exists() or not any(project_skills_dir.iterdir()):
+            console.print("[yellow]No project skills found.[/yellow]")
+            console.print(
+                f"[dim]Project skills will be created in {project_skills_dir}/ when you add them.[/dim]",
+                style=COLORS["dim"],
+            )
+            console.print(
+                "\n[dim]Create a project skill:\n  deepagents skills create my-skill --project[/dim]",
+                style=COLORS["dim"],
+            )
+            return
 
-    console.print("\n[bold]Available Skills:[/bold]\n", style=COLORS["primary"])
+        skills = list_skills(user_skills_dir=None, project_skills_dir=project_skills_dir)
+        console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
+    else:
+        # Load both user and project skills
+        skills = list_skills(user_skills_dir=user_skills_dir, project_skills_dir=project_skills_dir)
 
-    for skill in skills:
-        skill_path = Path(skill["path"])
-        skill_dir_name = skill_path.parent.name
+        if not skills:
+            console.print("[yellow]No skills found.[/yellow]")
+            console.print(
+                "[dim]Skills will be created in ~/.deepagents/agent/skills/ when you add them.[/dim]",
+                style=COLORS["dim"],
+            )
+            console.print(
+                "\n[dim]Create your first skill:\n  deepagents skills create my-skill[/dim]",
+                style=COLORS["dim"],
+            )
+            return
 
-        console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
-        console.print(f"    {skill['description']}", style=COLORS["dim"])
-        console.print(
-            f"    Location: ~/.deepagents/agent/skills/{skill_dir_name}/", style=COLORS["dim"]
-        )
-        console.print()
+        console.print("\n[bold]Available Skills:[/bold]\n", style=COLORS["primary"])
+
+    # Group skills by source
+    user_skills = [s for s in skills if s["source"] == "user"]
+    project_skills_list = [s for s in skills if s["source"] == "project"]
+
+    # Show user skills
+    if user_skills and not project:
+        console.print("[bold cyan]User Skills:[/bold cyan]", style=COLORS["primary"])
+        for skill in user_skills:
+            skill_path = Path(skill["path"])
+            console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
+            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
+            console.print()
+
+    # Show project skills
+    if project_skills_list:
+        if not project and user_skills:
+            console.print()
+        console.print("[bold green]Project Skills:[/bold green]", style=COLORS["primary"])
+        for skill in project_skills_list:
+            skill_path = Path(skill["path"])
+            console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
+            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
+            console.print()
 
 
-def _create(skill_name: str) -> None:
-    """Create a new skill with a template SKILL.md file for the default agent."""
+def _create(skill_name: str, agent: str, project: bool = False) -> None:
+    """Create a new skill with a template SKILL.md file.
+
+    Args:
+        skill_name: Name of the skill to create.
+        agent: Agent identifier for skills
+        project: If True, create in project skills directory.
+            If False, create in user skills directory.
+    """
     # Validate skill name first
-    is_valid, error_msg = _validate_skill_name(skill_name)
+    is_valid, error_msg = _validate_name(skill_name)
     if not is_valid:
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
         console.print(
@@ -133,8 +179,20 @@ def _create(skill_name: str) -> None:
         )
         return
 
-    # Use default agent's skills directory
-    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
+    # Determine target directory
+    settings = Settings.from_environment()
+    if project:
+        if not settings.project_root:
+            console.print("[bold red]Error:[/bold red] Not in a project directory.")
+            console.print(
+                "[dim]Project skills require a .git directory in the project root.[/dim]",
+                style=COLORS["dim"],
+            )
+            return
+        skills_dir = settings.ensure_project_skills_dir()
+    else:
+        skills_dir = settings.ensure_user_skills_dir(agent)
+
     skill_dir = skills_dir / skill_name
 
     # Validate the resolved path is within skills_dir
@@ -243,13 +301,26 @@ This skill directory can include supporting files referenced in the instructions
     )
 
 
-def _info(skill_name: str) -> None:
-    """Show detailed information about a specific skill for the default agent."""
-    # Use default agent's skills directory
-    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
+def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> None:
+    """Show detailed information about a specific skill.
 
-    # Load skills
-    skills = list_skills(skills_dir)
+    Args:
+        skill_name: Name of the skill to show info for.
+        agent: Agent identifier for skills (default: agent).
+        project: If True, only search in project skills. If False, search in both user and project skills.
+    """
+    settings = Settings.from_environment()
+    user_skills_dir = settings.get_user_skills_dir(agent)
+    project_skills_dir = settings.get_project_skills_dir()
+
+    # Load skills based on --project flag
+    if project:
+        if not project_skills_dir:
+            console.print("[bold red]Error:[/bold red] Not in a project directory.")
+            return
+        skills = list_skills(user_skills_dir=None, project_skills_dir=project_skills_dir)
+    else:
+        skills = list_skills(user_skills_dir=user_skills_dir, project_skills_dir=project_skills_dir)
 
     # Find the skill
     skill = next((s for s in skills if s["name"] == skill_name), None)
@@ -265,7 +336,14 @@ def _info(skill_name: str) -> None:
     skill_path = Path(skill["path"])
     skill_content = skill_path.read_text()
 
-    console.print(f"\n[bold]Skill: {skill['name']}[/bold]\n", style=COLORS["primary"])
+    # Determine source label
+    source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
+    source_color = "green" if skill["source"] == "project" else "cyan"
+
+    console.print(
+        f"\n[bold]Skill: {skill['name']}[/bold] [bold {source_color}]({source_label})[/bold {source_color}]\n",
+        style=COLORS["primary"],
+    )
     console.print(f"[bold]Description:[/bold] {skill['description']}\n", style=COLORS["dim"])
     console.print(f"[bold]Location:[/bold] {skill_path.parent}/\n", style=COLORS["dim"])
 
@@ -297,8 +375,18 @@ def setup_skills_parser(
     skills_subparsers = skills_parser.add_subparsers(dest="skills_command", help="Skills command")
 
     # Skills list
-    skills_subparsers.add_parser(
+    list_parser = skills_subparsers.add_parser(
         "list", help="List all available skills", description="List all available skills"
+    )
+    list_parser.add_argument(
+        "--agent",
+        default="agent",
+        help="Agent identifier for skills (default: agent)",
+    )
+    list_parser.add_argument(
+        "--project",
+        action="store_true",
+        help="Show only project-level skills",
     )
 
     # Skills create
@@ -308,6 +396,16 @@ def setup_skills_parser(
         description="Create a new skill with a template SKILL.md file",
     )
     create_parser.add_argument("name", help="Name of the skill to create (e.g., web-research)")
+    create_parser.add_argument(
+        "--agent",
+        default="agent",
+        help="Agent identifier for skills (default: agent)",
+    )
+    create_parser.add_argument(
+        "--project",
+        action="store_true",
+        help="Create skill in project directory instead of user directory",
+    )
 
     # Skills info
     info_parser = skills_subparsers.add_parser(
@@ -316,6 +414,16 @@ def setup_skills_parser(
         description="Show detailed information about a specific skill",
     )
     info_parser.add_argument("name", help="Name of the skill to show info for")
+    info_parser.add_argument(
+        "--agent",
+        default="agent",
+        help="Agent identifier for skills (default: agent)",
+    )
+    info_parser.add_argument(
+        "--project",
+        action="store_true",
+        help="Search only in project skills",
+    )
     return skills_parser
 
 
@@ -325,12 +433,23 @@ def execute_skills_command(args: argparse.Namespace) -> None:
     Args:
         args: Parsed command line arguments with skills_command attribute
     """
+    # validate agent argument
+    if args.agent:
+        is_valid, error_msg = _validate_name(args.agent)
+        if not is_valid:
+            console.print(f"[bold red]Error:[/bold red] Invalid agent name: {error_msg}")
+            console.print(
+                "[dim]Agent names must only contain letters, numbers, hyphens, and underscores.[/dim]",
+                style=COLORS["dim"],
+            )
+            return
+
     if args.skills_command == "list":
-        _list()
+        _list(agent=args.agent, project=args.project)
     elif args.skills_command == "create":
-        _create(args.name)
+        _create(args.name, agent=args.agent, project=args.project)
     elif args.skills_command == "info":
-        _info(args.name)
+        _info(args.name, agent=args.agent, project=args.project)
     else:
         # No subcommand provided, show help
         console.print("[yellow]Please specify a skills subcommand: list, create, or info[/yellow]")

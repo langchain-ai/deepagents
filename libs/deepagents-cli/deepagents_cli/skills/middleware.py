@@ -5,7 +5,11 @@ This middleware implements Anthropic's "Agent Skills" pattern with progressive d
 2. Inject skills metadata (name + description) into system prompt
 3. Agent reads full SKILL.md content when relevant to a task
 
-Skills directory structure (per-agent):
+Skills directory structure (per-agent + project):
+User-level: ~/.deepagents/{AGENT_NAME}/skills/
+Project-level: {PROJECT_ROOT}/.deepagents/skills/
+
+Example structure:
 ~/.deepagents/{AGENT_NAME}/skills/
 ├── web-research/
 │   ├── SKILL.md        # Required: YAML frontmatter + instructions
@@ -13,6 +17,10 @@ Skills directory structure (per-agent):
 ├── code-review/
 │   ├── SKILL.md
 │   └── checklist.md
+
+.deepagents/skills/
+├── project-specific/
+│   └── SKILL.md        # Project-specific skills
 """
 
 from collections.abc import Awaitable, Callable
@@ -25,6 +33,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langgraph.runtime import Runtime
 
 from deepagents_cli.skills.load import SkillMetadata, list_skills
 
@@ -50,7 +59,7 @@ SKILLS_SYSTEM_PROMPT = """
 
 You have access to a skills library that provides specialized capabilities and domain knowledge.
 
-**Skills Location**: `{skills_dir_absolute}` (displays as `{skills_dir_display}`)
+{skills_locations}
 
 **Available Skills:**
 
@@ -72,21 +81,19 @@ Skills follow a **progressive disclosure** pattern - you know they exist (name +
 
 **Skills are Self-Documenting:**
 - Each SKILL.md tells you exactly what the skill does and how to use it
-- You can explore available skills with `ls {skills_dir_absolute}`
-- You can read any skill's directory with `ls {skills_dir_absolute}/[skill-name]`
+- The skill list above shows the full path for each skill's SKILL.md file
 
 **Executing Skill Scripts:**
-Skills may contain Python scripts or other executable files. Always use absolute paths:
-Example: `bash python {skills_dir_absolute}/web-research/fetch_data.py`
+Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
 
 **Example Workflow:**
 
 User: "Can you research the latest developments in quantum computing?"
 
 1. Check available skills above → See "web-research" skill with its full path
-2. Read the skill using the path shown: `read_file '{skills_dir_absolute}/web-research/SKILL.md'`
+2. Read the skill using the path shown in the list
 3. Follow the skill's research workflow (search → organize → synthesize)
-4. Use any helper scripts with absolute paths: `bash python {skills_dir_absolute}/web-research/script.py`
+4. Use any helper scripts with absolute paths
 
 Remember: Skills are tools to make you more capable and consistent. When in doubt, check if a skill exists for the task!
 """
@@ -100,22 +107,15 @@ class SkillsMiddleware(AgentMiddleware):
     - Injects skills list into system prompt for discoverability
     - Agent reads full SKILL.md content when a skill is relevant (progressive disclosure)
 
+    Supports both user-level and project-level skills:
+    - User skills: ~/.deepagents/{AGENT_NAME}/skills/
+    - Project skills: {PROJECT_ROOT}/.deepagents/skills/
+    - Project skills override user skills with the same name
+
     Args:
-        skills_dir: Path to the skills directory (per-agent).
+        skills_dir: Path to the user-level skills directory (per-agent).
         assistant_id: The agent identifier for path references in prompts.
-
-    Example:
-        ```python
-        from pathlib import Path
-        from deepagents_cli.skills import SkillsMiddleware
-
-        # Set up skills directory (per-agent)
-        agent_dir = Path.home() / ".deepagents" / "agent"
-        skills_dir = agent_dir / "skills"
-
-        # Create middleware
-        middleware = SkillsMiddleware(skills_dir=skills_dir, assistant_id="agent")
-        ```
+        project_skills_dir: Optional path to project-level skills directory.
     """
 
     state_schema = SkillsState
@@ -125,43 +125,69 @@ class SkillsMiddleware(AgentMiddleware):
         *,
         skills_dir: str | Path,
         assistant_id: str,
+        project_skills_dir: str | Path | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
         Args:
-            skills_dir: Path to the skills directory.
+            skills_dir: Path to the user-level skills directory.
             assistant_id: The agent identifier.
+            project_skills_dir: Optional path to the project-level skills directory.
         """
         self.skills_dir = Path(skills_dir).expanduser()
         self.assistant_id = assistant_id
-        # Store both display path (with ~) and absolute path for file operations
-        self.skills_dir_display = f"~/.deepagents/{assistant_id}/skills"
-        self.skills_dir_absolute = str(self.skills_dir)
+        self.project_skills_dir = (
+            Path(project_skills_dir).expanduser() if project_skills_dir else None
+        )
+        # Store display paths for prompts
+        self.user_skills_display = f"~/.deepagents/{assistant_id}/skills"
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
+
+    def _format_skills_locations(self) -> str:
+        """Format skills locations for display in system prompt."""
+        locations = [f"**User Skills**: `{self.user_skills_display}`"]
+        if self.project_skills_dir:
+            locations.append(
+                f"**Project Skills**: `{self.project_skills_dir}` (overrides user skills)"
+            )
+        return "\n".join(locations)
 
     def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
         """Format skills metadata for display in system prompt."""
         if not skills:
-            return f"(No skills available yet. You can create skills in {self.skills_dir_display}/)"
+            locations = [f"{self.user_skills_display}/"]
+            if self.project_skills_dir:
+                locations.append(f"{self.project_skills_dir}/")
+            return f"(No skills available yet. You can create skills in {' or '.join(locations)})"
+
+        # Group skills by source
+        user_skills = [s for s in skills if s["source"] == "user"]
+        project_skills = [s for s in skills if s["source"] == "project"]
 
         lines = []
-        for skill in skills:
-            skill_dir = Path(skill["path"]).parent.name
-            lines.append(f"- **{skill['name']}**: {skill['description']}")
-            lines.append(
-                f"  → Read `{self.skills_dir_absolute}/{skill_dir}/SKILL.md` for full instructions"
-            )
+
+        # Show user skills
+        if user_skills:
+            lines.append("**User Skills:**")
+            for skill in user_skills:
+                lines.append(f"- **{skill['name']}**: {skill['description']}")
+                lines.append(f"  → Read `{skill['path']}` for full instructions")
+            lines.append("")
+
+        # Show project skills
+        if project_skills:
+            lines.append("**Project Skills:**")
+            for skill in project_skills:
+                lines.append(f"- **{skill['name']}**: {skill['description']}")
+                lines.append(f"  → Read `{skill['path']}` for full instructions")
 
         return "\n".join(lines)
 
-    def before_agent(
-        self,
-        state: SkillsState,
-        runtime,
-    ) -> SkillsStateUpdate | None:
+    def before_agent(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution.
 
-        This runs once at session start to discover available skills.
+        This runs once at session start to discover available skills from both
+        user-level and project-level directories.
 
         Args:
             state: Current agent state.
@@ -171,8 +197,11 @@ class SkillsMiddleware(AgentMiddleware):
             Updated state with skills_metadata populated.
         """
         # We re-load skills on every new interaction with the agent to capture
-        # any changes in the skills directory.
-        skills = list_skills(self.skills_dir)
+        # any changes in the skills directories.
+        skills = list_skills(
+            user_skills_dir=self.skills_dir,
+            project_skills_dir=self.project_skills_dir,
+        )
         return SkillsStateUpdate(skills_metadata=skills)
 
     def wrap_model_call(
@@ -194,14 +223,14 @@ class SkillsMiddleware(AgentMiddleware):
         # Get skills metadata from state
         skills_metadata = request.state.get("skills_metadata", [])
 
-        # Format skills list
+        # Format skills locations and list
+        skills_locations = self._format_skills_locations()
         skills_list = self._format_skills_list(skills_metadata)
 
         # Format the skills documentation
         skills_section = self.system_prompt_template.format(
+            skills_locations=skills_locations,
             skills_list=skills_list,
-            skills_dir_absolute=self.skills_dir_absolute,
-            skills_dir_display=self.skills_dir_display,
         )
 
         if request.system_prompt:
@@ -229,14 +258,14 @@ class SkillsMiddleware(AgentMiddleware):
         state = cast("SkillsState", request.state)
         skills_metadata = state.get("skills_metadata", [])
 
-        # Format skills list
+        # Format skills locations and list
+        skills_locations = self._format_skills_locations()
         skills_list = self._format_skills_list(skills_metadata)
 
         # Format the skills documentation
         skills_section = self.system_prompt_template.format(
+            skills_locations=skills_locations,
             skills_list=skills_list,
-            skills_dir_absolute=self.skills_dir_absolute,
-            skills_dir_display=self.skills_dir_display,
         )
 
         # Inject into system prompt

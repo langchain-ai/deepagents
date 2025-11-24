@@ -1,4 +1,4 @@
-.PHONY: all lint format test help
+.PHONY: all lint format test help run test_integration test_watch
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -19,6 +19,9 @@ test_integration:
 
 test_watch:
 	uv run ptw . -- $(TEST_FILE)
+
+run:
+	uvx --no-cache --reinstall .
 
 
 ######################

@@ -1,4 +1,4 @@
-"""Test importing files"""
+"""Test importing files."""
 
 
 def test_imports() -> None:

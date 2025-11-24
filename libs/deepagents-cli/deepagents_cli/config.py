@@ -75,7 +75,7 @@ def _find_project_root(start_path: Path | None = None) -> Path | None:
     current = Path(start_path or Path.cwd()).resolve()
 
     # Walk up the directory tree
-    for parent in [current] + list(current.parents):
+    for parent in [current, *list(current.parents)]:
         git_dir = parent / ".git"
         if git_dir.exists():
             return parent
@@ -134,6 +134,7 @@ class Settings:
     # API keys
     openai_api_key: str | None
     anthropic_api_key: str | None
+    google_api_key: str | None
     tavily_api_key: str | None
 
     # Project information
@@ -152,6 +153,7 @@ class Settings:
         # Detect API keys
         openai_key = os.environ.get("OPENAI_API_KEY")
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+        google_key = os.environ.get("GOOGLE_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
 
         # Detect project
@@ -160,6 +162,7 @@ class Settings:
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
+            google_api_key=google_key,
             tavily_api_key=tavily_key,
             project_root=project_root,
         )
@@ -175,6 +178,11 @@ class Settings:
         return self.anthropic_api_key is not None
 
     @property
+    def has_google(self) -> bool:
+        """Check if Google API key is configured."""
+        return self.google_api_key is not None
+
+    @property
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
         return self.tavily_api_key is not None
@@ -183,6 +191,15 @@ class Settings:
     def has_project(self) -> bool:
         """Check if currently in a git project."""
         return self.project_root is not None
+
+    @property
+    def user_deepagents_dir(self) -> Path:
+        """Get the base user-level .deepagents directory.
+
+        Returns:
+            Path to ~/.deepagents
+        """
+        return Path.home() / ".deepagents"
 
     def get_user_agent_md_path(self, agent_name: str) -> Path:
         """Get user-level agent.md path for a specific agent.
@@ -227,10 +244,11 @@ class Settings:
             Path to ~/.deepagents/{agent_name}
         """
         if not self._is_valid_agent_name(agent_name):
-            raise ValueError(
+            msg = (
                 f"Invalid agent name: {agent_name!r}. "
                 "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
             )
+            raise ValueError(msg)
         return Path.home() / ".deepagents" / agent_name
 
     def ensure_agent_dir(self, agent_name: str) -> Path:
@@ -243,10 +261,11 @@ class Settings:
             Path to ~/.deepagents/{agent_name}
         """
         if not self._is_valid_agent_name(agent_name):
-            raise ValueError(
+            msg = (
                 f"Invalid agent name: {agent_name!r}. "
                 "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
             )
+            raise ValueError(msg)
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
         return agent_dir
@@ -264,6 +283,52 @@ class Settings:
         project_deepagents_dir.mkdir(parents=True, exist_ok=True)
         return project_deepagents_dir
 
+    def get_user_skills_dir(self, agent_name: str) -> Path:
+        """Get user-level skills directory path for a specific agent.
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Path to ~/.deepagents/{agent_name}/skills/
+        """
+        return self.get_agent_dir(agent_name) / "skills"
+
+    def ensure_user_skills_dir(self, agent_name: str) -> Path:
+        """Ensure user-level skills directory exists and return its path.
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Path to ~/.deepagents/{agent_name}/skills/
+        """
+        skills_dir = self.get_user_skills_dir(agent_name)
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        return skills_dir
+
+    def get_project_skills_dir(self) -> Path | None:
+        """Get project-level skills directory path.
+
+        Returns:
+            Path to {project_root}/.deepagents/skills/, or None if not in a project
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".deepagents" / "skills"
+
+    def ensure_project_skills_dir(self) -> Path | None:
+        """Ensure project-level skills directory exists and return its path.
+
+        Returns:
+            Path to {project_root}/.deepagents/skills/, or None if not in a project
+        """
+        if not self.project_root:
+            return None
+        skills_dir = self.get_project_skills_dir()
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        return skills_dir
+
 
 # Global settings instance (initialized once)
 settings = Settings.from_environment()
@@ -272,8 +337,9 @@ settings = Settings.from_environment()
 class SessionState:
     """Holds mutable session state (auto-approve mode, etc)."""
 
-    def __init__(self, auto_approve: bool = False) -> None:
+    def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
         self.auto_approve = auto_approve
+        self.no_splash = no_splash
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
         self.thread_id = str(uuid.uuid4())
@@ -324,10 +390,21 @@ def create_model() -> BaseChatModel:
             # causes issues in IDEs/type checkers.
             max_tokens=20_000,  # type: ignore[arg-type]
         )
+    if settings.has_google:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
+        console.print(f"[dim]Using Google Gemini model: {model_name}[/dim]")
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            temperature=0,
+            max_tokens=None,
+        )
     console.print("[bold red]Error:[/bold red] No API key configured.")
     console.print("\nPlease set one of the following environment variables:")
     console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
     console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
+    console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
     console.print("\nExample:")
     console.print("  export OPENAI_API_KEY=your_api_key_here")
     console.print("\nOr add it to your .env file.")

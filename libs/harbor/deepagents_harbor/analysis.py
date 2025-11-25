@@ -224,9 +224,18 @@ def print_summary(trials: list[Trial]) -> None:
 
 
 ANALYSIS_PROMPT = """\
-# Trajectory Failure Analysis Prompt
+# Trajectory Analysis Prompt
 
-You are analyzing a failed agent execution trajectory. Your goal is to identify where and why the agent failed, and suggest potential improvements.
+You are analyzing an agent execution trajectory. Your goal is to identify what happened during execution and, if the trial failed, determine why.
+
+## IMPORTANT: Trial Status
+
+The trial status will be explicitly provided to you. This status is the ground truth:
+- **FAILED**: The agent did not successfully complete the task (reward = 0 or exception occurred)
+- **PENDING**: The trial has not finished executing yet
+- **COMPLETED**: The agent successfully completed the task (reward = 1)
+
+**If the status is FAILED, then something went wrong, even if the agent reported success or the trajectory appears successful.** Your job is to identify what went wrong by carefully examining the details.
 
 ## Trajectory Format
 
@@ -238,17 +247,21 @@ The trajectory is in ATIF (Agent Trajectory Interchange Format) with sequential 
 
 ## Analysis Task
 
-Review the trajectory and provide:
+Review the trajectory with careful attention to subtle details and provide:
 
-### 1. FAILURE IDENTIFICATION
-- **Failure Step**: Which step number failed?
-- **What Failed**: Describe what went wrong (tool error, incorrect logic, incomplete execution, etc.)
+### 1. FAILURE IDENTIFICATION (for FAILED trials)
+- **Failure Step**: Which step number failed or where did things go wrong?
+- **What Failed**: Describe what went wrong (tool error, incorrect logic, incomplete execution, subtle mistakes, etc.)
 - **Error Details**: Quote any error messages or failure indicators
+- **Subtle Issues**: Look for problems that aren't obvious errors (wrong paths, incorrect assumptions, missing steps, etc.)
 
 ### 2. EXECUTION ANALYSIS
 - **What the Agent Did**: Trace the agent's actions step by step
 - **Where It Went Wrong**: Identify the specific point where the agent diverged from the correct approach
-- **Tool Usage Issues**: Were the right tools used with correct parameters?
+- **Tool Usage Issues**: Were the right tools used with correct parameters? Pay attention to:
+  - File paths (absolute vs. relative, correct locations)
+  - Parameter values (exact matches, formatting)
+  - Logical correctness of actions
 
 ### 3. ROOT CAUSE
 Determine the underlying cause:
@@ -258,6 +271,7 @@ Determine the underlying cause:
 - Is this incomplete execution (agent stopped too early)?
 - Is this a resource/permission error?
 - Is this agent confusion about the task requirements?
+- Is this a subtle mistake (wrong path type, wrong location, incorrect value)?
 
 ### 4. SUGGESTED IMPROVEMENTS
 If clear from the trajectory, suggest:
@@ -267,10 +281,13 @@ If clear from the trajectory, suggest:
 
 ## Guidelines
 
+- **Pay close attention to details**: Even if the agent reported success, if the trial failed, find what went wrong
+- Look for subtle issues like path mistakes, incorrect values, or logical errors
 - Be concise but specific
 - Quote exact error messages when present
 - Focus on actionable insights
 - Identify patterns in agent behavior that led to failure
+- Don't assume the agent is correct just because it reported success
 """  # noqa: E501
 
 
@@ -306,9 +323,11 @@ async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> O
     # Format trajectory as JSON string for the prompt
     trajectory_json = json.dumps(trajectory_data, indent=2)
 
-    # Create the user message with the trajectory
+    # Create the user message with the trajectory and explicit status
     status_desc = "failed" if trial.status == TrialStatus.FAILED else "pending"
+    status_upper = trial.status.value.upper()
     user_message = (
+        f"**TRIAL STATUS: {status_upper}**\n\n"
         f"Please analyze this {status_desc} agent trajectory:\n\n```json\n{trajectory_json}\n```\n"
     )
 

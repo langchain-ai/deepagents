@@ -4,12 +4,11 @@ Analyze job trials from a jobs directory.
 
 Scans through trial directories, extracts trajectory data and success metrics.
 """
+import argparse
 import asyncio
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import argparse
 
 
 @dataclass

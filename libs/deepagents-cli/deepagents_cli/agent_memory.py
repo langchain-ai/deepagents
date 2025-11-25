@@ -2,7 +2,8 @@
 
 import contextlib
 from collections.abc import Awaitable, Callable
-from typing import NotRequired, TypedDict, cast
+from typing_extensions import NotRequired
+from typing import TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,

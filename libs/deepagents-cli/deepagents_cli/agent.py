@@ -412,7 +412,4 @@ def create_agent_with_config(
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
     ).with_config(config)
-
-    agent.checkpointer = InMemorySaver()
-
     return agent, composite_backend

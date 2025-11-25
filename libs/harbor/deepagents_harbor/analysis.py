@@ -370,9 +370,13 @@ async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> O
 
     # Add reference solution if available
     if solution_content:
-        user_message += f"**REFERENCE SOLUTION (solve.sh):**\n\n```bash\n{solution_content}\n```\n\n"
+        user_message += (
+            f"**REFERENCE SOLUTION (solve.sh):**\n\n```bash\n{solution_content}\n```\n\n"
+        )
 
-    user_message += f"Please analyze this {status_desc} agent trajectory:\n\n```json\n{trajectory_json}\n```\n"
+    user_message += (
+        f"Please analyze this {status_desc} agent trajectory:\n\n```json\n{trajectory_json}\n```\n"
+    )
 
     # Run the deep agent analysis
     result = analysis_agent.invoke({"messages": [{"role": "user", "content": user_message}]})

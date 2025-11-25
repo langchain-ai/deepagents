@@ -251,47 +251,32 @@ Review the trajectory with careful attention to subtle details and provide:
 
 ### 1. FAILURE IDENTIFICATION (for FAILED trials)
 
-**CRITICAL: First compare what the user requested vs what the agent actually did:**
-- If user said "create a file called `hello.txt`", the agent should create `hello.txt` (relative path), NOT `/hello.txt` (absolute path)
-- If user said "write X to a file", verify the agent wrote exactly X, not a variation
-- Look for any deviation between the user's exact request and the agent's actual actions
+**Start by comparing the user's request to the agent's actual actions:**
+- What exactly did the user ask for? (Quote the specific request)
+- What exactly did the agent do? (Quote the actual tool calls and parameters)
+- Are there any discrepancies between what was requested and what was executed?
 
 **Then identify:**
 - **Failure Step**: Which step number failed or where did things go wrong?
 - **What Failed**: Describe what went wrong (tool error, incorrect logic, incomplete execution, subtle mistakes, etc.)
 - **Error Details**: Quote any error messages or failure indicators
-- **Subtle Issues**: Look for problems that aren't obvious errors:
-  - **Path mismatches**: `/path/to/file` vs `path/to/file` are completely different
-  - Incorrect assumptions about working directory
-  - Missing steps or incomplete execution
+- **Subtle Issues**: Look for problems that aren't obvious errors - small differences in parameters, values, or execution that don't match the request
 
 ### 2. EXECUTION ANALYSIS
-
-**Compare user request to agent actions:**
-- Quote exactly what the user requested (file names, paths, content, etc.)
-- Quote exactly what the agent did (actual parameters passed to tools)
-- Identify any discrepancies, no matter how small
-
-**Trace execution:**
 - **What the Agent Did**: Trace the agent's actions step by step
-- **Where It Went Wrong**: Identify the specific point where the agent diverged from the correct approach
-- **Tool Usage Issues**: Were the right tools used with correct parameters?
-  - **File paths are critical**: `hello.txt` (relative) vs `/hello.txt` (absolute) are different files in different locations
-  - Parameter values must match exactly
-  - Logical correctness of actions
+- **What Was Expected**: Based on the user's request, what should have happened?
+- **Where It Went Wrong**: Identify the specific point where the agent's actions diverged from what was needed
+- **Tool Usage**: Examine all tool parameters carefully - verify they match what the user requested
 
 ### 3. ROOT CAUSE
-Determine the underlying cause (prioritize based on likelihood):
-- **Path mismatch** (agent used wrong path type or location - VERY COMMON)?
-  - Used absolute path when relative was needed, or vice versa
-  - Created file in wrong directory
+Determine the underlying cause:
 - Is this incorrect tool usage (wrong tool or wrong parameters)?
 - Is this a logical/reasoning error (agent made wrong decision)?
 - Is this a tool execution error (tool failed or returned error)?
 - Is this incomplete execution (agent stopped too early)?
 - Is this a resource/permission error?
 - Is this agent confusion about the task requirements?
-- Is this a subtle mistake (incorrect value, formatting issue)?
+- Is this a subtle parameter mismatch (values that look correct but differ from the request)?
 
 ### 4. SUGGESTED IMPROVEMENTS
 If clear from the trajectory, suggest:

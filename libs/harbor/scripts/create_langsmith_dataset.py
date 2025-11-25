@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from harbor.models.dataset_item import DownloadedDatasetItem
 from harbor.registry.client import RegistryClient
 from langsmith import Client
-from deepagents_harbor.langsmith_utils import create_example_id_from_instruction
+from deepagents_harbor.tracing import create_example_id_from_instruction
 
 load_dotenv()
 

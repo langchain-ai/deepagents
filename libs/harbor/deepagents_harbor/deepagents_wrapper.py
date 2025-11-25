@@ -24,7 +24,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from deepagents_harbor.backend import HarborSandboxFallback
-from deepagents_harbor.langsmith_utils import create_example_id_from_instruction
+from deepagents_harbor.tracing import create_example_id_from_instruction
 
 
 class DeepAgentsWrapper(BaseAgent):

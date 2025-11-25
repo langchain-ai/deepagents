@@ -16,6 +16,7 @@ Note on testing approach:
 """
 
 import os
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from io import StringIO
@@ -23,11 +24,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from rich.console import Console
 
 from deepagents_cli import config as config_module
 from deepagents_cli import main as main_module
-from deepagents_cli.config import SessionState
+from deepagents_cli.agent import create_agent_with_config
+from deepagents_cli.config import SessionState, create_model
 from deepagents_cli.main import simple_cli
 
 
@@ -42,7 +45,7 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
     Yields:
         tuple: (working_directory: Path, console_output: str)
     """
-    original_dir = os.getcwd()
+    original_dir = Path.cwd()
     os.chdir(tmp_path)
 
     # Capture console output
@@ -69,35 +72,37 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
 
             # Mock console to capture output
             # Use patch.object() to fail immediately if attributes don't exist
-            with patch.object(main_module, "console", captured_console):
-                with patch.object(config_module, "console", captured_console):
-                    # Import after patching
-                    from deepagents_cli.agent import create_agent_with_config
-                    from deepagents_cli.config import create_model
+            with (
+                patch.object(main_module, "console", captured_console),
+                patch.object(config_module, "console", captured_console),
+            ):
+                # Import after patching
+                from deepagents_cli.agent import create_agent_with_config
+                from deepagents_cli.config import create_model
 
-                    # Create real agent with real model (will use env var or fail gracefully)
-                    model = create_model()
-                    agent, backend = create_agent_with_config(
-                        model=model,
-                        assistant_id="test_agent",
-                        tools=[],
-                        sandbox=None,
-                        sandbox_type=None,
-                    )
+                # Create real agent with real model (will use env var or fail gracefully)
+                model = create_model()
+                agent, backend = create_agent_with_config(
+                    model=model,
+                    assistant_id="test_agent",
+                    tools=[],
+                    sandbox=None,
+                    sandbox_type=None,
+                )
 
-                    # Create session state with auto-approve
-                    session_state = SessionState(auto_approve=True)
+                # Create session state with auto-approve
+                session_state = SessionState(auto_approve=True)
 
-                    # Run the CLI
-                    await simple_cli(
-                        agent=agent,
-                        assistant_id="test_agent",
-                        session_state=session_state,
-                        baseline_tokens=0,
-                        backend=backend,
-                        sandbox_type=None,
-                        setup_script_path=None,
-                    )
+                # Run the CLI
+                await simple_cli(
+                    agent=agent,
+                    assistant_id="test_agent",
+                    session_state=session_state,
+                    baseline_tokens=0,
+                    backend=backend,
+                    sandbox_type=None,
+                    setup_script_path=None,
+                )
 
             # Verify that our mocks were actually used (ensures patching worked)
             mock_prompt.assert_called_once()
@@ -107,6 +112,47 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
 
         # Yield the directory and captured output
         yield tmp_path, output.getvalue()
+
+    finally:
+        os.chdir(original_dir)
+
+
+@asynccontextmanager
+async def run_agent_task_with_hitl(task: str, tmp_path: Path) -> AsyncIterator:
+    """Context manager to run an agent task with HIL and stream events.
+
+    Args:
+        task: The task string to give to the agent
+        tmp_path: Temporary directory for the test
+
+    Yields:
+        AsyncGenerator: Stream of events from the agent
+    """
+    original_dir = Path.cwd()
+    os.chdir(tmp_path)
+
+    try:
+        # Create agent with HIL enabled (no auto-approve)
+        model = create_model()
+        checkpointer = MemorySaver()
+        agent, _backend = create_agent_with_config(
+            model=model,
+            assistant_id="test_agent",
+            tools=[],
+            sandbox=None,
+            sandbox_type=None,
+        )
+        agent.checkpointer = checkpointer
+
+        # Create config with thread_id for checkpointing
+        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+        # Yield the stream generator for the test to consume
+        yield agent.astream(
+            {"messages": [{"role": "user", "content": task}]},
+            config=config,
+            stream_mode="values",
+        )
 
     finally:
         os.chdir(original_dir)
@@ -156,3 +202,73 @@ class TestSimpleTasks:
 
             # Verify console output captured the interaction
             assert len(console_output) > 0, "Console output should not be empty"
+
+
+class TestAgentBehavior:
+    """A collection of tests for agent behavior (non-CLI level)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(120)
+    async def test_run_command_calls_shell_tool(self, tmp_path: Path) -> None:
+        """Test that 'run make format' calls shell tool with 'make format' command.
+
+        This test verifies that when a user says "run make format", the agent
+        correctly interprets this as a shell command and calls the shell tool
+        with just "make format" (not including the word "run").
+
+        The test stops at the interrupt (HITL approval point) before the shell
+        tool is actually executed, to verify the correct command is being passed.
+        """
+        # Mock the settings to use a fresh filesystem in tmp_path
+        from deepagents_cli.config import Settings
+
+        mock_settings = Settings.from_environment(start_path=tmp_path)
+
+        # Patch settings in all modules that import it
+        patches = [
+            patch("deepagents_cli.config.settings", mock_settings),
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.file_ops.settings", mock_settings),
+            patch("deepagents_cli.tools.settings", mock_settings),
+            patch("deepagents_cli.token_utils.settings", mock_settings),
+        ]
+
+        # Apply all patches using ExitStack for cleaner nesting
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+
+            async with run_agent_task_with_hitl("run make format", tmp_path) as stream:
+                # Stream events and capture the final result
+                events = []
+                result = {}
+                async for event in stream:
+                    events.append(event)
+                    result = event
+
+                # Verify that we captured events
+                assert len(events) > 0, "Expected to receive events from agent stream"
+
+                # Verify that an interrupt occurred (shell tool requires approval)
+                assert "__interrupt__" in result, "Expected shell tool to trigger HITL interrupt"
+                assert result["__interrupt__"] is not None
+
+                # Extract interrupt information
+                interrupts = result["__interrupt__"]
+                assert len(interrupts) > 0, "Expected at least one interrupt"
+
+                interrupt_value = interrupts[0].value
+                action_requests = interrupt_value.get("action_requests", [])
+
+                # Verify that a shell tool call is present
+                shell_calls = [req for req in action_requests if req.get("name") == "shell"]
+                assert len(shell_calls) > 0, "Expected at least one shell tool call"
+
+                # Verify the shell command is "make format" (not "run make format")
+                shell_call = shell_calls[0]
+                command = shell_call.get("args", {}).get("command", "")
+                assert command == "make format", (
+                    f"Expected shell command to be 'make format', got: {command}"
+                )

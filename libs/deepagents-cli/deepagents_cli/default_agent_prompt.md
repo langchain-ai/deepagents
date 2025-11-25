@@ -83,6 +83,7 @@ When delegating to subagents:
 
 ### execute_bash
 Execute shell commands. Always quote paths with spaces.
+The bash command will be run from your current working directory.
 Examples: `pytest /foo/bar/tests` (good), `cd /foo/bar && pytest tests` (bad)
 
 ### File Tools

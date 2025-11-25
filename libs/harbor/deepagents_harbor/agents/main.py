@@ -105,7 +105,7 @@ class DeepAgentsWrapper(BaseAgent):
             "recursion_limit": self._max_iterations,
             "configurable": {
                 "thread_id": str(uuid.uuid4()),
-            }
+            },
         }
 
         # Invoke deep agent with LangSmith tracing

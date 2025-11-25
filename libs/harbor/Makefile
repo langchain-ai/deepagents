@@ -23,14 +23,20 @@ test_watch:
 
 # Run jobs
 run-hello-world:
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env docker
+	@mkdir -p jobs/hello-world
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp/hello-world --env docker
 
 run-terminal-bench-modal:
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs-terminal-bench --env modal
+	@mkdir -p jobs/terminal-bench
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs/terminal-bench --env modal
 
 run-terminal-bench-docker:
 	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs/terminal-bench --env docker
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker
+
+run-terminal-bench-runloop:
+	@mkdir -p jobs/terminal-bench
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env runloop
 
 ######################
 # LINTING AND FORMATTING

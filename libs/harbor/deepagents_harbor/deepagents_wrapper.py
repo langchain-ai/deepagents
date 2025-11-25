@@ -5,7 +5,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from deepagents import create_deep_agent
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -23,6 +22,7 @@ from langchain.messages import UsageMetadata
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
+from deepagents import create_deep_agent
 from deepagents_harbor.backend import HarborSandboxFallback
 
 
@@ -91,16 +91,20 @@ class DeepAgentsWrapper(BaseAgent):
         total_prompt_tokens = 0
         total_completion_tokens = 0
 
+        configuration = json.loads(environment.trial_paths.config_path.read_text())
+        job_id = configuration["job_id"]
+
         backend = HarborSandboxFallback(environment)
         deep_agent = create_deep_agent(model=self._model, backend=backend)
 
         config: RunnableConfig = {
             "run_name": f"harbor-deepagent-{environment.session_id}",
-            "tags": ["harbor", "deepagent", self._model_name, environment.session_id],
+            "tags": [self._model_name, environment.session_id],
             "metadata": {
                 "task_instruction": instruction,
                 "model": self._model_name,
                 "session_id": environment.session_id,
+                "job_id": job_id,
             },
             "recursion_limit": self._max_iterations,
             "configurable": {

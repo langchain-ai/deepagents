@@ -6,7 +6,10 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import ExecuteResponse, WriteResult
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    WriteResult,
+)
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 
@@ -475,3 +478,193 @@ def test_composite_backend_execute_with_routed_backends():
     # File operations should still work
     assert "local content" in comp.read("/local.txt")
     assert "persistent content" in comp.read("/memories/persistent.txt")
+
+
+def test_composite_upload_routing(tmp_path: Path):
+    """Test upload_files routing to different backends."""
+    rt = make_runtime("t_upload1")
+    root = tmp_path
+
+    # Create composite with filesystem default and store route
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Upload files to default path (filesystem)
+    default_files = [
+        ("/file1.bin", b"Default content 1"),
+        ("/file2.bin", b"Default content 2"),
+    ]
+    responses = comp.upload_files(default_files)
+    assert len(responses) == 2
+    assert all(r.error is None for r in responses)
+    assert (root / "file1.bin").exists()
+    assert (root / "file2.bin").read_bytes() == b"Default content 2"
+
+    # Upload files to routed path (store)
+    routed_files = [
+        ("/memories/note1.bin", b"Memory content 1"),
+        ("/memories/note2.bin", b"Memory content 2"),
+    ]
+    responses = comp.upload_files(routed_files)
+    assert len(responses) == 2
+    assert all(r.error is None for r in responses)
+
+    # Verify files are accessible in store
+    content1 = comp.read("/memories/note1.bin")
+    assert "Memory content 1" in content1
+
+
+def test_composite_download_routing(tmp_path: Path):
+    """Test download_files routing to different backends."""
+    rt = make_runtime("t_download1")
+    root = tmp_path
+
+    # Create composite with filesystem default and store route
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Pre-populate filesystem backend
+    (root / "local.bin").write_bytes(b"Local binary data")
+
+    # Pre-populate store backend
+    comp.write("/memories/stored.txt", "Stored text data")
+
+    # Download from default path (filesystem)
+    responses = comp.download_files(["/local.bin"])
+    assert len(responses) == 1
+    assert responses[0].path == "/local.bin"
+    assert responses[0].content == b"Local binary data"
+    assert responses[0].error is None
+
+    # Download from routed path (store) - Note: store backend doesn't implement download yet
+    # So this test focuses on routing logic
+    paths_to_download = ["/local.bin"]
+    responses = comp.download_files(paths_to_download)
+    assert len(responses) == 1
+    assert responses[0].path == "/local.bin"
+
+
+def test_composite_upload_download_roundtrip(tmp_path: Path):
+    """Test upload and download roundtrip through composite backend."""
+    rt = make_runtime("t_roundtrip1")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    comp = CompositeBackend(default=fs, routes={})
+
+    # Upload binary content
+    test_content = bytes(range(128))  # Binary data
+    upload_responses = comp.upload_files([("/test.bin", test_content)])
+    assert upload_responses[0].error is None
+
+    # Download it back
+    download_responses = comp.download_files(["/test.bin"])
+    assert download_responses[0].error is None
+    assert download_responses[0].content == test_content
+
+
+def test_composite_partial_success_upload(tmp_path: Path):
+    """Test partial success in batch upload with mixed valid/invalid paths."""
+    rt = make_runtime("t_partial_upload")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    comp = CompositeBackend(default=fs, routes={})
+
+    files = [
+        ("/valid1.bin", b"Valid 1"),
+        ("/../invalid.bin", b"Invalid path"),  # Path traversal
+        ("/valid2.bin", b"Valid 2"),
+    ]
+
+    responses = comp.upload_files(files)
+
+    assert len(responses) == 3
+    # First should succeed
+    assert responses[0].error is None
+    assert (root / "valid1.bin").exists()
+
+    # Second should fail
+    assert responses[1].error == "invalid_path"
+
+    # Third should still succeed (partial success)
+    assert responses[2].error is None
+    assert (root / "valid2.bin").exists()
+
+
+def test_composite_partial_success_download(tmp_path: Path):
+    """Test partial success in batch download with mixed valid/invalid paths."""
+    rt = make_runtime("t_partial_download")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    comp = CompositeBackend(default=fs, routes={})
+
+    # Create one valid file
+    (root / "exists.bin").write_bytes(b"I exist!")
+
+    paths = ["/exists.bin", "/doesnotexist.bin", "/../invalid"]
+    responses = comp.download_files(paths)
+
+    assert len(responses) == 3
+
+    # First should succeed
+    assert responses[0].error is None
+    assert responses[0].content == b"I exist!"
+
+    # Second should fail with file_not_found
+    assert responses[1].error == "file_not_found"
+    assert responses[1].content is None
+
+    # Third should fail with invalid_path
+    assert responses[2].error == "invalid_path"
+    assert responses[2].content is None
+
+
+def test_composite_upload_download_multiple_routes(tmp_path: Path):
+    """Test upload/download with multiple routed backends."""
+    rt = make_runtime("t_multi_route")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store1 = StoreBackend(rt)
+    store2 = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
+
+    # Upload to different backends
+    files = [
+        ("/default.bin", b"Default backend"),
+        ("/memories/mem.bin", b"Memory backend"),
+        ("/archive/arch.bin", b"Archive backend"),
+    ]
+
+    responses = comp.upload_files(files)
+    assert len(responses) == 3
+    assert all(r.error is None for r in responses)
+
+    # Verify routing worked (filesystem file should exist)
+    assert (root / "default.bin").exists()
+    assert (root / "default.bin").read_bytes() == b"Default backend"
+
+
+def test_composite_download_preserves_original_paths(tmp_path: Path):
+    """Test that download responses preserve original composite paths."""
+    rt = make_runtime("t_path_preserve")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    comp = CompositeBackend(default=fs, routes={})
+
+    # Create files
+    (root / "subdir").mkdir()
+    (root / "subdir" / "file.bin").write_bytes(b"Nested file")
+
+    # Download with composite path
+    responses = comp.download_files(["/subdir/file.bin"])
+
+    # Response should have the original composite path, not stripped
+    assert responses[0].path == "/subdir/file.bin"
+    assert responses[0].content == b"Nested file"

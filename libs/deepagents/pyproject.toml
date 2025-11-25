@@ -1,14 +1,14 @@
 [project]
 name = "deepagents"
-version = "0.2.7"
+version = "0.2.8"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "langchain-anthropic>=1.0.0,<2.0.0",
-    "langchain>=1.0.2,<2.0.0",
-    "langchain-core>=1.0.0,<2.0.0",
+    "langchain-anthropic>=1.2.0,<2.0.0",
+    "langchain>=1.1.0,<2.0.0",
+    "langchain-core>=1.1.0,<2.0.0",
     "wcmatch",
 ]
 

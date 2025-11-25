@@ -1,6 +1,9 @@
 """Tests for project-specific memory and dual agent.md loading."""
 
 import os
+from pathlib import Path
+
+import pytest
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import Settings
@@ -10,7 +13,7 @@ from deepagents_cli.skills import SkillsMiddleware
 class TestAgentMemoryMiddleware:
     """Test dual memory loading in AgentMemoryMiddleware."""
 
-    def test_load_user_memory_only(self, tmp_path, monkeypatch):
+    def test_load_user_memory_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test loading user agent.md when no project memory exists."""
         # Mock Path.home() to return tmp_path
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
@@ -26,7 +29,7 @@ class TestAgentMemoryMiddleware:
         non_project_dir.mkdir()
 
         # Change to non-project directory for test
-        original_cwd = os.getcwd()
+        original_cwd = Path.cwd()
         try:
             os.chdir(non_project_dir)
 
@@ -45,7 +48,7 @@ class TestAgentMemoryMiddleware:
         finally:
             os.chdir(original_cwd)
 
-    def test_load_both_memories(self, tmp_path, monkeypatch):
+    def test_load_both_memories(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test loading both user and project agent.md."""
         # Mock Path.home() to return tmp_path
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
@@ -64,7 +67,7 @@ class TestAgentMemoryMiddleware:
         project_md = project_root / ".deepagents" / "agent.md"
         project_md.write_text("Project instructions")
 
-        original_cwd = os.getcwd()
+        original_cwd = Path.cwd()
         try:
             os.chdir(project_root)
 
@@ -83,7 +86,7 @@ class TestAgentMemoryMiddleware:
         finally:
             os.chdir(original_cwd)
 
-    def test_memory_not_reloaded_if_already_in_state(self, tmp_path):
+    def test_memory_not_reloaded_if_already_in_state(self, tmp_path: Path) -> None:
         """Test that memory is not reloaded if already in state."""
         agent_dir = tmp_path / ".deepagents" / "test_agent"
         agent_dir.mkdir(parents=True)
@@ -104,7 +107,7 @@ class TestAgentMemoryMiddleware:
 class TestSkillsPathResolution:
     """Test skills path resolution with per-agent structure."""
 
-    def test_skills_middleware_paths(self, tmp_path):
+    def test_skills_middleware_paths(self, tmp_path: Path) -> None:
         """Test that skills middleware uses correct per-agent paths."""
         agent_dir = tmp_path / ".deepagents" / "test_agent"
         skills_dir = agent_dir / "skills"
@@ -117,7 +120,7 @@ class TestSkillsPathResolution:
         assert middleware.skills_dir_display == "~/.deepagents/test_agent/skills"
         assert middleware.skills_dir_absolute == str(skills_dir)
 
-    def test_skills_dir_per_agent(self, tmp_path):
+    def test_skills_dir_per_agent(self, tmp_path: Path) -> None:
         """Test that different agents have separate skills directories."""
         from deepagents_cli.skills import SkillsMiddleware
 

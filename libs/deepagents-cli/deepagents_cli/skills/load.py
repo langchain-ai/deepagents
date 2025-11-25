@@ -24,8 +24,10 @@ description: Structured approach to conducting thorough web research
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Maximum size for SKILL.md files (10MB)
 MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
@@ -42,6 +44,9 @@ class SkillMetadata(TypedDict):
 
     path: str
     """Path to the SKILL.md file."""
+
+    source: str
+    """Source of the skill ('user' or 'project')."""
 
 
 def _is_safe_path(path: Path, base_dir: Path) -> bool:
@@ -84,14 +89,15 @@ def _is_safe_path(path: Path, base_dir: Path) -> bool:
         return False
 
 
-def _parse_skill_metadata(skill_md_path: Path) -> SkillMetadata | None:
+def _parse_skill_metadata(skill_md_path: Path, source: str) -> SkillMetadata | None:
     """Parse YAML frontmatter from a SKILL.md file.
 
     Args:
         skill_md_path: Path to the SKILL.md file.
+        source: Source of the skill ('user' or 'project').
 
     Returns:
-        SkillMetadata with name, description, and path, or None if parsing fails.
+        SkillMetadata with name, description, path, and source, or None if parsing fails.
     """
     try:
         # Security: Check file size to prevent DoS attacks
@@ -128,6 +134,7 @@ def _parse_skill_metadata(skill_md_path: Path) -> SkillMetadata | None:
             name=metadata["name"],
             description=metadata["description"],
             path=str(skill_md_path),
+            source=source,
         )
 
     except (OSError, UnicodeDecodeError):
@@ -135,8 +142,8 @@ def _parse_skill_metadata(skill_md_path: Path) -> SkillMetadata | None:
         return None
 
 
-def list_skills(skills_dir: Path) -> list[SkillMetadata]:
-    """List all skills from the skills directory.
+def _list_skills(skills_dir: Path, source: str) -> list[SkillMetadata]:
+    """List all skills from a single skills directory (internal helper).
 
     Scans the skills directory for subdirectories containing SKILL.md files,
     parses YAML frontmatter, and returns skill metadata.
@@ -150,20 +157,10 @@ def list_skills(skills_dir: Path) -> list[SkillMetadata]:
 
     Args:
         skills_dir: Path to the skills directory.
+        source: Source of the skills ('user' or 'project').
 
     Returns:
-        List of skill metadata dictionaries with name, description, and path.
-
-    Example:
-        ```python
-        from pathlib import Path
-        from deepagents_cli.skills.load import list_skills
-
-        skills_dir = Path.home() / ".deepagents" / "skills"
-        skills = list_skills(skills_dir)
-        for skill in skills:
-            print(f"{skill['name']}: {skill['description']}")
-        ```
+        List of skill metadata dictionaries with name, description, path, and source.
     """
     # Check if skills directory exists
     skills_dir = skills_dir.expanduser()
@@ -199,8 +196,42 @@ def list_skills(skills_dir: Path) -> list[SkillMetadata]:
             continue
 
         # Parse metadata
-        metadata = _parse_skill_metadata(skill_md_path)
+        metadata = _parse_skill_metadata(skill_md_path, source=source)
         if metadata:
             skills.append(metadata)
 
     return skills
+
+
+def list_skills(
+    *, user_skills_dir: Path | None = None, project_skills_dir: Path | None = None
+) -> list[SkillMetadata]:
+    """List skills from user and/or project directories.
+
+    When both directories are provided, project skills with the same name as
+    user skills will override them.
+
+    Args:
+        user_skills_dir: Path to the user-level skills directory.
+        project_skills_dir: Path to the project-level skills directory.
+
+    Returns:
+        Merged list of skill metadata from both sources, with project skills
+        taking precedence over user skills when names conflict.
+    """
+    all_skills: dict[str, SkillMetadata] = {}
+
+    # Load user skills first (foundation)
+    if user_skills_dir:
+        user_skills = _list_skills(user_skills_dir, source="user")
+        for skill in user_skills:
+            all_skills[skill["name"]] = skill
+
+    # Load project skills second (override/augment)
+    if project_skills_dir:
+        project_skills = _list_skills(project_skills_dir, source="project")
+        for skill in project_skills:
+            # Project skills override user skills with the same name
+            all_skills[skill["name"]] = skill
+
+    return list(all_skills.values())

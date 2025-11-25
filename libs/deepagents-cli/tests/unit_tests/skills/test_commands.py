@@ -1,8 +1,10 @@
 """Unit tests for skills command sanitization and validation."""
 
+from pathlib import Path
+
 import pytest
 
-from deepagents_cli.skills.commands import _validate_skill_name, _validate_skill_path
+from deepagents_cli.skills.commands import _validate_name, _validate_skill_path
 
 
 class TestValidateSkillName:
@@ -20,7 +22,7 @@ class TestValidateSkillName:
             "skill_with_underscores",
         ]
         for name in valid_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert is_valid, f"Valid name '{name}' was rejected: {error}"
             assert error == ""
 
@@ -37,7 +39,7 @@ class TestValidateSkillName:
             "..",
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Malicious name '{name}' was accepted"
             assert error != ""
             assert ".." in error or "traversal" in error.lower()
@@ -51,7 +53,7 @@ class TestValidateSkillName:
             "/tmp/exploit",
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Absolute path '{name}' was accepted"
             assert error != ""
 
@@ -64,7 +66,7 @@ class TestValidateSkillName:
             "parent\\child",
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Path with separator '{name}' was accepted"
             assert error != ""
 
@@ -91,7 +93,7 @@ class TestValidateSkillName:
             'skill"quote',  # double quote
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Invalid character in '{name}' was accepted"
             assert error != ""
 
@@ -104,7 +106,7 @@ class TestValidateSkillName:
             "\n",
         ]
         for name in malicious_names:
-            is_valid, error = _validate_skill_name(name)
+            is_valid, error = _validate_name(name)
             assert not is_valid, f"Empty/whitespace name '{name}' was accepted"
             assert error != ""
 
@@ -112,7 +114,7 @@ class TestValidateSkillName:
 class TestValidateSkillPath:
     """Test skill path validation to ensure paths stay within bounds."""
 
-    def test_valid_path_within_base(self, tmp_path):
+    def test_valid_path_within_base(self, tmp_path: Path) -> None:
         """Test that valid paths within base directory are accepted."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -122,7 +124,7 @@ class TestValidateSkillPath:
         assert is_valid, f"Valid path was rejected: {error}"
         assert error == ""
 
-    def test_path_traversal_outside_base(self, tmp_path):
+    def test_path_traversal_outside_base(self, tmp_path: Path) -> None:
         """Test that paths outside base directory are blocked."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -133,7 +135,7 @@ class TestValidateSkillPath:
         assert not is_valid, "Path outside base directory was accepted"
         assert error != ""
 
-    def test_symlink_path_traversal(self, tmp_path):
+    def test_symlink_path_traversal(self, tmp_path: Path) -> None:
         """Test that symlinks pointing outside base are detected."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -153,7 +155,7 @@ class TestValidateSkillPath:
             # Symlink creation might fail on some systems
             pytest.skip("Symlink creation not supported")
 
-    def test_nonexistent_path_validation(self, tmp_path):
+    def test_nonexistent_path_validation(self, tmp_path: Path) -> None:
         """Test validation of paths that don't exist yet."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -168,7 +170,7 @@ class TestValidateSkillPath:
 class TestIntegrationSecurity:
     """Integration tests for security across the command flow."""
 
-    def test_combined_validation(self, tmp_path):
+    def test_combined_validation(self, tmp_path: Path) -> None:
         """Test that both name and path validation work together."""
         base_dir = tmp_path / "skills"
         base_dir.mkdir()
@@ -183,12 +185,12 @@ class TestIntegrationSecurity:
 
         for skill_name, attack_type in attack_vectors:
             # First, name validation should catch it
-            is_valid_name, name_error = _validate_skill_name(skill_name)
+            is_valid_name, name_error = _validate_name(skill_name)
 
             if is_valid_name:
                 # If name validation doesn't catch it, path validation must
                 skill_dir = base_dir / skill_name
-                is_valid_path, path_error = _validate_skill_path(skill_dir, base_dir)
+                is_valid_path, _path_error = _validate_skill_path(skill_dir, base_dir)
                 assert not is_valid_path, f"{attack_type} bypassed both validations: {skill_name}"
             else:
                 # Name validation caught it - this is good

@@ -1,12 +1,12 @@
 [project]
 name = "deepagents-cli"
-version = "0.0.9"
+version = "0.0.10"
 description = "Deepagents CLI"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "deepagents==0.2.7",
+  "deepagents==0.2.8",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",
@@ -102,6 +102,7 @@ ignore-var-parameters = true
     "S311",    # Allow pseudo-random generators in tests
     "ANN201",  # Missing return type annotation
     "INP001",  # Implicit namespace package
+    "PLR2004", # Magic value comparisons are fine in tests
 ]
 
 [tool.pytest.ini_options]

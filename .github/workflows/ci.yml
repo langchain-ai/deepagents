@@ -40,7 +40,7 @@ jobs:
             python-version: "3.11"
           # benchmarking
           - working-directory: "libs/harbor"
-            python-version: "3.11"
+            python-version: "3.13"
       fail-fast: false
     uses: ./.github/workflows/_lint.yml
     with:

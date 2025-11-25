@@ -219,35 +219,56 @@ class TestAgentBehavior:
         The test stops at the interrupt (HITL approval point) before the shell
         tool is actually executed, to verify the correct command is being passed.
         """
-        async with run_agent_task_with_hitl("run make format", tmp_path) as stream:
-            # Stream events and capture the final result
-            events = []
-            result = {}
-            async for event in stream:
-                events.append(event)
-                result = event
+        # Mock the settings to use a fresh filesystem in tmp_path
+        from deepagents_cli.config import Settings
 
-            # Verify that we captured events
-            assert len(events) > 0, "Expected to receive events from agent stream"
+        mock_settings = Settings.from_environment(start_path=tmp_path)
 
-            # Verify that an interrupt occurred (shell tool requires approval)
-            assert "__interrupt__" in result, "Expected shell tool to trigger HITL interrupt"
-            assert result["__interrupt__"] is not None
+        # Patch settings in all modules that import it
+        patches = [
+            patch("deepagents_cli.config.settings", mock_settings),
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.file_ops.settings", mock_settings),
+            patch("deepagents_cli.tools.settings", mock_settings),
+            patch("deepagents_cli.token_utils.settings", mock_settings),
+        ]
 
-            # Extract interrupt information
-            interrupts = result["__interrupt__"]
-            assert len(interrupts) > 0, "Expected at least one interrupt"
+        # Apply all patches using ExitStack for cleaner nesting
+        from contextlib import ExitStack
 
-            interrupt_value = interrupts[0].value
-            action_requests = interrupt_value.get("action_requests", [])
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
 
-            # Verify that a shell tool call is present
-            shell_calls = [req for req in action_requests if req.get("name") == "shell"]
-            assert len(shell_calls) > 0, "Expected at least one shell tool call"
+            async with run_agent_task_with_hitl("run make format", tmp_path) as stream:
+                # Stream events and capture the final result
+                events = []
+                result = {}
+                async for event in stream:
+                    events.append(event)
+                    result = event
 
-            # Verify the shell command is "make format" (not "run make format")
-            shell_call = shell_calls[0]
-            command = shell_call.get("args", {}).get("command", "")
-            assert command == "make format", (
-                f"Expected shell command to be 'make format', got: {command}"
-            )
+                # Verify that we captured events
+                assert len(events) > 0, "Expected to receive events from agent stream"
+
+                # Verify that an interrupt occurred (shell tool requires approval)
+                assert "__interrupt__" in result, "Expected shell tool to trigger HITL interrupt"
+                assert result["__interrupt__"] is not None
+
+                # Extract interrupt information
+                interrupts = result["__interrupt__"]
+                assert len(interrupts) > 0, "Expected at least one interrupt"
+
+                interrupt_value = interrupts[0].value
+                action_requests = interrupt_value.get("action_requests", [])
+
+                # Verify that a shell tool call is present
+                shell_calls = [req for req in action_requests if req.get("name") == "shell"]
+                assert len(shell_calls) > 0, "Expected at least one shell tool call"
+
+                # Verify the shell command is "make format" (not "run make format")
+                shell_call = shell_calls[0]
+                command = shell_call.get("args", {}).get("command", "")
+                assert command == "make format", (
+                    f"Expected shell command to be 'make format', got: {command}"
+                )

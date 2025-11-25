@@ -124,111 +124,112 @@ class DeepAgentsWrapper(BaseAgent):
             },
         }
 
-        # Invoke deep agent with LangSmith tracing
-        result = await deep_agent.ainvoke(
-            {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
-            config=config,
-        )
-
-        # Create trajectory
-        steps = [
-            Step(
-                step_id=1,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                source="system",
-                message="Agent initialized and ready to execute the task.",
-            ),
-            Step(
-                step_id=2,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                source="user",
-                message=instruction,
-            ),
-        ]
-
-        observations = []
-        pending_step: Step | None = None
-
-        for msg in result["messages"]:
-            if isinstance(msg, AIMessage):
-                # Extract usage metadata from AIMessage
-                usage: UsageMetadata = msg.usage_metadata
-                if usage:
-                    total_prompt_tokens += usage["input_tokens"]
-                    total_completion_tokens += usage["output_tokens"]
-                # If there's a pending step with tool calls, add it now with observations
-                if pending_step is not None:
-                    if pending_step.tool_calls and observations:
-                        # Add observations to the pending step
-                        pending_step.observation = Observation(results=observations)
-                        observations = []
-                    steps.append(pending_step)
-                    pending_step = None
-
-                # Extract content and tool calls from current AIMessage
-                atf_tool_calls = []
-                message = ""
-                for cb in msg.content_blocks:
-                    if cb["type"] == "text":
-                        message += cb["text"]
-                    elif cb["type"] == "reasoning":
-                        message += cb["reasoning"]
-                    elif cb["type"] == "tool_call":
-                        atf_tool_calls.append(
-                            ToolCall(
-                                tool_call_id=cb["id"],
-                                function_name=cb["name"],
-                                arguments=cb["args"],
-                            )
-                        )
-                    else:
-                        # TODO: Add server side tool call results.
-                        continue
-
-                # Create new step
-                new_step = Step(
-                    step_id=steps[-1].step_id + 1 if steps else 0,
+        try:
+            # Invoke deep agent with LangSmith tracing
+            result = await deep_agent.ainvoke(
+                {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                config=config,
+            )
+        finally:
+            # Create trajectory
+            steps = [
+                Step(
+                    step_id=1,
                     timestamp=datetime.now(timezone.utc).isoformat(),
-                    source="agent",
-                    message=message,
-                    tool_calls=atf_tool_calls if atf_tool_calls else None,
-                )
+                    source="system",
+                    message="Agent initialized and ready to execute the task.",
+                ),
+                Step(
+                    step_id=2,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    source="user",
+                    message=instruction,
+                ),
+            ]
 
-                # If this AIMessage has tool calls, make it pending (wait for observations)
-                # Otherwise, add it immediately
-                if atf_tool_calls:
-                    pending_step = new_step
-                else:
-                    steps.append(new_step)
+            observations = []
+            pending_step: Step | None = None
 
-            elif isinstance(msg, ToolMessage):
-                # Collect observations for the pending step
-                observations.append(
-                    ObservationResult(
-                        source_call_id=msg.tool_call_id,
-                        content=str(msg.content),
+            for msg in result["messages"]:
+                if isinstance(msg, AIMessage):
+                    # Extract usage metadata from AIMessage
+                    usage: UsageMetadata = msg.usage_metadata
+                    if usage:
+                        total_prompt_tokens += usage["input_tokens"]
+                        total_completion_tokens += usage["output_tokens"]
+                    # If there's a pending step with tool calls, add it now with observations
+                    if pending_step is not None:
+                        if pending_step.tool_calls and observations:
+                            # Add observations to the pending step
+                            pending_step.observation = Observation(results=observations)
+                            observations = []
+                        steps.append(pending_step)
+                        pending_step = None
+
+                    # Extract content and tool calls from current AIMessage
+                    atf_tool_calls = []
+                    message = ""
+                    for cb in msg.content_blocks:
+                        if cb["type"] == "text":
+                            message += cb["text"]
+                        elif cb["type"] == "reasoning":
+                            message += cb["reasoning"]
+                        elif cb["type"] == "tool_call":
+                            atf_tool_calls.append(
+                                ToolCall(
+                                    tool_call_id=cb["id"],
+                                    function_name=cb["name"],
+                                    arguments=cb["args"],
+                                )
+                            )
+                        else:
+                            # TODO: Add server side tool call results.
+                            continue
+
+                    # Create new step
+                    new_step = Step(
+                        step_id=steps[-1].step_id + 1 if steps else 0,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        source="agent",
+                        message=message,
+                        tool_calls=atf_tool_calls if atf_tool_calls else None,
                     )
-                )
-            elif isinstance(msg, HumanMessage):
-                pass
-            else:
-                raise NotImplementedError(
-                    f"Message type {type(msg)} not supported for step conversion"
-                )
 
-        # Add any remaining pending step
-        if pending_step is not None:
-            if pending_step.tool_calls and observations:
-                pending_step.observation = Observation(results=observations)
-            steps.append(pending_step)
+                    # If this AIMessage has tool calls, make it pending (wait for observations)
+                    # Otherwise, add it immediately
+                    if atf_tool_calls:
+                        pending_step = new_step
+                    else:
+                        steps.append(new_step)
 
-        # Build and save trajectory
-        metrics = FinalMetrics(
-            total_prompt_tokens=total_prompt_tokens or None,
-            total_completion_tokens=total_completion_tokens or None,
-            total_steps=len(steps),
-        )
-        self._save_trajectory(environment, steps, metrics)
+                elif isinstance(msg, ToolMessage):
+                    # Collect observations for the pending step
+                    observations.append(
+                        ObservationResult(
+                            source_call_id=msg.tool_call_id,
+                            content=str(msg.content),
+                        )
+                    )
+                elif isinstance(msg, HumanMessage):
+                    pass
+                else:
+                    raise NotImplementedError(
+                        f"Message type {type(msg)} not supported for step conversion"
+                    )
+
+            # Add any remaining pending step
+            if pending_step is not None:
+                if pending_step.tool_calls and observations:
+                    pending_step.observation = Observation(results=observations)
+                steps.append(pending_step)
+
+            # Build and save trajectory
+            metrics = FinalMetrics(
+                total_prompt_tokens=total_prompt_tokens or None,
+                total_completion_tokens=total_completion_tokens or None,
+                total_steps=len(steps),
+            )
+            self._save_trajectory(environment, steps, metrics)
 
     def _save_trajectory(
         self, environment: BaseEnvironment, steps: list[Step], metrics: FinalMetrics

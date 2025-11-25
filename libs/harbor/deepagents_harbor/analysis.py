@@ -31,6 +31,7 @@ class Trial:
     trajectory_path: Optional[Path] = None
     reward_path: Optional[Path] = None
     exception_path: Optional[Path] = None
+    solution_path: Optional[Path] = None
     trial_dir: Optional[Path] = None
 
 
@@ -115,10 +116,12 @@ async def analyze_trial(trial_dir: Path) -> Optional[Trial]:
     trajectory_path = trial_dir / "agent" / "trajectory.json"
     reward_path = trial_dir / "verifier" / "reward.txt"
     exception_path = trial_dir / "exception.txt"
+    solution_path = trial_dir / "solution" / "solve.sh"
 
     traj_exists = trajectory_path.exists()
     reward_exists = reward_path.exists()
     exception_exists = exception_path.exists()
+    solution_exists = solution_path.exists()
 
     reward_value: Optional[bool]
     if reward_exists:
@@ -144,6 +147,7 @@ async def analyze_trial(trial_dir: Path) -> Optional[Trial]:
         trajectory_path=trajectory_path if traj_exists else None,
         reward_path=reward_path if reward_exists else None,
         exception_path=exception_path if exception_exists else None,
+        solution_path=solution_path if solution_exists else None,
         trial_dir=trial_dir,
     )
 
@@ -237,6 +241,14 @@ The trial status will be explicitly provided to you. This status is the ground t
 
 **If the status is FAILED, then something went wrong, even if the agent reported success or the trajectory appears successful.** Your job is to identify what went wrong by carefully examining the details.
 
+## Reference Solution
+
+A reference solution script (solve.sh) will be provided when available. This script shows the correct approach to solving the task. Use this to:
+- Compare the agent's approach against the known working solution
+- Identify where the agent's actions diverged from the correct approach
+- Understand what steps or commands the agent missed or executed incorrectly
+- Determine if the agent used different tools/methods that led to failure
+
 ## Trajectory Format
 
 The trajectory is in ATIF (Agent Trajectory Interchange Format) with sequential steps:
@@ -254,6 +266,7 @@ Review the trajectory with careful attention to subtle details and provide:
 **Start by comparing the user's request to the agent's actual actions:**
 - What exactly did the user ask for? (Quote the specific request)
 - What exactly did the agent do? (Quote the actual tool calls and parameters)
+- If a reference solution is provided, how does the agent's approach differ from it?
 - Are there any discrepancies between what was requested and what was executed?
 
 **Then identify:**
@@ -262,9 +275,22 @@ Review the trajectory with careful attention to subtle details and provide:
 - **Error Details**: Quote any error messages or failure indicators
 - **Subtle Issues**: Look for problems that aren't obvious errors - small differences in parameters, values, or execution that don't match the request
 
+**Special Case: Max Iterations Reached**
+If the agent failed due to reaching the maximum iteration/recursion limit:
+- **Evaluate Progress**: Was the agent making sensible progress toward the solution?
+- **Direction Assessment**: Were the agent's actions moving it closer to completing the task?
+- **Correctness**: Despite not finishing, were the steps taken correct and logical?
+- **Compare to Solution**: If a reference solution is provided, was the agent following a similar approach?
+- **Estimate Completion**: How close was the agent to completing the task when it hit the limit?
+- **Root Cause**: Was the limit hit due to:
+  - Agent making good progress but task simply required more steps?
+  - Agent spinning in circles or repeating ineffective actions?
+  - Agent pursuing a suboptimal approach that would take too many steps?
+  - Agent getting stuck on a subtask or error recovery loop?
+
 ### 2. EXECUTION ANALYSIS
 - **What the Agent Did**: Trace the agent's actions step by step
-- **What Was Expected**: Based on the user's request, what should have happened?
+- **What Was Expected**: Based on the user's request and reference solution (if provided), what should have happened?
 - **Where It Went Wrong**: Identify the specific point where the agent's actions diverged from what was needed
 - **Tool Usage**: Examine all tool parameters carefully - verify they match what the user requested
 
@@ -280,13 +306,14 @@ Determine the underlying cause:
 
 ### 4. SUGGESTED IMPROVEMENTS
 If clear from the trajectory, suggest:
-- What the agent should have done differently
+- What the agent should have done differently (reference the solution script if available)
 - Which component or capability needs improvement
 - How to prevent this type of failure
 
 ## Guidelines
 
 - **Pay close attention to details**: Even if the agent reported success, if the trial failed, find what went wrong
+- **Use the reference solution**: When provided, compare the agent's approach systematically against it
 - Look for subtle issues like path mistakes, incorrect values, or logical errors
 - Be concise but specific
 - Quote exact error messages when present
@@ -328,13 +355,24 @@ async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> O
     # Format trajectory as JSON string for the prompt
     trajectory_json = json.dumps(trajectory_data, indent=2)
 
+    # Read the solution script if available
+    solution_content = None
+    if trial.solution_path and trial.solution_path.exists():
+        try:
+            solution_content = trial.solution_path.read_text()
+        except Exception:
+            solution_content = None
+
     # Create the user message with the trajectory and explicit status
     status_desc = "failed" if trial.status == TrialStatus.FAILED else "pending"
     status_upper = trial.status.value.upper()
-    user_message = (
-        f"**TRIAL STATUS: {status_upper}**\n\n"
-        f"Please analyze this {status_desc} agent trajectory:\n\n```json\n{trajectory_json}\n```\n"
-    )
+    user_message = f"**TRIAL STATUS: {status_upper}**\n\n"
+
+    # Add reference solution if available
+    if solution_content:
+        user_message += f"**REFERENCE SOLUTION (solve.sh):**\n\n```bash\n{solution_content}\n```\n\n"
+
+    user_message += f"Please analyze this {status_desc} agent trajectory:\n\n```json\n{trajectory_json}\n```\n"
 
     # Run the deep agent analysis
     result = analysis_agent.invoke({"messages": [{"role": "user", "content": user_message}]})

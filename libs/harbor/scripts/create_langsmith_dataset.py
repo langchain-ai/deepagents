@@ -5,16 +5,29 @@ Downloads tasks from the Harbor registry and creates a LangSmith dataset.
 """
 
 import argparse
-import hashlib
+import asyncio
+import datetime
+import os
+import sys
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Optional
 
+import aiohttp
 import toml
+from dotenv import load_dotenv
 from harbor.models.dataset_item import DownloadedDatasetItem
 from harbor.registry.client import RegistryClient
 from langsmith import Client
+from deepagents_harbor.langsmith_utils import create_example_id_from_instruction
+
+load_dotenv()
+
+
+LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+HEADERS = {
+    "x-api-key": os.getenv("LANGSMITH_API_KEY"),
+}
 
 
 def _read_instruction(task_path: Path) -> str:
@@ -31,24 +44,6 @@ def _read_task_metadata(task_path: Path) -> dict:
     if task_toml.exists():
         return toml.load(task_toml)
     return {}
-
-
-def _create_uuid_from_task_id(task_id: str) -> str:
-    """Create a deterministic UUID from a task ID string using hash.
-
-    Args:
-        task_id: The task ID string to hash
-
-    Returns:
-        A UUID string generated from the hash of the task ID
-    """
-    # Create SHA-256 hash of the task_id
-    hash_bytes = hashlib.sha256(task_id.encode('utf-8')).digest()
-
-    # Use first 16 bytes to create a UUID
-    task_uuid = uuid.UUID(bytes=hash_bytes[:16])
-
-    return str(task_uuid)
 
 
 def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> list:
@@ -69,13 +64,15 @@ def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> lis
         metadata = _read_task_metadata(task_path)
         task_name = downloaded_task.id.name
         task_id = str(downloaded_task.id)
-        task_uuid = _create_uuid_from_task_id(task_id)
 
         if instruction:
+            # Create deterministic example_id from instruction content
+            example_id = create_example_id_from_instruction(instruction)
+
             example = {
+                "id": example_id,  # Explicitly set the example ID
                 "inputs": {
                     "task_id": task_id,
-                    "task_uuid": task_uuid,
                     "task_name": task_name,
                     "instruction": instruction,
                     "metadata": metadata.get("metadata", {}),
@@ -83,7 +80,7 @@ def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> lis
                 "outputs": {},
             }
             examples.append(example)
-            print(f"Added task: {task_name} (ID: {task_id}, UUID: {task_uuid})")
+            print(f"Added task: {task_name} (ID: {task_id}, Example ID: {example_id})")
 
     return examples
 
@@ -91,7 +88,6 @@ def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> lis
 def create_langsmith_dataset(
     dataset_name: str,
     version: str = "head",
-    registry_url: Optional[str] = None,
     overwrite: bool = False,
 ) -> None:
     """
@@ -100,9 +96,7 @@ def create_langsmith_dataset(
     Args:
         dataset_name: Dataset name (used for both Harbor download and LangSmith dataset)
         version: Harbor dataset version (default: 'head')
-        registry_url: URL of Harbor registry (uses default if not specified)
         overwrite: Whether to overwrite cached remote tasks
-        output_dir: Directory to cache downloaded tasks (uses temp dir if not specified)
     """
     langsmith_client = Client()
     output_dir = Path(tempfile.mkdtemp(prefix="harbor_tasks_"))
@@ -137,20 +131,135 @@ def create_langsmith_dataset(
     print(f"Dataset ID: {dataset.id}")
 
 
+async def _create_experiment_session(
+    dataset_id: str, name: str, session: aiohttp.ClientSession
+) -> dict:
+    """Create a LangSmith experiment session.
+
+    Args:
+        dataset_id: LangSmith dataset ID to associate with
+        name: Name for the experiment session
+        session: aiohttp ClientSession for making requests
+
+    Returns:
+        Experiment session dictionary with 'id' field
+    """
+    async with session.post(
+        f"{LANGSMITH_API_URL}/sessions",
+        headers=HEADERS,
+        json={
+            "start_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "reference_dataset_id": dataset_id,
+            "name": name,
+            "description": "Harbor experiment run via REST API",
+        },
+    ) as experiment_response:
+        if experiment_response.status == 200:
+            return await experiment_response.json()
+        else:
+            raise Exception(
+                f"Failed to create experiment: {experiment_response.status} {await experiment_response.text()}"
+            )
+
+
+async def _get_dataset_by_name(dataset_name: str, session: aiohttp.ClientSession) -> dict:
+    """Get a LangSmith dataset by name.
+
+    Args:
+        dataset_name: Name of the dataset to retrieve
+        session: aiohttp ClientSession for making requests
+
+    Returns:
+        Dataset dictionary with 'id' field
+    """
+    async with session.get(
+        f"{LANGSMITH_API_URL}/datasets?name={dataset_name}&limit=1",
+        headers=HEADERS,
+    ) as response:
+        if response.status == 200:
+            datasets = await response.json()
+            if len(datasets) > 0:
+                return datasets[0]
+            else:
+                raise Exception(f"Dataset '{dataset_name}' not found")
+        else:
+            raise Exception(
+                f"Failed to get dataset: {response.status} {await response.text()}"
+            )
+
+
+async def create_experiment(dataset_name: str, experiment_name: str | None = None) -> str:
+    """Create a LangSmith experiment session for the given dataset.
+
+    Args:
+        dataset_name: Name of the LangSmith dataset to create experiment for
+        experiment_name: Optional name for the experiment (auto-generated if not provided)
+
+    Returns:
+        The experiment session ID
+    """
+    async with aiohttp.ClientSession() as session:
+        # Get the dataset
+        dataset = await _get_dataset_by_name(dataset_name, session)
+        dataset_id = dataset["id"]
+        print(f"Found dataset '{dataset_name}' with ID: {dataset_id}")
+
+        # Generate experiment name if not provided
+        if experiment_name is None:
+            timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+            experiment_name = f"harbor-experiment-{timestamp}"
+
+        # Create experiment session
+        print(f"Creating experiment session: {experiment_name}")
+        experiment_session = await _create_experiment_session(
+            dataset_id, experiment_name, session
+        )
+        session_id = experiment_session["id"]
+        tenant_id = experiment_session["tenant_id"]
+
+        print(f"✓ Experiment created successfully!")
+        print(f"  Session ID: {session_id}")
+        print(
+            f"  View at: https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}"
+        )
+
+        return session_id
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Create a LangSmith dataset by downloading tasks from Harbor registry."
+        description="Create a LangSmith dataset or experiment from Harbor tasks."
     )
     parser.add_argument("dataset_name", type=str, help="Dataset name (e.g., 'terminal-bench')")
     parser.add_argument(
         "--version", type=str, default="head", help="Dataset version (default: 'head')"
     )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite cached remote tasks")
+    parser.add_argument(
+        "--create-experiment",
+        action="store_true",
+        help="Create an experiment session for the dataset (dataset must already exist)",
+    )
+    parser.add_argument(
+        "--experiment-name",
+        type=str,
+        help="Name for the experiment (auto-generated if not provided)",
+    )
 
     args = parser.parse_args()
 
-    create_langsmith_dataset(
-        dataset_name=args.dataset_name,
-        version=args.version,
-        overwrite=args.overwrite,
-    )
+    if args.create_experiment:
+        # Create experiment for existing dataset
+        session_id = asyncio.run(
+            create_experiment(args.dataset_name, args.experiment_name)
+        )
+        print(f"\nExperiment session ID: {session_id}")
+        print("Set this as an environment variable when running Harbor:")
+        print(f"export LANGSMITH_EXPERIMENT_SESSION_ID={session_id}")
+    else:
+        # Create dataset from Harbor tasks
+        create_langsmith_dataset(
+            dataset_name=args.dataset_name,
+            version=args.version,
+            overwrite=args.overwrite,
+        )

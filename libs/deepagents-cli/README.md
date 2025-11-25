@@ -1,4 +1,4 @@
-# 🚀🧠 Deep Agents
+# 🚀🧠 Deep Agents CLI
 
 The [deepagents](https://github.com/langchain-ai/deepagents) CLI is an open source coding assistant that runs in your terminal, similar to Claude Code.
 

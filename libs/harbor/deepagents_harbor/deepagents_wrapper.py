@@ -1,7 +1,6 @@
 """A wrapper for DeepAgents to run in Harbor environments."""
 
 import json
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,7 +37,6 @@ class DeepAgentsWrapper(BaseAgent):
         self,
         logs_dir: Path,
         model_name: str | None = None,
-        max_iterations: int = 50,
         temperature: float = 0.0,
         verbose: bool = True,
         *args,
@@ -52,7 +50,6 @@ class DeepAgentsWrapper(BaseAgent):
             model_name = "anthropic:claude-sonnet-4-5-20250929"
 
         self._model_name = model_name
-        self._max_iterations = max_iterations
         self._temperature = temperature
         self._verbose = verbose
         self._model = init_chat_model(model_name, temperature=temperature)
@@ -122,7 +119,6 @@ class DeepAgentsWrapper(BaseAgent):
             "run_name": f"harbor-deepagent-{environment.session_id}",
             "tags": [self._model_name, environment.session_id],
             "metadata": metadata,
-            "recursion_limit": self._max_iterations,
             "configurable": {
                 "thread_id": str(uuid.uuid4()),
             },

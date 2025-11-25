@@ -38,6 +38,9 @@ jobs:
           # CLI package
           - working-directory: "libs/deepagents-cli"
             python-version: "3.11"
+          # benchmarking
+          - working-directory: "libs/harbor"
+            python-version: "3.11"
       fail-fast: false
     uses: ./.github/workflows/_lint.yml
     with:
@@ -60,6 +63,9 @@ jobs:
           - working-directory: "libs/deepagents-cli"
             python-version: "3.11"
           - working-directory: "libs/deepagents-cli"
+            python-version: "3.13"
+          # benchmarking
+          - working-directory: "libs/harbor"
             python-version: "3.13"
       fail-fast: false
     uses: ./.github/workflows/_test.yml

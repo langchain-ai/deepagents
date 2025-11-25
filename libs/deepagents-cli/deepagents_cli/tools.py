@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 import requests
 from markdownify import markdownify
-from tavily import TavilyClient
+from tavily.tavily import TavilyClient
 
 from deepagents_cli.config import settings
 

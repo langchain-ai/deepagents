@@ -53,7 +53,6 @@ class DeepAgentsWrapper(BaseAgent):
         self._max_iterations = max_iterations
         self._temperature = temperature
         self._verbose = verbose
-        self._session_id = str(uuid.uuid4())
         self._model = init_chat_model(model_name, temperature=temperature)
 
         # LangSmith run tracking for feedback
@@ -96,14 +95,17 @@ class DeepAgentsWrapper(BaseAgent):
         deep_agent = create_deep_agent(model=self._model, backend=backend)
 
         config: RunnableConfig = {
-            "run_name": f"harbor-deepagent-{self._session_id[:8]}",
-            "tags": ["harbor", "deepagent", self._model_name, self._session_id],
+            "run_name": f"harbor-deepagent-{environment.session_id}",
+            "tags": ["harbor", "deepagent", self._model_name, environment.session_id],
             "metadata": {
                 "task_instruction": instruction,
                 "model": self._model_name,
-                "session_id": self._session_id,
+                "session_id": environment.session_id,
             },
             "recursion_limit": self._max_iterations,
+            "configurable": {
+                "thread_id": str(uuid.uuid4()),
+            }
         }
 
         # Invoke deep agent with LangSmith tracing
@@ -213,7 +215,7 @@ class DeepAgentsWrapper(BaseAgent):
 
         trajectory = Trajectory(
             schema_version="ATIF-v1.2",
-            session_id=self._session_id,
+            session_id=environment.session_id,
             agent=Agent(
                 name=self.name(),
                 version=self.version() or "unknown",

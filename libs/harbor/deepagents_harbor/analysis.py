@@ -15,6 +15,7 @@ from deepagents import create_deep_agent
 
 class TrialStatus(Enum):
     """Status of a trial execution."""
+
     PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -70,7 +71,9 @@ def extract_task_metadata(trial_dir: Path) -> dict:
         try:
             with open(result_path, "r") as f:
                 result = json.load(f)
-                metadata["reward"] = result.get("verifier_result", {}).get("rewards", {}).get("reward", 0.0)
+                metadata["reward"] = (
+                    result.get("verifier_result", {}).get("rewards", {}).get("reward", 0.0)
+                )
                 metadata["started_at"] = result.get("started_at", "")
                 metadata["finished_at"] = result.get("finished_at", "")
         except Exception:
@@ -212,10 +215,12 @@ def print_summary(trials: list[Trial]) -> None:
             try:
                 exception_content = trial.exception_path.read_text()
                 # Show last 100 characters
-                exception_snippet = exception_content[-100:] if len(exception_content) > 100 else exception_content
+                exception_snippet = (
+                    exception_content[-100:] if len(exception_content) > 100 else exception_content
+                )
                 print(f"  Exception: ...{exception_snippet}")
             except Exception:
-                print(f"  Exception: [Error reading exception file]")
+                print("  Exception: [Error reading exception file]")
 
 
 ANALYSIS_PROMPT = """\
@@ -269,8 +274,6 @@ If clear from the trajectory, suggest:
 """  # noqa: E501
 
 
-
-
 async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> Optional[str]:
     """
     Run deep agent analysis on a failed or pending trial trajectory.
@@ -322,7 +325,7 @@ async def write_trial_analysis(
     trial_dir: Path,
     output_dir: Path,
     summary_only: bool = False,
-    analyze_pending: bool = False
+    analyze_pending: bool = False,
 ) -> Optional[Path]:
     """
     Analyze a failed or pending trial and write the results to a file.

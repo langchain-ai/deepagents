@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from deepagents import create_deep_agent
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -22,7 +23,6 @@ from langchain.messages import UsageMetadata
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from deepagents import create_deep_agent
 from deepagents_harbor.backend import HarborSandboxFallback
 
 
@@ -211,12 +211,17 @@ class DeepAgentsWrapper(BaseAgent):
             steps.append(pending_step)
 
         # Build and save trajectory
-        final_metrics = FinalMetrics(
+        metrics = FinalMetrics(
             total_prompt_tokens=total_prompt_tokens or None,
             total_completion_tokens=total_completion_tokens or None,
             total_steps=len(steps),
         )
+        self._save_trajectory(environment, steps, metrics)
 
+    def _save_trajectory(
+        self, environment: BaseEnvironment, steps: list[Step], metrics: FinalMetrics
+    ) -> None:
+        """Save current trajectory to logs directory."""
         trajectory = Trajectory(
             schema_version="ATIF-v1.2",
             session_id=environment.session_id,
@@ -230,8 +235,7 @@ class DeepAgentsWrapper(BaseAgent):
                 },
             ),
             steps=steps,
-            final_metrics=final_metrics,
+            final_metrics=metrics,
         )
-
         trajectory_path = self.logs_dir / "trajectory.json"
         trajectory_path.write_text(json.dumps(trajectory.to_json_dict(), indent=2))

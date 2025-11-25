@@ -13,7 +13,6 @@ dependencies = [
     # LangSmith for observability
     "langsmith>=0.4.0",
     "modal>=0.64.0",
-    "python-dotenv>=1.0.0",
 ]
 
 [dependency-groups]
@@ -21,6 +20,9 @@ test = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "ruff>=0.8.0",
+    "python-dotenv>=1.0.0",
+    "pytest-socket>=0.7.0",
+    "pytest-cov>=7.0.0",
 ]
 
 [build-system]

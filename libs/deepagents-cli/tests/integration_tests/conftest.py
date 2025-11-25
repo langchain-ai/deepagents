@@ -21,9 +21,7 @@ def langsmith_client() -> Generator[Client | None, None, None]:
         yield client
 
         # Final flush at end of session
-        print("we here")
         client.flush()
-        raise ValueError("whoopsy")
     else:
         yield None
 

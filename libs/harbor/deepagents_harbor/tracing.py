@@ -48,26 +48,7 @@ def send_harbor_feedback(
         run_id=run_id,
         key="harbor_reward",
         score=reward,
-        comment=f"Harbor Task: {task_name} | Score: {reward * 100:.0f}%",
     )
-
-    # Optional cost feedback
-    if agent_cost_usd is not None:
-        client.create_feedback(
-            run_id=run_id,
-            key="harbor_cost_usd",
-            score=agent_cost_usd,
-            comment=f"Agent execution cost: ${agent_cost_usd:.4f}",
-        )
-
-    # Optional steps feedback
-    if total_steps is not None:
-        client.create_feedback(
-            run_id=run_id,
-            key="harbor_steps",
-            score=total_steps,
-            comment=f"Total steps: {total_steps}",
-        )
 
 
 def get_langsmith_url(run_id: str) -> str:

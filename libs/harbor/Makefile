@@ -27,6 +27,10 @@ test_watch:
 run:
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env docker
 
+run-terminal-bench:
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs-terminal-bench --env modal
+
+
 ######################
 # LINTING AND FORMATTING
 ######################

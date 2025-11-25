@@ -1,4 +1,4 @@
-.PHONY: all lint format test help
+.PHONY: all lint format test help run-hello-world run-terminal-bench-modal run-terminal-bench-docker
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -21,15 +21,16 @@ test_watch:
 	uv run ptw . -- $(TEST_FILE)
 
 
-# Use runloop for now -- works without async
-#run:
-#	harbor run --agent-import-path deepagents_harbor.agents.deepagent:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env runloop
-run:
+# Run jobs
+run-hello-world:
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp --env docker
 
-run-terminal-bench:
+run-terminal-bench-modal:
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs-terminal-bench --env modal
 
+run-terminal-bench-docker:
+	@mkdir -p jobs/terminal-bench
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs/terminal-bench --env docker
 
 ######################
 # LINTING AND FORMATTING

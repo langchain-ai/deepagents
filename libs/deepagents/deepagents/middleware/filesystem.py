@@ -343,7 +343,7 @@ def _ls_tool_generator(
         result = truncate_if_too_long(paths)
         return str(result)
 
-    return StructuredTool(
+    return StructuredTool.from_function(
         name="ls",
         description=tool_description,
         func=sync_ls,
@@ -388,7 +388,7 @@ def _read_file_tool_generator(
         file_path = _validate_path(file_path)
         return await resolved_backend.aread(file_path, offset=offset, limit=limit)
 
-    return StructuredTool(
+    return StructuredTool.from_function(
         name="read_file",
         description=tool_description,
         func=sync_read_file,
@@ -463,7 +463,7 @@ def _write_file_tool_generator(
             )
         return f"Updated file {res.path}"
 
-    return StructuredTool(
+    return StructuredTool.from_function(
         name="write_file",
         description=tool_description,
         func=sync_write_file,
@@ -542,7 +542,7 @@ def _edit_file_tool_generator(
             )
         return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
-    return StructuredTool(
+    return StructuredTool.from_function(
         name="edit_file",
         description=tool_description,
         func=sync_edit_file,
@@ -581,7 +581,7 @@ def _glob_tool_generator(
         result = truncate_if_too_long(paths)
         return str(result)
 
-    return StructuredTool(
+    return StructuredTool.from_function(
         name="glob",
         description=tool_description,
         func=sync_glob,
@@ -634,7 +634,7 @@ def _grep_tool_generator(
         formatted = format_grep_matches(raw, output_mode)
         return truncate_if_too_long(formatted)  # type: ignore[arg-type]
 
-    return StructuredTool(
+    return StructuredTool.from_function(
         name="grep",
         description=tool_description,
         func=sync_grep,
@@ -746,7 +746,7 @@ def _execute_tool_generator(
 
         return "".join(parts)
 
-    return StructuredTool(
+    return StructuredTool.from_function(
         name="execute",
         description=tool_description,
         func=sync_execute,

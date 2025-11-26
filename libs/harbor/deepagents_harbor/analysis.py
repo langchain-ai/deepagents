@@ -374,6 +374,26 @@ def print_summary(trials: list[Trial]) -> None:
             overall_success_rate = (completed / total_trials) * 100
             print(f"Success rate (of all trials): {overall_success_rate:.1f}%")
 
+    # Compute overall tool usage across all trials
+    overall_tool_usage: dict[str, int] = {}
+    trials_with_tools = 0
+    for trial in trials:
+        if trial.tool_usage:
+            trials_with_tools += 1
+            for tool_name, count in trial.tool_usage.items():
+                overall_tool_usage[tool_name] = overall_tool_usage.get(tool_name, 0) + count
+
+    if overall_tool_usage:
+        print(f"\n{'=' * 80}")
+        print("OVERALL TOOL USAGE")
+        print(f"{'=' * 80}")
+        print(f"Trials with tool usage data: {trials_with_tools}/{len(trials)}")
+        print("\nTool usage across all trials:")
+        # Sort by usage count (descending) then alphabetically
+        sorted_overall_tools = sorted(overall_tool_usage.items(), key=lambda x: (-x[1], x[0]))
+        for tool_name, count in sorted_overall_tools:
+            print(f"  {tool_name}: {count}")
+
     print("\n" + "=" * 80)
     print("TRIAL DETAILS")
     print("=" * 80)

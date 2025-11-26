@@ -112,7 +112,7 @@ class DeepAgentsWrapper(BaseAgent):
         metadata["reference_example_id"] = example_id
 
         config: RunnableConfig = {
-            "run_name": f"harbor-deepagent-{environment.session_id}",
+            "run_name": f"{environment.session_id}",
             "tags": [self._model_name, environment.session_id],
             "metadata": metadata,
             "configurable": {

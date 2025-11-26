@@ -271,7 +271,7 @@ class BackendProtocol(Protocol):
                   The pattern is applied relative to this path.
 
         Returns:
-            list of FileInfo dicts for all matching files
+            list of FileInfo
         """
         ...
 
@@ -288,10 +288,7 @@ class BackendProtocol(Protocol):
             content: String content to write to the file.
 
         Returns:
-            WriteResult with:
-            - error: Error message on failure, None on success
-            - path: Absolute path of written file, None on failure
-            - files_update: State update dict for checkpoint backends, None for external storage
+            WriteResult
         """
         ...
 
@@ -314,11 +311,7 @@ class BackendProtocol(Protocol):
                         old_string must be unique in the file or the edit fails.
 
         Returns:
-            EditResult with:
-            - error: Error message on failure, None on success
-            - path: Absolute path of edited file, None on failure
-            - files_update: State update dict for checkpoint backends, None for external storage
-            - occurrences: Number of replacements made, None on failure
+            EditResult
         """
         ...
 

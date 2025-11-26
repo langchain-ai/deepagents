@@ -275,7 +275,7 @@ except PermissionError:
         search_path = path or "."
 
         # Build grep command to get structured output
-        grep_opts = "-rHn"  # recursive, with filename, with line number
+        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
 
         # Add glob pattern if specified
         glob_pattern = ""

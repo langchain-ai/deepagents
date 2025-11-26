@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shlex
 from abc import ABC, abstractmethod
 
 from deepagents.backends.protocol import (
@@ -272,7 +273,7 @@ except PermissionError:
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
         """Structured search results or error string for invalid input."""
-        search_path = path or "."
+        search_path = shlex.quote(path or ".")
 
         # Build grep command to get structured output
         grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
@@ -283,9 +284,9 @@ except PermissionError:
             glob_pattern = f"--include='{glob}'"
 
         # Escape pattern for shell
-        pattern_escaped = pattern.replace("'", "'\\\\''")
+        pattern_escaped = shlex.quote(pattern)
 
-        cmd = f"grep {grep_opts} {glob_pattern} -e '{pattern_escaped}' '{search_path}' 2>/dev/null || true"
+        cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
         result = self.execute(cmd)
 
         output = result.output.rstrip()

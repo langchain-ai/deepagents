@@ -62,7 +62,7 @@ esac | while IFS=$'\\t' read -r fpath ftype; do
     escaped=$(printf '%s' "$fpath" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')
 
     # Output JSON format matching the protocol
-    printf '{"path":"%s","is_dir":%s}\\n' "$escaped" "$is_dir"
+    printf '{{"path":"%s","is_dir":%s}}\\n' "$escaped" "$is_dir"
 done
 """
 
@@ -144,7 +144,7 @@ fi
 # Use awk to add line numbers and handle offset/limit
 awk -v offset={offset} -v limit={limit} '
     NR > offset && NR <= offset + limit {{
-        printf "%6d\\\\t%s\\\\n", NR, $0
+        printf "%6d\\t%s\\n", NR, $0
     }}
     NR > offset + limit {{ exit }}
 ' {file_path}

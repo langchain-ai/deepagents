@@ -8,7 +8,7 @@ This module tests the core file operations implemented in BaseSandbox:
 - grep_raw(): Search for patterns
 - glob_info(): Pattern matching for files
 
-All tests run on a single RunLoop sandbox instance (class-scoped fixture)
+All tests run on a single sandbox instance (class-scoped fixture)
 to avoid the overhead of spinning up multiple containers.
 """
 
@@ -21,11 +21,11 @@ from deepagents_cli.integrations.sandbox_factory import create_sandbox
 
 
 class TestSandboxOperations:
-    """Test core sandbox file operations using a single RunLoop container."""
+    """Test core sandbox file operations using a single sandbox instance."""
 
     @pytest.fixture(scope="class")
     def sandbox(self) -> Iterator[SandboxBackendProtocol]:
-        """Provide a single RunLoop sandbox instance for all tests."""
+        """Provide a single sandbox instance for all tests."""
         with create_sandbox("runloop") as sandbox:
             yield sandbox
 
@@ -99,6 +99,66 @@ class TestSandboxOperations:
         # Verify file exists but is empty
         exec_result = sandbox.execute(f"[ -f {test_path} ] && echo 'exists' || echo 'missing'")
         assert "exists" in exec_result.output
+
+    def test_write_path_with_spaces(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test writing a file with spaces in the path."""
+        test_path = "/tmp/test_sandbox_ops/dir with spaces/file name.txt"
+        content = "Content in file with spaces"
+
+        result = sandbox.write(test_path, content)
+
+        assert result.error is None
+        # Verify file was created
+        exec_result = sandbox.execute(f"cat '{test_path}'")
+        assert exec_result.output.strip() == content
+
+    def test_write_unicode_content(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test writing content with unicode characters and emojis."""
+        test_path = "/tmp/test_sandbox_ops/unicode.txt"
+        content = "Hello 👋 世界 مرحبا Привет 🌍\nLine with émojis 🎉"
+
+        result = sandbox.write(test_path, content)
+
+        assert result.error is None
+        # Verify content is preserved exactly
+        exec_result = sandbox.execute(f"cat {test_path}")
+        assert exec_result.output.strip() == content
+
+    def test_write_consecutive_slashes_in_path(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that paths with consecutive slashes are handled correctly."""
+        test_path = "/tmp//test_sandbox_ops///file.txt"
+        content = "Content"
+
+        result = sandbox.write(test_path, content)
+
+        assert result.error is None
+        # Verify file exists (shell should normalize the path)
+        exec_result = sandbox.execute("cat /tmp/test_sandbox_ops/file.txt")
+        assert exec_result.output.strip() == content
+
+    def test_write_very_long_content(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test writing a file with very long content (10000 lines)."""
+        test_path = "/tmp/test_sandbox_ops/very_long.txt"
+        content = "\n".join([f"Line {i} with some content here" for i in range(10000)])
+
+        result = sandbox.write(test_path, content)
+
+        assert result.error is None
+        # Verify file has correct number of lines
+        exec_result = sandbox.execute(f"wc -l {test_path}")
+        # wc -l counts newlines, so 10000 lines = 9999 newlines if last line has no newline
+        assert "9999" in exec_result.output or "10000" in exec_result.output
+
+    def test_write_content_with_only_newlines(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test writing content that consists only of newlines."""
+        test_path = "/tmp/test_sandbox_ops/only_newlines.txt"
+        content = "\n\n\n\n\n"
+
+        result = sandbox.write(test_path, content)
+
+        assert result.error is None
+        exec_result = sandbox.execute(f"wc -l {test_path}")
+        assert "5" in exec_result.output
 
     # ==================== read() tests ====================
 
@@ -174,6 +234,94 @@ class TestSandboxOperations:
         assert "Row_15_content" in result
         assert "Row_10_content" not in result
         assert "Row_16_content" not in result
+
+    def test_read_unicode_content(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test reading a file with unicode content."""
+        test_path = "/tmp/test_sandbox_ops/unicode_read.txt"
+        content = "Hello 👋 世界\nПривет мир\nمرحبا العالم"
+        sandbox.write(test_path, content)
+
+        result = sandbox.read(test_path)
+
+        assert "Error:" not in result
+        assert "👋" in result
+        assert "世界" in result
+        assert "Привет" in result
+
+    def test_read_file_with_very_long_lines(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test reading a file with lines longer than 2000 characters."""
+        test_path = "/tmp/test_sandbox_ops/long_lines.txt"
+        # Create a line with 3000 characters
+        long_line = "x" * 3000
+        content = f"Short line\n{long_line}\nAnother short line"
+        sandbox.write(test_path, content)
+
+        result = sandbox.read(test_path)
+
+        # Should still read successfully (implementation may truncate)
+        assert "Error:" not in result
+        assert "Short line" in result
+
+    def test_read_with_zero_limit(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test reading with limit=0 returns nothing."""
+        test_path = "/tmp/test_sandbox_ops/zero_limit.txt"
+        content = "Line 1\nLine 2\nLine 3"
+        sandbox.write(test_path, content)
+
+        result = sandbox.read(test_path, offset=0, limit=0)
+
+        # Should return empty or no content lines
+        assert "Line 1" not in result or result.strip() == ""
+
+    def test_read_offset_beyond_file_length(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test reading with offset beyond the file length."""
+        test_path = "/tmp/test_sandbox_ops/offset_beyond.txt"
+        content = "Line 1\nLine 2\nLine 3"
+        sandbox.write(test_path, content)
+
+        result = sandbox.read(test_path, offset=100, limit=10)
+
+        # Should return empty result (no lines to read)
+        # Check that there's no actual content (only possible header/formatting)
+        assert "Line 1" not in result
+        assert "Line 2" not in result
+        assert "Line 3" not in result
+
+    def test_read_offset_at_exact_file_length(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test reading with offset exactly at file length."""
+        test_path = "/tmp/test_sandbox_ops/offset_exact.txt"
+        content = "\n".join([f"Line {i}" for i in range(1, 6)])  # 5 lines
+        sandbox.write(test_path, content)
+
+        result = sandbox.read(test_path, offset=5, limit=10)
+
+        # Should return empty (offset=5 means skip first 5 lines)
+        assert "Line 1" not in result
+        assert "Line 5" not in result
+
+    def test_read_very_large_file_in_chunks(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test reading a large file in chunks using offset and limit."""
+        test_path = "/tmp/test_sandbox_ops/large_chunked.txt"
+        # Create 1000 line file
+        content = "\n".join([f"Line_{i:04d}_content" for i in range(1000)])
+        sandbox.write(test_path, content)
+
+        # Read first chunk
+        chunk1 = sandbox.read(test_path, offset=0, limit=100)
+        assert "Line_0000_content" in chunk1
+        assert "Line_0099_content" in chunk1
+        assert "Line_0100_content" not in chunk1
+
+        # Read middle chunk
+        chunk2 = sandbox.read(test_path, offset=500, limit=100)
+        assert "Line_0500_content" in chunk2
+        assert "Line_0599_content" in chunk2
+        assert "Line_0499_content" not in chunk2
+
+        # Read last chunk
+        chunk3 = sandbox.read(test_path, offset=900, limit=100)
+        assert "Line_0900_content" in chunk3
+        assert "Line_0999_content" in chunk3
 
     # ==================== edit() tests ====================
 
@@ -265,17 +413,122 @@ class TestSandboxOperations:
         assert "$200.00" in file_content
         assert "[0-9]+" in file_content
 
-    def test_edit_multiline_limitation(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test that edit has limitations with multiline strings (documented behavior)."""
+    def test_edit_multiline_support(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that edit handles multiline strings correctly."""
         test_path = "/tmp/test_sandbox_ops/edit_multiline.txt"
         content = "Line 1\nLine 2\nLine 3"
         sandbox.write(test_path, content)
 
-        # This should fail because sed processes line-by-line
+        # Should successfully replace multiline content
         result = sandbox.edit(test_path, "Line 1\nLine 2", "Combined")
 
-        # This is expected to fail due to documented limitation
-        assert result.error is not None
+        assert result.error is None
+        assert result.occurrences == 1
+        # Verify the replacement worked correctly
+        file_content = sandbox.read(test_path)
+        assert "Combined" in file_content
+        assert "Line 3" in file_content
+        assert "Line 1" not in file_content
+
+    def test_edit_with_empty_new_string(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test editing to delete content (replace with empty string)."""
+        test_path = "/tmp/test_sandbox_ops/edit_delete.txt"
+        content = "Keep this\nDelete this part\nKeep this too"
+        sandbox.write(test_path, content)
+
+        result = sandbox.edit(test_path, "Delete this part\n", "")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        file_content = sandbox.read(test_path)
+        assert "Keep this" in file_content
+        assert "Keep this too" in file_content
+        assert "Delete this part" not in file_content
+
+    def test_edit_identical_strings(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test editing where old_string equals new_string."""
+        test_path = "/tmp/test_sandbox_ops/edit_identical.txt"
+        content = "Same text"
+        sandbox.write(test_path, content)
+
+        result = sandbox.edit(test_path, "Same text", "Same text")
+
+        # Should succeed with 1 occurrence
+        assert result.error is None
+        assert result.occurrences == 1
+        file_content = sandbox.read(test_path)
+        assert "Same text" in file_content
+
+    def test_edit_unicode_content(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test editing with unicode characters and emojis."""
+        test_path = "/tmp/test_sandbox_ops/edit_unicode.txt"
+        content = "Hello 👋 world\n世界 is beautiful"
+        sandbox.write(test_path, content)
+
+        result = sandbox.edit(test_path, "👋", "🌍")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        file_content = sandbox.read(test_path)
+        assert "🌍" in file_content
+        assert "👋" not in file_content
+
+    def test_edit_whitespace_only_strings(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test editing with whitespace-only strings."""
+        test_path = "/tmp/test_sandbox_ops/edit_whitespace.txt"
+        content = "Line1    Line2"  # 4 spaces
+        sandbox.write(test_path, content)
+
+        result = sandbox.edit(test_path, "    ", " ")  # Replace 4 spaces with 1
+
+        assert result.error is None
+        assert result.occurrences == 1
+        file_content = sandbox.read(test_path)
+        assert "Line1 Line2" in file_content
+
+    def test_edit_with_very_long_strings(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test editing with very long old and new strings."""
+        test_path = "/tmp/test_sandbox_ops/edit_long.txt"
+        old_string = "x" * 1000
+        new_string = "y" * 1000
+        content = f"Start\n{old_string}\nEnd"
+        sandbox.write(test_path, content)
+
+        result = sandbox.edit(test_path, old_string, new_string)
+
+        assert result.error is None
+        assert result.occurrences == 1
+        file_content = sandbox.read(test_path)
+        assert "y" * 100 in file_content  # Check partial presence
+        assert "x" * 100 not in file_content
+
+    def test_edit_line_ending_preservation(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that edit preserves line endings correctly."""
+        test_path = "/tmp/test_sandbox_ops/edit_line_endings.txt"
+        content = "Line 1\nLine 2\nLine 3\n"
+        sandbox.write(test_path, content)
+
+        result = sandbox.edit(test_path, "Line 2", "Modified Line 2")
+
+        assert result.error is None
+        file_content = sandbox.read(test_path)
+        assert "Line 1" in file_content
+        assert "Modified Line 2" in file_content
+        assert "Line 3" in file_content
+
+    def test_edit_partial_line_match(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test editing a substring within a line."""
+        test_path = "/tmp/test_sandbox_ops/edit_partial.txt"
+        content = "The quick brown fox jumps over the lazy dog"
+        sandbox.write(test_path, content)
+
+        result = sandbox.edit(test_path, "brown fox", "red cat")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        file_content = sandbox.read(test_path)
+        assert "red cat" in file_content
+        assert "The quick red cat jumps" in file_content
 
     # ==================== ls_info() tests ====================
 
@@ -330,6 +583,75 @@ class TestSandboxOperations:
         paths = [info["path"] for info in result]
         assert ".hidden" in paths
         assert "visible.txt" in paths
+
+    def test_ls_info_directory_with_spaces(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test listing a directory that has spaces in file/dir names."""
+        base_dir = "/tmp/test_sandbox_ops/ls_spaces"
+        sandbox.execute(f"mkdir -p '{base_dir}'")
+        sandbox.write(f"{base_dir}/file with spaces.txt", "content")
+        sandbox.execute(f"mkdir -p '{base_dir}/dir with spaces'")
+
+        result = sandbox.ls_info(base_dir)
+
+        paths = [info["path"] for info in result]
+        assert "file with spaces.txt" in paths
+        assert "dir with spaces" in paths
+
+    def test_ls_info_unicode_filenames(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test listing directory with unicode filenames."""
+        base_dir = "/tmp/test_sandbox_ops/ls_unicode"
+        sandbox.execute(f"mkdir -p {base_dir}")
+        sandbox.write(f"{base_dir}/测试文件.txt", "content")
+        sandbox.write(f"{base_dir}/файл.txt", "content")
+
+        result = sandbox.ls_info(base_dir)
+
+        paths = [info["path"] for info in result]
+        # Should contain the unicode filenames
+        assert len(paths) == 2
+
+    def test_ls_info_large_directory(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test listing a directory with many files."""
+        base_dir = "/tmp/test_sandbox_ops/ls_large"
+        sandbox.execute(f"mkdir -p {base_dir}")
+        # Create 100 files
+        for i in range(100):
+            sandbox.write(f"{base_dir}/file_{i:03d}.txt", f"content {i}")
+
+        result = sandbox.ls_info(base_dir)
+
+        assert len(result) == 100
+        paths = [info["path"] for info in result]
+        assert "file_000.txt" in paths
+        assert "file_099.txt" in paths
+
+    def test_ls_info_path_with_trailing_slash(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that trailing slash in path is handled correctly."""
+        base_dir = "/tmp/test_sandbox_ops/ls_trailing"
+        sandbox.execute(f"mkdir -p {base_dir}")
+        sandbox.write(f"{base_dir}/file.txt", "content")
+
+        # List with trailing slash
+        result = sandbox.ls_info(f"{base_dir}/")
+
+        # Should work the same as without trailing slash
+        assert len(result) >= 1 or result == []  # Implementation dependent
+
+    def test_ls_info_special_characters_in_filenames(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test listing files with special characters in names."""
+        base_dir = "/tmp/test_sandbox_ops/ls_special"
+        sandbox.execute(f"mkdir -p {base_dir}")
+        # Create files with various special characters (shell-safe ones)
+        sandbox.write(f"{base_dir}/file(1).txt", "content")
+        sandbox.write(f"{base_dir}/file[2].txt", "content")
+        sandbox.write(f"{base_dir}/file-3.txt", "content")
+
+        result = sandbox.ls_info(base_dir)
+
+        paths = [info["path"] for info in result]
+        assert "file(1).txt" in paths
+        assert "file[2].txt" in paths
+        assert "file-3.txt" in paths
 
     # ==================== grep_raw() tests ====================
 

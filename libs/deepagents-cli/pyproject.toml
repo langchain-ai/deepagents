@@ -17,6 +17,7 @@ dependencies = [
   "modal>=0.65.0",
   "markdownify>=0.13.0",
   "langchain>=1.0.7",
+  "runloop-api-client>=0.69.0",
 ]
 
 [project.scripts]

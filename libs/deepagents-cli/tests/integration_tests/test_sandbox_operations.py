@@ -139,41 +139,41 @@ class TestSandboxOperations:
     def test_read_with_offset(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading a file with offset parameter."""
         test_path = "/tmp/test_sandbox_ops/offset_test.txt"
-        content = "\n".join([f"Line {i}" for i in range(1, 11)])
+        content = "\n".join([f"Row_{i}_content" for i in range(1, 11)])
         sandbox.write(test_path, content)
 
         result = sandbox.read(test_path, offset=5)
 
         # Should start from line 6 (offset=5 means skip first 5 lines)
-        assert "Line 6" in result
-        assert "Line 1" not in result
+        assert "Row_6_content" in result
+        assert "Row_1_content" not in result
 
     def test_read_with_limit(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading a file with limit parameter."""
         test_path = "/tmp/test_sandbox_ops/limit_test.txt"
-        content = "\n".join([f"Line {i}" for i in range(1, 101)])
+        content = "\n".join([f"Row_{i}_content" for i in range(1, 101)])
         sandbox.write(test_path, content)
 
         result = sandbox.read(test_path, offset=0, limit=5)
 
         # Should only have first 5 lines
-        assert "Line 1" in result
-        assert "Line 5" in result
-        assert "Line 6" not in result
+        assert "Row_1_content" in result
+        assert "Row_5_content" in result
+        assert "Row_6_content" not in result
 
     def test_read_with_offset_and_limit(self, sandbox: SandboxBackendProtocol) -> None:
         """Test reading a file with both offset and limit."""
         test_path = "/tmp/test_sandbox_ops/offset_limit_test.txt"
-        content = "\n".join([f"Line {i}" for i in range(1, 21)])
+        content = "\n".join([f"Row_{i}_content" for i in range(1, 21)])
         sandbox.write(test_path, content)
 
         result = sandbox.read(test_path, offset=10, limit=5)
 
         # Should have lines 11-15
-        assert "Line 11" in result
-        assert "Line 15" in result
-        assert "Line 10" not in result
-        assert "Line 16" not in result
+        assert "Row_11_content" in result
+        assert "Row_15_content" in result
+        assert "Row_10_content" not in result
+        assert "Row_16_content" not in result
 
     # ==================== edit() tests ====================
 

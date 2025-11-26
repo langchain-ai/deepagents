@@ -25,7 +25,6 @@ from langchain_core.runnables import RunnableConfig
 
 from deepagents_harbor.backend import HarborSandboxFallback
 from deepagents_harbor.tracing import create_example_id_from_instruction
-from langchain.agents.middleware import dynamic_prompt
 
 
 class DeepAgentsWrapper(BaseAgent):
@@ -87,7 +86,7 @@ class DeepAgentsWrapper(BaseAgent):
             Enhanced instruction with appended context
         """
         # Get directory information from backend
-        ls_info = await backend.als_info('.')
+        ls_info = await backend.als_info(".")
         current_dir = (await backend.aexecute("pwd")).output
 
         # Get first 10 files
@@ -96,7 +95,7 @@ class DeepAgentsWrapper(BaseAgent):
 
         # Build file listing
         if first_10_files:
-            file_listing = "\n".join(f"{i+1}. {file}" for i, file in enumerate(first_10_files))
+            file_listing = "\n".join(f"{i + 1}. {file}" for i, file in enumerate(first_10_files))
             if has_more:
                 file_listing += f"\n\n(Output truncated: {len(ls_info) - 10} more files available in current directory)"
         else:
@@ -104,16 +103,15 @@ class DeepAgentsWrapper(BaseAgent):
 
         # Build enhanced instruction
         enhanced_instruction = f"""{instruction}
+        
+----
 
-```
-ls_info = await backend.als_info('.')
-current_dir = (await backend.aexecute("pwd")).output
-```
-
-Current directory: {current_dir.strip() if current_dir else 'unknown'}
+Current directory: 
+{current_dir.strip() if current_dir else "unknown"}
 
 First 10 files in current directory:
-{file_listing}"""
+{file_listing}
+"""
 
         return enhanced_instruction
 
@@ -140,9 +138,7 @@ First 10 files in current directory:
         backend = HarborSandboxFallback(environment)
 
         # Enhance instruction with directory context
-        enhanced_instruction = await self._enhance_instruction_with_context(
-            instruction, backend
-        )
+        enhanced_instruction = await self._enhance_instruction_with_context(instruction, backend)
 
         deep_agent = create_deep_agent(model=self._model, backend=backend)
 
@@ -169,8 +165,6 @@ First 10 files in current directory:
                 "thread_id": str(uuid.uuid4()),
             },
         }
-
-
 
         # Invoke deep agent with LangSmith tracing
         result = await deep_agent.ainvoke(

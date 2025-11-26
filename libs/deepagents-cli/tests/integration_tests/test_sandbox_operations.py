@@ -611,19 +611,21 @@ class TestSandboxOperations:
         assert len(paths) == 2
 
     def test_ls_info_large_directory(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test listing a directory with multiple files."""
+        """Test listing a directory with many files."""
         base_dir = "/tmp/test_sandbox_ops/ls_large"
-        sandbox.execute(f"mkdir -p {base_dir}")
-        # Create 25 files (enough to test but not too slow)
-        for i in range(25):
-            sandbox.write(f"{base_dir}/file_{i:03d}.txt", f"content {i}")
+        # Create 50 files in a single command (much faster than loop)
+        sandbox.execute(
+            f"mkdir -p {base_dir} && "
+            f"cd {base_dir} && "
+            f"for i in {{0..49}}; do echo 'content' > file_$(printf '%03d' $i).txt; done"
+        )
 
         result = sandbox.ls_info(base_dir)
 
-        assert len(result) == 25
+        assert len(result) == 50
         paths = [info["path"] for info in result]
         assert "file_000.txt" in paths
-        assert "file_024.txt" in paths
+        assert "file_049.txt" in paths
 
     def test_ls_info_path_with_trailing_slash(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that trailing slash in path is handled correctly."""

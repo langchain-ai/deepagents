@@ -23,28 +23,48 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 
-_GLOB_COMMAND_TEMPLATE = """python3 -c "
-import glob
-import os
-import json
-import base64
+_GLOB_COMMAND_TEMPLATE = """
+# Decode base64 parameters using shell tools only
+path=$(echo '{path_b64}' | base64 -d)
+pattern=$(echo '{pattern_b64}' | base64 -d)
 
-# Decode base64-encoded parameters
-path = base64.b64decode('{path_b64}').decode('utf-8')
-pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
+cd "$path" 2>/dev/null || exit 1
 
-os.chdir(path)
-matches = sorted(glob.glob(pattern, recursive=True))
-for m in matches:
-    stat = os.stat(m)
-    result = {{
-        'path': m,
-        'size': stat.st_size,
-        'mtime': stat.st_mtime,
-        'is_dir': os.path.isdir(m)
-    }}
-    print(json.dumps(result))
-" 2>/dev/null"""
+# Translate glob patterns to find expressions
+# Handle common glob patterns: **/* for recursive, * for wildcard
+case "$pattern" in
+    **/*)
+        # Recursive pattern like **/*.py or src/**/*.js
+        # Extract part after **/ and use -name for basename matching
+        basename_part="${{pattern##**/}}"
+        prefix_part="${{pattern%%/**}}"
+        if [ -z "$prefix_part" ]; then
+            # Pattern like **/*.py - search everywhere
+            find . -name "$basename_part" -printf '%P\\t%y\\n' 2>/dev/null
+        else
+            # Pattern like src/**/*.py - search under prefix
+            find "./$prefix_part" -name "$basename_part" -printf '%P\\t%y\\n' 2>/dev/null
+        fi
+        ;;
+    *)
+        # Non-recursive pattern - use -path for exact matching
+        find . -path "./$pattern" -printf '%P\\t%y\\n' 2>/dev/null
+        ;;
+esac | while IFS=$'\\t' read -r fpath ftype; do
+    # Skip empty lines
+    [ -z "$fpath" ] && continue
+
+    # Determine if directory
+    is_dir=false
+    [ "$ftype" = "d" ] && is_dir=true
+
+    # Escape special chars for JSON string (backslash and quote)
+    escaped=$(printf '%s' "$fpath" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g')
+
+    # Output JSON format matching the protocol
+    printf '{"path":"%s","is_dir":%s}\\n' "$escaped" "$is_dir"
+done
+"""
 
 _WRITE_COMMAND_TEMPLATE = """
 if [ -e {file_path} ]; then

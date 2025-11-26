@@ -6,6 +6,11 @@ import os
 import uuid
 from pathlib import Path
 from typing import Any, Optional
+import os
+import requests
+import argparse
+from dotenv import load_dotenv
+
 
 from langsmith import Client
 
@@ -88,6 +93,104 @@ def get_langsmith_url(run_id: str) -> str:
     """
     project_name = os.getenv("LANGCHAIN_PROJECT", "default")
     return f"https://smith.langchain.com/o/default/projects/p/{project_name}/r/{run_id}"
+
+
+load_dotenv()
+
+
+def get_trace(
+    job_id: str,
+    project_name: str,
+    is_root: bool = True,
+) -> list:
+    """Fetch LangSmith runs by job_id metadata.
+
+    Args:
+        job_id: Job ID value to filter by (stored in run metadata)
+        project_name: LangSmith project name to search in
+        is_root: If True, only return root runs (default: True)
+
+    Returns:
+        List of run objects matching the job_id filter
+
+    Example:
+        >>> runs = get_trace(
+        ...     job_id="0cb8ca0c-f762-4723-ad1a-1d76c1d7a261",
+        ...     project_name="sample"
+        ... )
+        >>> for run in runs:
+        ...     print(f"Run: {run.name}, Status: {run.status}")
+    """
+    client = Client()
+
+    # Build filter to match job_id in metadata
+    filter_query = f'and(eq(metadata_key, "job_id"), eq(metadata_value, "{job_id}"))'
+
+    # Fetch runs matching the filter
+    runs = list(client.list_runs(
+        project_name=project_name,
+        filter=filter_query,
+        is_root=is_root,
+    ))
+
+    return runs
+
+
+def main():
+    """CLI entry point for fetching LangSmith traces by job_id."""
+    parser = argparse.ArgumentParser(
+        description="Fetch LangSmith runs filtered by job_id metadata"
+    )
+    parser.add_argument("--job-id", required=True, help="Job ID to filter by")
+    parser.add_argument("--project", required=True, help="LangSmith project name")
+    parser.add_argument(
+        "--include-children",
+        action="store_true",
+        help="Include child runs (default: root runs only)",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output file path (default: print to stdout)",
+    )
+
+    args = parser.parse_args()
+
+    runs = get_trace(
+        job_id=args.job_id,
+        project_name=args.project,
+        is_root=not args.include_children,
+    )
+
+    print(f"Found {len(runs)} run(s) matching job_id={args.job_id}")
+
+    output_lines = []
+    for run in runs:
+        line = f"\nRun ID: {run.id}"
+        line += f"\nName: {run.name}"
+        line += f"\nStatus: {run.status}"
+        line += f"\nRun Type: {run.run_type}"
+        if run.start_time:
+            line += f"\nStart Time: {run.start_time}"
+        if run.end_time:
+            line += f"\nEnd Time: {run.end_time}"
+        if hasattr(run, "total_tokens") and run.total_tokens:
+            line += f"\nTotal Tokens: {run.total_tokens}"
+        line += f"\n{'-' * 80}"
+        output_lines.append(line)
+
+    output_text = "\n".join(output_lines)
+
+    if args.output:
+        with open(args.output, "w") as f:
+            f.write(output_text)
+        print(f"Results saved to {args.output}")
+    else:
+        print(output_text)
+
+
+if __name__ == "__main__":
+    main()
 
 
 class LangSmithTrajectoryExporter:

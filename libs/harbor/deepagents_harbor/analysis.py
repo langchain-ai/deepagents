@@ -13,6 +13,73 @@ from typing import Optional
 from deepagents import create_deep_agent
 
 
+def scan_dataset_for_solutions(dataset_path: Path) -> dict[str, Path]:
+    """Scan a dataset directory and create a mapping from task names to solution paths.
+
+    Args:
+        dataset_path: Path to the dataset directory (e.g., terminal-bench/)
+
+    Returns:
+        Dictionary mapping task names to their solution/solve.sh paths
+        Example: {"chess-best-move": Path("terminal-bench/7bFm.../chess-best-move/solution/solve.sh")}
+    """
+    task_to_solution: dict[str, Path] = {}
+
+    if not dataset_path.exists():
+        print(f"Warning: Dataset path {dataset_path} does not exist")
+        return task_to_solution
+
+    # Iterate through hash directories
+    for hash_dir in dataset_path.iterdir():
+        if not hash_dir.is_dir():
+            continue
+
+        # Iterate through task directories within each hash
+        for task_dir in hash_dir.iterdir():
+            if not task_dir.is_dir():
+                continue
+
+            # Check if this is a valid task directory (has solution/solve.sh)
+            solution_path = task_dir / "solution" / "solve.sh"
+            if solution_path.exists():
+                task_name = task_dir.name
+                # Store the mapping (if task appears multiple times, last one wins)
+                task_to_solution[task_name] = solution_path
+
+    return task_to_solution
+
+
+def find_task_directory(trial_dir: Path, task_name: str, task_source: str) -> Optional[Path]:
+    """Find the task directory for a given trial.
+
+    Args:
+        trial_dir: Path to the trial directory
+        task_name: Name of the task (from config.json)
+        task_source: Source of the task (e.g., "terminal-bench")
+
+    Returns:
+        Path to the task directory if found, None otherwise
+    """
+    # Start from the trial directory and search for the task directory
+    # The structure is typically: {task_source}/{hash}/{task_name}
+
+    # Go up to find the task source directory
+    current = trial_dir.parent.parent  # Go up from trial to jobs root
+    task_source_dir = current / task_source
+
+    if not task_source_dir.exists():
+        return None
+
+    # Search for the task in any hash subdirectory
+    for hash_dir in task_source_dir.iterdir():
+        if hash_dir.is_dir():
+            task_dir = hash_dir / task_name
+            if task_dir.exists():
+                return task_dir
+
+    return None
+
+
 class TrialStatus(Enum):
     """Status of a trial execution."""
 
@@ -33,6 +100,7 @@ class Trial:
     exception_path: Optional[Path] = None
     solution_path: Optional[Path] = None
     trial_dir: Optional[Path] = None
+    tool_usage: Optional[dict[str, int]] = None
 
 
 async def parse_reward(reward_path: Path) -> bool:
@@ -102,7 +170,79 @@ def extract_task_instructions(trajectory_path: Path) -> Optional[str]:
         return None
 
 
-async def analyze_trial(trial_dir: Path) -> Optional[Trial]:
+def count_tool_usage(trajectory_path: Path) -> dict[str, int]:
+    """Count tool usage across all steps in a trajectory.
+
+    Args:
+        trajectory_path: Path to the trajectory.json file in ATIF format
+
+    Returns:
+        Dictionary mapping tool names to their usage counts
+    """
+    tool_counts: dict[str, int] = {}
+
+    try:
+        with open(trajectory_path, "r") as f:
+            trajectory_data = json.load(f)
+
+        # Iterate through all steps
+        for step in trajectory_data.get("steps", []):
+            # Check if this step has tool calls
+            tool_calls = step.get("tool_calls")
+            if tool_calls:
+                # Count each tool call
+                for tool_call in tool_calls:
+                    tool_name = tool_call.get("function_name", "unknown")
+                    tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+
+        return tool_counts
+    except Exception:
+        return {}
+
+
+def get_task_name_from_trial(trial_dir: Path) -> Optional[str]:
+    """Extract the task name from a trial's config.json.
+
+    Args:
+        trial_dir: Path to the trial directory
+
+    Returns:
+        Task name if found, None otherwise
+    """
+    config_path = trial_dir / "config.json"
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                return config.get("task", {}).get("path", "")
+        except Exception:
+            pass
+    return None
+
+
+def enrich_trials_with_solutions(
+    trials: list[Trial], solution_mapping: dict[str, Path]
+) -> list[Trial]:
+    """Update trials with solution paths from a pre-computed solution mapping.
+
+    Args:
+        trials: List of Trial objects to enrich
+        solution_mapping: Dictionary mapping task names to solution paths
+
+    Returns:
+        The same list of trials (modified in place) for convenience
+    """
+    for trial in trials:
+        if trial.trial_dir:
+            task_name = get_task_name_from_trial(trial.trial_dir)
+            if task_name and task_name in solution_mapping:
+                trial.solution_path = solution_mapping[task_name]
+    return trials
+
+
+async def analyze_trial(
+    trial_dir: Path, solution_mapping: Optional[dict[str, Path]] = None
+) -> Optional[Trial]:
     """Analyze a single trial directory.
 
     Returns a Trial object even if trajectory or reward files are missing so incomplete
@@ -116,12 +256,35 @@ async def analyze_trial(trial_dir: Path) -> Optional[Trial]:
     trajectory_path = trial_dir / "agent" / "trajectory.json"
     reward_path = trial_dir / "verifier" / "reward.txt"
     exception_path = trial_dir / "exception.txt"
-    solution_path = trial_dir / "solution" / "solve.sh"
+
+    # Read config to find the task directory for the solution
+    config_path = trial_dir / "config.json"
+    solution_path = None
+
+    # First try to use the solution_mapping if provided
+    if solution_mapping:
+        task_name = get_task_name_from_trial(trial_dir)
+        if task_name and task_name in solution_mapping:
+            solution_path = solution_mapping[task_name]
+
+    # Fall back to searching for the task directory
+    if not solution_path and config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                task_name = config.get("task", {}).get("path", "")
+                task_source = config.get("task", {}).get("source", "")
+                if task_name and task_source:
+                    task_dir = find_task_directory(trial_dir, task_name, task_source)
+                    if task_dir:
+                        solution_path = task_dir / "solution" / "solve.sh"
+        except Exception:
+            pass
 
     traj_exists = trajectory_path.exists()
     reward_exists = reward_path.exists()
     exception_exists = exception_path.exists()
-    solution_exists = solution_path.exists()
+    solution_exists = solution_path and solution_path.exists()
 
     reward_value: Optional[bool]
     if reward_exists:
@@ -139,6 +302,11 @@ async def analyze_trial(trial_dir: Path) -> Optional[Trial]:
     else:
         status = TrialStatus.PENDING
 
+    # Count tool usage if trajectory exists
+    tool_usage = None
+    if traj_exists:
+        tool_usage = count_tool_usage(trajectory_path)
+
     trial_id = trial_dir.name
     return Trial(
         trial_id=trial_id,
@@ -149,11 +317,20 @@ async def analyze_trial(trial_dir: Path) -> Optional[Trial]:
         exception_path=exception_path if exception_exists else None,
         solution_path=solution_path if solution_exists else None,
         trial_dir=trial_dir,
+        tool_usage=tool_usage,
     )
 
 
-async def scan_jobs_directory(jobs_dir: Path) -> list[Trial]:
-    """Scan the jobs directory and extract all trial metadata."""
+async def scan_jobs_directory(
+    jobs_dir: Path, solution_mapping: Optional[dict[str, Path]] = None
+) -> list[Trial]:
+    """Scan the jobs directory and extract all trial metadata.
+
+    Args:
+        jobs_dir: Path to the jobs directory containing trial subdirectories
+        solution_mapping: Optional pre-computed mapping from task names to solution paths.
+                         If not provided, solutions will be searched for individually.
+    """
     if not jobs_dir.exists():
         print(f"Error: Directory {jobs_dir} does not exist")
         return []
@@ -165,7 +342,7 @@ async def scan_jobs_directory(jobs_dir: Path) -> list[Trial]:
 
     trials: list[Trial] = []
     for trial_dir in trial_dirs:
-        trial = await analyze_trial(trial_dir)
+        trial = await analyze_trial(trial_dir, solution_mapping=solution_mapping)
         trials.append(trial)
     return trials
 
@@ -189,13 +366,27 @@ def print_summary(trials: list[Trial]) -> None:
         complete_trials = completed + failed
         if complete_trials > 0:
             success_rate = (completed / complete_trials) * 100
-            print(f"Success rate (of completed/failed trials): {success_rate:.1f}%")
+            print(f"Success rate (excluding pending): {success_rate:.1f}%")
+
+        # Also show success rate including pending trials
+        total_trials = len(trials)
+        if total_trials > 0:
+            overall_success_rate = (completed / total_trials) * 100
+            print(f"Success rate (of all trials): {overall_success_rate:.1f}%")
 
     print("\n" + "=" * 80)
     print("TRIAL DETAILS")
     print("=" * 80)
 
-    for trial in trials:
+    # Sort trials: COMPLETED first, then FAILED, then PENDING
+    status_order = {
+        TrialStatus.COMPLETED: 0,
+        TrialStatus.FAILED: 1,
+        TrialStatus.PENDING: 2
+    }
+    sorted_trials = sorted(trials, key=lambda t: status_order[t.status])
+
+    for trial in sorted_trials:
         if trial.status == TrialStatus.COMPLETED:
             status = "✓ COMPLETED"
         elif trial.status == TrialStatus.FAILED:
@@ -225,6 +416,13 @@ def print_summary(trials: list[Trial]) -> None:
                 print(f"  Exception: ...{exception_snippet}")
             except Exception:
                 print("  Exception: [Error reading exception file]")
+
+        # Display tool usage if available
+        if trial.tool_usage:
+            # Sort tools by usage count (descending) then alphabetically
+            sorted_tools = sorted(trial.tool_usage.items(), key=lambda x: (-x[1], x[0]))
+            tool_summary = ", ".join([f"{tool}: {count}" for tool, count in sorted_tools])
+            print(f"  Tool usage: {tool_summary}")
 
 
 ANALYSIS_PROMPT = """\
@@ -358,10 +556,8 @@ async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> O
     # Read the solution script if available
     solution_content = None
     if trial.solution_path and trial.solution_path.exists():
-        try:
-            solution_content = trial.solution_path.read_text()
-        except Exception:
-            solution_content = None
+        solution_content = trial.solution_path.read_text()
+
 
     # Create the user message with the trajectory and explicit status
     status_desc = "failed" if trial.status == TrialStatus.FAILED else "pending"
@@ -373,6 +569,8 @@ async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> O
         user_message += (
             f"**REFERENCE SOLUTION (solve.sh):**\n\n```bash\n{solution_content}\n```\n\n"
         )
+    else:
+        user_message += "**REFERENCE SOLUTION:** Not provided\n\n"
 
     user_message += (
         f"Please analyze this {status_desc} agent trajectory:\n\n```json\n{trajectory_json}\n```\n"

@@ -11,6 +11,7 @@ from pathlib import Path
 from deepagents_harbor.analysis import (
     TrialStatus,
     print_summary,
+    scan_dataset_for_solutions,
     scan_jobs_directory,
     write_trial_analysis,
 )
@@ -21,6 +22,12 @@ async def main():
     parser = argparse.ArgumentParser(description="Analyze job trials from a jobs directory")
     parser.add_argument(
         "jobs_dir", type=Path, help="Path to the jobs directory (e.g., jobs-terminal-bench/)"
+    )
+    parser.add_argument(
+        "--dataset",
+        "-d",
+        type=Path,
+        help="Path to the dataset directory (e.g., terminal-bench/) to scan for solution files",
     )
     parser.add_argument(
         "--output-dir",
@@ -45,8 +52,15 @@ async def main():
 
     args = parser.parse_args()
 
+    # Scan dataset for solutions if provided
+    solution_mapping = None
+    if args.dataset:
+        print(f"Scanning dataset directory: {args.dataset}")
+        solution_mapping = scan_dataset_for_solutions(args.dataset)
+        print(f"Found {len(solution_mapping)} tasks with solutions\n")
+
     # Scan and analyze all trials
-    trials = await scan_jobs_directory(args.jobs_dir)
+    trials = await scan_jobs_directory(args.jobs_dir, solution_mapping=solution_mapping)
 
     # Print human-readable summary
     print_summary(trials)

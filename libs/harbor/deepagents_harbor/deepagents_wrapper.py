@@ -25,6 +25,7 @@ from langchain_core.runnables import RunnableConfig
 
 from deepagents_harbor.backend import HarborSandboxFallback
 from deepagents_harbor.tracing import create_example_id_from_instruction
+from langchain.agents.middleware import dynamic_prompt
 
 
 class DeepAgentsWrapper(BaseAgent):
@@ -73,6 +74,49 @@ class DeepAgentsWrapper(BaseAgent):
     def version(self) -> str | None:
         return "0.0.1"
 
+    async def _enhance_instruction_with_context(
+        self, instruction: str, backend: HarborSandboxFallback
+    ) -> str:
+        """Enhance instruction with current directory and file listing context.
+
+        Args:
+            instruction: Original task instruction
+            backend: Harbor sandbox backend to query for directory information
+
+        Returns:
+            Enhanced instruction with appended context
+        """
+        # Get directory information from backend
+        ls_info = await backend.als_info('.')
+        current_dir = (await backend.aexecute("pwd")).output
+
+        # Get first 10 files
+        first_10_files = ls_info[:10] if ls_info else []
+        has_more = len(ls_info) > 10 if ls_info else False
+
+        # Build file listing
+        if first_10_files:
+            file_listing = "\n".join(f"{i+1}. {file}" for i, file in enumerate(first_10_files))
+            if has_more:
+                file_listing += f"\n\n(Output truncated: {len(ls_info) - 10} more files available in current directory)"
+        else:
+            file_listing = "(no files found)"
+
+        # Build enhanced instruction
+        enhanced_instruction = f"""{instruction}
+
+```
+ls_info = await backend.als_info('.')
+current_dir = (await backend.aexecute("pwd")).output
+```
+
+Current directory: {current_dir.strip() if current_dir else 'unknown'}
+
+First 10 files in current directory:
+{file_listing}"""
+
+        return enhanced_instruction
+
     async def run(
         self,
         instruction: str,
@@ -94,6 +138,12 @@ class DeepAgentsWrapper(BaseAgent):
         job_id = configuration["job_id"]
 
         backend = HarborSandboxFallback(environment)
+
+        # Enhance instruction with directory context
+        enhanced_instruction = await self._enhance_instruction_with_context(
+            instruction, backend
+        )
+
         deep_agent = create_deep_agent(model=self._model, backend=backend)
 
         # Build metadata with experiment tracking info
@@ -120,9 +170,11 @@ class DeepAgentsWrapper(BaseAgent):
             },
         }
 
+
+
         # Invoke deep agent with LangSmith tracing
         result = await deep_agent.ainvoke(
-            {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+            {"messages": [{"role": "user", "content": enhanced_instruction}]},  # type: ignore
             config=config,
         )
         # Create trajectory

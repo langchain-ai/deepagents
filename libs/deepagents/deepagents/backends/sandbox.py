@@ -46,96 +46,89 @@ for m in matches:
     print(json.dumps(result))
 " 2>/dev/null"""
 
-_WRITE_COMMAND_TEMPLATE = """python3 -c "
-import os
-import sys
-import base64
+_WRITE_COMMAND_TEMPLATE = """
+if [ -e {file_path} ]; then
+    echo "Error: File already exists" >&2
+    exit 1
+fi
+parent_dir=$(dirname {file_path})
+mkdir -p "$parent_dir" 2>/dev/null
+echo '{content_b64}' | base64 -d > {file_path}
+"""
 
-file_path = '{file_path}'
+_EDIT_COMMAND_TEMPLATE = """
+if [ ! -f {file_path} ]; then
+    exit 3
+fi
 
-# Check if file already exists (atomic with write)
-if os.path.exists(file_path):
-    print(f'Error: File \\'{file_path}\\' already exists', file=sys.stderr)
-    sys.exit(1)
+old=$(echo '{old_b64}' | base64 -d)
+new=$(echo '{new_b64}' | base64 -d)
 
-# Create parent directory if needed
-parent_dir = os.path.dirname(file_path) or '.'
-os.makedirs(parent_dir, exist_ok=True)
+# Use awk for literal string replacement that handles multiline correctly
+awk -v old="$old" -v new="$new" -v replace_all="{replace_all_str}" '
+BEGIN {{
+    RS = "^$"  # Read entire file as one record
+    ORS = ""   # No extra newline on output
+}}
+{{
+    content = $0
+    count = 0
 
-# Decode and write content
-content = base64.b64decode('{content_b64}').decode('utf-8')
-with open(file_path, 'w') as f:
-    f.write(content)
-" 2>&1"""
+    # Count occurrences
+    temp = content
+    while ((pos = index(temp, old)) > 0) {{
+        count++
+        temp = substr(temp, pos + length(old))
+    }}
 
-_EDIT_COMMAND_TEMPLATE = """python3 -c "
-import sys
-import base64
+    # Check error conditions
+    if (count == 0) {{
+        exit 1  # String not found
+    }}
+    if (count > 1 && replace_all == "false") {{
+        exit 2  # Multiple occurrences without replace_all
+    }}
 
-# Read file content
-with open('{file_path}', 'r') as f:
-    text = f.read()
+    # Perform replacement
+    if (replace_all == "true") {{
+        # Replace all occurrences
+        result = ""
+        remaining = content
+        while ((pos = index(remaining, old)) > 0) {{
+            result = result substr(remaining, 1, pos - 1) new
+            remaining = substr(remaining, pos + length(old))
+        }}
+        result = result remaining
+    }} else {{
+        # Replace first occurrence only
+        pos = index(content, old)
+        result = substr(content, 1, pos - 1) new substr(content, pos + length(old))
+    }}
 
-# Decode base64-encoded strings
-old = base64.b64decode('{old_b64}').decode('utf-8')
-new = base64.b64decode('{new_b64}').decode('utf-8')
+    # Write result and output count to stderr (so we can capture it)
+    print result > {file_path}
+    print count > "/dev/stderr"
+}}
+' {file_path} 2>&1 | tail -1
+"""
 
-# Count occurrences
-count = text.count(old)
-
-# Exit with error codes if issues found
-if count == 0:
-    sys.exit(1)  # String not found
-elif count > 1 and not {replace_all}:
-    sys.exit(2)  # Multiple occurrences without replace_all
-
-# Perform replacement
-if {replace_all}:
-    result = text.replace(old, new)
-else:
-    result = text.replace(old, new, 1)
-
-# Write back to file
-with open('{file_path}', 'w') as f:
-    f.write(result)
-
-print(count)
-" 2>&1"""
-
-_READ_COMMAND_TEMPLATE = """python3 -c "
-import os
-import sys
-
-file_path = '{file_path}'
-offset = {offset}
-limit = {limit}
-
-# Check if file exists
-if not os.path.isfile(file_path):
-    print('Error: File not found')
-    sys.exit(1)
-
-# Check if file is empty
-if os.path.getsize(file_path) == 0:
-    print('System reminder: File exists but has empty contents')
-    sys.exit(0)
-
-# Read file with offset and limit
-with open(file_path, 'r') as f:
-    lines = f.readlines()
-
-# Apply offset and limit
-start_idx = offset
-end_idx = offset + limit
-selected_lines = lines[start_idx:end_idx]
-
-# Format with line numbers (1-indexed, starting from offset + 1)
-for i, line in enumerate(selected_lines):
-    line_num = offset + i + 1
-    # Remove trailing newline for formatting, then add it back
-    line_content = line.rstrip('\\n')
-    print(f'{{line_num:6d}}\\t{{line_content}}')
-" 2>&1"""
+_READ_COMMAND_TEMPLATE = """
+if [ ! -f {file_path} ]; then
+    echo "Error: File not found"
+    exit 1
+fi
+if [ ! -s {file_path} ]; then
+    echo "System reminder: File exists but has empty contents"
+    exit 0
+fi
+# Use awk to add line numbers and handle offset/limit
+awk -v offset={offset} -v limit={limit} '
+    NR > offset && NR <= offset + limit {{
+        printf "%6d\\\\t%s\\\\n", NR, $0
+    }}
+    NR > offset + limit {{ exit }}
+' {file_path}
+"""
 
 
 class BaseSandbox(SandboxBackendProtocol, ABC):
@@ -161,38 +154,38 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         ...
 
     def ls_info(self, path: str) -> list[FileInfo]:
-        """Structured listing with file metadata using os.scandir."""
-        cmd = f"""python3 -c "
-import os
-import json
-
-path = '{path}'
-
-try:
-    with os.scandir(path) as it:
-        for entry in it:
-            result = {{
-                'path': entry.name,
-                'is_dir': entry.is_dir(follow_symlinks=False)
-            }}
-            print(json.dumps(result))
-except FileNotFoundError:
-    pass
-except PermissionError:
-    pass
-" 2>/dev/null"""
+        """Structured listing with file metadata using shell commands."""
+        # Escape path for safe shell execution
+        safe_path = shlex.quote(path)
+        # Use tab as delimiter (less likely to appear in filenames than pipe)
+        cmd = f"""
+if [ ! -d {safe_path} ]; then
+    exit 1
+fi
+for entry in {safe_path}/*; do
+    if [ -e "$entry" ]; then
+        name=$(basename "$entry")
+        if [ -d "$entry" ]; then
+            printf '%s\\t1\\n' "$name"
+        else
+            printf '%s\\t0\\n' "$name"
+        fi
+    fi
+done
+"""
 
         result = self.execute(cmd)
+
+        if result.exit_code != 0:
+            return []
 
         file_infos: list[FileInfo] = []
         for line in result.output.strip().split("\n"):
             if not line:
                 continue
-            try:
-                data = json.loads(line)
-                file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
-            except json.JSONDecodeError:
-                continue
+            parts = line.split("\t")
+            if len(parts) == 2:
+                file_infos.append({"path": parts[0], "is_dir": parts[1] == "1"})
 
         return file_infos
 
@@ -203,8 +196,10 @@ except PermissionError:
         limit: int = 2000,
     ) -> str:
         """Read file content with line numbers using a single shell command."""
+        # Escape file path for safe shell execution
+        safe_path = shlex.quote(file_path)
         # Use template for reading file with offset and limit
-        cmd = _READ_COMMAND_TEMPLATE.format(file_path=file_path, offset=offset, limit=limit)
+        cmd = _READ_COMMAND_TEMPLATE.format(file_path=safe_path, offset=offset, limit=limit)
         result = self.execute(cmd)
 
         output = result.output.rstrip()
@@ -223,9 +218,11 @@ except PermissionError:
         """Create a new file. Returns WriteResult; error populated on failure."""
         # Encode content as base64 to avoid any escaping issues
         content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        # Escape file path for safe shell execution
+        safe_path = shlex.quote(file_path)
 
         # Single atomic check + write command
-        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content_b64=content_b64)
+        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=safe_path, content_b64=content_b64)
         result = self.execute(cmd)
 
         # Check for errors (exit code or error message in output)
@@ -247,9 +244,12 @@ except PermissionError:
         # Encode strings as base64 to avoid any escaping issues
         old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
         new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
+        replace_all_str = "true" if replace_all else "false"
+        # Escape file path for safe shell execution
+        safe_path = shlex.quote(file_path)
 
         # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_b64=old_b64, new_b64=new_b64, replace_all=replace_all)
+        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=safe_path, old_b64=old_b64, new_b64=new_b64, replace_all_str=replace_all_str)
         result = self.execute(cmd)
 
         exit_code = result.exit_code
@@ -273,20 +273,22 @@ except PermissionError:
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
         """Structured search results or error string for invalid input."""
-        search_path = shlex.quote(path or ".")
+        search_path = path or "."
 
         # Build grep command to get structured output
-        grep_opts = "-rHnF"  # recursive, with filename, with line number, fixed-strings (literal)
+        # Use -E for extended regex to support patterns like test[0-9]+
+        grep_opts = "-rHnE"  # recursive, with filename, with line number, extended regex
 
-        # Add glob pattern if specified
+        # Add glob pattern if specified (escape for safe shell execution)
         glob_pattern = ""
         if glob:
-            glob_pattern = f"--include='{glob}'"
+            glob_pattern = f"--include={shlex.quote(glob)}"
 
-        # Escape pattern for shell
-        pattern_escaped = shlex.quote(pattern)
+        # Escape pattern and path for safe shell execution
+        safe_pattern = shlex.quote(pattern)
+        safe_path = shlex.quote(search_path)
 
-        cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
+        cmd = f"grep {grep_opts} {glob_pattern} -e {safe_pattern} {safe_path} 2>/dev/null || true"
         result = self.execute(cmd)
 
         output = result.output.rstrip()

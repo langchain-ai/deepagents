@@ -196,9 +196,14 @@ WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
 
 Usage:
 - The file_path parameter must be an absolute path, not a relative path
-- The content parameter must be a string
-- The write_file tool will create the a new file.
-- Prefer to edit existing files over creating new ones when possible."""
+- The content parameter contains the complete file contents as a string (this is the actual text/code/data that will be written to the file)
+- The write_file tool will create a new file at the specified path
+- If a file already exists at the path, it will be overwritten
+- Prefer to edit existing files over creating new ones when possible
+
+Example:
+- To create a Python file: write_file(file_path="/app/main.py", content="def hello():\\n    print('Hello, World!')")
+- To create a text file: write_file(file_path="/data/notes.txt", content="Meeting notes from today...")"""
 
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.

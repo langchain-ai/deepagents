@@ -1,17 +1,14 @@
 """LangSmith integration for Harbor DeepAgents."""
 
+import argparse
 import hashlib
 import json
 import os
 import uuid
 from pathlib import Path
 from typing import Any, Optional
-import os
-import requests
-import argparse
+
 from dotenv import load_dotenv
-
-
 from langsmith import Client
 
 
@@ -127,20 +124,20 @@ def get_trace(
     filter_query = f'and(eq(metadata_key, "job_id"), eq(metadata_value, "{job_id}"))'
 
     # Fetch runs matching the filter
-    runs = list(client.list_runs(
-        project_name=project_name,
-        filter=filter_query,
-        is_root=is_root,
-    ))
+    runs = list(
+        client.list_runs(
+            project_name=project_name,
+            filter=filter_query,
+            is_root=is_root,
+        )
+    )
 
     return runs
 
 
 def main():
     """CLI entry point for fetching LangSmith traces by job_id."""
-    parser = argparse.ArgumentParser(
-        description="Fetch LangSmith runs filtered by job_id metadata"
-    )
+    parser = argparse.ArgumentParser(description="Fetch LangSmith runs filtered by job_id metadata")
     parser.add_argument("--job-id", required=True, help="Job ID to filter by")
     parser.add_argument("--project", required=True, help="LangSmith project name")
     parser.add_argument(

@@ -399,11 +399,7 @@ def print_summary(trials: list[Trial]) -> None:
     print("=" * 80)
 
     # Sort trials: COMPLETED first, then FAILED, then PENDING
-    status_order = {
-        TrialStatus.COMPLETED: 0,
-        TrialStatus.FAILED: 1,
-        TrialStatus.PENDING: 2
-    }
+    status_order = {TrialStatus.COMPLETED: 0, TrialStatus.FAILED: 1, TrialStatus.PENDING: 2}
     sorted_trials = sorted(trials, key=lambda t: status_order[t.status])
 
     for trial in sorted_trials:
@@ -577,7 +573,6 @@ async def analyze_failed_trial(trial: Trial, analyze_pending: bool = False) -> O
     solution_content = None
     if trial.solution_path and trial.solution_path.exists():
         solution_content = trial.solution_path.read_text()
-
 
     # Create the user message with the trajectory and explicit status
     status_desc = "failed" if trial.status == TrialStatus.FAILED else "pending"

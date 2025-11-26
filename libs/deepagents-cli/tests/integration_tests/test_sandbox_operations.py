@@ -723,12 +723,23 @@ class TestSandboxOperations:
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/numbers.txt", "test123\ntest456\nabcdef")
 
+        # Debug: verify file was created and contains expected content
+        verify = sandbox.execute(f"cat {base_dir}/numbers.txt")
+        assert "test123" in verify.output, f"File content: {verify.output}"
+
+        # Test with simpler pattern first (literal string without special regex)
+        result_simple = sandbox.grep_raw("test123", path=base_dir)
+        assert isinstance(result_simple, list)
+        assert len(result_simple) >= 1, f"Simple pattern failed to find matches"
+
+        # Now test with regex pattern
         result = sandbox.grep_raw("test[0-9]+", path=base_dir)
 
         assert isinstance(result, list)
-        assert len(result) == 2
-        assert "test123" in result[0]["text"]
-        assert "test456" in result[1]["text"]
+        assert len(result) == 2, f"Found {len(result)} matches, expected 2. Results: {result}"
+        if len(result) == 2:
+            assert "test123" in result[0]["text"]
+            assert "test456" in result[1]["text"]
 
     def test_grep_unicode_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep with unicode pattern and content."""

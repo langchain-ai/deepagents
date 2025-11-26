@@ -15,7 +15,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
@@ -325,8 +325,8 @@ def _ls_tool_generator(
     """
     tool_description = custom_description or LIST_FILES_TOOL_DESCRIPTION
 
-    @tool(description=tool_description)
-    def ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
+    def sync_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
+        """Synchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
         validated_path = _validate_path(path)
         infos = resolved_backend.ls_info(validated_path)
@@ -334,7 +334,21 @@ def _ls_tool_generator(
         result = truncate_if_too_long(paths)
         return str(result)
 
-    return ls
+    async def async_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
+        """Asynchronous wrapper for ls tool."""
+        resolved_backend = _get_backend(backend, runtime)
+        validated_path = _validate_path(path)
+        infos = await resolved_backend.als_info(validated_path)
+        paths = [fi.get("path", "") for fi in infos]
+        result = truncate_if_too_long(paths)
+        return str(result)
+
+    return StructuredTool.from_function(
+        name="ls",
+        description=tool_description,
+        func=sync_ls,
+        coroutine=async_ls,
+    )
 
 
 def _read_file_tool_generator(
@@ -352,18 +366,34 @@ def _read_file_tool_generator(
     """
     tool_description = custom_description or READ_FILE_TOOL_DESCRIPTION
 
-    @tool(description=tool_description)
-    def read_file(
+    def sync_read_file(
         file_path: str,
         runtime: ToolRuntime[None, FilesystemState],
         offset: int = DEFAULT_READ_OFFSET,
         limit: int = DEFAULT_READ_LIMIT,
     ) -> str:
+        """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
         return resolved_backend.read(file_path, offset=offset, limit=limit)
 
-    return read_file
+    async def async_read_file(
+        file_path: str,
+        runtime: ToolRuntime[None, FilesystemState],
+        offset: int = DEFAULT_READ_OFFSET,
+        limit: int = DEFAULT_READ_LIMIT,
+    ) -> str:
+        """Asynchronous wrapper for read_file tool."""
+        resolved_backend = _get_backend(backend, runtime)
+        file_path = _validate_path(file_path)
+        return await resolved_backend.aread(file_path, offset=offset, limit=limit)
+
+    return StructuredTool.from_function(
+        name="read_file",
+        description=tool_description,
+        func=sync_read_file,
+        coroutine=async_read_file,
+    )
 
 
 def _write_file_tool_generator(
@@ -381,12 +411,12 @@ def _write_file_tool_generator(
     """
     tool_description = custom_description or WRITE_FILE_TOOL_DESCRIPTION
 
-    @tool(description=tool_description)
-    def write_file(
+    def sync_write_file(
         file_path: str,
         content: str,
         runtime: ToolRuntime[None, FilesystemState],
     ) -> Command | str:
+        """Synchronous wrapper for write_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
         res: WriteResult = resolved_backend.write(file_path, content)
@@ -407,7 +437,38 @@ def _write_file_tool_generator(
             )
         return f"Updated file {res.path}"
 
-    return write_file
+    async def async_write_file(
+        file_path: str,
+        content: str,
+        runtime: ToolRuntime[None, FilesystemState],
+    ) -> Command | str:
+        """Asynchronous wrapper for write_file tool."""
+        resolved_backend = _get_backend(backend, runtime)
+        file_path = _validate_path(file_path)
+        res: WriteResult = await resolved_backend.awrite(file_path, content)
+        if res.error:
+            return res.error
+        # If backend returns state update, wrap into Command with ToolMessage
+        if res.files_update is not None:
+            return Command(
+                update={
+                    "files": res.files_update,
+                    "messages": [
+                        ToolMessage(
+                            content=f"Updated file {res.path}",
+                            tool_call_id=runtime.tool_call_id,
+                        )
+                    ],
+                }
+            )
+        return f"Updated file {res.path}"
+
+    return StructuredTool.from_function(
+        name="write_file",
+        description=tool_description,
+        func=sync_write_file,
+        coroutine=async_write_file,
+    )
 
 
 def _edit_file_tool_generator(
@@ -425,8 +486,7 @@ def _edit_file_tool_generator(
     """
     tool_description = custom_description or EDIT_FILE_TOOL_DESCRIPTION
 
-    @tool(description=tool_description)
-    def edit_file(
+    def sync_edit_file(
         file_path: str,
         old_string: str,
         new_string: str,
@@ -434,6 +494,7 @@ def _edit_file_tool_generator(
         *,
         replace_all: bool = False,
     ) -> Command | str:
+        """Synchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
         res: EditResult = resolved_backend.edit(file_path, old_string, new_string, replace_all=replace_all)
@@ -453,7 +514,40 @@ def _edit_file_tool_generator(
             )
         return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
-    return edit_file
+    async def async_edit_file(
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        runtime: ToolRuntime[None, FilesystemState],
+        *,
+        replace_all: bool = False,
+    ) -> Command | str:
+        """Asynchronous wrapper for edit_file tool."""
+        resolved_backend = _get_backend(backend, runtime)
+        file_path = _validate_path(file_path)
+        res: EditResult = await resolved_backend.aedit(file_path, old_string, new_string, replace_all=replace_all)
+        if res.error:
+            return res.error
+        if res.files_update is not None:
+            return Command(
+                update={
+                    "files": res.files_update,
+                    "messages": [
+                        ToolMessage(
+                            content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                            tool_call_id=runtime.tool_call_id,
+                        )
+                    ],
+                }
+            )
+        return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
+
+    return StructuredTool.from_function(
+        name="edit_file",
+        description=tool_description,
+        func=sync_edit_file,
+        coroutine=async_edit_file,
+    )
 
 
 def _glob_tool_generator(
@@ -471,15 +565,28 @@ def _glob_tool_generator(
     """
     tool_description = custom_description or GLOB_TOOL_DESCRIPTION
 
-    @tool(description=tool_description)
-    def glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+    def sync_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+        """Synchronous wrapper for glob tool."""
         resolved_backend = _get_backend(backend, runtime)
         infos = resolved_backend.glob_info(pattern, path=path)
         paths = [fi.get("path", "") for fi in infos]
         result = truncate_if_too_long(paths)
         return str(result)
 
-    return glob
+    async def async_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+        """Asynchronous wrapper for glob tool."""
+        resolved_backend = _get_backend(backend, runtime)
+        infos = await resolved_backend.aglob_info(pattern, path=path)
+        paths = [fi.get("path", "") for fi in infos]
+        result = truncate_if_too_long(paths)
+        return str(result)
+
+    return StructuredTool.from_function(
+        name="glob",
+        description=tool_description,
+        func=sync_glob,
+        coroutine=async_glob,
+    )
 
 
 def _grep_tool_generator(
@@ -497,14 +604,14 @@ def _grep_tool_generator(
     """
     tool_description = custom_description or GREP_TOOL_DESCRIPTION
 
-    @tool(description=tool_description)
-    def grep(
+    def sync_grep(
         pattern: str,
         runtime: ToolRuntime[None, FilesystemState],
         path: str | None = None,
         glob: str | None = None,
         output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
     ) -> str:
+        """Synchronous wrapper for grep tool."""
         resolved_backend = _get_backend(backend, runtime)
         raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
         if isinstance(raw, str):
@@ -512,7 +619,27 @@ def _grep_tool_generator(
         formatted = format_grep_matches(raw, output_mode)
         return truncate_if_too_long(formatted)  # type: ignore[arg-type]
 
-    return grep
+    async def async_grep(
+        pattern: str,
+        runtime: ToolRuntime[None, FilesystemState],
+        path: str | None = None,
+        glob: str | None = None,
+        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+    ) -> str:
+        """Asynchronous wrapper for grep tool."""
+        resolved_backend = _get_backend(backend, runtime)
+        raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
+        if isinstance(raw, str):
+            return raw
+        formatted = format_grep_matches(raw, output_mode)
+        return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+
+    return StructuredTool.from_function(
+        name="grep",
+        description=tool_description,
+        func=sync_grep,
+        coroutine=async_grep,
+    )
 
 
 def _supports_execution(backend: BackendProtocol) -> bool:
@@ -553,11 +680,11 @@ def _execute_tool_generator(
     """
     tool_description = custom_description or EXECUTE_TOOL_DESCRIPTION
 
-    @tool(description=tool_description)
-    def execute(
+    def sync_execute(
         command: str,
         runtime: ToolRuntime[None, FilesystemState],
     ) -> str:
+        """Synchronous wrapper for execute tool."""
         resolved_backend = _get_backend(backend, runtime)
 
         # Runtime check - fail gracefully if not supported
@@ -586,7 +713,45 @@ def _execute_tool_generator(
 
         return "".join(parts)
 
-    return execute
+    async def async_execute(
+        command: str,
+        runtime: ToolRuntime[None, FilesystemState],
+    ) -> str:
+        """Asynchronous wrapper for execute tool."""
+        resolved_backend = _get_backend(backend, runtime)
+
+        # Runtime check - fail gracefully if not supported
+        if not _supports_execution(resolved_backend):
+            return (
+                "Error: Execution not available. This agent's backend "
+                "does not support command execution (SandboxBackendProtocol). "
+                "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
+            )
+
+        try:
+            result = await resolved_backend.aexecute(command)
+        except NotImplementedError as e:
+            # Handle case where execute() exists but raises NotImplementedError
+            return f"Error: Execution not available. {e}"
+
+        # Format output for LLM consumption
+        parts = [result.output]
+
+        if result.exit_code is not None:
+            status = "succeeded" if result.exit_code == 0 else "failed"
+            parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
+
+        if result.truncated:
+            parts.append("\n[Output was truncated due to size limits]")
+
+        return "".join(parts)
+
+    return StructuredTool.from_function(
+        name="execute",
+        description=tool_description,
+        func=sync_execute,
+        coroutine=async_execute,
+    )
 
 
 TOOL_GENERATORS = {

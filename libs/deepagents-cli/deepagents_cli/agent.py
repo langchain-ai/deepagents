@@ -96,7 +96,7 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
 
     Args:
         assistant_id: The agent identifier for path references
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona", "docker").
                      If None, agent is operating in local mode.
 
     Returns:
@@ -339,7 +339,7 @@ def create_agent_with_config(
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
                  If None, uses local filesystem + shell.
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona")
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona", "docker")
 
     Returns:
         2-tuple of graph and backend

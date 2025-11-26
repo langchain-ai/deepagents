@@ -266,10 +266,114 @@ def create_daytona_sandbox(
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
+@contextmanager
+def create_docker_sandbox(
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
+    """Create or connect to Docker sandbox.
+
+    Args:
+        sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        (DockerBackend, sandbox_id)
+
+    Raises:
+        ImportError: Docker SDK not installed
+        Exception: Sandbox creation/connection failed
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
+    """
+    import docker
+
+    from deepagents_cli.integrations.docker import DockerBackend
+
+    sandbox_exists = sandbox_id != None
+    console.print(f"[yellow]{"Connecting to" if sandbox_exists else "Starting"} Docker sandbox...[/yellow]")
+
+    # Create ephemeral app (auto-cleans up on exit)
+    client = docker.from_env()
+
+    image_name = "python:3.12-slim"
+    project_level_deepagents_dir = f"{os.getcwd()}/.deepagents"
+    try:
+        container = client.containers.get(sandbox_id) if sandbox_exists else client.containers.run(
+            image_name,
+            command="tail -f /dev/null",  # Keep container running
+            detach=True,
+            environment={"HOME": os.path.expanduser('~')},
+            tty=True,
+            mem_limit="512m",
+            cpu_quota=50000,  # Limits CPU usage (e.g., 50% of one core)
+            pids_limit=100,   # Limit number of processes
+            # Temporarily allow network and root access for setup
+            network_mode="bridge",
+            # No user restriction for install step
+            read_only=False,  # Temporarily allow writes
+            tmpfs={"/tmp": "rw,size=64m,noexec,nodev,nosuid"}, # Writable /tmp
+            volumes={
+                os.path.expanduser('~/.deepagents'): {"bind": os.path.expanduser('~/.deepagents'), 'mode': 'rw'},
+                os.getcwd(): {"bind": "/workspace", 'mode': 'rw'},
+                **({project_level_deepagents_dir: {"bind": project_level_deepagents_dir, 'mode': 'rw'}} if os.path.isdir(project_level_deepagents_dir) else {}), # Needed for project skills to work
+            },
+        )
+    except docker.errors.ImageNotFound as e:
+        print(f"Error: The specified image '{image_name}' was not found.")
+        print(f"Details: {e}")
+        exit()
+    except docker.errors.ContainerError as e:
+        # This exception is raised if the container exits with a non-zero exit code
+        # and detach is False.
+        print(f"Error: The container exited with a non-zero exit code ({e.exit_status}).")
+        print(f"Command run: {e.command}")
+        print(f"Container logs: {e.logs.decode('utf-8')}")
+        print(f"Details: {e}")
+        exit()
+    except docker.errors.APIError as e:
+        # This covers other server-related errors, like connection issues or permission problems.
+        print(f"Error: A Docker API error occurred.")
+        print(f"Details: {e}")
+        exit()
+    except docker.errors.NotFound as e:
+        print("Container not found or not running.")
+        exit()
+    except Exception as e:
+        # General exception handler for any other unexpected errors
+        print(f"An unexpected error occurred: {e}")
+        exit()
+
+    sandbox_id = container.id
+
+    backend = DockerBackend(container)
+    console.print(f"[green]✓ Docker sandbox ready: {backend.id}[/green]")
+
+    # Run setup script if provided
+    if setup_script_path:
+        _run_sandbox_setup(backend, setup_script_path)
+    try:
+        yield backend
+    finally:
+        if not sandbox_exists:
+            try:
+                console.print(f"[dim]Terminating Docker sandbox {sandbox_id}...[/dim]")
+                try:
+                    container.stop(timeout=5)
+                    container.remove(force=True)
+                except docker.errors.NotFound:
+                    print(f"Container {sandbox_id} already removed.")
+                except docker.errors.APIError as e:
+                    print(f"Error during container cleanup {sandbox_id}: {e}")
+                console.print(f"[dim]✓ Docker sandbox {sandbox_id} terminated[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+
+
 _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
+    "docker": "/workspace",
 }
 
 
@@ -278,6 +382,7 @@ _SANDBOX_PROVIDERS = {
     "modal": create_modal_sandbox,
     "runloop": create_runloop_sandbox,
     "daytona": create_daytona_sandbox,
+    "docker": create_docker_sandbox,
 }
 
 
@@ -294,7 +399,7 @@ def create_sandbox(
     the appropriate provider-specific context manager.
 
     Args:
-        provider: Sandbox provider ("modal", "runloop", "daytona")
+        provider: Sandbox provider ("modal", "runloop", "daytona", "docker")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 
@@ -318,7 +423,7 @@ def get_available_sandbox_types() -> list[str]:
     """Get list of available sandbox provider types.
 
     Returns:
-        List of sandbox type names (e.g., ["modal", "runloop", "daytona"])
+        List of sandbox type names (e.g., ["modal", "runloop", "daytona", "docker"])
     """
     return list(_SANDBOX_PROVIDERS.keys())
 
@@ -327,7 +432,7 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name ("modal", "runloop", "daytona")
+        provider: Sandbox provider name ("modal", "runloop", "daytona", "docker")
 
     Returns:
         Default working directory path as string

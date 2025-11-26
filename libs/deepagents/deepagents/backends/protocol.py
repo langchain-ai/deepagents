@@ -172,7 +172,19 @@ class BackendProtocol(Protocol):
     """
 
     def ls_info(self, path: str) -> list["FileInfo"]:
-        """Structured listing with file metadata."""
+        """List all files in a directory with metadata.
+
+        Args:
+            path: Absolute path to the directory to list. Must start with '/'.
+
+        Returns:
+            List of FileInfo dicts containing file metadata:
+
+            - `path` (required): Absolute file path
+            - `is_dir` (optional): True if directory
+            - `size` (optional): File size in bytes
+            - `modified_at` (optional): ISO 8601 timestamp
+        """
         ...
 
     def read(
@@ -181,7 +193,26 @@ class BackendProtocol(Protocol):
         offset: int = 0,
         limit: int = 2000,
     ) -> str:
-        """Read file content with line numbers or an error string."""
+        """Read file content with line numbers.
+
+        Args:
+            file_path: Absolute path to the file to read. Must start with '/'.
+            offset: Line number to start reading from (0-indexed). Default: 0.
+            limit: Maximum number of lines to read. Default: 2000.
+
+        Returns:
+            String containing file content formatted with line numbers (cat -n format),
+            starting at line 1. Lines longer than 2000 characters are truncated.
+
+            Returns an error string if the file doesn't exist or can't be read.
+
+        !!! note
+            - Use pagination (offset/limit) for large files to avoid context overflow
+            - First scan: `read(path, limit=100)` to see file structure
+            - Read more: `read(path, offset=100, limit=200)` for next section
+            - ALWAYS read a file before editing it
+            - If file exists but is empty, you'll receive a system reminder warning
+        """
         ...
 
     def grep_raw(
@@ -190,11 +221,58 @@ class BackendProtocol(Protocol):
         path: str | None = None,
         glob: str | None = None,
     ) -> list["GrepMatch"] | str:
-        """Structured search results or error string for invalid input."""
+        """Search for a literal text pattern in files.
+
+        Args:
+            pattern: Literal string to search for (NOT regex).
+                     Performs exact substring matching within file content.
+                     Example: "TODO" matches any line containing "TODO"
+
+            path: Optional directory path to search in.
+                  If None, searches in current working directory.
+                  Example: "/workspace/src"
+
+            glob: Optional glob pattern to filter which FILES to search.
+                  Filters by filename/path, not content.
+                  Supports standard glob wildcards:
+                  - `*` matches any characters in filename
+                  - `**` matches any directories recursively
+                  - `?` matches single character
+                  - `[abc]` matches one character from set
+
+        Examples:
+                  - "*.py" - only search Python files
+                  - "**/*.txt" - search all .txt files recursively
+                  - "src/**/*.js" - search JS files under src/
+                  - "test[0-9].txt" - search test0.txt, test1.txt, etc.
+
+        Returns:
+            On success: list[GrepMatch] with structured results containing:
+                - path: Absolute file path
+                - line: Line number (1-indexed)
+                - text: Full line content containing the match
+
+            On error: str with error message (e.g., invalid path, permission denied)
+        """
         ...
 
     def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
-        """Structured glob matching returning FileInfo dicts."""
+        """Find files matching a glob pattern.
+
+        Args:
+            pattern: Glob pattern with wildcards to match file paths.
+                     Supports standard glob syntax:
+                     - `*` matches any characters within a filename/directory
+                     - `**` matches any directories recursively
+                     - `?` matches a single character
+                     - `[abc]` matches one character from set
+
+            path: Base directory to search from. Default: "/" (root).
+                  The pattern is applied relative to this path.
+
+        Returns:
+            list of FileInfo dicts for all matching files
+        """
         ...
 
     def write(
@@ -202,7 +280,19 @@ class BackendProtocol(Protocol):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file. Returns WriteResult; error populated on failure."""
+        """Write content to a new file in the filesystem, error if file exists.
+
+        Args:
+            file_path: Absolute path where the file should be created.
+                       Must start with '/'.
+            content: String content to write to the file.
+
+        Returns:
+            WriteResult with:
+            - error: Error message on failure, None on success
+            - path: Absolute path of written file, None on failure
+            - files_update: State update dict for checkpoint backends, None for external storage
+        """
         ...
 
     def edit(
@@ -212,7 +302,24 @@ class BackendProtocol(Protocol):
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
-        """Edit a file by replacing string occurrences. Returns EditResult."""
+        """Perform exact string replacements in an existing file.
+
+        Args:
+            file_path: Absolute path to the file to edit. Must start with '/'.
+            old_string: Exact string to search for and replace.
+                       Must match exactly including whitespace and indentation.
+            new_string: String to replace old_string with.
+                       Must be different from old_string.
+            replace_all: If True, replace all occurrences. If False (default),
+                        old_string must be unique in the file or the edit fails.
+
+        Returns:
+            EditResult with:
+            - error: Error message on failure, None on success
+            - path: Absolute path of edited file, None on failure
+            - files_update: State update dict for checkpoint backends, None for external storage
+            - occurrences: Number of replacements made, None on failure
+        """
         ...
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:

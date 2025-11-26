@@ -201,7 +201,7 @@ Usage:
 - If a file already exists at the path, it will be overwritten
 - Prefer to edit existing files over creating new ones when possible
 
-Example:
+Examples:
 - To create a Python file: write_file(file_path="/app/main.py", content="def hello():\\n    print('Hello, World!')")
 - To create a text file: write_file(file_path="/data/notes.txt", content="Meeting notes from today...")"""
 

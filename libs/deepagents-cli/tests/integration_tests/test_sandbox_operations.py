@@ -658,7 +658,7 @@ class TestSandboxOperations:
     # ==================== grep_raw() tests ====================
 
     def test_grep_basic_search(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test basic grep search for a pattern."""
+        """Test basic grep search for a literal pattern (not regex)."""
         base_dir = "/tmp/test_sandbox_ops/grep_test"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/file1.txt", "Hello world\nGoodbye world")
@@ -717,18 +717,18 @@ class TestSandboxOperations:
         line_numbers = [match["line"] for match in result]
         assert line_numbers == [1, 3, 5]
 
-    def test_grep_regex_pattern(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test grep with regex pattern."""
-        base_dir = "/tmp/test_sandbox_ops/grep_regex"
+    def test_grep_literal_string_matching(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test grep with literal string matching (not regex)."""
+        base_dir = "/tmp/test_sandbox_ops/grep_literal"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/numbers.txt", "test123\ntest456\nabcdef")
 
-        result = sandbox.grep_raw("test[0-9]+", path=base_dir)
+        # Pattern is treated as literal string, not regex
+        result = sandbox.grep_raw("test123", path=base_dir)
 
         assert isinstance(result, list)
-        assert len(result) == 2
+        assert len(result) == 1
         assert "test123" in result[0]["text"]
-        assert "test456" in result[1]["text"]
 
     def test_grep_unicode_pattern(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep with unicode pattern and content."""
@@ -755,16 +755,23 @@ class TestSandboxOperations:
         assert len(result) == 1
         assert "Hello" in result[0]["text"]
 
-    def test_grep_with_special_regex_characters(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test grep with patterns containing special regex characters."""
+    def test_grep_with_special_characters(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test grep with patterns containing special characters (treated as literals)."""
         base_dir = "/tmp/test_sandbox_ops/grep_special"
         sandbox.execute(f"mkdir -p {base_dir}")
         sandbox.write(f"{base_dir}/special.txt", "Price: $100\nPath: /usr/bin\nPattern: [a-z]*")
 
-        # Test with dollar sign (should work as literal in extended regex)
-        result = sandbox.grep_raw(r"\$100", path=base_dir)
+        # Test with dollar sign (treated as literal)
+        result = sandbox.grep_raw("$100", path=base_dir)
         assert isinstance(result, list)
-        assert len(result) >= 0  # May or may not match depending on escaping
+        assert len(result) == 1
+        assert "$100" in result[0]["text"]
+
+        # Test with brackets (treated as literal)
+        result = sandbox.grep_raw("[a-z]*", path=base_dir)
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert "[a-z]*" in result[0]["text"]
 
     def test_grep_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test grep in a directory with no files."""

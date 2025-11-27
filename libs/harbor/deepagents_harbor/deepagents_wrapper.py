@@ -98,12 +98,33 @@ Work in the /app directory unless explicitly instructed otherwise.
     - For multi-objective problems, consider multiple strategies
     - Read requirements for completeness: if "generate report including X, Y, Z" - include all three
 
+## TASK TRACKING & VERIFICATION
+
+11. **Maintain a TODO List**:
+    - At the start of each task, create a TODO list with all required steps
+    - Update the TODO list as you progress through the task
+    - Mark items as in_progress when starting them
+    - Mark items as completed immediately after finishing them
+
+12. **MANDATORY Final Verification**:
+    - BEFORE declaring a task complete, ALWAYS add a final TODO item: "Verify solution matches EXACT instructions"
+    - This verification step MUST:
+      * Read back the original user instructions word-for-word
+      * Check each requirement, constraint, field name, file path, and specification EXACTLY as written
+      * Confirm that what was implemented matches EXACTLY what was requested (not "similar" or "equivalent")
+      * Verify all conditions, edge cases, and constraints from the original request are satisfied
+      * Check output formats, file names, paths, and values match the specification precisely
+    - Do NOT declare completion until this verification step confirms exact compliance
+    - If any discrepancies are found during verification, fix them before completing
+
 ## EXECUTION APPROACH
 - Extract and verify complete requirements checklist FIRST
+- Create a TODO list with all required steps, including final verification
 - Identify irreversible operations and plan around them
 - Select tools based on specification and data type
 - Research domain conventions before specialized implementations
 - Validate against external sources, not just self-created tests
+- ALWAYS complete the final verification TODO before declaring success
 """
 
 

@@ -1,8 +1,12 @@
 """Agent management and creation for the CLI."""
 
 import os
+import re
 import shutil
 from pathlib import Path
+from functools import reduce
+from itertools import chain
+from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
@@ -55,6 +59,14 @@ def list_agents() -> None:
                 console.print(f"    {agent_path}", style=COLORS["dim"])
 
     console.print()
+
+
+def list_assistant_ids() -> list:
+    agents_dir = settings.user_deepagents_dir
+    project_deepagents_dir = settings.ensure_project_deepagents_dir()
+    if not agents_dir.exists() or not any(chain(agents_dir.iterdir(), project_deepagents_dir.iterdir())):
+        return []
+    return reduce(lambda agent_paths, agent_path: [*agent_paths, agent_path.name] if agent_path.is_dir() and (agent_path / "agent.md").exists() else agent_paths, sorted(chain(agents_dir.iterdir(), project_deepagents_dir.iterdir())), [])
 
 
 def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
@@ -322,6 +334,89 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "task": task_interrupt_config,
     }
 
+def create_subagent_with_config(
+    model: str | BaseChatModel,
+    assistant_id: str,
+    tools: list[BaseTool],
+    *,
+    sandbox: SandboxBackendProtocol | None = None,
+    sandbox_type: str | None = None,
+) -> dict[str, Any]:
+    """Create and configure an agent with the specified model and tools.
+
+    Args:
+        model: LLM model to use
+        assistant_id: Agent identifier for memory storage
+        tools: Additional tools to provide to agent
+        sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
+                 If None, uses local filesystem + shell.
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona")
+
+    Returns:
+        subagent dict object
+    """
+    # Setup agent directory for persistent memory (same for both local and remote modes)
+    agent_dir = settings.ensure_agent_dir(assistant_id)
+    agent_md = agent_dir / "agent.md"
+    if not agent_md.exists():
+        source_content = get_default_coding_instructions()
+        agent_md.write_text(source_content)
+
+    # Skills directory - per-agent (user-level)
+    skills_dir = settings.ensure_user_skills_dir(assistant_id)
+
+    # Project-level skills directory (if in a project)
+    project_skills_dir = settings.get_project_skills_dir()
+
+    # CONDITIONAL SETUP: Local vs Remote Sandbox
+    if sandbox is None:
+        # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ShellToolMiddleware
+        agent_middleware = [
+            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
+            SkillsMiddleware(
+                skills_dir=skills_dir,
+                assistant_id=assistant_id,
+                project_skills_dir=project_skills_dir,
+            ),
+            ShellMiddleware(
+                workspace_root=str(Path.cwd()),
+                env=os.environ,
+            ),
+        ]
+    else:
+        # Middleware: AgentMemoryMiddleware and SkillsMiddleware
+        # NOTE: File operations (ls, read, write, edit, glob, grep) and execute tool
+        # are automatically provided by create_deep_agent when backend is a SandboxBackend.
+        agent_middleware = [
+            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
+            SkillsMiddleware(
+                skills_dir=skills_dir,
+                assistant_id=assistant_id,
+                project_skills_dir=project_skills_dir,
+            ),
+        ]
+
+    # Get the system prompt (sandbox-aware and with skills)
+    system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
+
+    interrupt_on = _add_interrupt_on()
+
+    content = agent_md.read_text()
+    match1 = re.search(r"model: ([^\n]*)", content) # allow subagent to dynamically switch model
+    model = match1 and match1.group(1) or model
+    description = content.split("#")[0].replace(f"model: {model}", "").strip()
+    agent = {
+        "name": assistant_id,
+        "description": description,
+        "model": model,
+        "system_prompt": system_prompt,
+        "tools": tools,
+        "middleware": agent_middleware,
+        "interrupt_on": interrupt_on,
+    }
+
+    return agent
+
 
 def create_agent_with_config(
     model: str | BaseChatModel,
@@ -404,6 +499,11 @@ def create_agent_with_config(
 
     interrupt_on = _add_interrupt_on()
 
+    subagents = []
+    for assistant_id in [item for item in list_assistant_ids() if item != assistant_id]:
+        subagent = create_subagent_with_config(model, assistant_id, tools, sandbox=sandbox, sandbox_type=sandbox_type)
+        subagents.append(subagent)
+
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
@@ -411,6 +511,7 @@ def create_agent_with_config(
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
+        subagents=subagents
     ).with_config(config)
 
     agent.checkpointer = InMemorySaver()

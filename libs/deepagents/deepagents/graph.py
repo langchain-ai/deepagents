@@ -26,14 +26,32 @@ from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgent
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
 # Default context limits for known model families (used as fallback)
-_DEFAULT_CONTEXT_LIMITS: dict[str, int] = {
-    "claude": 200000,
-    "gpt-4-turbo": 128000,
-    "gpt-4o": 128000,
-    "gpt-4": 8192,
-    "gpt-3.5": 16385,
-    "gemini": 1000000,
-}
+# These are checked in order - more specific patterns should come first
+_DEFAULT_CONTEXT_LIMITS: list[tuple[str, int]] = [
+    # OpenAI models (2025)
+    ("gpt-4.1", 1000000),      # GPT-4.1, GPT-4.1-mini, GPT-4.1-nano: 1M tokens
+    ("gpt-4o", 128000),        # GPT-4o, GPT-4o-mini: 128K tokens
+    ("o1", 200000),            # o1, o1-pro: 200K tokens
+    ("o3-mini", 200000),       # o3-mini: 200K tokens
+    ("o3", 200000),            # o3: 200K tokens
+    ("o4-mini", 128000),       # o4-mini: 128K tokens
+    # Anthropic Claude models (2025)
+    ("claude-sonnet-4", 200000),   # Claude Sonnet 4/4.5: 200K (1M in beta)
+    ("claude-opus-4", 200000),     # Claude Opus 4/4.5: 200K
+    ("claude-3", 200000),          # Claude 3.x family: 200K tokens
+    ("claude", 200000),            # Generic Claude fallback: 200K tokens
+    # Google Gemini models (2025)
+    ("gemini-2.5", 1000000),   # Gemini 2.5 Pro/Flash: 1M tokens
+    ("gemini-2.0", 1000000),   # Gemini 2.0 Flash: 1M tokens
+    ("gemini-1.5", 1000000),   # Gemini 1.5 Pro/Flash: 1M tokens
+    ("gemini", 1000000),       # Generic Gemini fallback: 1M tokens
+    # DeepSeek models
+    ("deepseek", 128000),      # DeepSeek models: 128K tokens
+    # Mistral models
+    ("mistral", 128000),       # Mistral models: typically 128K tokens
+    # Llama models
+    ("llama", 128000),         # Llama 3.x models: 128K tokens
+]
 
 # Fallback context limit for unknown models
 _FALLBACK_CONTEXT_LIMIT = 128000
@@ -88,8 +106,8 @@ def _get_max_context_tokens(model: BaseChatModel) -> int | None:
             continue
 
     if model_name:
-        for key, limit in _DEFAULT_CONTEXT_LIMITS.items():
-            if key in model_name:
+        for pattern, limit in _DEFAULT_CONTEXT_LIMITS:
+            if pattern in model_name:
                 return limit
 
     return None

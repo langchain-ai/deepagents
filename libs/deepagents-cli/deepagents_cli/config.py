@@ -382,7 +382,7 @@ def create_model() -> BaseChatModel:
     if settings.has_anthropic:
         from langchain_anthropic import ChatAnthropic
 
-        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-5-20251101")
+        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
         console.print(f"[dim]Using Anthropic model: {model_name}[/dim]")
         return ChatAnthropic(
             model_name=model_name,

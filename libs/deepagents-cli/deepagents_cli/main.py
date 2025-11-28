@@ -109,7 +109,7 @@ def parse_args():
     )
     parser.add_argument(
         "--sandbox",
-        choices=["none", "modal", "daytona", "runloop"],
+        choices=["none", "modal", "daytona", "runloop", "docker"],
         default="none",
         help="Remote sandbox for code execution (default: none - local only)",
     )
@@ -144,7 +144,7 @@ async def simple_cli(
 
     Args:
         backend: Backend for file operations (CompositeBackend)
-        sandbox_type: Type of sandbox being used (e.g., "modal", "runloop", "daytona").
+        sandbox_type: Type of sandbox being used (e.g., "modal", "runloop", "daytona", "docker").
                      If None, running in local mode.
         sandbox_id: ID of the active sandbox
         setup_script_path: Path to setup script that was run (if any)
@@ -329,7 +329,7 @@ async def main(
     Args:
         assistant_id: Agent identifier for memory storage
         session_state: Session state with auto-approve settings
-        sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona")
+        sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona", "docker")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run in sandbox
     """

@@ -47,7 +47,7 @@ deepagents --agent mybot
 deepagents --auto-approve
 
 # Execute code in a remote sandbox
-deepagents --sandbox modal        # or runloop, daytona
+deepagents --sandbox modal        # or runloop, daytona, docker
 deepagents --sandbox-id dbx_123   # reuse existing sandbox
 ```
 

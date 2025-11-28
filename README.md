@@ -281,10 +281,34 @@ See the [agent harness documentation](https://docs.langchain.com/oss/python/deep
 | **TodoListMiddleware** | Task planning and progress tracking |
 | **FilesystemMiddleware** | File operations and context offloading (auto-saves large results) |
 | **SubAgentMiddleware** | Delegate tasks to isolated sub-agents |
-| **SummarizationMiddleware** | Auto-summarizes when context exceeds 170k tokens |
+| **SummarizationMiddleware** | Auto-summarizes when context approaches limit (see [Context Management](#context-management)) |
 | **AnthropicPromptCachingMiddleware** | Caches system prompts to reduce costs (Anthropic only) |
 | **PatchToolCallsMiddleware** | Fixes dangling tool calls from interruptions |
 | **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
+
+### Context Management
+
+The `SummarizationMiddleware` automatically manages conversation context to prevent token overflow errors. It determines the context limit through:
+
+1. **Environment variable** (`DEEPAGENTS_MAX_CONTEXT_TOKENS`) - highest priority
+2. **Model profile** (`model.profile["max_input_tokens"]`)
+3. **Model name inference** (for known models like Claude, GPT-4, Gemini)
+
+Summarization triggers at **85%** of the context limit, keeping **10%** of the context after summarization.
+
+#### Custom Models (OpenRouter, etc.)
+
+When using custom models where the context limit cannot be automatically detected, set the `DEEPAGENTS_MAX_CONTEXT_TOKENS` environment variable:
+
+```bash
+# For a 262K context model
+export DEEPAGENTS_MAX_CONTEXT_TOKENS=262144
+
+# For a 128K context model
+export DEEPAGENTS_MAX_CONTEXT_TOKENS=128000
+```
+
+This prevents `BadRequestError: maximum context length exceeded` errors during long conversations.
 
 ## Built-in prompts
 

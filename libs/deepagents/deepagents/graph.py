@@ -1,5 +1,6 @@
 """Deepagents come with planning, filesystem, and subagents."""
 
+import os
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -23,6 +24,75 @@ from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
+
+# Default context limits for known model families (used as fallback)
+_DEFAULT_CONTEXT_LIMITS: dict[str, int] = {
+    "claude": 200000,
+    "gpt-4-turbo": 128000,
+    "gpt-4o": 128000,
+    "gpt-4": 8192,
+    "gpt-3.5": 16385,
+    "gemini": 1000000,
+}
+
+# Fallback context limit for unknown models
+_FALLBACK_CONTEXT_LIMIT = 128000
+
+# Fraction of context to use before triggering summarization (85%)
+_SUMMARIZATION_TRIGGER_FRACTION = 0.85
+
+# Fraction of context to keep after summarization (10%)
+_SUMMARIZATION_KEEP_FRACTION = 0.10
+
+
+def _get_max_context_tokens(model: BaseChatModel) -> int | None:
+    """Get the maximum context tokens for a model.
+
+    Resolution order:
+    1. DEEPAGENTS_MAX_CONTEXT_TOKENS environment variable (user override)
+    2. Model's profile.max_input_tokens attribute
+    3. Inference from model name (for known model families)
+
+    Args:
+        model: The language model instance.
+
+    Returns:
+        Maximum input tokens, or None if unable to determine.
+    """
+    # 1. Check environment variable first (highest priority - user override)
+    env_limit = os.environ.get("DEEPAGENTS_MAX_CONTEXT_TOKENS")
+    if env_limit:
+        try:
+            return int(env_limit)
+        except ValueError:
+            pass  # Invalid value, continue to other methods
+
+    # 2. Check model profile
+    if (
+        model.profile is not None
+        and isinstance(model.profile, dict)
+        and "max_input_tokens" in model.profile
+        and isinstance(model.profile["max_input_tokens"], int)
+    ):
+        return model.profile["max_input_tokens"]
+
+    # 3. Try to infer from model name
+    model_name = ""
+    for attr in ["model_name", "model", "name"]:
+        try:
+            value = getattr(model, attr, None)
+            if value and isinstance(value, str):
+                model_name = value.lower()
+                break
+        except Exception:
+            continue
+
+    if model_name:
+        for key, limit in _DEFAULT_CONTEXT_LIMITS.items():
+            if key in model_name:
+                return limit
+
+    return None
 
 
 def get_default_model() -> ChatAnthropic:
@@ -98,15 +168,15 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
 
-    if (
-        model.profile is not None
-        and isinstance(model.profile, dict)
-        and "max_input_tokens" in model.profile
-        and isinstance(model.profile["max_input_tokens"], int)
-    ):
-        trigger = ("fraction", 0.85)
-        keep = ("fraction", 0.10)
+    # Determine context limit and configure summarization accordingly
+    max_context = _get_max_context_tokens(model)
+
+    if max_context is not None:
+        # Use dynamic fraction-based triggers when we know the context limit
+        trigger = ("tokens", int(max_context * _SUMMARIZATION_TRIGGER_FRACTION))
+        keep = ("fraction", _SUMMARIZATION_KEEP_FRACTION)
     else:
+        # Fallback to conservative fixed threshold for unknown models
         trigger = ("tokens", 170000)
         keep = ("messages", 6)
 

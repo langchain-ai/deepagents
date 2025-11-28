@@ -24,6 +24,9 @@ class AgentMemoryState(AgentState):
     project_memory: NotRequired[str]
     """Project-specific context (loaded from project root)."""
 
+    agents_md_memory: NotRequired[str]
+    """AGENTS.md context loaded hierarchically from current directory up to project root."""
+
 
 class AgentMemoryStateUpdate(TypedDict):
     """A state update for the agent memory middleware."""
@@ -33,6 +36,9 @@ class AgentMemoryStateUpdate(TypedDict):
 
     project_memory: NotRequired[str]
     """Project-specific context (loaded from project root)."""
+
+    agents_md_memory: NotRequired[str]
+    """AGENTS.md context loaded hierarchically from current directory up to project root."""
 
 
 # Long-term Memory Documentation
@@ -50,14 +56,22 @@ Your long-term memory is stored in files on the filesystem and persists across s
 
 **User Memory Location**: `{agent_dir_absolute}` (displays as `{agent_dir_display}`)
 **Project Memory Location**: {project_memory_info}
+**AGENTS.md Support**: {agents_md_info}
 
-Your system prompt is loaded from TWO sources at startup:
+Your system prompt is loaded from THREE sources at startup:
 1. **User agent.md**: `{agent_dir_absolute}/agent.md` - Your personal preferences across all projects
 2. **Project agent.md**: Loaded from project root if available - Project-specific instructions
+3. **AGENTS.md**: Standard AI agent configuration files loaded hierarchically from current directory
 
 Project-specific agent.md is loaded from these locations (both combined if both exist):
 - `[project-root]/.deepagents/agent.md` (preferred)
 - `[project-root]/agent.md` (fallback, but also included if both exist)
+
+AGENTS.md files follow the agents.md specification (https://agents.md/):
+- Searched hierarchically from current working directory up to (but not including) project root
+- Multiple AGENTS.md files are combined from most specific (current dir) to least specific
+- Provides standardized project context, build steps, tests, and conventions for AI agents
+- For monorepos, nested AGENTS.md files in subdirectories provide subproject-specific context
 
 **When to CHECK/READ memories (CRITICAL - do this FIRST):**
 - **At the start of ANY new session**: Check both user and project memories
@@ -165,7 +179,11 @@ DEFAULT_MEMORY_SNIPPET = """<user_memory>
 
 <project_memory>
 {project_memory}
-</project_memory>"""
+</project_memory>
+
+<agents_md>
+{agents_md_memory}
+</agents_md>"""
 
 
 class AgentMemoryMiddleware(AgentMiddleware):
@@ -214,7 +232,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
     ) -> AgentMemoryStateUpdate:
         """Load agent memory from file before agent execution.
 
-        Loads both user agent.md and project-specific agent.md if available.
+        Loads user agent.md, project-specific agent.md, and AGENTS.md files if available.
         Only loads if not already present in state.
 
         Dynamically checks for file existence on every call to catch user updates.
@@ -224,7 +242,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
             runtime: Runtime context.
 
         Returns:
-            Updated state with user_memory and project_memory populated.
+            Updated state with user_memory, project_memory, and agents_md_memory populated.
         """
         result: AgentMemoryStateUpdate = {}
 
@@ -242,6 +260,22 @@ class AgentMemoryMiddleware(AgentMiddleware):
                 with contextlib.suppress(OSError, UnicodeDecodeError):
                     result["project_memory"] = project_path.read_text()
 
+        # Load AGENTS.md files if not already in state
+        if "agents_md_memory" not in state:
+            agents_md_files = self.settings.get_agents_md_files()
+            if agents_md_files:
+                agents_md_contents = []
+                for agents_md_path in agents_md_files:
+                    with contextlib.suppress(OSError, UnicodeDecodeError):
+                        content = agents_md_path.read_text()
+                        # Add a header to indicate which file this is from
+                        agents_md_contents.append(
+                            f"# From: {agents_md_path}\n\n{content}"
+                        )
+                if agents_md_contents:
+                    # Combine all AGENTS.md files, separated by horizontal rules
+                    result["agents_md_memory"] = "\n\n---\n\n".join(agents_md_contents)
+
         return result
 
     def _build_system_prompt(self, request: ModelRequest) -> str:
@@ -257,6 +291,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
         state = cast("AgentMemoryState", request.state)
         user_memory = state.get("user_memory")
         project_memory = state.get("project_memory")
+        agents_md_memory = state.get("agents_md_memory")
         base_system_prompt = request.system_prompt
 
         # Build project memory info for documentation
@@ -267,16 +302,28 @@ class AgentMemoryMiddleware(AgentMiddleware):
         else:
             project_memory_info = "None (not in a git project)"
 
+        # Build AGENTS.md info for documentation
+        if agents_md_memory:
+            agents_md_files = self.settings.get_agents_md_files()
+            num_files = len(agents_md_files)
+            if num_files == 1:
+                agents_md_info = f"Loaded 1 AGENTS.md file from `{agents_md_files[0].parent}`"
+            else:
+                agents_md_info = f"Loaded {num_files} AGENTS.md files hierarchically"
+        else:
+            agents_md_info = "No AGENTS.md files found"
+
         # Build project deepagents directory path
         if self.project_root:
             project_deepagents_dir = str(self.project_root / ".deepagents")
         else:
             project_deepagents_dir = "[project-root]/.deepagents (not in a project)"
 
-        # Format memory section with both memories
+        # Format memory section with all memories
         memory_section = self.system_prompt_template.format(
             user_memory=user_memory if user_memory else "(No user agent.md)",
             project_memory=project_memory if project_memory else "(No project agent.md)",
+            agents_md_memory=agents_md_memory if agents_md_memory else "(No AGENTS.md files found)",
         )
 
         system_prompt = memory_section
@@ -288,6 +335,7 @@ class AgentMemoryMiddleware(AgentMiddleware):
             agent_dir_absolute=self.agent_dir_absolute,
             agent_dir_display=self.agent_dir_display,
             project_memory_info=project_memory_info,
+            agents_md_info=agents_md_info,
             project_deepagents_dir=project_deepagents_dir,
         )
 

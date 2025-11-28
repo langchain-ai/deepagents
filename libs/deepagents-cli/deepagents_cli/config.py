@@ -129,6 +129,13 @@ class Settings:
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
         tavily_api_key: Tavily API key if available
+
+    Environment Variables:
+        DEEPAGENTS_MAX_CONTEXT_TOKENS: Override the model's context window size.
+            Use this when working with custom models (e.g., via OpenRouter) where
+            the context limit cannot be automatically detected. The summarization
+            middleware will trigger at 85% of this value to prevent token overflow.
+            Example: export DEEPAGENTS_MAX_CONTEXT_TOKENS=262144
     """
 
     # API keys

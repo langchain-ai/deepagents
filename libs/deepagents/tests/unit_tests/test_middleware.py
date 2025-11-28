@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
 from langchain_core.messages import (
@@ -14,6 +16,13 @@ from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.skills import (
+    SkillMetadata,
+    SkillsMiddleware,
+    _is_safe_path,
+    _parse_skill_metadata,
+    list_skills,
+)
 from deepagents.middleware.subagents import SubAgentMiddleware
 
 
@@ -1340,3 +1349,272 @@ class TestTruncation:
         # Should end with truncation message
         assert "results truncated" in result
         assert "try being more specific" in result
+
+
+class TestSkillMetadata:
+    """Tests for skill metadata parsing."""
+
+    def test_parse_valid_skill_md(self, tmp_path: Path) -> None:
+        """Test parsing a valid SKILL.md file."""
+        skill_dir = tmp_path / "test-skill"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            """---
+name: test-skill
+description: A test skill for validation
+---
+
+# Test Skill
+
+This is a test skill.
+"""
+        )
+
+        metadata = _parse_skill_metadata(skill_md, source="user")
+
+        assert metadata is not None
+        assert metadata["name"] == "test-skill"
+        assert metadata["description"] == "A test skill for validation"
+        assert metadata["path"] == str(skill_md)
+        assert metadata["source"] == "user"
+
+    def test_parse_missing_frontmatter(self, tmp_path: Path) -> None:
+        """Test parsing a SKILL.md without frontmatter."""
+        skill_dir = tmp_path / "no-frontmatter"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("# No Frontmatter\n\nJust content.")
+
+        metadata = _parse_skill_metadata(skill_md, source="user")
+        assert metadata is None
+
+    def test_parse_missing_required_fields(self, tmp_path: Path) -> None:
+        """Test parsing a SKILL.md with missing required fields."""
+        skill_dir = tmp_path / "missing-fields"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            """---
+name: only-name
+---
+
+# Missing Description
+"""
+        )
+
+        metadata = _parse_skill_metadata(skill_md, source="user")
+        assert metadata is None
+
+
+class TestListSkills:
+    """Tests for list_skills function."""
+
+    def test_list_skills_empty_dir(self, tmp_path: Path) -> None:
+        """Test listing skills from an empty directory."""
+        skills = list_skills(user_skills_dir=tmp_path)
+        assert skills == []
+
+    def test_list_skills_single_skill(self, tmp_path: Path) -> None:
+        """Test listing a single skill."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            """---
+name: my-skill
+description: My awesome skill
+---
+
+# My Skill
+"""
+        )
+
+        skills = list_skills(user_skills_dir=tmp_path)
+
+        assert len(skills) == 1
+        assert skills[0]["name"] == "my-skill"
+        assert skills[0]["description"] == "My awesome skill"
+        assert skills[0]["source"] == "user"
+
+    def test_list_skills_multiple_skills(self, tmp_path: Path) -> None:
+        """Test listing multiple skills."""
+        for i in range(3):
+            skill_dir = tmp_path / f"skill-{i}"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                f"""---
+name: skill-{i}
+description: Skill number {i}
+---
+
+# Skill {i}
+"""
+            )
+
+        skills = list_skills(user_skills_dir=tmp_path)
+        assert len(skills) == 3
+
+    def test_list_skills_project_overrides_user(self, tmp_path: Path) -> None:
+        """Test that project skills override user skills with same name."""
+        user_dir = tmp_path / "user"
+        user_dir.mkdir()
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        # Create user skill
+        user_skill = user_dir / "shared-skill"
+        user_skill.mkdir()
+        (user_skill / "SKILL.md").write_text(
+            """---
+name: shared-skill
+description: User version
+---
+"""
+        )
+
+        # Create project skill with same name
+        project_skill = project_dir / "shared-skill"
+        project_skill.mkdir()
+        (project_skill / "SKILL.md").write_text(
+            """---
+name: shared-skill
+description: Project version
+---
+"""
+        )
+
+        skills = list_skills(user_skills_dir=user_dir, project_skills_dir=project_dir)
+
+        assert len(skills) == 1
+        assert skills[0]["description"] == "Project version"
+        assert skills[0]["source"] == "project"
+
+    def test_list_skills_nonexistent_dir(self) -> None:
+        """Test listing skills from a nonexistent directory."""
+        skills = list_skills(user_skills_dir=Path("/nonexistent/path"))
+        assert skills == []
+
+
+class TestSkillsMiddleware:
+    """Tests for SkillsMiddleware class."""
+
+    def test_init(self, tmp_path: Path) -> None:
+        """Test middleware initialization."""
+        middleware = SkillsMiddleware(
+            skills_dir=tmp_path,
+            assistant_id="test-agent",
+        )
+
+        assert middleware.skills_dir == tmp_path
+        assert middleware.assistant_id == "test-agent"
+        assert middleware.project_skills_dir is None
+
+    def test_init_with_project_dir(self, tmp_path: Path) -> None:
+        """Test middleware initialization with project directory."""
+        user_dir = tmp_path / "user"
+        project_dir = tmp_path / "project"
+
+        middleware = SkillsMiddleware(
+            skills_dir=user_dir,
+            assistant_id="test-agent",
+            project_skills_dir=project_dir,
+        )
+
+        assert middleware.skills_dir == user_dir
+        assert middleware.project_skills_dir == project_dir
+
+    def test_format_skills_list_empty(self, tmp_path: Path) -> None:
+        """Test formatting empty skills list."""
+        middleware = SkillsMiddleware(
+            skills_dir=tmp_path,
+            assistant_id="test-agent",
+        )
+
+        result = middleware._format_skills_list([])
+        assert "No skills available yet" in result
+
+    def test_format_skills_list_with_skills(self, tmp_path: Path) -> None:
+        """Test formatting skills list with skills."""
+        middleware = SkillsMiddleware(
+            skills_dir=tmp_path,
+            assistant_id="test-agent",
+        )
+
+        skills: list[SkillMetadata] = [
+            {
+                "name": "test-skill",
+                "description": "A test skill",
+                "path": "/path/to/skill",
+                "source": "user",
+            }
+        ]
+
+        result = middleware._format_skills_list(skills)
+        assert "test-skill" in result
+        assert "A test skill" in result
+
+    def test_before_agent_loads_skills(self, tmp_path: Path) -> None:
+        """Test that before_agent loads skills and returns state update.
+
+        This test verifies the method works when called with keyword arguments,
+        which is how langgraph invokes middleware methods.
+        """
+        # Create a skill directory with SKILL.md
+        skill_dir = tmp_path / "test-skill"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            "---\nname: test-skill\ndescription: A test skill\n---\n\nInstructions here."
+        )
+
+        middleware = SkillsMiddleware(
+            skills_dir=tmp_path,
+            assistant_id="test-agent",
+        )
+
+        # Call with keyword arguments (how langgraph calls it)
+        result = middleware.before_agent(state={}, runtime=None)  # type: ignore[arg-type]
+
+        assert result is not None
+        assert "skills_metadata" in result
+        assert len(result["skills_metadata"]) == 1
+        assert result["skills_metadata"][0]["name"] == "test-skill"
+
+    def test_before_agent_empty_dir(self, tmp_path: Path) -> None:
+        """Test before_agent with empty skills directory."""
+        middleware = SkillsMiddleware(
+            skills_dir=tmp_path,
+            assistant_id="test-agent",
+        )
+
+        # Call with keyword arguments
+        result = middleware.before_agent(state={}, runtime=None)  # type: ignore[arg-type]
+
+        assert result is not None
+        assert "skills_metadata" in result
+        assert len(result["skills_metadata"]) == 0
+
+
+class TestIsSafePath:
+    """Tests for _is_safe_path function."""
+
+    def test_safe_path(self, tmp_path: Path) -> None:
+        """Test that a valid child path is safe."""
+        child = tmp_path / "subdir"
+        child.mkdir()
+        assert _is_safe_path(child, tmp_path) is True
+
+    def test_unsafe_path_outside_base(self, tmp_path: Path) -> None:
+        """Test that a path outside base is unsafe."""
+        outside = tmp_path.parent / "other"
+        assert _is_safe_path(outside, tmp_path) is False
+
+
+class TestSkillsMiddlewareExport:
+    """Tests for SkillsMiddleware export from deepagents.middleware package."""
+
+    def test_skills_middleware_exported_from_middleware(self) -> None:
+        """Test that SkillsMiddleware is exported from deepagents.middleware."""
+        from deepagents.middleware import SkillsMiddleware as MiddlewareSkillsMiddleware
+
+        assert MiddlewareSkillsMiddleware is SkillsMiddleware

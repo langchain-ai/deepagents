@@ -145,7 +145,7 @@ from deepagents import create_deep_agent
 research_subagent = {
     "name": "research-agent",
     "description": "Used to research in-depth questions",
-    "prompt": "You are an expert researcher",
+    "system_prompt": "You are an expert researcher",
     "tools": [internet_search],
     "model": "openai:gpt-4o",  # Optional, defaults to main agent model
 }
@@ -310,3 +310,62 @@ The middleware automatically adds instructions about the standard tools. Your cu
 - When to use sub-agents vs when NOT to use them
 - Guidance on parallel execution
 - Subagent lifecycle (spawn → run → return → reconcile)
+
+## Security Considerations
+
+### Execute Tool Risks
+
+The `execute` tool allows the agent to run shell commands. This is powerful but carries significant security risks:
+
+| Risk | Description | Mitigation |
+|------|-------------|------------|
+| Command Injection | LLM could be manipulated to run malicious commands | Use sandbox backends |
+| Data Access | Commands can read/write filesystem | Restrict with `FilesystemBackend` |
+| Network Access | Commands can access network | Use network isolation |
+| System Damage | Commands can modify system state | Run as non-root user |
+
+### Recommended Security Practices
+
+1. **Use sandboxed backends in production**
+
+```python
+from deepagents import create_deep_agent
+from deepagents.backends import FilesystemBackend
+
+# Sandbox to specific directory
+agent = create_deep_agent(
+    backend=FilesystemBackend(
+        root_dir="/path/to/workspace",
+        virtual_mode=True,  # Sandboxes all paths to root_dir
+    ),
+)
+```
+
+2. **Use virtual mode for demos/prototypes**
+
+```python
+# No actual filesystem access - all files in memory
+agent = create_deep_agent()  # Default StateBackend is virtual
+```
+
+3. **Run as unprivileged user** - Never run deepagents as root
+
+4. **Enable logging for auditing**
+
+```python
+import logging
+logging.getLogger("deepagents").setLevel(logging.DEBUG)
+```
+
+### Windows Symlink Protection
+
+On Unix/Linux/macOS, `FilesystemBackend` uses `O_NOFOLLOW` to prevent symlink-following attacks. This protection is **not available on Windows** due to OS limitations.
+
+If your agent processes untrusted input on Windows:
+- Use `virtual_mode=True` to sandbox file operations
+- Consider additional path validation
+- Be aware that symlinks within the workspace could point outside
+
+### Trust Model
+
+Deepagents follows a "trust the LLM" model similar to Claude Code. The agent can perform any action the underlying tools allow. Security boundaries should be enforced at the tool/sandbox level, not by expecting the LLM to self-police.

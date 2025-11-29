@@ -200,7 +200,7 @@ A main feature of Deep Agents is their ability to spawn subagents. You can speci
 class SubAgent(TypedDict):
     name: str
     description: str
-    prompt: str
+    system_prompt: str
     tools: Sequence[BaseTool | Callable | dict[str, Any]]
     model: NotRequired[str | BaseChatModel]
     middleware: NotRequired[list[AgentMiddleware]]
@@ -215,7 +215,7 @@ class CompiledSubAgent(TypedDict):
 **SubAgent fields:**
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
 - **description**: This is the description of the subagent that is shown to the main agent
-- **prompt**: This is the prompt used for the subagent
+- **system_prompt**: This is the system prompt used for the subagent
 - **tools**: This is the list of tools that the subagent has access to.
 - **model**: Optional model name or model instance.
 - **middleware** Additional middleware to attach to the subagent. See [here](https://docs.langchain.com/oss/python/langchain/middleware) for an introduction into middleware and how it works with create_agent.
@@ -466,7 +466,7 @@ Prior versions of deepagents separated sync and async agent factories.
 
 The `deepagents` library can be ran with MCP tools. This can be achieved by using the [Langchain MCP Adapter library](https://github.com/langchain-ai/langchain-mcp-adapters).
 
-**NOTE:** You will want to use `from deepagents import async_create_deep_agent` to use the async version of `deepagents`, since MCP tools are async
+**NOTE:** MCP tools are async, so you'll need to use `agent.ainvoke()` or `agent.astream()` for invocation.
 
 (To run the example below, will need to `pip install langchain-mcp-adapters`)
 

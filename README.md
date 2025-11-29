@@ -145,7 +145,7 @@ from deepagents import create_deep_agent
 research_subagent = {
     "name": "research-agent",
     "description": "Used to research in-depth questions",
-    "prompt": "You are an expert researcher",
+    "system_prompt": "You are an expert researcher",
     "tools": [internet_search],
     "model": "openai:gpt-4o",  # Optional, defaults to main agent model
 }

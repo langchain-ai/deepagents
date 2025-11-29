@@ -106,9 +106,11 @@ class CompositeBackend:
         """Read file content, routing to appropriate backend.
 
         Args:
-            file_path: Absolute file path
-            offset: Line offset to start reading from (0-indexed)
-            limit: Maximum number of lines to readReturns:
+            file_path: Absolute file path.
+            offset: Line offset to start reading from (0-indexed).
+            limit: Maximum number of lines to read.
+
+        Returns:
             Formatted file content with line numbers, or error message.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
@@ -175,8 +177,10 @@ class CompositeBackend:
         """Create a new file, routing to appropriate backend.
 
         Args:
-            file_path: Absolute file path
-            content: File content as a stringReturns:
+            file_path: Absolute file path.
+            content: File content as a string.
+
+        Returns:
             Success message or Command object, or error if file already exists.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
@@ -204,10 +208,12 @@ class CompositeBackend:
         """Edit a file, routing to appropriate backend.
 
         Args:
-            file_path: Absolute file path
-            old_string: String to find and replace
-            new_string: Replacement string
-            replace_all: If True, replace all occurrencesReturns:
+            file_path: Absolute file path.
+            old_string: String to find and replace.
+            new_string: Replacement string.
+            replace_all: If True, replace all occurrences.
+
+        Returns:
             Success message or Command object, or error message on failure.
         """
         backend, stripped_key = self._get_backend_and_key(file_path)

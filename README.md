@@ -310,3 +310,53 @@ The middleware automatically adds instructions about the standard tools. Your cu
 - When to use sub-agents vs when NOT to use them
 - Guidance on parallel execution
 - Subagent lifecycle (spawn → run → return → reconcile)
+
+## Security Considerations
+
+### Execute Tool Risks
+
+The `execute` tool allows the agent to run shell commands. This is powerful but carries significant security risks:
+
+| Risk | Description | Mitigation |
+|------|-------------|------------|
+| Command Injection | LLM could be manipulated to run malicious commands | Use sandbox backends |
+| Data Access | Commands can read/write filesystem | Restrict with `FilesystemBackend` |
+| Network Access | Commands can access network | Use network isolation |
+| System Damage | Commands can modify system state | Run as non-root user |
+
+### Recommended Security Practices
+
+1. **Use sandboxed backends in production**
+
+```python
+from deepagents import create_deep_agent
+from deepagents.backends import FilesystemBackend
+
+# Sandbox to specific directory
+agent = create_deep_agent(
+    backend=FilesystemBackend(
+        root_dir="/path/to/workspace",
+        virtual_mode=True,  # Sandboxes all paths to root_dir
+    ),
+)
+```
+
+2. **Use virtual mode for demos/prototypes**
+
+```python
+# No actual filesystem access - all files in memory
+agent = create_deep_agent()  # Default StateBackend is virtual
+```
+
+3. **Run as unprivileged user** - Never run deepagents as root
+
+4. **Enable logging for auditing**
+
+```python
+import logging
+logging.getLogger("deepagents").setLevel(logging.DEBUG)
+```
+
+### Trust Model
+
+Deepagents follows a "trust the LLM" model similar to Claude Code. The agent can perform any action the underlying tools allow. Security boundaries should be enforced at the tool/sandbox level, not by expecting the LLM to self-police.

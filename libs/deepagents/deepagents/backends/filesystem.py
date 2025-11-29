@@ -202,9 +202,11 @@ class FilesystemBackend(BackendProtocol):
         """Read file content with line numbers.
 
         Args:
-            file_path: Absolute or relative file path
-            offset: Line offset to start reading from (0-indexed)
-            limit: Maximum number of lines to readReturns:
+            file_path: Absolute or relative file path.
+            offset: Line offset to start reading from (0-indexed).
+            limit: Maximum number of lines to read.
+
+        Returns:
             Formatted file content with line numbers, or error message.
         """
         resolved_path = self._resolve_path(file_path)

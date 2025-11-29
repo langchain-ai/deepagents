@@ -38,17 +38,18 @@ class StoreBackend(BackendProtocol):
         """Initialize StoreBackend with runtime.
 
         Args:
+            runtime: The ToolRuntime instance providing store access and configuration.
         """
         self.runtime = runtime
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
 
-        Args:Returns:
-            BaseStore instance
+        Returns:
+            BaseStore instance from the runtime.
 
         Raises:
-            ValueError: If no store is available or runtime not provided
+            ValueError: If no store is available in the runtime.
         """
         store = self.runtime.store
         if store is None:
@@ -257,8 +258,9 @@ class StoreBackend(BackendProtocol):
         """Read file content with line numbers.
 
         Args:
-            file_path: Absolute file path
-            offset: Line offset to start reading from (0-indexed)limit: Maximum number of lines to read
+            file_path: Absolute file path.
+            offset: Line offset to start reading from (0-indexed).
+            limit: Maximum number of lines to read.
 
         Returns:
             Formatted file content with line numbers, or error message.

@@ -466,7 +466,7 @@ Prior versions of deepagents separated sync and async agent factories.
 
 The `deepagents` library can be ran with MCP tools. This can be achieved by using the [Langchain MCP Adapter library](https://github.com/langchain-ai/langchain-mcp-adapters).
 
-**NOTE:** You will want to use `from deepagents import async_create_deep_agent` to use the async version of `deepagents`, since MCP tools are async
+**NOTE:** MCP tools are async, so you'll need to use `agent.ainvoke()` or `agent.astream()` for invocation.
 
 (To run the example below, will need to `pip install langchain-mcp-adapters`)
 

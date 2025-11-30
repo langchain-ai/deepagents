@@ -104,7 +104,7 @@ def get_memory_system_prompt(
 
     # Build project deepagents directory path
     if project_root:
-        project_deepagents_dir = f"{project_root}/.deepagents"
+        project_deepagents_dir = str(project_root / ".deepagents")
     else:
         project_deepagents_dir = "[project-root]/.deepagents (not in a project)"
 

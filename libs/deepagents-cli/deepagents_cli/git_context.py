@@ -115,7 +115,7 @@ class GitContextMiddleware(AgentMiddleware):
             return None
 
         # Build git context section
-        git_lines = ["### Git Context", "", f"Current branch: `{git_info['branch']}`"]
+        git_lines = ["## Git Context", "", f"Current branch: `{git_info['branch']}`"]
         for main_branch in git_info.get("main_branches", []):
             git_lines.append(f"Main branch available: `{main_branch}`")
 

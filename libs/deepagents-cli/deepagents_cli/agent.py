@@ -21,6 +21,7 @@ from langgraph.runtime import Runtime
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
+from deepagents_cli.git_context import GitContextMiddleware
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.shell import ShellMiddleware
 from deepagents_cli.skills import SkillsMiddleware
@@ -366,9 +367,10 @@ def create_agent_with_config(
             routes={},  # No virtualization - use real paths
         )
 
-        # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ShellToolMiddleware
+        # Middleware: AgentMemoryMiddleware, GitContextMiddleware, SkillsMiddleware, ShellToolMiddleware
         agent_middleware = [
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
+            GitContextMiddleware(),
             SkillsMiddleware(
                 skills_dir=skills_dir,
                 assistant_id=assistant_id,

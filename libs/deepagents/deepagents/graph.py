@@ -104,7 +104,7 @@ def create_deep_agent(
         and "max_input_tokens" in model.profile
         and isinstance(model.profile["max_input_tokens"], int)
     ):
-        trigger = ("fraction", 0.85)
+        trigger = ("fraction", 0.70)
         keep = ("fraction", 0.10)
     else:
         trigger = ("tokens", 170000)

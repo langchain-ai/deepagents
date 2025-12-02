@@ -71,10 +71,10 @@ def _aviationbot_request(
 
 
 @tool(
-    "aviationbot_document_retrieval",
+    "easa_document_retrieval",
     description="Retrieve EASA Easy Access Rules context by query",
 )
-def aviationbot_document_retrieval(
+def easa_document_retrieval(
     query: str,
     erules_ids: Sequence[str] | None = None,
 ) -> Any:

@@ -11,7 +11,7 @@ import dotenv
 from langchain_core.language_models import BaseChatModel
 from rich.console import Console
 
-from deepagents_cli.llm import llm_openrouter_medium_fast_min_reasoning
+from deepagents_cli.llm import llm_openrouter_medium_fast_min_reasoning, llm_openrouter_flash
 
 dotenv.load_dotenv()
 
@@ -360,7 +360,8 @@ def create_model() -> BaseChatModel:
         #     temperature=0.1,
         # )
         
-        model = llm_openrouter_medium_fast_min_reasoning
+        # model = llm_openrouter_medium_fast_min_reasoning
+        model = llm_openrouter_flash
         console.print(f"[dim]Using OpenRouter model: {model.model_name}[/dim]")
 
         return model

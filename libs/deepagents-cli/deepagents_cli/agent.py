@@ -339,9 +339,14 @@ def create_agent_with_config(
         # Middleware: AgentMemoryMiddleware, SkillsMiddleware, ResumableShellToolMiddleware
         agent_middleware = [
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
-            SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
+            SkillsMiddleware(
+                skills_dir=skills_dir,
+                assistant_id=assistant_id,
+                working_dir=agent_working_dir,  # For virtual_mode relative path compatibility
+            ),
             ResumableShellToolMiddleware(
-                workspace_root=str(agent_working_dir), execution_policy=HostExecutionPolicy()
+                workspace_root=str(agent_working_dir),
+                execution_policy=HostExecutionPolicy(),
             ),
         ]
     else:

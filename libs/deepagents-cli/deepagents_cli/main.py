@@ -25,7 +25,7 @@ from deepagents_cli.integrations.sandbox_factory import (
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import (
-    aviationbot_document_retrieval,
+    easa_document_retrieval,
     aviationbot_meta_model,
     fetch_nested_rules,
     fetch_parent_title_path,
@@ -285,7 +285,7 @@ async def _run_agent_session(
     """
     # Create agent with conditional tools
     tools = [
-        aviationbot_document_retrieval,
+        # easa_document_retrieval,
         aviationbot_meta_model,
         filter_regulations_by_domain,
         fetch_nested_rules,

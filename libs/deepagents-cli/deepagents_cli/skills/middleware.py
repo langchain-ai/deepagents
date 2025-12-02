@@ -51,7 +51,7 @@ SKILLS_SYSTEM_PROMPT = """
 
 You have access to a skills library that provides specialized capabilities and domain knowledge.
 
-**Skills Location**: `{skills_dir_absolute}` (displays as `{skills_dir_display}`)
+**Skills Location**: `{skills_dir_display}` (use `{skills_dir_for_read}` for file operations)
 
 **Available Skills:**
 
@@ -64,7 +64,7 @@ Skills follow a **progressive disclosure** pattern - you know they exist (name +
 1. **Recognize when a skill applies**: Check if the user's task matches any skill's description
 2. **Read the skill's full instructions**: The skill list above shows the exact path to use with read_file
 3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
-4. **Access supporting files**: Skills may include Python scripts, configs, or reference docs - use absolute paths
+4. **Access supporting files**: Skills may include Python scripts, configs, or reference docs
 
 **When to Use Skills:**
 - When the user's request matches a skill's domain (e.g., "research X" → web-research skill)
@@ -73,11 +73,11 @@ Skills follow a **progressive disclosure** pattern - you know they exist (name +
 
 **Skills are Self-Documenting:**
 - Each SKILL.md tells you exactly what the skill does and how to use it
-- You can explore available skills with `ls {skills_dir_absolute}`
-- You can read any skill's directory with `ls {skills_dir_absolute}/[skill-name]`
+- You can explore available skills with `ls {skills_dir_for_read}`
+- You can read any skill's directory with `ls {skills_dir_for_read}/[skill-name]`
 
 **Executing Skill Scripts:**
-Skills may contain Python scripts or other executable files. Always use absolute paths:
+Skills may contain Python scripts or other executable files. For shell commands, use absolute paths:
 Example: `bash python {skills_dir_absolute}/web-research/fetch_data.py`
 
 **Example Workflow:**
@@ -85,7 +85,7 @@ Example: `bash python {skills_dir_absolute}/web-research/fetch_data.py`
 User: "Can you research the latest developments in quantum computing?"
 
 1. Check available skills above → See "web-research" skill with its full path
-2. Read the skill using the path shown: `read_file '{skills_dir_absolute}/web-research/SKILL.md'`
+2. Read the skill using the path shown: `read_file '{skills_dir_for_read}/web-research/SKILL.md'`
 3. Follow the skill's research workflow (search → organize → synthesize)
 4. Use any helper scripts with absolute paths: `bash python {skills_dir_absolute}/web-research/script.py`
 
@@ -126,17 +126,34 @@ class SkillsMiddleware(AgentMiddleware):
         *,
         skills_dir: str | Path,
         assistant_id: str,
+        working_dir: str | Path | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
         Args:
             skills_dir: Path to the skills directory.
             assistant_id: The agent identifier.
+            working_dir: Optional working directory for computing relative paths.
+                        If skills_dir is inside working_dir, relative paths will be used.
         """
-        self.skills_dir = Path(skills_dir).expanduser()
+        self.skills_dir = Path(skills_dir).expanduser().resolve()
         self.assistant_id = assistant_id
-        # Store both display path and absolute path for file operations
-        # Show actual path if SKILLS_PATH env var is set, otherwise show default
+        
+        # Compute the path to use for file operations
+        # If skills_dir is inside working_dir, use relative path (for virtual_mode compatibility)
+        self.skills_dir_for_read: str
+        if working_dir:
+            working_dir_resolved = Path(working_dir).expanduser().resolve()
+            try:
+                relative_path = self.skills_dir.relative_to(working_dir_resolved)
+                self.skills_dir_for_read = str(relative_path)
+            except ValueError:
+                # skills_dir is not inside working_dir, use absolute path
+                self.skills_dir_for_read = str(self.skills_dir)
+        else:
+            self.skills_dir_for_read = str(self.skills_dir)
+        
+        # Store display path for user-facing messages
         if os.environ.get("SKILLS_PATH"):
             self.skills_dir_display = str(self.skills_dir)
         else:
@@ -153,8 +170,9 @@ class SkillsMiddleware(AgentMiddleware):
         for skill in skills:
             skill_dir = Path(skill["path"]).parent.name
             lines.append(f"- **{skill['name']}**: {skill['description']}")
+            # Use skills_dir_for_read which may be relative (for virtual_mode compatibility)
             lines.append(
-                f"  → Read `{self.skills_dir_absolute}/{skill_dir}/SKILL.md` for full instructions"
+                f"  → Read `{self.skills_dir_for_read}/{skill_dir}/SKILL.md` for full instructions"
             )
 
         return "\n".join(lines)
@@ -207,6 +225,7 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
             skills_dir_absolute=self.skills_dir_absolute,
             skills_dir_display=self.skills_dir_display,
+            skills_dir_for_read=self.skills_dir_for_read,
         )
 
         if request.system_prompt:
@@ -242,6 +261,7 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
             skills_dir_absolute=self.skills_dir_absolute,
             skills_dir_display=self.skills_dir_display,
+            skills_dir_for_read=self.skills_dir_for_read,
         )
 
         # Inject into system prompt

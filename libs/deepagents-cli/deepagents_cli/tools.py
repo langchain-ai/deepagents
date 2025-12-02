@@ -72,24 +72,26 @@ def _aviationbot_request(
 
 @tool(
     "easa_document_retrieval",
-    description="Retrieve EASA Easy Access Rules context by query",
+    description=(
+        "Retrieve EASA Easy Access Rules context by query. REQUIRED: provide one or more "
+        "Easy Access Rules file_ids (preferred) or 'all' when the correct file is unknown."
+    ),
 )
 def easa_document_retrieval(
     query: str,
-    erules_ids: Sequence[str] | None = None,
+    file_ids: Sequence[str],
 ) -> Any:
     """Fetch EASA aviation regulations matching a natural-language query.
 
     Args:
         query: Search phrase or question.
-        erules_ids: Optional list of ERules IDs to restrict results.
+        file_ids: Required list of Easy Access Rules file IDs to restrict results. Use "all" only when you cannot determine a specific file.
     Returns:
         Dict with success flag, status_code, and data/error from AviationBot.
     """
 
     params: dict[str, Any] = {"query": query}
-    if erules_ids:
-        params["erules_ids"] = list(erules_ids)
+    params["file_ids"] = list(file_ids)
     return _aviationbot_request(
         "GET",
         "/tool/EASA/document-retrieval",
@@ -99,10 +101,10 @@ def easa_document_retrieval(
 
 
 @tool(
-    "aviationbot_meta_model",
+    "get_easa_regulatory_metamodel",
     description="Retrieve EASA regulatory metamodel info (AviationBot /tool/EASA/meta-model)",
 )
-def aviationbot_meta_model(query: str) -> Any:
+def get_easa_regulatory_metamodel(query: str) -> Any:
     """Get structured information about the EASA regulatory framework."""
 
     return _aviationbot_request(
@@ -311,7 +313,7 @@ class FilterRegulationsByDomainInput(BaseModel):
 
 
 @tool(args_schema=FilterRegulationsByDomainInput)
-def filter_regulations_by_domain(domain: str) -> str:
+def filter_easa_regulations_by_domain(domain: str) -> str:
     """
     Filters EASA regulations by a specified domain and returns the filtered JSON.
 
@@ -367,7 +369,7 @@ class FetchNestedRulesInput(BaseModel):
 
 
 @tool(args_schema=FetchNestedRulesInput)
-def fetch_nested_rules(
+def fetch_easa_nested_rules(
     parent_title_path: list[str],
     short_name: str | None = None,
     include_all_descendants: bool = True,
@@ -408,7 +410,7 @@ class FetchParentTitlePathInput(BaseModel):
 
 
 @tool(args_schema=FetchParentTitlePathInput)
-def fetch_parent_title_path(
+def fetch_easa_parent_title_path(
     references: list[str],
     include_base_without_parentheses: bool = True,
     include_without_amc_gm_prefix: bool = True,
@@ -442,7 +444,7 @@ class FetchRulesDocumentInput(BaseModel):
 
 
 @tool(args_schema=FetchRulesDocumentInput)
-def fetch_rules_document(erules_ids: list[str], metadata: list[str]) -> dict:
+def fetch_easa_rules_document(erules_ids: list[str], metadata: list[str]) -> dict:
     """Fetch one or multiple regulatory rules documents with their content and metadata."""
 
     if not AVIATIONBOT_API_KEY:
@@ -459,7 +461,7 @@ def fetch_rules_document(erules_ids: list[str], metadata: list[str]) -> dict:
 
 
 @tool
-def get_regulations_map() -> str:
+def get_easa_regulations_map() -> str:
     """Retrieve the EASA regulations map as raw JSON for LLM processing."""
     try:
         regulations_map = _load_regulations_map()
@@ -473,7 +475,7 @@ def get_regulations_map() -> str:
 
 
 @tool
-def get_certification_specifications() -> str:
+def get_easa_certification_specifications() -> str:
     """Retrieve EASA certification specifications as raw JSON for LLM processing."""
     try:
         cert_specs = _load_certification_specifications()

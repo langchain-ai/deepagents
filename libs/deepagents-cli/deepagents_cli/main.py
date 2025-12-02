@@ -26,13 +26,13 @@ from deepagents_cli.integrations.sandbox_factory import (
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import (
     easa_document_retrieval,
-    aviationbot_meta_model,
-    fetch_nested_rules,
-    fetch_parent_title_path,
-    fetch_rules_document,
-    filter_regulations_by_domain,
-    get_certification_specifications,
-    get_regulations_map,
+    get_easa_regulatory_metamodel,
+    fetch_easa_nested_rules,
+    fetch_easa_parent_title_path,
+    fetch_easa_rules_document,
+    filter_easa_regulations_by_domain,
+    get_easa_certification_specifications,
+    get_easa_regulations_map,
     fetch_url,
     http_request,
     web_search,
@@ -285,14 +285,14 @@ async def _run_agent_session(
     """
     # Create agent with conditional tools
     tools = [
-        # easa_document_retrieval,
-        aviationbot_meta_model,
-        filter_regulations_by_domain,
-        fetch_nested_rules,
-        fetch_parent_title_path,
-        fetch_rules_document,
-        get_regulations_map,
-        get_certification_specifications,
+        easa_document_retrieval,
+        get_easa_regulatory_metamodel,
+        filter_easa_regulations_by_domain,
+        fetch_easa_nested_rules,
+        fetch_easa_parent_title_path,
+        fetch_easa_rules_document,
+        get_easa_regulations_map,
+        get_easa_certification_specifications,
     ]
     if settings.has_tavily:
         tools.append(web_search)

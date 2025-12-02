@@ -8,7 +8,6 @@ The trial_name is derived from the trial directory name (e.g., 'chess-best-move_
 import argparse
 import json
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 from langsmith import Client
@@ -16,19 +15,17 @@ from langsmith import Client
 load_dotenv()
 
 
-def _extract_reward(trial_dir: Path) -> Optional[float]:
+def _extract_reward(trial_dir: Path) -> float:
     """Extract reward from trial's result.json."""
     result_path = trial_dir / "result.json"
     if not result_path.exists():
-        return None
+        # If task completed but no result.json, assume reward 0.0 as default
+        # because it was likely due to an exception.
+        return 0.0
 
-    try:
-        with open(result_path) as f:
-            result = json.load(f)
-            return result.get("verifier_result", {}).get("rewards", {}).get("reward")
-    except Exception as e:
-        print(f"  Error reading result.json: {e}")
-        return None
+    with open(result_path) as f:
+        result = json.load(f)
+        return result.get("verifier_result", {}).get("rewards", {}).get("reward")
 
 
 def _process_trial(
@@ -75,8 +72,6 @@ def _process_trial(
 
     # Extract reward
     reward = _extract_reward(trial_dir)
-    if reward is None:
-        return {"status": "error", "message": "No reward found in result.json"}
 
     if not dry_run:
         client.create_feedback(
@@ -96,12 +91,12 @@ def _process_trial(
 
 
 def _process_job_folder(
+    client: Client,
     job_folder: Path,
     project_name: str,
     dry_run: bool = False,
 ) -> None:
     """Process all trials in a job folder."""
-    client = Client()
 
     print(f"Processing job folder: {job_folder}")
     print(f"LangSmith project: {project_name}")
@@ -175,12 +170,14 @@ def main():
         print(f"Error: Job folder does not exist: {args.job_folder}")
         return 1
 
+    client = Client()
+
     _process_job_folder(
+        client=client,
         job_folder=args.job_folder,
         project_name=args.project_name,
         dry_run=args.dry_run,
     )
-
     return 0
 
 

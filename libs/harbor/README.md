@@ -136,6 +136,30 @@ LANGSMITH_PROJECT=my-project-name make run-terminal-bench-daytona
 
 **Experiment view** groups runs by dataset examples and allows side-by-side comparison of different agent configurations. **Regular tracing** logs all runs to a project without the dataset association, useful for general development and debugging.
 
+### Step 4: Push Feedback to LangSmith
+
+After your Harbor benchmark run completes, push the reward scores to LangSmith to enable filtering and analysis by performance:
+
+```bash
+python scripts/add_feedback.py <job-folder-path> --project-name <project-name>
+```
+
+Example:
+```bash
+python scripts/add_feedback.py jobs/terminal-bench/2025-12-02__16-25-40 --project-name foofoo5
+```
+
+Options:
+- `--dry-run`: Preview what would be done without making changes
+
+The script will:
+- Match Harbor trials to LangSmith traces using the `trial_name` metadata
+- Extract reward scores from Harbor's `result.json` files
+- Add `harbor_reward` feedback (0.0 - 1.0) to each trace
+- Skip traces that already have feedback
+
+This enables you to filter runs by reward score in LangSmith and identify patterns in successful vs. failed runs.
+
 ## Analyzing Results & Improving Your Harness
 
 ### What LangSmith Captures
@@ -149,19 +173,19 @@ With tracing enabled, LangSmith automatically captures:
 
 ### Reward Feedback Integration
 
-Harbor automatically pushes reward scores to LangSmith, connecting **what happened** (execution trace) with **how well it worked** (test results). This allows you to filter runs by reward score and identify patterns in successful vs. failed runs.
+Using the `add_feedback.py` script (see Step 4 above), you can push Harbor's reward scores to LangSmith, connecting **what happened** (execution trace) with **how well it worked** (test results). This allows you to filter runs by reward score and identify patterns in successful vs. failed runs.
 
 ### Common Patterns & Fixes
 
 After running evaluations, analyze failed runs in LangSmith to identify improvement opportunities:
 
-| Pattern | Symptom | Potential Fix |
-|---------|---------|---------------|
-| **Poor Planning** | Agent jumps into coding without reading requirements | Add upfront planning requirement to prompt |
-| **Incorrect Tool Usage** | Uses `bash cat` instead of `read_file` | Improve tool descriptions with examples |
-| **No Incremental Testing** | Writes 200 lines, then tests once | Prompt to test after each logical unit |
-| **Hallucinated Paths** | Reads files before checking existence | Add "always `ls` before read" rule |
-| **Wrong Model** | Model fails on complex reasoning | Use more capable model for hard tasks |
+| Pattern                    | Symptom                                              | Potential Fix                              |
+|----------------------------|------------------------------------------------------|--------------------------------------------|
+| **Poor Planning**          | Agent jumps into coding without reading requirements | Add upfront planning requirement to prompt |
+| **Incorrect Tool Usage**   | Uses `bash cat` instead of `read_file`               | Improve tool descriptions with examples    |
+| **No Incremental Testing** | Writes 200 lines, then tests once                    | Prompt to test after each logical unit     |
+| **Hallucinated Paths**     | Reads files before checking existence                | Add "always `ls` before read" rule         |
+| **Wrong Model**            | Model fails on complex reasoning                     | Use more capable model for hard tasks      |
 
 ### Agent-Assisted Analysis
 

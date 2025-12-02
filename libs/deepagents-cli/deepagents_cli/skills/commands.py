@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents_cli.config import COLORS, console
-from deepagents_cli.skills.load import list_skills
+from deepagents_cli.skills.load import get_skills_directory, list_skills
 
 
 def _validate_skill_name(skill_name: str) -> tuple[bool, str]:
@@ -81,13 +81,13 @@ def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
 
 def _list() -> None:
     """List all available skills for the default agent."""
-    # Use default agent's skills directory
-    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
+    # Use env var or default agent's skills directory
+    skills_dir = get_skills_directory("agent")
 
     if not skills_dir.exists() or not any(skills_dir.iterdir()):
         console.print("[yellow]No skills found.[/yellow]")
         console.print(
-            "[dim]Skills will be created in ~/.deepagents/agent/skills/ when you add them.[/dim]",
+            f"[dim]Skills will be created in {skills_dir}/ when you add them.[/dim]",
             style=COLORS["dim"],
         )
         console.print(
@@ -133,8 +133,8 @@ def _create(skill_name: str) -> None:
         )
         return
 
-    # Use default agent's skills directory
-    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
+    # Use env var or default agent's skills directory
+    skills_dir = get_skills_directory("agent")
     skill_dir = skills_dir / skill_name
 
     # Validate the resolved path is within skills_dir
@@ -245,8 +245,8 @@ This skill directory can include supporting files referenced in the instructions
 
 def _info(skill_name: str) -> None:
     """Show detailed information about a specific skill for the default agent."""
-    # Use default agent's skills directory
-    skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
+    # Use env var or default agent's skills directory
+    skills_dir = get_skills_directory("agent")
 
     # Load skills
     skills = list_skills(skills_dir)

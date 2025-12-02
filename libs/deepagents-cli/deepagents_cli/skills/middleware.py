@@ -15,6 +15,7 @@ Skills directory structure (per-agent):
 │   └── checklist.md
 """
 
+import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
@@ -134,8 +135,12 @@ class SkillsMiddleware(AgentMiddleware):
         """
         self.skills_dir = Path(skills_dir).expanduser()
         self.assistant_id = assistant_id
-        # Store both display path (with ~) and absolute path for file operations
-        self.skills_dir_display = f"~/.deepagents/{assistant_id}/skills"
+        # Store both display path and absolute path for file operations
+        # Show actual path if SKILLS_PATH env var is set, otherwise show default
+        if os.environ.get("SKILLS_PATH"):
+            self.skills_dir_display = str(self.skills_dir)
+        else:
+            self.skills_dir_display = f"~/.deepagents/{assistant_id}/skills"
         self.skills_dir_absolute = str(self.skills_dir)
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 

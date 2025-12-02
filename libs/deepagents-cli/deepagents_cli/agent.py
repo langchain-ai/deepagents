@@ -25,6 +25,7 @@ from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.skills import SkillsMiddleware
+from deepagents_cli.skills.load import get_skills_directory
 
 
 def get_agent_working_directory() -> Path:
@@ -317,8 +318,8 @@ def create_agent_with_config(
         source_content = get_default_coding_instructions()
         agent_md.write_text(source_content)
 
-    # Skills directory - per-agent
-    skills_dir = agent_dir / "skills"
+    # Skills directory - from env var or default per-agent location
+    skills_dir = get_skills_directory(assistant_id)
     skills_dir.mkdir(parents=True, exist_ok=True)
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox

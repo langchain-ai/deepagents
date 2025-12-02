@@ -23,6 +23,7 @@ description: Structured approach to conducting thorough web research
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import TypedDict
@@ -204,3 +205,18 @@ def list_skills(skills_dir: Path) -> list[SkillMetadata]:
             skills.append(metadata)
 
     return skills
+
+
+def get_skills_directory(assistant_id: str) -> Path:
+    """Get the skills directory from environment variable or default location.
+
+    Returns:
+        Path to the skills directory.
+        If SKILLS_PATH is set, uses that path.
+        Otherwise, uses ~/.deepagents/{assistant_id}/skills/
+    """
+    skills_path = os.environ.get("SKILLS_PATH")
+    if skills_path:
+        return Path(skills_path).expanduser().resolve()
+    # Default location
+    return Path.home() / ".deepagents" / assistant_id / "skills"

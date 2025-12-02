@@ -17,13 +17,11 @@ For official EASA regulations, certification specs, and regulatory documents:
 
 | Tool | Purpose |
 |------|---------|
-| `get_easa_regulatory_metamodel` | Get structured info about the EASA regulatory framework |
 | `filter_easa_regulations_by_domain` | Filter regulations by domain (e.g., "Aircrew & Medical", "Aircraft & products") |
 | `fetch_easa_nested_rules` | Fetch nested rules by parent title path (e.g., `["Part-145", "Subpart A"]`) |
 | `fetch_easa_parent_title_path` | Resolve regulatory references to EAR hierarchy (e.g., "AMC 25.201") |
 | `fetch_easa_rules_document` | Fetch full document content by ERULES ID |
-| `easa_document_retrieval` | Semantic retrieval across EASA Easy Access Rules. `file_ids` required (use specific IDs; only use `"all"` if you truly cannot pick). |
-| `get_easa_regulations_map` | Get overview of all EASA regulations structure |
+| `easa_document_retrieval` | Semantic retrieval across EASA Easy Access Rules. `file_ids` required (choose specific IDs; use multiple when scope spans domains). |
 | `get_easa_certification_specifications` | Get EASA certification specifications |
 
 ### 2. User Documents (Compliance Manuals & Procedures)
@@ -49,9 +47,8 @@ Before executing tools, analyze the user's query:
 ### Phase 2: Tool Selection Strategy
 
 - **For EU Rules + EASA AMC+GM softlaw:**
-  1) Use `filter_easa_regulations_by_domain` and/or `get_easa_regulations_map` to identify the relevant domain(s) and candidate documents.
-  2) From `get_easa_regulations_map`, collect the `file_id`(s) of the matching Easy Access Rules. For cross-domain queries, include multiple `file_id`s.
-  3) Run `easa_document_retrieval` with `file_ids=[...]` (required). Use `file_ids=["all"]` only when you truly cannot determine the target file.
+  1) Use `filter_easa_regulations_by_domain` (see supported domains below) to identify the relevant domain(s) and candidate documents to collect the `file_id`(s) of the matching Easy Access Rules. For cross-domain queries, include multiple `file_id`s.
+  3) Run `easa_document_retrieval` with `file_ids=[...]` (required). Always supply at least one specific `file_id`; use multiple when unsure which of the relevant domains/files applies.
 
 - **For User Compliance Documents:** Use `ls` first to understand the folder structure (e.g., `uploaded_files/`), then use `grep` to find specific keywords (e.g., "certifying staff", "tools control"), and `read_file` to examine the content.
 
@@ -67,6 +64,24 @@ Before answering, verify:
 - Did I find the *exact* regulation reference (e.g., "145.A.30(a)")?
 - Did I distinguish between the *Regulation* (Law) and the *AMC/GM* (Guidance)?
 - If the user asked about their specific manual, did I actually read the file?
+
+### Supported Domains for `filter_easa_regulations_by_domain`
+
+The tool accepts any of these domains (case-insensitive):
+- Air Traffic Management
+- Aircraft & products
+- Aircrew & Medical
+- Air Operations
+- Aerodromes
+- Drones & Air Mobility
+- Cybersecurity
+- Environment
+- General Aviation
+- International cooperation
+- Research & Innovation
+- Rotorcraft & VTOL
+- Safety Management & Promotion
+- Third Country Operators
 
 ## Answer Guidelines
 

@@ -74,7 +74,7 @@ def _aviationbot_request(
     "easa_document_retrieval",
     description=(
         "Retrieve EASA Easy Access Rules context by query. REQUIRED: provide one or more "
-        "Easy Access Rules file_ids (preferred) or 'all' when the correct file is unknown."
+        "Easy Access Rules file_ids (choose specific files; use multiple if scope spans domains)."
     ),
 )
 def easa_document_retrieval(
@@ -85,10 +85,17 @@ def easa_document_retrieval(
 
     Args:
         query: Search phrase or question.
-        file_ids: Required list of Easy Access Rules file IDs to restrict results. Use "all" only when you cannot determine a specific file.
+        file_ids: Required list of Easy Access Rules file IDs to restrict results. Use multiple when the query spans several domains.
     Returns:
         Dict with success flag, status_code, and data/error from AviationBot.
     """
+
+    if not file_ids:
+        return {
+            "success": False,
+            "status_code": 0,
+            "error": "file_ids is required; provide one or more file identifiers.",
+        }
 
     params: dict[str, Any] = {"query": query}
     params["file_ids"] = list(file_ids)
@@ -307,7 +314,9 @@ def _remove_verbose_fields(data: dict) -> dict:
 class FilterRegulationsByDomainInput(BaseModel):
     domain: str = Field(
         description=(
-            "The EASA regulation domain to filter by, e.g., 'Air Traffic Management', 'Aircraft & products', 'Aircrew & Medical', etc."
+            "The EASA regulation domain to filter by. Supported domains include: Air Traffic Management; Aircraft & products; "
+            "Aircrew & Medical; Air Operations; Aerodromes; Drones & Air Mobility; Cybersecurity; Environment; General Aviation; "
+            "International cooperation; Research & Innovation; Rotorcraft & VTOL; Safety Management & Promotion; Third Country Operators."
         )
     )
 

@@ -29,6 +29,7 @@ test = [
   "pytest-xdist",
   "ruff>=0.12.2,<0.13.0",
   "mypy>=1.18.1,<1.19.0",
+  "pytest-asyncio>=1.3.0",
 ]
 
 dev = [
@@ -93,3 +94,6 @@ enable_error_code = ["deprecated"]
 # Optional: reduce strictness if needed
 disallow_any_generics = false
 warn_return_any = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

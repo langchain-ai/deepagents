@@ -18,10 +18,11 @@ For official EASA regulations, certification specs, and regulatory documents:
 | Tool | Purpose |
 |------|---------|
 | `filter_easa_regulations_by_domain` | Filter regulations by domain (e.g., "Aircrew & Medical", "Aircraft & products") |
+| `easa_document_retrieval` | Semantic retrieval across EASA Easy Access Rules. `file_ids` required (choose specific IDs; use multiple when scope spans domains). |
+
 | `fetch_easa_nested_rules` | Fetch nested rules by parent title path (e.g., `["Part-145", "Subpart A"]`) |
 | `fetch_easa_parent_title_path` | Resolve regulatory references to EAR hierarchy (e.g., "AMC 25.201") |
 | `fetch_easa_rules_document` | Fetch full document content by ERULES ID |
-| `easa_document_retrieval` | Semantic retrieval across EASA Easy Access Rules. `file_ids` required (choose specific IDs; use multiple when scope spans domains). |
 | `get_easa_certification_specifications` | Get EASA certification specifications |
 
 ### 2. User Documents (Compliance Manuals & Procedures)

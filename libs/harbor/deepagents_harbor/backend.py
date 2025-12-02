@@ -1,9 +1,7 @@
 """Implement harbor backend."""
 
-import asyncio
 import base64
 import shlex
-import threading
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -13,50 +11,12 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.sandbox import BaseSandbox
 from harbor.environments.base import BaseEnvironment
 
-_loop = asyncio.new_event_loop()
 
+class HarborSandbox(SandboxBackendProtocol):
+    """A sandbox implementation without assuming that python3 is available."""
 
-def run_loop(loop: asyncio.AbstractEventLoop) -> None:
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-
-# Temporary work-around. We need to transition to full async support.
-_thread = threading.Thread(target=run_loop, args=(_loop,), daemon=True, name="HarborSandboxLoop")
-_thread.start()
-
-
-class HarborSandbox(BaseSandbox):
-    def __init__(self, environment: BaseEnvironment) -> None:
-        """Initialize HarborSandbox with the given environment."""
-        self.environment = environment
-
-    def execute(
-        self,
-        command: str,
-    ) -> ExecuteResponse:
-        """Execute a bash command in the task environment."""
-        coro = self.environment.exec(command)
-
-        # Submit the async task to the background loop and wait for the result
-        future = asyncio.run_coroutine_threadsafe(coro, _loop)
-        result = future.result()
-        output = (result.stdout or "") + "\n stderr: " + (result.stderr or "")
-        return ExecuteResponse(
-            output=output,
-            exit_code=result.return_code,
-        )
-
-    @property
-    def id(self) -> str:
-        """Unique identifier for the sandbox backend."""
-        return self.environment.session_id
-
-
-class HarborSandboxFallback(SandboxBackendProtocol):
     def __init__(self, environment: BaseEnvironment) -> None:
         """Initialize HarborSandbox with the given environment."""
         self.environment = environment
@@ -78,7 +38,7 @@ class HarborSandboxFallback(SandboxBackendProtocol):
         command: str,
     ) -> ExecuteResponse:
         """Execute a bash command in the task environment."""
-        raise NotImplementedError("Use aexecute instead")
+        raise NotImplementedError("This backend only supports async execution")
 
     @property
     def id(self) -> str:

@@ -23,7 +23,7 @@ from langchain.messages import UsageMetadata
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from deepagents_harbor.backend import HarborSandboxFallback
+from deepagents_harbor.backend import HarborSandbox
 from deepagents_harbor.tracing import create_example_id_from_instruction
 
 
@@ -93,7 +93,7 @@ class DeepAgentsWrapper(BaseAgent):
         configuration = json.loads(environment.trial_paths.config_path.read_text())
         job_id = configuration["job_id"]
 
-        backend = HarborSandboxFallback(environment)
+        backend = HarborSandbox(environment)
         deep_agent = create_deep_agent(model=self._model, backend=backend)
 
         # Build metadata with experiment tracking info

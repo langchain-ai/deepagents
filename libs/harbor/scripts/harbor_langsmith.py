@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unified CLI for LangSmith integration with Harbor.
+CLI for LangSmith integration with Harbor.
 
 Provides commands for:
 - Creating LangSmith datasets from Harbor tasks
@@ -371,12 +371,7 @@ def add_feedback(job_folder: Path, project_name: str, dry_run: bool = False) -> 
     print(f"Errors: {results['error']}")
 
 
-# ============================================================================
-# CLI
-# ============================================================================
-
-
-def main():
+def main() -> None:
     """Main CLI entrypoint with subcommands."""
     parser = argparse.ArgumentParser(
         description="Harbor-LangSmith integration CLI for managing datasets, experiments, and feedback.",

@@ -1,11 +1,11 @@
 """A wrapper for DeepAgents to run in Harbor environments."""
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from deepagents import create_deep_agent
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -22,7 +22,9 @@ from langchain.chat_models import init_chat_model
 from langchain.messages import UsageMetadata
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langsmith import trace
 
+from deepagents import create_deep_agent
 from deepagents_harbor.backend import HarborSandbox
 from deepagents_harbor.tracing import create_example_id_from_instruction
 
@@ -71,6 +73,7 @@ class DeepAgentsWrapper(BaseAgent):
         pass
 
     def version(self) -> str | None:
+        """The version of the agent."""
         return "0.0.1"
 
     async def run(
@@ -86,10 +89,6 @@ class DeepAgentsWrapper(BaseAgent):
             environment: Harbor environment (Docker, Modal, etc.)
             context: Context to populate with metrics
         """
-        # Track token usage and cost for this run
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-
         configuration = json.loads(environment.trial_paths.config_path.read_text())
         job_id = configuration["job_id"]
 
@@ -109,7 +108,6 @@ class DeepAgentsWrapper(BaseAgent):
         # Compute example_id from instruction for deterministic linking
         # This uses the same hashing as create_langsmith_dataset.py
         example_id = create_example_id_from_instruction(instruction)
-        metadata["reference_example_id"] = example_id
 
         config: RunnableConfig = {
             "run_name": f"{environment.session_id}",
@@ -120,21 +118,42 @@ class DeepAgentsWrapper(BaseAgent):
             },
         }
 
-        # Invoke deep agent with LangSmith tracing
-        result = await deep_agent.ainvoke(
-            {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
-            config=config,
-        )
+        # If LANGSMITH_EXPERIMENT is set, wrap in trace context.
+        # This will link runs to the given experiment in LangSmith.
+        langsmith_experiment_name = os.environ.get("LANGSMITH_EXPERIMENT", "").strip() or None
+
+        if langsmith_experiment_name:
+            with trace(
+                name=environment.session_id,
+                reference_example_id=example_id,
+                inputs={"instruction": instruction},
+                project_name=langsmith_experiment_name,
+            ):
+                # Invoke deep agent with LangSmith tracing
+                result = await deep_agent.ainvoke(
+                    {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                    config=config,
+                )
+        else:
+            result = await deep_agent.ainvoke(
+                {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                config=config,
+            )
+
+        self._save_trajectory(environment, instruction, result)
+
+    def _save_trajectory(
+        self, environment: BaseEnvironment, instruction: str, result: dict
+    ) -> None:
+        """Save current trajectory to logs directory."""
+        # Track token usage and cost for this run
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
         # Create trajectory
         steps = [
             Step(
                 step_id=1,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                source="system",
-                message="Agent initialized and ready to execute the task.",
-            ),
-            Step(
-                step_id=2,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 source="user",
                 message=instruction,
@@ -223,12 +242,6 @@ class DeepAgentsWrapper(BaseAgent):
             total_completion_tokens=total_completion_tokens or None,
             total_steps=len(steps),
         )
-        self._save_trajectory(environment, steps, metrics)
-
-    def _save_trajectory(
-        self, environment: BaseEnvironment, steps: list[Step], metrics: FinalMetrics
-    ) -> None:
-        """Save current trajectory to logs directory."""
         trajectory = Trajectory(
             schema_version="ATIF-v1.2",
             session_id=environment.session_id,

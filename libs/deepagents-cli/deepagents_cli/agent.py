@@ -183,18 +183,6 @@ Some tool calls require user approval before execution. When a tool call is reje
 
 Respect the user's decisions and work with them collaboratively.
 
-### Web Search Tool Usage
-
-When you use the web_search tool:
-1. The tool will return search results with titles, URLs, and content excerpts
-2. You MUST read and process these results, then respond naturally to the user
-3. NEVER show raw JSON or tool results directly to the user
-4. Synthesize the information from multiple sources into a coherent answer
-5. Cite your sources by mentioning page titles or URLs when relevant
-6. If the search doesn't find what you need, explain what you found and ask clarifying questions
-
-The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
-
 ### Todo List Management
 
 When using the write_todos tool:

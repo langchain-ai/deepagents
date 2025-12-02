@@ -41,10 +41,6 @@ class GitContextMiddleware(AgentMiddleware):
 
     state_schema = GitContextState
 
-    def __init__(self) -> None:
-        """Initialize git context middleware."""
-        super().__init__()
-
     def _get_git_info(self) -> dict[str, str | list[str]]:
         """Gather git state information.
 
@@ -122,6 +118,27 @@ class GitContextMiddleware(AgentMiddleware):
         git_context = "\n".join(git_lines)
         return GitContextStateUpdate(git_context=git_context)
 
+    def _get_modified_request(self, request: ModelRequest) -> ModelRequest | None:
+        """Get modified request with git context injected, or None if no context.
+
+        Args:
+            request: The original model request.
+
+        Returns:
+            Modified request with git context appended, or None if no git context.
+        """
+        state = cast("GitContextState", request.state)
+        git_context = state.get("git_context", "")
+
+        if not git_context:
+            return None
+
+        # Append git context to system prompt
+        system_prompt = request.system_prompt or ""
+        new_prompt = system_prompt + "\n\n" + git_context
+
+        return request.override(system_prompt=new_prompt)
+
     def wrap_model_call(
         self,
         request: ModelRequest,
@@ -136,17 +153,8 @@ class GitContextMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        state = cast("GitContextState", request.state)
-        git_context = state.get("git_context", "")
-
-        if not git_context:
-            return handler(request)
-
-        # Append git context to system prompt
-        system_prompt = request.system_prompt or ""
-        new_prompt = system_prompt + "\n\n" + git_context
-
-        return handler(request.override(system_prompt=new_prompt))
+        modified_request = self._get_modified_request(request)
+        return handler(modified_request if modified_request else request)
 
     async def awrap_model_call(
         self,
@@ -162,17 +170,8 @@ class GitContextMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        state = cast("GitContextState", request.state)
-        git_context = state.get("git_context", "")
-
-        if not git_context:
-            return await handler(request)
-
-        # Append git context to system prompt
-        system_prompt = request.system_prompt or ""
-        new_prompt = system_prompt + "\n\n" + git_context
-
-        return await handler(request.override(system_prompt=new_prompt))
+        modified_request = self._get_modified_request(request)
+        return await handler(modified_request if modified_request else request)
 
 
 __all__ = ["GitContextMiddleware"]

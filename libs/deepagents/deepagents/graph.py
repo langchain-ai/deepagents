@@ -43,6 +43,8 @@ def create_deep_agent(
     *,
     system_prompt: str | None = None,
     middleware: Sequence[AgentMiddleware] = (),
+    override_default_middleware: bool = False,
+    custom_middleware: Sequence[AgentMiddleware] | None = None,
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     response_format: ResponseFormat | None = None,
     context_schema: type[Any] | None = None,
@@ -69,6 +71,12 @@ def create_deep_agent(
         system_prompt: The additional instructions the agent should have. Will go in
             the system prompt.
         middleware: Additional middleware to apply after standard middleware.
+        override_default_middleware: If True, skip the default deepagents middleware
+            configuration and use `custom_middleware` with your own configuration instead. When
+            set, the `middleware` argument is ignored.
+        custom_middleware: Your own middleware configuration to use instead of the default.
+            When `override_default_middleware` is True, this argument is required.
+            Must be a sequence of AgentMiddleware.
         subagents: The subagents to use. Each subagent should be a dictionary with the
             following keys:
                 - `name`
@@ -110,41 +118,53 @@ def create_deep_agent(
         trigger = ("tokens", 170000)
         keep = ("messages", 6)
 
-    deepagent_middleware = [
-        TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
-        SubAgentMiddleware(
-            default_model=model,
-            default_tools=tools,
-            subagents=subagents if subagents is not None else [],
-            default_middleware=[
-                TodoListMiddleware(),
-                FilesystemMiddleware(backend=backend),
-                SummarizationMiddleware(
-                    model=model,
-                    trigger=trigger,
-                    keep=keep,
-                    trim_tokens_to_summarize=None,
-                ),
-                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-                PatchToolCallsMiddleware(),
-            ],
-            default_interrupt_on=interrupt_on,
-            general_purpose_agent=True,
-        ),
-        SummarizationMiddleware(
-            model=model,
-            trigger=trigger,
-            keep=keep,
-            trim_tokens_to_summarize=None,
-        ),
-        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-        PatchToolCallsMiddleware(),
-    ]
-    if middleware:
-        deepagent_middleware.extend(middleware)
-    if interrupt_on is not None:
-        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+    if override_default_middleware:
+        if custom_middleware is None:
+            raise ValueError(
+                "custom_middleware cannot be None if override_default_middleware is True"
+            )
+        deepagent_middleware = [*custom_middleware]
+        if interrupt_on is not None:
+            deepagent_middleware.append(
+                HumanInTheLoopMiddleware(interrupt_on=interrupt_on)
+            )
+
+    else:
+        deepagent_middleware = [
+            TodoListMiddleware(),
+            FilesystemMiddleware(backend=backend),
+            SubAgentMiddleware(
+                default_model=model,
+                default_tools=tools,
+                subagents=subagents if subagents is not None else [],
+                default_middleware=[
+                    TodoListMiddleware(),
+                    FilesystemMiddleware(backend=backend),
+                    SummarizationMiddleware(
+                        model=model,
+                        trigger=trigger,
+                        keep=keep,
+                        trim_tokens_to_summarize=None,
+                    ),
+                    AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                    PatchToolCallsMiddleware(),
+                ],
+                default_interrupt_on=interrupt_on,
+                general_purpose_agent=True,
+            ),
+            SummarizationMiddleware(
+                model=model,
+                trigger=trigger,
+                keep=keep,
+                trim_tokens_to_summarize=None,
+            ),
+            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+            PatchToolCallsMiddleware(),
+        ]
+        if middleware:
+            deepagent_middleware.extend(middleware)
+        if interrupt_on is not None:
+            deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
     return create_agent(
         model,

@@ -1,6 +1,5 @@
 """CompositeBackend: Route operations to different backends based on path prefix."""
 
-import asyncio
 from collections import defaultdict
 
 from deepagents.backends.protocol import (

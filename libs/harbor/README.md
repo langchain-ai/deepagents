@@ -38,12 +38,14 @@ The DeepAgent harness ships with design patterns validated as good defaults acro
 # Install dependencies
 uv sync
 
-# Configure API keys
-cp .env.example .env
-# Edit .env and set:
-#   - ANTHROPIC_API_KEY (required for Claude model)
-#   - LANGSMITH_API_KEY (required for tracing)
-#   - DAYTONA_API_KEY (optional, only if using --env daytona)
+# Configure required API keys
+export ANTHROPIC_API_KEY="sk-ant-..."  # Required: For Claude model
+export LANGSMITH_API_KEY="lsv2_..."    # Required: For tracing
+export LANGSMITH_TRACING_V2=true       # Required: Enable LangSmith tracing
+export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default shown
+
+# Optional: Only if using Daytona environment
+# export DAYTONA_API_KEY="..."
 
 # Run via Docker (1 task)
 uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
@@ -64,11 +66,12 @@ DeepAgents → Harbor (evaluate) → LangSmith (analyze) → Improve → Repeat
 
 ### Prerequisites
 
-Set up your LangSmith API credentials:
+Ensure your LangSmith credentials are set (already covered in Quick Start):
 
 ```bash
-export LANGSMITH_API_KEY="your-api-key-here"
-export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional, defaults to this
+export LANGSMITH_API_KEY="lsv2_..."
+export LANGSMITH_TRACING_V2=true
+export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: defaults to this
 ```
 
 ### Step 1: Create Dataset and Experiment
@@ -84,15 +87,17 @@ python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepa
 ### Step 2: Run Benchmark with Tracing
 
 ```bash
-# Option 1: Use Makefile shortcuts (runs 10 tasks on Daytona)
-# For experiments (enables side-by-side comparison)
-LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-terminal-bench-daytona
+# Option 1: For experiments (enables side-by-side comparison in LangSmith)
+export LANGSMITH_EXPERIMENT="deepagents-baseline-v1"
+make run-terminal-bench-daytona  # Runs 10 tasks on Daytona
 
-# Or for development (simpler project view)
-LANGSMITH_PROJECT=deepagents-development make run-terminal-bench-daytona
+# Option 2: For development (simpler project view in LangSmith)
+export LANGSMITH_PROJECT="deepagents-development"
+make run-terminal-bench-daytona
 
-# Option 2: Run harbor directly (customize -n for number of tasks)
-LANGSMITH_EXPERIMENT=deepagents-baseline-v1 uv run harbor run \
+# Option 3: Run harbor directly (customize -n for number of tasks)
+export LANGSMITH_EXPERIMENT="deepagents-baseline-v1"
+uv run harbor run \
   --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
 ```

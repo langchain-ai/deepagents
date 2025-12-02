@@ -19,7 +19,6 @@ def make_runtime():
     )
 
 
-@pytest.mark.asyncio
 async def test_store_backend_async_crud_and_search():
     """Test async CRUD and search operations."""
     rt = make_runtime()
@@ -53,7 +52,6 @@ async def test_store_backend_async_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
-@pytest.mark.asyncio
 async def test_store_backend_als_nested_directories():
     """Test async ls with nested directories."""
     rt = make_runtime()
@@ -98,7 +96,6 @@ async def test_store_backend_als_nested_directories():
     assert empty_listing == []
 
 
-@pytest.mark.asyncio
 async def test_store_backend_als_trailing_slash():
     """Test async ls with trailing slash behavior."""
     rt = make_runtime()
@@ -122,7 +119,6 @@ async def test_store_backend_als_trailing_slash():
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
-@pytest.mark.asyncio
 async def test_store_backend_async_errors():
     """Test async error handling."""
     rt = make_runtime()
@@ -137,7 +133,6 @@ async def test_store_backend_async_errors():
     assert "Error" in content or "not found" in content.lower()
 
 
-@pytest.mark.asyncio
 async def test_store_backend_aedit_replace_all():
     """Test async edit with replace_all option."""
     rt = make_runtime()
@@ -169,7 +164,6 @@ async def test_store_backend_aedit_replace_all():
     assert "qux xyz qux baz" in content2
 
 
-@pytest.mark.asyncio
 async def test_store_backend_aread_with_offset_and_limit():
     """Test async read with offset and limit."""
     rt = make_runtime()
@@ -189,7 +183,6 @@ async def test_store_backend_aread_with_offset_and_limit():
     assert "Line 6" not in content_offset
 
 
-@pytest.mark.asyncio
 async def test_store_backend_agrep_with_glob():
     """Test async grep with glob filter."""
     rt = make_runtime()
@@ -213,7 +206,6 @@ async def test_store_backend_agrep_with_glob():
     assert len(py_matches) >= 2  # Should match test.py and main.py
 
 
-@pytest.mark.asyncio
 async def test_store_backend_aglob_patterns():
     """Test async glob with various patterns."""
     rt = make_runtime()
@@ -246,7 +238,6 @@ async def test_store_backend_aglob_patterns():
     assert "/docs/api.md" in md_files
 
 
-@pytest.mark.asyncio
 async def test_store_backend_aupload_adownload():
     """Test async upload and download operations."""
     rt = make_runtime()
@@ -270,7 +261,6 @@ async def test_store_backend_aupload_adownload():
     assert download_responses[1].error is None
 
 
-@pytest.mark.asyncio
 async def test_store_backend_agrep_invalid_regex():
     """Test async grep with invalid regex pattern."""
     rt = make_runtime()
@@ -285,7 +275,6 @@ async def test_store_backend_agrep_invalid_regex():
     assert "Invalid regex" in result or "error" in result.lower()
 
 
-@pytest.mark.asyncio
 async def test_store_backend_intercept_large_tool_result_async():
     """Test that StoreBackend properly handles large tool result interception in async context."""
     from langchain_core.messages import ToolMessage

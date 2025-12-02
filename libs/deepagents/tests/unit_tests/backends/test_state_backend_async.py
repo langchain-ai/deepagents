@@ -22,7 +22,6 @@ def make_runtime(files=None):
     )
 
 
-@pytest.mark.asyncio
 async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     """Test async write, read, edit, ls, grep, and glob operations."""
     rt = make_runtime()
@@ -65,7 +64,6 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     assert any(i["path"] == "/notes.txt" for i in infos)
 
 
-@pytest.mark.asyncio
 async def test_state_backend_async_errors():
     """Test async error handling for StateBackend."""
     rt = make_runtime()
@@ -83,7 +81,6 @@ async def test_state_backend_async_errors():
     assert isinstance(dup_err, WriteResult) and dup_err.error and "already exists" in dup_err.error
 
 
-@pytest.mark.asyncio
 async def test_state_backend_als_nested_directories():
     """Test async ls with nested directories."""
     rt = make_runtime()
@@ -127,7 +124,6 @@ async def test_state_backend_als_nested_directories():
     assert empty_listing == []
 
 
-@pytest.mark.asyncio
 async def test_state_backend_als_trailing_slash():
     """Test async ls with trailing slash behavior."""
     rt = make_runtime()
@@ -153,7 +149,6 @@ async def test_state_backend_als_trailing_slash():
     assert listing_from_dir[0]["path"] == "/dir/nested.txt"
 
 
-@pytest.mark.asyncio
 async def test_state_backend_aedit_replace_all():
     """Test async edit with replace_all option."""
     rt = make_runtime()
@@ -188,7 +183,6 @@ async def test_state_backend_aedit_replace_all():
     assert "hi galaxy hi universe" in content2
 
 
-@pytest.mark.asyncio
 async def test_state_backend_aread_with_offset_and_limit():
     """Test async read with offset and limit parameters."""
     rt = make_runtime()
@@ -209,7 +203,6 @@ async def test_state_backend_aread_with_offset_and_limit():
     assert "Line 6" not in content_offset
 
 
-@pytest.mark.asyncio
 async def test_state_backend_agrep_with_pattern_and_glob():
     """Test async grep with pattern and glob filter."""
     rt = make_runtime()
@@ -236,7 +229,6 @@ async def test_state_backend_agrep_with_pattern_and_glob():
     assert not any(m["path"] == "/test.txt" for m in matches)
 
 
-@pytest.mark.asyncio
 async def test_state_backend_aglob_recursive():
     """Test async glob with recursive patterns."""
     rt = make_runtime()
@@ -264,7 +256,6 @@ async def test_state_backend_aglob_recursive():
     assert "/readme.txt" not in py_files
 
 
-@pytest.mark.asyncio
 async def test_state_backend_intercept_large_tool_result_async():
     """Test that StateBackend properly handles large tool result interception in async context."""
     from langgraph.types import Command

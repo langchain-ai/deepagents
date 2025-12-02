@@ -13,7 +13,6 @@ def write_file(p: Path, content: str):
     p.write_text(content)
 
 
-@pytest.mark.asyncio
 async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     """Test async operations in normal (non-virtual) mode."""
     root = tmp_path
@@ -48,7 +47,6 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     assert any(i["path"] == str(f2) for i in g)
 
 
-@pytest.mark.asyncio
 async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     """Test async operations in virtual mode."""
     root = tmp_path
@@ -94,7 +92,6 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
         await be.aread("/../a.txt")
 
 
-@pytest.mark.asyncio
 async def test_filesystem_backend_als_nested_directories(tmp_path: Path):
     """Test async ls with nested directories."""
     root = tmp_path
@@ -137,7 +134,6 @@ async def test_filesystem_backend_als_nested_directories(tmp_path: Path):
     assert empty_listing == []
 
 
-@pytest.mark.asyncio
 async def test_filesystem_backend_als_normal_mode_nested(tmp_path: Path):
     """Test async ls_info with nested directories in normal (non-virtual) mode."""
     root = tmp_path
@@ -167,7 +163,6 @@ async def test_filesystem_backend_als_normal_mode_nested(tmp_path: Path):
     assert str(root / "subdir" / "nested" / "file3.txt") not in subdir_paths
 
 
-@pytest.mark.asyncio
 async def test_filesystem_backend_als_trailing_slash(tmp_path: Path):
     """Test async ls_info edge cases with trailing slashes."""
     root = tmp_path
@@ -198,7 +193,6 @@ async def test_filesystem_backend_als_trailing_slash(tmp_path: Path):
     assert empty == []
 
 
-@pytest.mark.asyncio
 async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception in async context."""
     from langchain.tools import ToolRuntime
@@ -230,7 +224,6 @@ async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Pa
     assert saved_file.read_text() == large_content
 
 
-@pytest.mark.asyncio
 async def test_filesystem_aupload_single_file(tmp_path: Path):
     """Test async uploading a single binary file."""
     root = tmp_path
@@ -251,7 +244,6 @@ async def test_filesystem_aupload_single_file(tmp_path: Path):
     assert uploaded_file.read_bytes() == test_content
 
 
-@pytest.mark.asyncio
 async def test_filesystem_aupload_multiple_files(tmp_path: Path):
     """Test async uploading multiple files in one call."""
     root = tmp_path
@@ -276,7 +268,6 @@ async def test_filesystem_aupload_multiple_files(tmp_path: Path):
     assert (root / "subdir" / "file3.bin").read_bytes() == b"Content 3"
 
 
-@pytest.mark.asyncio
 async def test_filesystem_adownload_single_file(tmp_path: Path):
     """Test async downloading a single file."""
     root = tmp_path
@@ -295,7 +286,6 @@ async def test_filesystem_adownload_single_file(tmp_path: Path):
     assert responses[0].error is None
 
 
-@pytest.mark.asyncio
 async def test_filesystem_adownload_multiple_files(tmp_path: Path):
     """Test async downloading multiple files in one call."""
     root = tmp_path
@@ -329,7 +319,6 @@ async def test_filesystem_adownload_multiple_files(tmp_path: Path):
     assert responses[2].error is None
 
 
-@pytest.mark.asyncio
 async def test_filesystem_aupload_download_roundtrip(tmp_path: Path):
     """Test async upload followed by download for data integrity."""
     root = tmp_path
@@ -349,7 +338,6 @@ async def test_filesystem_aupload_download_roundtrip(tmp_path: Path):
     assert download_responses[0].content == test_content
 
 
-@pytest.mark.asyncio
 async def test_filesystem_adownload_errors(tmp_path: Path):
     """Test async download error handling."""
     root = tmp_path
@@ -375,7 +363,6 @@ async def test_filesystem_adownload_errors(tmp_path: Path):
     assert responses[0].content is None
 
 
-@pytest.mark.asyncio
 async def test_filesystem_aupload_errors(tmp_path: Path):
     """Test async upload error handling."""
     root = tmp_path
@@ -387,7 +374,6 @@ async def test_filesystem_aupload_errors(tmp_path: Path):
     assert responses[0].error == "invalid_path"
 
 
-@pytest.mark.asyncio
 async def test_filesystem_partial_success_aupload(tmp_path: Path):
     """Test partial success in async batch upload."""
     root = tmp_path
@@ -414,7 +400,6 @@ async def test_filesystem_partial_success_aupload(tmp_path: Path):
     assert (root / "valid2.txt").exists()
 
 
-@pytest.mark.asyncio
 async def test_filesystem_partial_success_adownload(tmp_path: Path):
     """Test partial success in async batch download."""
     root = tmp_path
@@ -443,7 +428,6 @@ async def test_filesystem_partial_success_adownload(tmp_path: Path):
     assert responses[2].content is None
 
 
-@pytest.mark.asyncio
 async def test_filesystem_aedit_replace_all(tmp_path: Path):
     """Test async edit with replace_all option."""
     root = tmp_path
@@ -473,7 +457,6 @@ async def test_filesystem_aedit_replace_all(tmp_path: Path):
     assert "qux xyz qux baz" in content2
 
 
-@pytest.mark.asyncio
 async def test_filesystem_aread_with_offset_and_limit(tmp_path: Path):
     """Test async read with offset and limit."""
     root = tmp_path
@@ -493,7 +476,6 @@ async def test_filesystem_aread_with_offset_and_limit(tmp_path: Path):
     assert "Line 6" not in content
 
 
-@pytest.mark.asyncio
 async def test_filesystem_agrep_with_glob(tmp_path: Path):
     """Test async grep with glob filter."""
     root = tmp_path
@@ -513,7 +495,6 @@ async def test_filesystem_agrep_with_glob(tmp_path: Path):
     assert not any("test.txt" in p for p in py_files)
 
 
-@pytest.mark.asyncio
 async def test_filesystem_aglob_recursive(tmp_path: Path):
     """Test async glob with recursive patterns."""
     root = tmp_path

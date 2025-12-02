@@ -76,7 +76,7 @@ export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional, default
 Create a dataset from Harbor tasks. This downloads tasks from the Harbor registry and creates corresponding examples in LangSmith:
 
 ```bash
-python scripts/create_langsmith_dataset.py terminal-bench --version 2
+python scripts/harbor_langsmith.py create-dataset terminal-bench --version 2.0
 ```
 
 Options:
@@ -88,16 +88,16 @@ Options:
 Create an experiment session associated with your dataset:
 
 ```bash
-python scripts/create_langsmith_dataset.py terminal-bench --create-experiment
+python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepagents-baseline-v1
 ```
 
 Options:
-- `--experiment-name`: Custom name for the experiment (auto-generated if not provided)
+- `--name`: Custom name for the experiment (auto-generated if not provided)
 
 This will output:
 - The experiment session ID
 - A URL to view the experiment in LangSmith
-- Instructions for setting the `LANGSMITH_PROJECT` environment variable
+- Instructions for setting the `LANGSMITH_EXPERIMENT` environment variable
 
 ### Step 3: Run Benchmarking with Tracing
 
@@ -120,10 +120,10 @@ LANGSMITH_EXPERIMENT=<experiment-name> harbor run terminal-bench --config config
 Example:
 ```bash
 # Create experiment and capture the name
-python scripts/create_langsmith_dataset.py terminal-bench --create-experiment --experiment-name my-experiment
+python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepagents-baseline-v1
 
 # Run benchmark with experiment tracing
-LANGSMITH_EXPERIMENT=my-experiment make run-terminal-bench-daytona
+LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-terminal-bench-daytona
 ```
 
 #### Option B: Regular Tracing (Project View)
@@ -131,7 +131,7 @@ LANGSMITH_EXPERIMENT=my-experiment make run-terminal-bench-daytona
 Use `LANGSMITH_PROJECT` if you just want to log traces without an experiment view:
 
 ```bash
-LANGSMITH_PROJECT=my-project-name make run-terminal-bench-daytona
+LANGSMITH_PROJECT=deepagents-development make run-terminal-bench-daytona
 ```
 
 **Experiment view** groups runs by dataset examples and allows side-by-side comparison of different agent configurations. **Regular tracing** logs all runs to a project without the dataset association, useful for general development and debugging.
@@ -141,18 +141,18 @@ LANGSMITH_PROJECT=my-project-name make run-terminal-bench-daytona
 After your Harbor benchmark run completes, push the reward scores to LangSmith to enable filtering and analysis by performance:
 
 ```bash
-python scripts/add_feedback.py <job-folder-path> --project-name <project-name>
+python scripts/harbor_langsmith.py add-feedback <job-folder-path> --project-name <project-name>
 ```
 
 Example:
 ```bash
-python scripts/add_feedback.py jobs/terminal-bench/2025-12-02__16-25-40 --project-name foofoo5
+python scripts/harbor_langsmith.py add-feedback jobs/terminal-bench/2025-12-02__16-25-40 --project-name deepagents-baseline-v1
 ```
 
 Options:
 - `--dry-run`: Preview what would be done without making changes
 
-The script will:
+The command will:
 - Match Harbor trials to LangSmith traces using the `trial_name` metadata
 - Extract reward scores from Harbor's `result.json` files
 - Add `harbor_reward` feedback (0.0 - 1.0) to each trace
@@ -173,7 +173,7 @@ With tracing enabled, LangSmith automatically captures:
 
 ### Reward Feedback Integration
 
-Using the `add_feedback.py` script (see Step 4 above), you can push Harbor's reward scores to LangSmith, connecting **what happened** (execution trace) with **how well it worked** (test results). This allows you to filter runs by reward score and identify patterns in successful vs. failed runs.
+Using the `harbor-langsmith add-feedback` command (see Step 4 above), you can push Harbor's reward scores to LangSmith, connecting **what happened** (execution trace) with **how well it worked** (test results). This allows you to filter runs by reward score and identify patterns in successful vs. failed runs.
 
 ### Common Patterns & Fixes
 

@@ -164,23 +164,28 @@ async def test_state_backend_aedit_replace_all():
     assert res.error is None
     rt.state["files"].update(res.files_update)
 
-    # Edit with replace_all=False (default) - should replace only first
+    # Edit with replace_all=False when string appears multiple times should error
     res2 = await be.aedit("/test.txt", "hello", "hi", replace_all=False)
-    assert res2.error is None
-    assert res2.occurrences == 1
-    rt.state["files"].update(res2.files_update)
+    assert res2.error is not None
+    assert "appears 2 times" in res2.error
 
-    content1 = await be.aread("/test.txt")
-    assert "hi world hello universe" in content1
-
-    # Edit with replace_all=True - should replace all
+    # Edit with replace_all=True - should replace all occurrences
     res3 = await be.aedit("/test.txt", "hello", "hi", replace_all=True)
     assert res3.error is None
-    assert res3.occurrences == 1  # Only one remaining "hello"
+    assert res3.occurrences == 2
     rt.state["files"].update(res3.files_update)
 
+    content = await be.aread("/test.txt")
+    assert "hi world hi universe" in content
+
+    # Now test replace_all=False with unique string (should succeed)
+    res4 = await be.aedit("/test.txt", "world", "galaxy", replace_all=False)
+    assert res4.error is None
+    assert res4.occurrences == 1
+    rt.state["files"].update(res4.files_update)
+
     content2 = await be.aread("/test.txt")
-    assert "hi world hi universe" in content2
+    assert "hi galaxy hi universe" in content2
 
 
 @pytest.mark.asyncio

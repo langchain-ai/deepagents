@@ -147,21 +147,26 @@ async def test_store_backend_aedit_replace_all():
     res = await be.awrite("/test.txt", "foo bar foo baz")
     assert res.error is None
 
-    # Edit with replace_all=False (default)
+    # Edit with replace_all=False when string appears multiple times should error
     res2 = await be.aedit("/test.txt", "foo", "qux", replace_all=False)
-    assert res2.error is None
-    assert res2.occurrences == 1
+    assert res2.error is not None
+    assert "appears 2 times" in res2.error
 
-    content1 = await be.aread("/test.txt")
-    assert "qux bar foo baz" in content1
-
-    # Edit with replace_all=True
+    # Edit with replace_all=True - should replace all occurrences
     res3 = await be.aedit("/test.txt", "foo", "qux", replace_all=True)
     assert res3.error is None
-    assert res3.occurrences == 1
+    assert res3.occurrences == 2
+
+    content = await be.aread("/test.txt")
+    assert "qux bar qux baz" in content
+
+    # Now test replace_all=False with unique string (should succeed)
+    res4 = await be.aedit("/test.txt", "bar", "xyz", replace_all=False)
+    assert res4.error is None
+    assert res4.occurrences == 1
 
     content2 = await be.aread("/test.txt")
-    assert "qux bar qux baz" in content2
+    assert "qux xyz qux baz" in content2
 
 
 @pytest.mark.asyncio

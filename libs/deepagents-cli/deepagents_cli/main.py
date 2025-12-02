@@ -27,6 +27,12 @@ from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import (
     aviationbot_document_retrieval,
     aviationbot_meta_model,
+    fetch_nested_rules,
+    fetch_parent_title_path,
+    fetch_rules_document,
+    filter_regulations_by_domain,
+    get_certification_specifications,
+    get_regulations_map,
     fetch_url,
     http_request,
     web_search,
@@ -278,7 +284,16 @@ async def _run_agent_session(
         setup_script_path: Path to setup script that was run (if any)
     """
     # Create agent with conditional tools
-    tools = [aviationbot_document_retrieval, aviationbot_meta_model]
+    tools = [
+        aviationbot_document_retrieval,
+        aviationbot_meta_model,
+        filter_regulations_by_domain,
+        fetch_nested_rules,
+        fetch_parent_title_path,
+        fetch_rules_document,
+        get_regulations_map,
+        get_certification_specifications,
+    ]
     if settings.has_tavily:
         tools.append(web_search)
 

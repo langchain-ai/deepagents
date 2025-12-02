@@ -1,10 +1,13 @@
 """Custom tools for the CLI agent."""
 
+import json
 import os
+from pathlib import Path
 from typing import Any, Literal, Sequence
 
 import requests
 from markdownify import markdownify
+from pydantic import BaseModel, Field
 from tavily import TavilyClient
 from langchain.tools import tool
 
@@ -18,6 +21,7 @@ tavily_client = TavilyClient(api_key=settings.tavily_api_key) if settings.has_ta
 
 AVIATIONBOT_BASE_URL = os.getenv("AVIATION_BOT_BASE_URL", "https://beta.aviation.bot/api/v1")
 AVIATIONBOT_DEFAULT_TIMEOUT = int(os.getenv("AVIATION_BOT_TIMEOUT", "60"))
+AVIATIONBOT_API_KEY = os.getenv("AVIATION_BOT_API_KEY", "")
 
 
 def _build_auth_headers() -> dict[str, str]:
@@ -232,6 +236,254 @@ def web_search(
         )
     except Exception as e:
         return {"error": f"Web search error: {e!s}", "query": query}
+
+
+# --- EASA local JSON helpers --------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_regulations() -> dict:
+    """Load EASA regulations JSON from uploaded_files."""
+    path = _REPO_ROOT / "uploaded_files" / "EASA" / "regulations" / "regulations.json"
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_regulations_map() -> list:
+    """Load EASA regulations map JSON from uploaded_files."""
+    path = _REPO_ROOT / "uploaded_files" / "EASA" / "regulations_map" / "regulations_map.json"
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_certification_specifications() -> dict:
+    """Load EASA certification specifications JSON from uploaded_files."""
+    path = _REPO_ROOT / "uploaded_files" / "EASA" / "certification-specifications" / "certification-specifications.json"
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _get_domain_mapping() -> dict:
+    """Create a case-insensitive domain mapping (lowercase -> proper case)."""
+    regulations_data = _load_regulations()
+    domains = regulations_data.get("metadata", {}).get("domains", [])
+    return {domain.lower(): domain for domain in domains}
+
+
+def _normalize_domain(domain: str, domain_mapping: dict) -> str:
+    """Normalize a domain name to its proper case."""
+    return domain_mapping.get(domain.lower(), domain)
+
+
+def _should_remove_fields(json_str: str) -> bool:
+    """Check if JSON size exceeds 10000 characters."""
+    return len(json_str) > 10_000
+
+
+def _remove_verbose_fields(data: dict) -> dict:
+    """Remove verbose fields to reduce JSON size."""
+    fields_to_remove = {"url", "entity_label", "extended_title", "eurlex"}
+
+    def clean_item(item):
+        if isinstance(item, dict):
+            return {k: v for k, v in item.items() if k not in fields_to_remove}
+        return item
+
+    if "regulations" in data:
+        cleaned_regulations = {}
+        for category, regulations in data["regulations"].items():
+            if isinstance(regulations, list):
+                cleaned_regulations[category] = [clean_item(reg) for reg in regulations]
+            else:
+                cleaned_regulations[category] = regulations
+        data["regulations"] = cleaned_regulations
+
+    return data
+
+
+class FilterRegulationsByDomainInput(BaseModel):
+    domain: str = Field(
+        description=(
+            "The EASA regulation domain to filter by, e.g., 'Air Traffic Management', 'Aircraft & products', 'Aircrew & Medical', etc."
+        )
+    )
+
+
+@tool(args_schema=FilterRegulationsByDomainInput)
+def filter_regulations_by_domain(domain: str) -> str:
+    """
+    Filters EASA regulations by a specified domain and returns the filtered JSON.
+
+    The tool:
+    1. Loads the complete EASA regulations database
+    2. Filters regulations to include only those with the specified domain (case-insensitive)
+    3. If the result exceeds 10,000 characters, removes verbose fields (url, entity_label, extended_title, eurlex) to reduce size
+    4. Returns the filtered and optionally reduced JSON as a string
+    """
+    try:
+        regulations_data = _load_regulations()
+        domain_mapping = _get_domain_mapping()
+        normalized_domain = _normalize_domain(domain, domain_mapping)
+
+        filtered_data = {"metadata": regulations_data.get("metadata", {}), "regulations": {}}
+
+        for category, regulations_list in regulations_data.get("regulations", {}).items():
+            filtered_regulations = []
+            if isinstance(regulations_list, list):
+                for regulation in regulations_list:
+                    regulation_domains = regulation.get("domains", [])
+                    if any(d.lower() == normalized_domain.lower() for d in regulation_domains):
+                        filtered_regulations.append(regulation)
+            if filtered_regulations:
+                filtered_data["regulations"][category] = filtered_regulations
+
+        json_str = json.dumps(filtered_data, indent=2, ensure_ascii=False)
+        if _should_remove_fields(json_str):
+            filtered_data = _remove_verbose_fields(filtered_data)
+            json_str = json.dumps(filtered_data, indent=2, ensure_ascii=False)
+        return json_str
+    except FileNotFoundError:
+        return json.dumps({"error": "regulations.json file not found in uploaded_files/EASA/regulations"})
+    except json.JSONDecodeError:
+        return json.dumps({"error": "Failed to parse regulations.json - invalid JSON"})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to filter regulations: {str(e)}"})
+
+
+class FetchNestedRulesInput(BaseModel):
+    short_name: str | None = Field(
+        default=None,
+        description="Optional short name of the regulation (typically left null for EAR queries)",
+    )
+    parent_title_path: list[str] = Field(description="The path of parent titles as a list, e.g., ['Part-1', 'Subpart A']")
+    include_all_descendants: bool = Field(
+        default=True, description="Whether to include all descendant rules"
+    )
+    metadata: list[str] | None = Field(default=None, description="Optional metadata fields to include")
+    truncate_metadata_chars_max: int | None = Field(
+        default=500, description="Maximum characters for metadata truncation"
+    )
+
+
+@tool(args_schema=FetchNestedRulesInput)
+def fetch_nested_rules(
+    parent_title_path: list[str],
+    short_name: str | None = None,
+    include_all_descendants: bool = True,
+    metadata: list[str] | None = None,
+    truncate_metadata_chars_max: int | None = 500,
+) -> dict:
+    """Fetch nested rules/elements from EASA regulations by traversing a parent title path."""
+
+    if not AVIATIONBOT_API_KEY:
+        return {"error": "AVIATION_BOT_API_KEY environment variable not set"}
+
+    payload = {
+        "short_name": short_name,
+        "parent_title_path": parent_title_path,
+        "include_all_descendants": include_all_descendants,
+        "metadata": metadata or ["markdown_with_html_table"],
+        "truncate_metadata_chars_max": truncate_metadata_chars_max,
+    }
+
+    return _aviationbot_request(
+        "POST",
+        "/tool/EASA/easa-ear-child-elements",
+        json=payload,
+        timeout=AVIATIONBOT_DEFAULT_TIMEOUT,
+    )
+
+
+class FetchParentTitlePathInput(BaseModel):
+    references: list[str] = Field(
+        description="List of regulatory references to resolve, e.g., ['AMC 25.201']"
+    )
+    include_base_without_parentheses: bool = Field(
+        default=True, description="Include base references without parentheses"
+    )
+    include_without_amc_gm_prefix: bool = Field(
+        default=True, description="Include references without AMC/GM prefix"
+    )
+
+
+@tool(args_schema=FetchParentTitlePathInput)
+def fetch_parent_title_path(
+    references: list[str],
+    include_base_without_parentheses: bool = True,
+    include_without_amc_gm_prefix: bool = True,
+) -> dict:
+    """Fetch EAR hierarchy information for given regulatory references."""
+
+    if not AVIATIONBOT_API_KEY:
+        return {"error": "AVIATION_BOT_API_KEY environment variable not set"}
+
+    payload = {
+        "references": references,
+        "include_base_without_parentheses": include_base_without_parentheses,
+        "include_without_amc_gm_prefix": include_without_amc_gm_prefix,
+    }
+
+    return _aviationbot_request(
+        "POST",
+        "/tool/EASA/easa-reference-to-ear-hierarchy",
+        json=payload,
+        timeout=AVIATIONBOT_DEFAULT_TIMEOUT,
+    )
+
+
+class FetchRulesDocumentInput(BaseModel):
+    erules_ids: list[str] = Field(
+        description="List of ERULES IDs to fetch, e.g., ['ERULES-1963177438-2103']. One ERulesId can result in multiple instances due to amendments."
+    )
+    metadata: list[str] = Field(
+        description="List of metadata fields to include, e.g., ['markdown_with_html_table', 'markdown', 'html']"
+    )
+
+
+@tool(args_schema=FetchRulesDocumentInput)
+def fetch_rules_document(erules_ids: list[str], metadata: list[str]) -> dict:
+    """Fetch one or multiple regulatory rules documents with their content and metadata."""
+
+    if not AVIATIONBOT_API_KEY:
+        return {"error": "AVIATION_BOT_API_KEY environment variable not set"}
+
+    payload = {"erules_ids": erules_ids, "metadata": metadata}
+
+    return _aviationbot_request(
+        "POST",
+        "/document/",
+        json=payload,
+        timeout=AVIATIONBOT_DEFAULT_TIMEOUT,
+    )
+
+
+@tool
+def get_regulations_map() -> str:
+    """Retrieve the EASA regulations map as raw JSON for LLM processing."""
+    try:
+        regulations_map = _load_regulations_map()
+        return json.dumps(regulations_map, ensure_ascii=False)
+    except FileNotFoundError:
+        return json.dumps({"error": "regulations_map.json file not found in uploaded_files/EASA/regulations_map"})
+    except json.JSONDecodeError:
+        return json.dumps({"error": "Failed to parse regulations_map.json - invalid JSON"})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to load regulations map: {str(e)}"})
+
+
+@tool
+def get_certification_specifications() -> str:
+    """Retrieve EASA certification specifications as raw JSON for LLM processing."""
+    try:
+        cert_specs = _load_certification_specifications()
+        return json.dumps(cert_specs, ensure_ascii=False)
+    except FileNotFoundError:
+        return json.dumps({"error": "certification-specifications.json file not found in uploaded_files/EASA/certification-specifications"})
+    except json.JSONDecodeError:
+        return json.dumps({"error": "Failed to parse certification-specifications.json - invalid JSON"})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to load certification specifications: {str(e)}"})
 
 
 def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:

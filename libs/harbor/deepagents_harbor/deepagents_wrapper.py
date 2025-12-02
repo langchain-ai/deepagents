@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from deepagents import create_deep_agent
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -24,7 +25,6 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langsmith import trace
 
-from deepagents import create_deep_agent
 from deepagents_harbor.backend import HarborSandbox
 from deepagents_harbor.tracing import create_example_id_from_instruction
 
@@ -90,7 +90,11 @@ class DeepAgentsWrapper(BaseAgent):
             context: Context to populate with metrics
         """
         configuration = json.loads(environment.trial_paths.config_path.read_text())
-        job_id = configuration["job_id"]
+        if not isinstance(configuration, dict):
+            raise AssertionError(
+                "Unexpected configuration format. "
+                f"Expected a dict got {type(configuration)}."
+            )
 
         backend = HarborSandbox(environment)
         deep_agent = create_deep_agent(model=self._model, backend=backend)
@@ -102,8 +106,8 @@ class DeepAgentsWrapper(BaseAgent):
             # This is a harbor-specific session ID for the entire task run
             # It's different from the LangSmith experiment ID (called session_id)
             "harbor_session_id": environment.session_id,
-            "job_id": job_id,
         }
+        metadata.update(configuration)
 
         # Compute example_id from instruction for deterministic linking
         # This uses the same hashing as create_langsmith_dataset.py
@@ -112,7 +116,6 @@ class DeepAgentsWrapper(BaseAgent):
         config: RunnableConfig = {
             "run_name": f"{environment.session_id}",
             "tags": [self._model_name, environment.session_id],
-            "metadata": metadata,
             "configurable": {
                 "thread_id": str(uuid.uuid4()),
             },
@@ -128,6 +131,7 @@ class DeepAgentsWrapper(BaseAgent):
                 reference_example_id=example_id,
                 inputs={"instruction": instruction},
                 project_name=langsmith_experiment_name,
+                metadata=metadata,
             ):
                 # Invoke deep agent with LangSmith tracing
                 result = await deep_agent.ainvoke(
@@ -135,6 +139,7 @@ class DeepAgentsWrapper(BaseAgent):
                     config=config,
                 )
         else:
+            config["metadata"] = metadata
             result = await deep_agent.ainvoke(
                 {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
                 config=config,

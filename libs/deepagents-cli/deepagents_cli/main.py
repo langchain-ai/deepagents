@@ -174,17 +174,18 @@ async def simple_cli(
         console.print()
 
     if not settings.has_tavily:
-        console.print(
-            "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
-            style=COLORS["dim"],
-        )
-        console.print("  To enable web search, set your Tavily API key:", style=COLORS["dim"])
-        console.print("    export TAVILY_API_KEY=your_api_key_here", style=COLORS["dim"])
-        console.print(
-            "  Or add it to your .env file. Get your key at: https://tavily.com",
-            style=COLORS["dim"],
-        )
-        console.print()
+        # console.print(
+        #     "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
+        #     style=COLORS["dim"],
+        # )
+        # console.print("  To enable web search, set your Tavily API key:", style=COLORS["dim"])
+        # console.print("    export TAVILY_API_KEY=your_api_key_here", style=COLORS["dim"])
+        # console.print(
+        #     "  Or add it to your .env file. Get your key at: https://tavily.com",
+        #     style=COLORS["dim"],
+        # )
+        # console.print()
+        pass
 
     console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
 

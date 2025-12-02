@@ -359,7 +359,11 @@ def create_model() -> BaseChatModel:
         #     model=model_name,
         #     temperature=0.1,
         # )
-        return llm_openrouter_medium_fast_min_reasoning
+        
+        model = llm_openrouter_medium_fast_min_reasoning
+        console.print(f"[dim]Using OpenRouter model: {model.model_name}[/dim]")
+
+        return model
     console.print("[bold red]Error:[/bold red] No API key configured.")
     console.print("\nPlease set one of the following environment variables:")
     console.print("  - GOOGLE_AI_STUDIO_API_KEY  (for Google Gemini models - default)")

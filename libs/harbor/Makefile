@@ -42,15 +42,6 @@ run-terminal-bench-runloop:
 	@mkdir -p jobs/terminal-bench
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop
 
-
-run-single-task:
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker --task-name schemelike-metacircular-eval
-
-run-daytona-failed:
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 6 --jobs-dir jobs/terminal-bench --env daytona --task-name make-mips-interpreter --task-name train-fasttext --task-name writer-compressor --task-name merge-diff-arc-agi-task --task-name regex-chess
-
 ######################
 # LINTING AND FORMATTING
 ######################

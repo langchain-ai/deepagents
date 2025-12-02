@@ -79,39 +79,6 @@ def send_harbor_feedback(
     )
 
 
-def associate_trace_with_experiment(
-    run_id: str,
-    example_id: str,
-    session_id: str,
-) -> None:
-    """Associate an existing LangSmith trace with an experiment and example.
-
-    This allows you to retroactively link traces that were created without
-    experiment context to specific examples and experiment sessions.
-
-    Args:
-        run_id: The LangSmith run ID to update
-        example_id: The example ID to associate with (from the dataset)
-        session_id: The experiment session ID to associate with
-
-    Example:
-        >>> # Associate a run with an example and experiment
-        >>> associate_trace_with_experiment(
-        ...     run_id="abc-123-def-456",
-        ...     example_id="example-uuid-from-dataset",
-        ...     session_id="session-uuid-from-experiment",
-        ... )
-    """
-    client = Client()
-
-    # Update the run to associate it with the example and session
-    client.update_run(
-        run_id=run_id,
-        reference_example_id=example_id,
-        session_id=session_id,
-    )
-
-
 def get_langsmith_url(run_id: str) -> str:
     """Generate LangSmith URL for a given run ID.
 

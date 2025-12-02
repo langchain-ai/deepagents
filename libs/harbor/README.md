@@ -50,17 +50,13 @@ uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
 ```
 
-## The Evaluation & Improvement Loop
+## LangSmith Integration
 
-The agent development workflow:
+LangSmith provides tracing and observability for agent runs. The workflow:
 
 ```
-DeepAgents (harness) → Harbor (evaluate) → LangSmith (analyze) → Improve → Repeat
+DeepAgents → Harbor (evaluate) → LangSmith (analyze) → Improve → Repeat
 ```
-
-### Using Harbor with LangSmith
-
-LangSmith provides automatic tracing and observability for your agent runs. This section explains how to set up the integration.
 
 ### Prerequisites
 
@@ -71,109 +67,40 @@ export LANGSMITH_API_KEY="your-api-key-here"
 export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional, defaults to this
 ```
 
-### Step 1: Create a LangSmith Dataset
-
-Create a dataset from Harbor tasks. This downloads tasks from the Harbor registry and creates corresponding examples in LangSmith:
+### Step 1: Create Dataset and Experiment
 
 ```bash
+# Create dataset from Harbor tasks
 python scripts/harbor_langsmith.py create-dataset terminal-bench --version 2.0
-```
 
-Options:
-- `--version`: Specify the Harbor dataset version (default: "head")
-- `--overwrite`: Overwrite cached remote tasks
-
-### Step 2: Create an Experiment
-
-Create an experiment session associated with your dataset:
-
-```bash
+# Create experiment session (outputs session ID and URL)
 python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepagents-baseline-v1
 ```
 
-Options:
-- `--name`: Custom name for the experiment (auto-generated if not provided)
+### Step 2: Run Benchmark with Tracing
 
-This will output:
-- The experiment session ID
-- A URL to view the experiment in LangSmith
-- Instructions for setting the `LANGSMITH_EXPERIMENT` environment variable
-
-### Step 3: Run Benchmarking with Tracing
-
-Run your Harbor benchmark with tracing enabled. You have two options:
-
-#### Option A: Experiment View (Recommended for Benchmarking)
-
-Use `LANGSMITH_EXPERIMENT` to associate runs with an experiment for side-by-side comparison:
-
-Using make:
 ```bash
-LANGSMITH_EXPERIMENT=<experiment-name> make run-terminal-bench-daytona
-```
-
-Or using Harbor directly:
-```bash
-LANGSMITH_EXPERIMENT=<experiment-name> harbor run terminal-bench --config configs/terminal-bench-daytona.yaml
-```
-
-Example:
-```bash
-# Create experiment and capture the name
-python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepagents-baseline-v1
-
-# Run benchmark with experiment tracing
+# For experiments (enables side-by-side comparison)
 LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-terminal-bench-daytona
-```
 
-#### Option B: Regular Tracing (Project View)
-
-Use `LANGSMITH_PROJECT` if you just want to log traces without an experiment view:
-
-```bash
+# Or for development (simpler project view)
 LANGSMITH_PROJECT=deepagents-development make run-terminal-bench-daytona
 ```
 
-**Experiment view** groups runs by dataset examples and allows side-by-side comparison of different agent configurations. **Regular tracing** logs all runs to a project without the dataset association, useful for general development and debugging.
+### Step 3: Add Feedback Scores
 
-### Step 4: Push Feedback to LangSmith
-
-After your Harbor benchmark run completes, push the reward scores to LangSmith to enable filtering and analysis by performance:
+After the benchmark completes, push reward scores to LangSmith for filtering and analysis:
 
 ```bash
-python scripts/harbor_langsmith.py add-feedback <job-folder-path> --project-name <project-name>
+python scripts/harbor_langsmith.py add-feedback jobs/terminal-bench/2025-12-02__16-25-40 \
+  --project-name deepagents-baseline-v1
 ```
 
-Example:
-```bash
-python scripts/harbor_langsmith.py add-feedback jobs/terminal-bench/2025-12-02__16-25-40 --project-name deepagents-baseline-v1
-```
+This matches trials to traces and adds `harbor_reward` feedback (0.0-1.0) from Harbor's test results.
 
-Options:
-- `--dry-run`: Preview what would be done without making changes
+## Analyzing Results
 
-The command will:
-- Match Harbor trials to LangSmith traces using the `trial_name` metadata
-- Extract reward scores from Harbor's `result.json` files
-- Add `harbor_reward` feedback (0.0 - 1.0) to each trace
-- Skip traces that already have feedback
-
-This enables you to filter runs by reward score in LangSmith and identify patterns in successful vs. failed runs.
-
-## Analyzing Results & Improving Your Harness
-
-### What LangSmith Captures
-
-With tracing enabled, LangSmith automatically captures:
-
-- Every LLM call (prompts, outputs, tokens)
-- Every tool invocation (arguments, results, errors)
-- Performance metrics (latency, cost)
-- **Reward scores** from Harbor's test verification (0.0 - 1.0)
-
-### Reward Feedback Integration
-
-Using the `harbor-langsmith add-feedback` command (see Step 4 above), you can push Harbor's reward scores to LangSmith, connecting **what happened** (execution trace) with **how well it worked** (test results). This allows you to filter runs by reward score and identify patterns in successful vs. failed runs.
+LangSmith captures every LLM call, tool invocation, and performance metric. Combined with Harbor reward scores (added via Step 3), you can filter runs by performance and identify patterns in successful vs. failed runs.
 
 ### Common Patterns & Fixes
 
@@ -189,19 +116,7 @@ After running evaluations, analyze failed runs in LangSmith to identify improvem
 
 ### Agent-Assisted Analysis
 
-Because agent trajectories produce large amounts of data across runs, consider using agents to help analyze patterns:
-
-- Use LangSmith's Insights Agent or your own agent
-- Feed in trajectory data across multiple runs
-- Task: **"Analyze these failed runs and identify common patterns"**
-
-The agent can automatically:
-- Group failures by task category
-- Identify common error patterns
-- Suggest prompt improvements
-- Recommend tool redesigns
-
-**This enables systematic, data-driven improvement instead of guessing.**
+Use LangSmith's Insights Agent or your own agent to analyze trajectory data across runs. Task it with identifying common failure patterns, grouping errors by category, and suggesting prompt or tool improvements.
 
 ## Resources
 

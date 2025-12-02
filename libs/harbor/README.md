@@ -36,16 +36,20 @@ The DeepAgent harness ships with design patterns validated as good defaults acro
 
 ```bash
 # Install dependencies
-uv sync --no-editable
+uv sync
 
 # Configure API keys
 cp .env.example .env
+# Edit .env and set:
+#   - ANTHROPIC_API_KEY (required for Claude model)
+#   - LANGSMITH_API_KEY (required for tracing)
+#   - DAYTONA_API_KEY (optional, only if using --env daytona)
 
 # Run via Docker (1 task)
 uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker
 
-# Run via Daytona (10 tasks) -- requires DAYTONA_API_KEY
+# Run via Daytona (10 tasks)
 uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
 ```
@@ -80,11 +84,17 @@ python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepa
 ### Step 2: Run Benchmark with Tracing
 
 ```bash
+# Option 1: Use Makefile shortcuts (runs 10 tasks on Daytona)
 # For experiments (enables side-by-side comparison)
 LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-terminal-bench-daytona
 
 # Or for development (simpler project view)
 LANGSMITH_PROJECT=deepagents-development make run-terminal-bench-daytona
+
+# Option 2: Run harbor directly (customize -n for number of tasks)
+LANGSMITH_EXPERIMENT=deepagents-baseline-v1 uv run harbor run \
+  --agent-import-path deepagents_harbor:DeepAgentsWrapper \
+  --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
 ```
 
 ### Step 3: Add Feedback Scores
@@ -117,6 +127,21 @@ After running evaluations, analyze failed runs in LangSmith to identify improvem
 ### Agent-Assisted Analysis
 
 Use LangSmith's Insights Agent or your own agent to analyze trajectory data across runs. Task it with identifying common failure patterns, grouping errors by category, and suggesting prompt or tool improvements.
+
+## Available Environments
+
+Harbor supports multiple sandbox environments. Use the `--env` flag to select:
+
+- `docker` - Local Docker containers (good for testing)
+- `daytona` - Daytona cloud sandboxes (requires DAYTONA_API_KEY)
+- `modal` - Modal cloud compute
+- `runloop` - Runloop sandboxes
+
+Makefile shortcuts are available for common workflows:
+- `make run-terminal-bench-docker` - Run 1 task locally with Docker
+- `make run-terminal-bench-daytona` - Run 10 tasks on Daytona
+- `make run-terminal-bench-modal` - Run 4 tasks on Modal
+- `make run-terminal-bench-runloop` - Run 10 tasks on Runloop
 
 ## Resources
 

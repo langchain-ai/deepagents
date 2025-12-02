@@ -92,8 +92,7 @@ class DeepAgentsWrapper(BaseAgent):
         configuration = json.loads(environment.trial_paths.config_path.read_text())
         if not isinstance(configuration, dict):
             raise AssertionError(
-                "Unexpected configuration format. "
-                f"Expected a dict got {type(configuration)}."
+                f"Unexpected configuration format. Expected a dict got {type(configuration)}."
             )
 
         backend = HarborSandbox(environment)

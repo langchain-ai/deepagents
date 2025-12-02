@@ -8,10 +8,8 @@ import argparse
 import asyncio
 import datetime
 import os
-import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 import aiohttp
 import toml
@@ -19,6 +17,7 @@ from dotenv import load_dotenv
 from harbor.models.dataset_item import DownloadedDatasetItem
 from harbor.registry.client import RegistryClient
 from langsmith import Client
+
 from deepagents_harbor.tracing import create_example_id_from_instruction
 
 load_dotenv()
@@ -183,9 +182,7 @@ async def _get_dataset_by_name(dataset_name: str, session: aiohttp.ClientSession
             else:
                 raise Exception(f"Dataset '{dataset_name}' not found")
         else:
-            raise Exception(
-                f"Failed to get dataset: {response.status} {await response.text()}"
-            )
+            raise Exception(f"Failed to get dataset: {response.status} {await response.text()}")
 
 
 async def create_experiment(dataset_name: str, experiment_name: str | None = None) -> str:
@@ -211,9 +208,7 @@ async def create_experiment(dataset_name: str, experiment_name: str | None = Non
 
         # Create experiment session
         print(f"Creating experiment session: {experiment_name}")
-        experiment_session = await _create_experiment_session(
-            dataset_id, experiment_name, session
-        )
+        experiment_session = await _create_experiment_session(dataset_id, experiment_name, session)
         session_id = experiment_session["id"]
         tenant_id = experiment_session["tenant_id"]
 
@@ -250,12 +245,10 @@ if __name__ == "__main__":
 
     if args.create_experiment:
         # Create experiment for existing dataset
-        session_id = asyncio.run(
-            create_experiment(args.dataset_name, args.experiment_name)
-        )
+        session_id = asyncio.run(create_experiment(args.dataset_name, args.experiment_name))
         print(f"\nExperiment session ID: {session_id}")
-        print("Set this as an environment variable when running Harbor:")
-        print(f"export LANGSMITH_EXPERIMENT_SESSION_ID={session_id}")
+        print("Set this as an environment variable when running Harbor to log to an experiment:")
+        print(f"export LANGSMITH_PROJECT={args.experiment_name}")
     else:
         # Create dataset from Harbor tasks
         create_langsmith_dataset(

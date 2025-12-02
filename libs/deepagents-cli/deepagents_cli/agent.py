@@ -21,8 +21,8 @@ from langgraph.runtime import Runtime
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
-from deepagents_cli.git_context import GitContextMiddleware
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
+from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.shell import ShellMiddleware
 from deepagents_cli.skills import SkillsMiddleware
 
@@ -123,11 +123,7 @@ All code execution and file operations happen in this sandbox environment.
 """
     else:
         cwd = Path.cwd()
-        working_dir_section = f"""<env>
-Working directory: {cwd}
-</env>
-
-### Current Working Directory
+        working_dir_section = f"""### Current Working Directory
 
 The filesystem backend is currently operating in: `{cwd}`
 
@@ -135,7 +131,7 @@ The filesystem backend is currently operating in: `{cwd}`
 
 **IMPORTANT - Path Handling:**
 - All file paths must be absolute paths (e.g., `{cwd}/file.txt`)
-- Use the working directory from <env> to construct absolute paths
+- Use the working directory to construct absolute paths
 - Example: To create a file in your working directory, use `{cwd}/research_project/file.md`
 - Never use relative paths - always construct full absolute paths
 
@@ -367,10 +363,10 @@ def create_agent_with_config(
             routes={},  # No virtualization - use real paths
         )
 
-        # Middleware: AgentMemoryMiddleware, GitContextMiddleware, SkillsMiddleware, ShellToolMiddleware
+        # Middleware: AgentMemoryMiddleware, LocalContextMiddleware, SkillsMiddleware, ShellToolMiddleware
         agent_middleware = [
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
-            GitContextMiddleware(),
+            LocalContextMiddleware(),
             SkillsMiddleware(
                 skills_dir=skills_dir,
                 assistant_id=assistant_id,

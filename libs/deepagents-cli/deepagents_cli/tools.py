@@ -68,7 +68,7 @@ def _aviationbot_request(
 
 @tool(
     "aviationbot_document_retrieval",
-    description="Semantic retrieval of EASA Easy Access Rules by query (AviationBot /tool/EASA/document-retrieval)",
+    description="Retrieve EASA Easy Access Rules context by query",
 )
 def aviationbot_document_retrieval(
     query: str,

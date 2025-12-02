@@ -119,6 +119,11 @@ def parse_args():
         help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
     )
     parser.add_argument(
+        "--show-thinking",
+        action="store_true",
+        help="Show agent's reasoning/thinking process",
+    )
+    parser.add_argument(
         "--sandbox",
         choices=["none", "modal", "daytona", "runloop"],
         default="none",
@@ -211,7 +216,7 @@ async def simple_cli(
         console.print()
 
     console.print(
-        "  Tips: Enter to submit, Alt+Enter for newline, Ctrl+E for editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt",
+        "  Tips: Enter to submit, Alt+Enter for newline, Ctrl+E for editor, Ctrl+T to toggle auto-approve, Ctrl+O to toggle tool outputs, Ctrl+C to interrupt",
         style=f"dim {COLORS['dim']}",
     )
     console.print()
@@ -286,12 +291,11 @@ async def _run_agent_session(
     # Create agent with conditional tools
     tools = [
         easa_document_retrieval,
-        get_easa_regulatory_metamodel,
+
         filter_easa_regulations_by_domain,
         fetch_easa_nested_rules,
         fetch_easa_parent_title_path,
         fetch_easa_rules_document,
-        get_easa_regulations_map,
         get_easa_certification_specifications,
     ]
     if settings.has_tavily:
@@ -402,7 +406,10 @@ def cli_main() -> None:
             execute_skills_command(args)
         else:
             # Create session state from args
-            session_state = SessionState(auto_approve=args.auto_approve)
+            session_state = SessionState(
+                auto_approve=args.auto_approve,
+                show_thinking=args.show_thinking
+            )
 
             # API key validation happens in create_model()
             asyncio.run(

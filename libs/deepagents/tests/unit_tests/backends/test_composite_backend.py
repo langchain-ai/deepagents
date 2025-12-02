@@ -8,6 +8,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    SandboxBackendProtocol,
     WriteResult,
 )
 from deepagents.backends.state import StateBackend
@@ -396,7 +397,7 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store():
 
 
 # Mock sandbox backend for testing execute functionality
-class MockSandboxBackend(StateBackend):
+class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
     """Mock sandbox backend that implements SandboxBackendProtocol."""
 
     def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:

@@ -162,7 +162,9 @@ class TestLocalContextMiddleware:
         # Create mock request with local context in state
         request = Mock()
         request.system_prompt = "Base system prompt"
-        request.state = {"local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"}
+        request.state = {
+            "local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"
+        }
 
         # Mock the override method to return a new request
         overridden_request = Mock()

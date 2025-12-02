@@ -135,12 +135,16 @@ class DeepAgentsWrapper(BaseAgent):
                 inputs={"instruction": instruction},
                 project_name=langsmith_experiment_name,
                 metadata=metadata,
-            ):
+            ) as run_tree:
                 # Invoke deep agent with LangSmith tracing
                 result = await deep_agent.ainvoke(
                     {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
                     config=config,
                 )
+                # Extract last AI message and add as output
+                last_message = result["messages"][-1]
+                if isinstance(last_message, AIMessage):
+                    run_tree.end(outputs={"last_message": last_message.text})
         else:
             config["metadata"] = metadata
             result = await deep_agent.ainvoke(

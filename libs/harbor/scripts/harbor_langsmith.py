@@ -54,6 +54,21 @@ def _read_task_metadata(task_path: Path) -> dict:
     return {}
 
 
+def _read_solution(task_path: Path) -> str | None:
+    """Read the solution script from a task directory.
+
+    Args:
+        task_path: Path to the task directory
+
+    Returns:
+        Solution script content if it exists, None otherwise
+    """
+    solution_file = task_path / "solution" / "solve.sh"
+    if solution_file.exists():
+        return solution_file.read_text()
+    return None
+
+
 def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> list:
     """Scan downloaded tasks and extract all task information.
 
@@ -70,12 +85,18 @@ def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> lis
 
         instruction = _read_instruction(task_path)
         metadata = _read_task_metadata(task_path)
+        solution = _read_solution(task_path)
         task_name = downloaded_task.id.name
         task_id = str(downloaded_task.id)
 
         if instruction:
             # Create deterministic example_id from instruction content
             example_id = create_example_id_from_instruction(instruction)
+
+            # Build outputs dict with reference solution if available
+            outputs = {}
+            if solution:
+                outputs["reference_solution"] = solution
 
             example = {
                 "id": example_id,  # Explicitly set the example ID
@@ -85,10 +106,12 @@ def _scan_downloaded_tasks(downloaded_tasks: list[DownloadedDatasetItem]) -> lis
                     "instruction": instruction,
                     "metadata": metadata.get("metadata", {}),
                 },
-                "outputs": {},
+                "outputs": outputs,
             }
             examples.append(example)
-            print(f"Added task: {task_name} (ID: {task_id}, Example ID: {example_id})")
+
+            solution_status = "with solution" if solution else "without solution"
+            print(f"Added task: {task_name} (ID: {task_id}, Example ID: {example_id}) [{solution_status}]")
 
     return examples
 
@@ -159,7 +182,6 @@ async def _create_experiment_session(
             "start_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "reference_dataset_id": dataset_id,
             "name": name,
-            "description": "Harbor experiment run via REST API",
         },
     ) as experiment_response:
         if experiment_response.status == 200:

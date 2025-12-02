@@ -38,14 +38,18 @@ The DeepAgent harness ships with design patterns validated as good defaults acro
 # Install dependencies
 uv sync
 
-# Configure required API keys
+# Configure API keys - Choose one approach:
+
+# Option 1: Use .env file (recommended for local development)
+cp .env.example .env
+# Edit .env and add your keys - they'll be automatically loaded
+
+# Option 2: Export directly (useful for CI/CD or quick testing)
 export ANTHROPIC_API_KEY="sk-ant-..."  # Required: For Claude model
 export LANGSMITH_API_KEY="lsv2_..."    # Required: For tracing
 export LANGSMITH_TRACING_V2=true       # Required: Enable LangSmith tracing
 export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default shown
-
-# Optional: Only if using Daytona environment
-# export DAYTONA_API_KEY="..."
+# export DAYTONA_API_KEY="..."  # Optional: Only if using --env daytona
 
 # Run via Docker (1 task)
 uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
@@ -66,12 +70,13 @@ DeepAgents → Harbor (evaluate) → LangSmith (analyze) → Improve → Repeat
 
 ### Prerequisites
 
-Ensure your LangSmith credentials are set (already covered in Quick Start):
+Ensure your LangSmith credentials are configured (see Quick Start for .env or export options):
 
 ```bash
-export LANGSMITH_API_KEY="lsv2_..."
-export LANGSMITH_TRACING_V2=true
-export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: defaults to this
+# Required environment variables:
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_TRACING_V2=true
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com  # Optional: defaults to this
 ```
 
 ### Step 1: Create Dataset and Experiment

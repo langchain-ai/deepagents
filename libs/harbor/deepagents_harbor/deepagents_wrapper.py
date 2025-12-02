@@ -7,9 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from deepagents import create_deep_agent
+from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+# Load .env file if present
+load_dotenv()
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,

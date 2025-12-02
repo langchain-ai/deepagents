@@ -1,15 +1,112 @@
 """Custom tools for the CLI agent."""
 
-from typing import Any, Literal
+import os
+from typing import Any, Literal, Sequence
 
 import requests
 from markdownify import markdownify
 from tavily import TavilyClient
+from langchain.tools import tool
 
 from deepagents_cli.config import settings
 
 # Initialize Tavily client if API key is available
 tavily_client = TavilyClient(api_key=settings.tavily_api_key) if settings.has_tavily else None
+
+
+# --- AviationBot helpers and tools -----------------------------------------------------------
+
+AVIATIONBOT_BASE_URL = os.getenv("AVIATION_BOT_BASE_URL", "https://beta.aviation.bot/api/v1")
+AVIATIONBOT_DEFAULT_TIMEOUT = int(os.getenv("AVIATION_BOT_TIMEOUT", "60"))
+
+
+def _build_auth_headers() -> dict[str, str]:
+    """Return Authorization header using AVIATION_BOT_API_KEY env if present."""
+    api_key = os.getenv("AVIATION_BOT_API_KEY", "")
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _aviationbot_request(
+    method: str,
+    path: str,
+    *,
+    params: dict | None = None,
+    json: Any = None,
+    timeout: int | None = None,
+):
+    """Internal shared request helper for AviationBot endpoints."""
+    url = f"{AVIATIONBOT_BASE_URL}{path}"
+    effective_timeout = timeout or AVIATIONBOT_DEFAULT_TIMEOUT
+    try:
+        response = requests.request(
+            method=method,
+            url=url,
+            params=params,
+            json=json,
+            headers={"Accept": "application/json", **_build_auth_headers()},
+            timeout=effective_timeout,
+        )
+        response.raise_for_status()
+        # Prefer JSON, fallback to text
+        try:
+            return {"success": True, "status_code": response.status_code, "data": response.json()}
+        except ValueError:
+            return {"success": True, "status_code": response.status_code, "data": response.text}
+    except requests.HTTPError as exc:  # includes status >=400
+        payload: dict[str, Any] = {"success": False, "status_code": exc.response.status_code}
+        try:
+            payload["error"] = exc.response.json()
+        except Exception:
+            payload["error"] = exc.response.text
+        return payload
+    except requests.RequestException as exc:  # network/timeout etc
+        return {"success": False, "status_code": 0, "error": str(exc)}
+
+
+@tool(
+    "aviationbot_document_retrieval",
+    description="Semantic retrieval of EASA Easy Access Rules by query (AviationBot /tool/EASA/document-retrieval)",
+)
+def aviationbot_document_retrieval(
+    query: str,
+    erules_ids: Sequence[str] | None = None,
+) -> Any:
+    """Fetch EASA aviation regulations matching a natural-language query.
+
+    Args:
+        query: Search phrase or question.
+        erules_ids: Optional list of ERules IDs to restrict results.
+    Returns:
+        Dict with success flag, status_code, and data/error from AviationBot.
+    """
+
+    params: dict[str, Any] = {"query": query}
+    if erules_ids:
+        params["erules_ids"] = list(erules_ids)
+    return _aviationbot_request(
+        "GET",
+        "/tool/EASA/document-retrieval",
+        params=params,
+        timeout=AVIATIONBOT_DEFAULT_TIMEOUT,
+    )
+
+
+@tool(
+    "aviationbot_meta_model",
+    description="Retrieve EASA regulatory metamodel info (AviationBot /tool/EASA/meta-model)",
+)
+def aviationbot_meta_model(query: str) -> Any:
+    """Get structured information about the EASA regulatory framework."""
+
+    return _aviationbot_request(
+        "GET",
+        "/tool/EASA/meta-model",
+        params={"query": query},
+        timeout=AVIATIONBOT_DEFAULT_TIMEOUT,
+    )
 
 
 def http_request(

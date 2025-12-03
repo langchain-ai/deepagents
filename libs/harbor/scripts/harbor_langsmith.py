@@ -274,7 +274,9 @@ def _extract_reward(trial_dir: Path) -> float:
 
     with open(result_path) as f:
         result = json.load(f)
-        return result.get("verifier_result", {}).get("rewards", {}).get("reward")
+        verifier_result = result.get("verifier_result") or {}
+        rewards = verifier_result.get("rewards") or {}
+        return rewards.get("reward")
 
 
 def _process_trial(

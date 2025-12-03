@@ -411,12 +411,6 @@ class DeepAgentsWrapper(BaseAgent):
             total_completion_tokens=total_completion_tokens or None,
             total_steps=len(steps),
         )
-        self._save_trajectory(environment, steps, metrics)
-
-    def _save_trajectory(
-        self, environment: BaseEnvironment, steps: list[Step], metrics: FinalMetrics
-    ) -> None:
-        """Save current trajectory to logs directory."""
         trajectory = Trajectory(
             schema_version="ATIF-v1.2",
             session_id=environment.session_id,

@@ -28,19 +28,40 @@ class HarborSandbox(SandboxBackendProtocol):
         """Execute a bash command in the task environment."""
         result = await self.environment.exec(command)
 
-        # This error appears in daytona harbor environment.
-        # TODO: Investigate why this error appears, but for now can
-        # ignore here.
-        error_msg = (
-            "bash: initialize_job_control: no job control in background: Bad file descriptor"
-        )
+        # These errors appear in harbor environments when running bash commands
+        # in non-interactive/non-TTY contexts. They're harmless artifacts.
+        # Filter them from both stdout and stderr, then collect them to show in stderr.
+        error_messages = [
+            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device",
+            "bash: no job control in this shell",
+            "bash: initialize_job_control: no job control in background: Bad file descriptor",
+        ]
 
-        if result.stderr and error_msg in result.stderr:
-            # Remove the specific error message from stderr
-            stderr = result.stderr.replace(error_msg, "").strip()
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        # Collect the bash messages if they appear (to move to stderr)
+        bash_messages = []
+        for error_msg in error_messages:
+            if error_msg in stdout:
+                bash_messages.append(error_msg)
+                stdout = stdout.replace(error_msg, "")
+            if error_msg in stderr:
+                stderr = stderr.replace(error_msg, "")
+
+        stdout = stdout.strip()
+        stderr = stderr.strip()
+
+        # Add bash messages to stderr
+        if bash_messages:
+            bash_msg_text = "\n".join(bash_messages)
+            stderr = f"{bash_msg_text}\n{stderr}".strip() if stderr else bash_msg_text
+
+        # Only append stderr label if there's actual stderr content
+        if stderr:
+            output = stdout + "\n\n stderr: " + stderr if stdout else "\n stderr: " + stderr
         else:
-            stderr = result.stderr
-        output = (result.stdout or "") + "\n stderr: " + (stderr or "")
+            output = stdout
         return ExecuteResponse(
             output=output,
             exit_code=result.return_code,

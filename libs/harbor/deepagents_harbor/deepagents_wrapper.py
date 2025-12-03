@@ -1,14 +1,19 @@
 """A wrapper for DeepAgents to run in Harbor environments."""
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from deepagents import create_deep_agent
+from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+# Load .env file if present
+load_dotenv()
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,
@@ -22,8 +27,9 @@ from langchain.chat_models import init_chat_model
 from langchain.messages import UsageMetadata
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langsmith import trace
 
-from deepagents_harbor.backend import HarborSandboxFallback
+from deepagents_harbor.backend import HarborSandbox
 from deepagents_harbor.tracing import create_example_id_from_instruction
 
 SYSTEM_MESSAGE = """
@@ -176,7 +182,7 @@ class DeepAgentsWrapper(BaseAgent):
         return "0.0.1"
 
     async def _enhance_instruction_with_context(
-        self, instruction: str, backend: HarborSandboxFallback
+        self, instruction: str, backend: HarborSandbox
     ) -> str:
         """Enhance instruction with current directory and file listing context.
 
@@ -236,14 +242,12 @@ First 10 files in current directory:
                 f"Unexpected configuration format. Expected a dict got {type(configuration)}."
             )
 
-        backend = HarborSandboxFallback(environment)
+        backend = HarborSandbox(environment)
 
         # Enhance instruction with directory context
         enhanced_instruction = await self._enhance_instruction_with_context(instruction, backend)
 
-        deep_agent = create_deep_agent(
-            model=self._model, backend=backend, system_prompt=SYSTEM_MESSAGE
-        )
+        deep_agent = create_deep_agent(model=self._model, backend=backend)
 
         # Build metadata with experiment tracking info
         metadata = {

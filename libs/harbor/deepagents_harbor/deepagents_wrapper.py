@@ -257,7 +257,9 @@ class DeepAgentsWrapper(BaseAgent):
         # Get formatted system prompt with directory context
         system_prompt = await self._get_formatted_system_prompt(backend)
 
-        deep_agent = create_deep_agent(model=self._model, backend=backend, system_prompt=system_prompt)
+        deep_agent = create_deep_agent(
+            model=self._model, backend=backend, system_prompt=system_prompt
+        )
 
         # Build metadata with experiment tracking info
         metadata = {

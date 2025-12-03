@@ -27,7 +27,20 @@ class HarborSandbox(SandboxBackendProtocol):
     ) -> ExecuteResponse:
         """Execute a bash command in the task environment."""
         result = await self.environment.exec(command)
-        output = (result.stdout or "") + "\n stderr: " + (result.stderr or "")
+
+        # This error appears in daytona harbor environment.
+        # TODO: Investigate why this error appears, but for now can
+        # ignore here.
+        error_msg = (
+            "bash: initialize_job_control: no job control in background: Bad file descriptor"
+        )
+
+        if result.stderr and error_msg in result.stderr:
+            # Remove the specific error message from stderr
+            stderr = result.stderr.replace(error_msg, "").strip()
+        else:
+            stderr = result.stderr
+        output = (result.stdout or "") + "\n stderr: " + (stderr or "")
         return ExecuteResponse(
             output=output,
             exit_code=result.return_code,

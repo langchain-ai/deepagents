@@ -35,8 +35,19 @@ from deepagents_harbor.tracing import create_example_id_from_instruction
 SYSTEM_MESSAGE = """
 You are an autonomous agent executing tasks in a sandboxed environment. Follow these instructions carefully.
 
-## WORKING DIRECTORY
-Work in the /app directory unless explicitly instructed otherwise.
+## WORKING DIRECTORY & ENVIRONMENT CONTEXT
+
+Your current working directory is:
+{current_directory}
+
+{file_listing_header}
+{file_listing}
+
+**IMPORTANT**: This directory information is provided for your convenience at the start of the task. You should:
+- Use this information to understand the initial environment state
+- Avoid redundantly calling `ls` or similar commands just to list the same directory
+- Only use file listing commands if you need updated information (after creating/deleting files) or need to explore subdirectories
+- Work in the /app directory unless explicitly instructed otherwise
 
 ## TASK UNDERSTANDING & REQUIREMENTS
 
@@ -181,47 +192,46 @@ class DeepAgentsWrapper(BaseAgent):
         """The version of the agent."""
         return "0.0.1"
 
-    async def _enhance_instruction_with_context(
-        self, instruction: str, backend: HarborSandbox
-    ) -> str:
-        """Enhance instruction with current directory and file listing context.
+    async def _get_formatted_system_prompt(self, backend: HarborSandbox) -> str:
+        """Format the system prompt with current directory and file listing context.
 
         Args:
-            instruction: Original task instruction
             backend: Harbor sandbox backend to query for directory information
 
         Returns:
-            Enhanced instruction with appended context
+            Formatted system prompt with directory context
         """
         # Get directory information from backend
         ls_info = await backend.als_info(".")
         current_dir = (await backend.aexecute("pwd")).output
 
         # Get first 10 files
+        total_files = len(ls_info) if ls_info else 0
         first_10_files = ls_info[:10] if ls_info else []
-        has_more = len(ls_info) > 10 if ls_info else False
+        has_more = total_files > 10
 
-        # Build file listing
-        if first_10_files:
+        # Build file listing header based on actual count
+        if total_files == 0:
+            file_listing_header = "Current directory is empty."
+            file_listing = ""
+        elif total_files <= 10:
+            # Show actual count when 10 or fewer
+            file_count_text = "1 file" if total_files == 1 else f"{total_files} files"
+            file_listing_header = f"Files in current directory ({file_count_text}):"
             file_listing = "\n".join(f"{i + 1}. {file}" for i, file in enumerate(first_10_files))
-            if has_more:
-                file_listing += f"\n\n(Output truncated: {len(ls_info) - 10} more files available in current directory)"
         else:
-            file_listing = "(no files found)"
+            # Show "First 10 of N" when more than 10
+            file_listing_header = f"Files in current directory (showing first 10 of {total_files}):"
+            file_listing = "\n".join(f"{i + 1}. {file}" for i, file in enumerate(first_10_files))
 
-        # Build enhanced instruction
-        enhanced_instruction = f"""{instruction}
-        
-----
+        # Format the system prompt with context
+        formatted_prompt = SYSTEM_MESSAGE.format(
+            current_directory=current_dir.strip() if current_dir else "/app",
+            file_listing_header=file_listing_header,
+            file_listing=file_listing,
+        )
 
-Current directory: 
-{current_dir.strip() if current_dir else "unknown"}
-
-First 10 files in current directory:
-{file_listing}
-"""
-
-        return enhanced_instruction
+        return formatted_prompt
 
     async def run(
         self,
@@ -244,10 +254,10 @@ First 10 files in current directory:
 
         backend = HarborSandbox(environment)
 
-        # Enhance instruction with directory context
-        enhanced_instruction = await self._enhance_instruction_with_context(instruction, backend)
+        # Get formatted system prompt with directory context
+        system_prompt = await self._get_formatted_system_prompt(backend)
 
-        deep_agent = create_deep_agent(model=self._model, backend=backend)
+        deep_agent = create_deep_agent(model=self._model, backend=backend, system_prompt=system_prompt)
 
         # Build metadata with experiment tracking info
         metadata = {
@@ -285,7 +295,7 @@ First 10 files in current directory:
             ) as run_tree:
                 # Invoke deep agent with LangSmith tracing
                 result = await deep_agent.ainvoke(
-                    {"messages": [{"role": "user", "content": enhanced_instruction}]},  # type: ignore
+                    {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
                     config=config,
                 )
                 # Extract last AI message and add as output
@@ -295,7 +305,7 @@ First 10 files in current directory:
         else:
             config["metadata"] = metadata
             result = await deep_agent.ainvoke(
-                {"messages": [{"role": "user", "content": enhanced_instruction}]},  # type: ignore
+                {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
                 config=config,
             )
 

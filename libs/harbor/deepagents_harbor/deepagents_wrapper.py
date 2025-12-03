@@ -48,16 +48,6 @@ Your current working directory is:
 - Avoid redundantly calling `ls` or similar commands just to list the same directory
 - Only use file listing commands if you need updated information (after creating/deleting files) or need to explore subdirectories
 - Work in the /app directory unless explicitly instructed otherwise
-
-## SELF-VERIFICATION
-
-Before declaring a task complete, you must verify your work:
-- Run tests to validate your implementation works as expected
-- Test edge cases and different scenarios to ensure robustness
-- Verify the output matches the requirements specified in the task
-- Do not assume success - actually execute and validate your solution
-
-Only mark the task as complete after you have successfully verified the implementation through testing.
 """
 
 

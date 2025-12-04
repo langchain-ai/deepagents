@@ -194,20 +194,26 @@ def semantic_search(
     max_results: int = 5,
     file_type: str | None = None,
     force_reindex: bool = False,
+    use_hybrid: bool = True,
 ) -> dict[str, Any]:
-    """Search the codebase semantically using RAG (Retrieval-Augmented Generation).
+    """Search the codebase using hybrid search (semantic + lexical) with RAG.
 
-    This tool performs semantic search across any codebase folder to find code, functions, classes,
-    or documentation that matches your query. It uses embeddings to understand the meaning
-    of your query, not just keyword matching.
+    This tool performs hybrid search across any codebase folder to find code, functions, classes,
+    or documentation that matches your query. It combines:
+    - Semantic search: Uses embeddings to understand the meaning of your query
+    - Lexical search: Uses keyword matching (like grep) for exact matches
+    
+    This hybrid approach (similar to Cursor IDE) provides comprehensive results by leveraging
+    both meaning-based and keyword-based matching.
 
     Args:
-        query: The semantic search query (describe what you're looking for)
+        query: The search query (describe what you're looking for or use keywords)
         workspace_root: REQUIRED - The folder/directory to search in. Can be any absolute or relative path.
                         Examples: "/path/to/project", "./src", "../other-project"
         max_results: Maximum number of results to return (default: 5)
         file_type: Optional file type filter (e.g., ".py", ".js", ".md")
         force_reindex: Force reindexing of the codebase (default: False)
+        use_hybrid: Enable hybrid search combining semantic and lexical (default: True)
 
     Returns:
         Dictionary containing:
@@ -216,7 +222,8 @@ def semantic_search(
             - file_path: Full path to the file
             - relative_path: Relative path from workspace root
             - file_name: Name of the file
-            - score: Similarity score (lower is better)
+            - score: Similarity score (normalized, higher is better)
+            - match_type: "semantic" or "lexical" indicating match type
         - query: The original search query
         - indexed: Whether the codebase was indexed
 
@@ -224,8 +231,9 @@ def semantic_search(
     1. Read through the 'content' field of each result
     2. Use the file_path to read the full file if needed
     3. The results show code chunks - you may need to read the full file for context
-    4. Lower scores indicate better matches
-    5. Use this tool when you need to find code by meaning, not just by name
+    4. Higher normalized scores indicate better matches
+    5. Results include both semantic (meaning-based) and lexical (keyword-based) matches
+    6. Use this tool when you need to find code by meaning, functionality, or exact keywords
     """
     try:
         # Resolve and validate workspace root
@@ -274,8 +282,13 @@ def semantic_search(
         if file_type:
             filter_metadata = {"file_type": file_type}
 
-        # Perform search
-        results = rag.search(query, k=max_results, filter_metadata=filter_metadata)
+        # Perform hybrid search (semantic + lexical)
+        results = rag.search(
+            query, 
+            k=max_results, 
+            filter_metadata=filter_metadata,
+            use_hybrid=use_hybrid,
+        )
 
         return {
             "results": results,

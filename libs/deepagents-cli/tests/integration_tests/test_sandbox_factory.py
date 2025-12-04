@@ -1,6 +1,6 @@
 """Test sandbox integrations with upload/download functionality.
 
-This module tests sandbox backends (RunLoop, Daytona, Modal) with support for
+This module tests sandbox backends (RunLoop, Daytona, Modal, Docker) with support for
 optional sandbox reuse to reduce test execution time.
 
 Set REUSE_SANDBOX=1 environment variable to reuse sandboxes across tests within
@@ -320,3 +320,13 @@ class TestModalIntegration(BaseSandboxIntegrationTest):
         """Provide a Modal sandbox instance."""
         with create_sandbox("modal") as sandbox:
             yield sandbox
+
+
+# class TestDockerIntegration(BaseSandboxIntegrationTest):
+#     """Test Docker backend integration."""
+
+#     @pytest.fixture(scope="class")
+#     def sandbox(self) -> Iterator[BaseSandbox]:
+#         """Provide a Docker sandbox instance."""
+#         with create_sandbox("docker") as sandbox:
+#             yield sandbox

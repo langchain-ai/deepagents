@@ -1,0 +1,34 @@
+[project]
+name = "docs-reviewer"
+version = "0.1.0"
+description = "AI-powered documentation code snippet reviewer built on DeepAgents"
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "deepagents",
+    "langchain-anthropic>=0.3.14",  # Required for code execution tool
+    "langchain-mcp-adapters>=0.1.0",  # MCP integration for LangChain docs
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "prompt-toolkit>=3.0.0",  # For command history with up/down arrows
+]
+
+[project.scripts]
+docs-reviewer = "docs_reviewer.cli:app"
+
+[tool.uv.sources]
+deepagents = { path = "../", editable = true }
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[build-system]
+requires = ["setuptools>=73.0.0", "wheel"]
+build-backend = "setuptools.build_meta"

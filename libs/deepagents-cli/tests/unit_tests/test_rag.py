@@ -94,8 +94,10 @@ class TestCodeRAGFileDiscovery:
 
             file_paths = [f.name for f in files]
             assert "test.py" in file_paths
-            assert "test.txt" in file_paths  # .txt is in code_extensions
-            assert "test.pyc" not in file_paths  # Excluded by pattern
+            # .txt files are not indexed (only source code files)
+            assert "test.txt" not in file_paths
+            # Files in __pycache__ are skipped
+            assert "test.pyc" not in file_paths
 
     def test_get_code_files_excludes_patterns(self, tmp_path: Path) -> None:
         """Test that excluded patterns are not included."""
@@ -118,9 +120,11 @@ class TestCodeRAGFileDiscovery:
             assert not any("node_modules" in p for p in file_paths)
 
     def test_get_code_files_finds_multiple_extensions(self, tmp_path: Path) -> None:
-        """Test that multiple file extensions are discovered."""
+        """Test that multiple source code file extensions are discovered."""
         (tmp_path / "test.py").write_text("python")
         (tmp_path / "test.js").write_text("javascript")
+        (tmp_path / "test.ts").write_text("typescript")
+        (tmp_path / "test.go").write_text("go code")
         (tmp_path / "test.md").write_text("markdown")
         (tmp_path / "test.yaml").write_text("yaml: config")
 
@@ -132,10 +136,14 @@ class TestCodeRAGFileDiscovery:
             files = rag._get_code_files()
 
             file_names = [f.name for f in files]
+            # Only source code files should be indexed
             assert "test.py" in file_names
             assert "test.js" in file_names
-            assert "test.md" in file_names
-            assert "test.yaml" in file_names
+            assert "test.ts" in file_names
+            assert "test.go" in file_names
+            # Config and doc files should NOT be indexed
+            assert "test.md" not in file_names
+            assert "test.yaml" not in file_names
 
 
 class TestCodeRAGChunking:

@@ -118,24 +118,69 @@ class CodeRAG:
 
     def _get_code_files(self) -> list[Path]:
         """Get all code files in the workspace.
+        
+        Only indexes actual source code files, excluding:
+        - Config files (.yaml, .json, .toml, etc.)
+        - Documentation files (.md, .txt, .rst)
+        - Shell scripts (.sh, .bash, .zsh)
+        - Build artifacts and dependencies
 
         Returns:
             List of code file paths
         """
+        # Only actual source code file extensions
         code_extensions = {
             ".py", ".js", ".ts", ".jsx", ".tsx",
             ".java", ".cpp", ".c", ".h", ".hpp",
             ".go", ".rs", ".rb", ".php", ".swift",
-            ".kt", ".scala", ".sh", ".bash", ".zsh",
-            ".yaml", ".yml", ".json", ".toml",
-            ".md", ".rst", ".txt",
+            ".kt", ".scala",
+        }
+        
+        # Comprehensive list of directories to skip (similar to Cursor IDE)
+        # Includes: dependencies, build artifacts, caches, IDE configs, OS files
+        skip_dirs = {
+            # Version control
+            ".git", ".svn", ".hg", ".bzr",
+            # Dependencies
+            "node_modules", "vendor", "bower_components", "jspm_packages",
+            ".venv", "venv", "env", ".env", "virtualenv", "ENV",
+            # Python
+            "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+            ".python-version", "pip-log.txt", "pip-delete-this-directory.txt",
+            # Build artifacts
+            "dist", "build", ".build", "target", "bin", "obj", "out",
+            ".next", ".nuxt", ".turbo", ".vercel", ".netlify",
+            # JavaScript/TypeScript
+            ".parcel-cache", ".cache", ".eslintcache", ".yarn",
+            # Java
+            ".gradle", ".mvn", "gradle", "maven",
+            # Rust
+            "target",
+            # IDE and editor configs
+            ".vscode", ".idea", ".vs", ".cursor", ".settings",
+            # OS files
+            ".DS_Store", "Thumbs.db", ".Spotlight-V100", ".Trashes",
+            # Test coverage
+            "coverage", ".coverage", "htmlcov", ".nyc_output",
+            # Logs and temporary
+            "logs", "tmp", "temp", ".tmp",
+            # Other common
+            ".sass-cache", ".terraform", ".serverless", ".dynamodb",
+            ".eggs",
         }
 
         files = []
         for ext in code_extensions:
             for file_path in self.workspace_root.rglob(f"*{ext}"):
-                if file_path.is_file():
-                    files.append(file_path)
+                if not file_path.is_file():
+                    continue
+                
+                # Skip files in common non-code directories
+                path_parts = file_path.parts
+                if any(skip_dir in path_parts for skip_dir in skip_dirs):
+                    continue
+                
+                files.append(file_path)
 
         return files
 

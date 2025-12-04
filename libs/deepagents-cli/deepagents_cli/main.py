@@ -27,6 +27,7 @@ from deepagents_cli.integrations.sandbox_factory import (
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.ui import TokenTracker, show_help
+from deepagents_cli.tools import semantic_search
 
 
 def check_cli_dependencies() -> None:
@@ -290,18 +291,15 @@ async def _run_agent_session(
     """
     # Create agent with conditional tools
     tools = [http_request, fetch_url]
+    
+    # Add web search if Tavily API key is available
     if settings.has_tavily:
         tools.append(web_search)
     
-    # Add semantic search tool (requires OPENAI_API_KEY)
-    from deepagents_cli.tools import semantic_search
-    try:
-        # Check if OpenAI API key is available using settings
-        if settings.has_openai:
-            tools.append(semantic_search)
-    except Exception:
-        # If import fails or API key not available, skip semantic search
-        pass
+    # Add semantic search tool if OpenAI API key is available
+    # This enables RAG (Retrieval-Augmented Generation) for semantic code search
+    if settings.has_openai:
+        tools.append(semantic_search)
 
     agent, composite_backend = create_agent_with_config(
         model, assistant_id, tools, sandbox=sandbox_backend, sandbox_type=sandbox_type

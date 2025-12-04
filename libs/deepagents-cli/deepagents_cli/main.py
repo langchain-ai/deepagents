@@ -292,6 +292,16 @@ async def _run_agent_session(
     tools = [http_request, fetch_url]
     if settings.has_tavily:
         tools.append(web_search)
+    
+    # Add semantic search tool (requires OPENAI_API_KEY)
+    from deepagents_cli.tools import semantic_search
+    try:
+        # Check if OpenAI API key is available using settings
+        if settings.has_openai:
+            tools.append(semantic_search)
+    except Exception:
+        # If import fails or API key not available, skip semantic search
+        pass
 
     agent, composite_backend = create_agent_with_config(
         model, assistant_id, tools, sandbox=sandbox_backend, sandbox_type=sandbox_type

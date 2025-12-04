@@ -688,6 +688,7 @@ dev = [
 test = [
     { name = "mypy", specifier = ">=1.18.1,<1.19.0" },
     { name = "pytest" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
     { name = "ruff", specifier = ">=0.12.2,<0.13.0" },

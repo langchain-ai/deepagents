@@ -29,7 +29,7 @@ from rich.console import Console
 
 from deepagents_cli import config as config_module
 from deepagents_cli import main as main_module
-from deepagents_cli.agent import create_agent_with_config
+from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.config import SessionState, create_model
 from deepagents_cli.main import simple_cli
 
@@ -77,12 +77,12 @@ async def run_cli_task(task: str, tmp_path: Path) -> AsyncIterator[tuple[Path, s
                 patch.object(config_module, "console", captured_console),
             ):
                 # Import after patching
-                from deepagents_cli.agent import create_agent_with_config
+                from deepagents_cli.agent import create_cli_agent
                 from deepagents_cli.config import create_model
 
                 # Create real agent with real model (will use env var or fail gracefully)
                 model = create_model()
-                agent, backend = create_agent_with_config(
+                agent, backend = create_cli_agent(
                     model=model,
                     assistant_id="test_agent",
                     tools=[],
@@ -135,7 +135,7 @@ async def run_agent_task_with_hitl(task: str, tmp_path: Path) -> AsyncIterator:
         # Create agent with HIL enabled (no auto-approve)
         model = create_model()
         checkpointer = MemorySaver()
-        agent, _backend = create_agent_with_config(
+        agent, _backend = create_cli_agent(
             model=model,
             assistant_id="test_agent",
             tools=[],

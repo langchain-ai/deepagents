@@ -32,7 +32,7 @@ run-terminal-bench-modal:
 
 run-terminal-bench-daytona:
 	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
+	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 40 --jobs-dir jobs/terminal-bench --env daytona
 
 run-terminal-bench-docker:
 	@mkdir -p jobs/terminal-bench

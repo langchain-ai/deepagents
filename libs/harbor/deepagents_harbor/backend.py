@@ -326,7 +326,11 @@ done
         raise NotImplementedError("Use agrep_raw instead")
 
     async def aglob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        """Find files matching glob pattern using shell commands."""
+        """Find files matching glob pattern using shell commands.
+
+        Please note that this implementation does not currently support all glob
+        patterns.
+        """
         safe_path = shlex.quote(path)
         safe_pattern = shlex.quote(pattern)
 

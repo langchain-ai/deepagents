@@ -14,6 +14,7 @@ from harbor.models.agent.context import AgentContext
 
 # Load .env file if present
 load_dotenv()
+from deepagents_cli.agent import create_cli_agent
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,
@@ -63,10 +64,20 @@ class DeepAgentsWrapper(BaseAgent):
         model_name: str | None = None,
         temperature: float = 0.0,
         verbose: bool = True,
+        use_cli_agent: bool = True,
         *args,
         **kwargs,
     ) -> None:
-        """Initialize DeepAgentsWrapper."""
+        """Initialize DeepAgentsWrapper.
+
+        Args:
+            logs_dir: Directory for storing logs
+            model_name: Name of the LLM model to use
+            temperature: Temperature setting for the model
+            verbose: Enable verbose output
+            use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
+                          If False, use create_deep_agent from SDK.
+        """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
         if model_name is None:
@@ -76,6 +87,7 @@ class DeepAgentsWrapper(BaseAgent):
         self._model_name = model_name
         self._temperature = temperature
         self._verbose = verbose
+        self._use_cli_agent = use_cli_agent
         self._model = init_chat_model(model_name, temperature=temperature)
 
         # LangSmith run tracking for feedback
@@ -160,12 +172,31 @@ class DeepAgentsWrapper(BaseAgent):
 
         backend = HarborSandbox(environment)
 
-        # Get formatted system prompt with directory context
-        system_prompt = await self._get_formatted_system_prompt(backend)
+        # Create agent based on mode (CLI vs SDK)
+        if self._use_cli_agent:
+            # Get Harbor's system prompt with directory context
+            harbor_system_prompt = await self._get_formatted_system_prompt(backend)
 
-        deep_agent = create_deep_agent(
-            model=self._model, backend=backend, system_prompt=system_prompt
-        )
+            # Use CLI agent with auto-approve mode
+            deep_agent, _ = create_cli_agent(
+                model=self._model,
+                assistant_id=environment.session_id,
+                sandbox=backend,
+                sandbox_type=None,
+                system_prompt=harbor_system_prompt,  # Use Harbor's custom prompt
+                auto_approve=True,  # Skip HITL in Harbor
+                enable_memory=False,
+                enable_skills=False,  # Disable CLI skills for now
+                enable_shell=False,  # Sandbox provides execution
+            )
+        else:
+            # Use SDK agent
+            # Get formatted system prompt with directory context
+            system_prompt = await self._get_formatted_system_prompt(backend)
+
+            deep_agent = create_deep_agent(
+                model=self._model, backend=backend, system_prompt=system_prompt
+            )
 
         # Build metadata with experiment tracking info
         metadata = {
@@ -174,6 +205,8 @@ class DeepAgentsWrapper(BaseAgent):
             # This is a harbor-specific session ID for the entire task run
             # It's different from the LangSmith experiment ID (called session_id)
             "harbor_session_id": environment.session_id,
+            # Tag to indicate which agent implementation is being used
+            "agent_mode": "cli" if self._use_cli_agent else "sdk",
         }
         metadata.update(configuration)
 
@@ -183,7 +216,11 @@ class DeepAgentsWrapper(BaseAgent):
 
         config: RunnableConfig = {
             "run_name": f"{environment.session_id}",
-            "tags": [self._model_name, environment.session_id],
+            "tags": [
+                self._model_name,
+                environment.session_id,
+                "cli-agent" if self._use_cli_agent else "sdk-agent",
+            ],
             "configurable": {
                 "thread_id": str(uuid.uuid4()),
             },

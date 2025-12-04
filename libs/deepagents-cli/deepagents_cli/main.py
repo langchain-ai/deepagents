@@ -8,7 +8,7 @@ from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
-from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
+from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
 from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.config import (
     COLORS,
@@ -293,8 +293,13 @@ async def _run_agent_session(
     if settings.has_tavily:
         tools.append(web_search)
 
-    agent, composite_backend = create_agent_with_config(
-        model, assistant_id, tools, sandbox=sandbox_backend, sandbox_type=sandbox_type
+    agent, composite_backend = create_cli_agent(
+        model=model,
+        assistant_id=assistant_id,
+        tools=tools,
+        sandbox=sandbox_backend,
+        sandbox_type=sandbox_type,
+        auto_approve=session_state.auto_approve,
     )
 
     # Calculate baseline token count for accurate token tracking

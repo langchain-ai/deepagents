@@ -145,7 +145,7 @@ from deepagents import create_deep_agent
 research_subagent = {
     "name": "research-agent",
     "description": "Used to research in-depth questions",
-    "prompt": "You are an expert researcher",
+    "system_prompt": "You are an expert researcher",
     "tools": [internet_search],
     "model": "openai:gpt-4o",  # Optional, defaults to main agent model
 }
@@ -310,3 +310,18 @@ The middleware automatically adds instructions about the standard tools. Your cu
 - When to use sub-agents vs when NOT to use them
 - Guidance on parallel execution
 - Subagent lifecycle (spawn → run → return → reconcile)
+
+## Security Considerations
+
+### Windows Symlink Protection
+
+On Unix/Linux/macOS, `FilesystemBackend` uses `O_NOFOLLOW` to prevent symlink-following attacks. This protection is **not available on Windows** due to OS limitations.
+
+If your agent processes untrusted input on Windows:
+- Use `virtual_mode=True` to sandbox file operations
+- Consider additional path validation
+- Be aware that symlinks within the workspace could point outside
+
+### Trust Model
+
+Deepagents follows a "trust the LLM" model similar to Claude Code. The agent can perform any action the underlying tools allow. Security boundaries should be enforced at the tool/sandbox level, not by expecting the LLM to self-police.

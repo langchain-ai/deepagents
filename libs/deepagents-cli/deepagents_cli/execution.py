@@ -3,8 +3,14 @@
 import asyncio
 import json
 import sys
-import termios
-import tty
+
+# Unix-only terminal control modules (not available on Windows)
+try:
+    import termios
+    import tty
+    HAS_TERMIOS = True
+except ImportError:
+    HAS_TERMIOS = False
 
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
@@ -77,86 +83,99 @@ def prompt_for_tool_approval(
     options = ["approve", "reject", "auto-accept all going forward"]
     selected = 0  # Start with approve selected
 
-    try:
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-
+    if HAS_TERMIOS:
         try:
-            tty.setraw(fd)
-            # Hide cursor during menu interaction
-            sys.stdout.write("\033[?25l")
-            sys.stdout.flush()
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
 
-            # Initial render flag
-            first_render = True
-
-            while True:
-                if not first_render:
-                    # Move cursor back to start of menu (up 3 lines, then to start of line)
-                    sys.stdout.write("\033[3A\r")
-
-                first_render = False
-
-                # Display options vertically with ANSI color codes
-                for i, option in enumerate(options):
-                    sys.stdout.write("\r\033[K")  # Clear line from cursor to end
-
-                    if i == selected:
-                        if option == "approve":
-                            # Green bold with filled checkbox
-                            sys.stdout.write("\033[1;32m☑ Approve\033[0m\n")
-                        elif option == "reject":
-                            # Red bold with filled checkbox
-                            sys.stdout.write("\033[1;31m☑ Reject\033[0m\n")
-                        else:
-                            # Blue bold with filled checkbox for auto-accept
-                            sys.stdout.write("\033[1;34m☑ Auto-accept all going forward\033[0m\n")
-                    elif option == "approve":
-                        # Dim with empty checkbox
-                        sys.stdout.write("\033[2m☐ Approve\033[0m\n")
-                    elif option == "reject":
-                        # Dim with empty checkbox
-                        sys.stdout.write("\033[2m☐ Reject\033[0m\n")
-                    else:
-                        # Dim with empty checkbox
-                        sys.stdout.write("\033[2m☐ Auto-accept all going forward\033[0m\n")
-
+            try:
+                tty.setraw(fd)
+                # Hide cursor during menu interaction
+                sys.stdout.write("\033[?25l")
                 sys.stdout.flush()
 
-                # Read key
-                char = sys.stdin.read(1)
+                # Initial render flag
+                first_render = True
 
-                if char == "\x1b":  # ESC sequence (arrow keys)
-                    next1 = sys.stdin.read(1)
-                    next2 = sys.stdin.read(1)
-                    if next1 == "[":
-                        if next2 == "B":  # Down arrow
-                            selected = (selected + 1) % len(options)
-                        elif next2 == "A":  # Up arrow
-                            selected = (selected - 1) % len(options)
-                elif char in {"\r", "\n"}:  # Enter
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
-                    break
-                elif char == "\x03":  # Ctrl+C
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
-                    raise KeyboardInterrupt
-                elif char.lower() == "a":
-                    selected = 0
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
-                    break
-                elif char.lower() == "r":
-                    selected = 1
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
-                    break
+                while True:
+                    if not first_render:
+                        # Move cursor back to start of menu (up 3 lines, then to start of line)
+                        sys.stdout.write("\033[3A\r")
 
-        finally:
-            # Show cursor again
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                    first_render = False
 
-    except (termios.error, AttributeError):
-        # Fallback for non-Unix systems
+                    # Display options vertically with ANSI color codes
+                    for i, option in enumerate(options):
+                        sys.stdout.write("\r\033[K")  # Clear line from cursor to end
+
+                        if i == selected:
+                            if option == "approve":
+                                # Green bold with filled checkbox
+                                sys.stdout.write("\033[1;32m☑ Approve\033[0m\n")
+                            elif option == "reject":
+                                # Red bold with filled checkbox
+                                sys.stdout.write("\033[1;31m☑ Reject\033[0m\n")
+                            else:
+                                # Blue bold with filled checkbox for auto-accept
+                                sys.stdout.write("\033[1;34m☑ Auto-accept all going forward\033[0m\n")
+                        elif option == "approve":
+                            # Dim with empty checkbox
+                            sys.stdout.write("\033[2m☐ Approve\033[0m\n")
+                        elif option == "reject":
+                            # Dim with empty checkbox
+                            sys.stdout.write("\033[2m☐ Reject\033[0m\n")
+                        else:
+                            # Dim with empty checkbox
+                            sys.stdout.write("\033[2m☐ Auto-accept all going forward\033[0m\n")
+
+                    sys.stdout.flush()
+
+                    # Read key
+                    char = sys.stdin.read(1)
+
+                    if char == "\x1b":  # ESC sequence (arrow keys)
+                        next1 = sys.stdin.read(1)
+                        next2 = sys.stdin.read(1)
+                        if next1 == "[":
+                            if next2 == "B":  # Down arrow
+                                selected = (selected + 1) % len(options)
+                            elif next2 == "A":  # Up arrow
+                                selected = (selected - 1) % len(options)
+                    elif char in {"\r", "\n"}:  # Enter
+                        sys.stdout.write("\r\n")  # Move to start of line and add newline
+                        break
+                    elif char == "\x03":  # Ctrl+C
+                        sys.stdout.write("\r\n")  # Move to start of line and add newline
+                        raise KeyboardInterrupt
+                    elif char.lower() == "a":
+                        selected = 0
+                        sys.stdout.write("\r\n")  # Move to start of line and add newline
+                        break
+                    elif char.lower() == "r":
+                        selected = 1
+                        sys.stdout.write("\r\n")  # Move to start of line and add newline
+                        break
+
+            finally:
+                # Show cursor again
+                sys.stdout.write("\033[?25h")
+                sys.stdout.flush()
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+        except (termios.error, AttributeError):
+            # Fallback for Unix errors
+            console.print("  ☐ (A)pprove  (default)")
+            console.print("  ☐ (R)eject")
+            console.print("  ☐ (Auto)-accept all going forward")
+            choice = input("\nChoice (A/R/Auto, default=Approve): ").strip().lower()
+            if choice in {"r", "reject"}:
+                selected = 1
+            elif choice in {"auto", "auto-accept"}:
+                selected = 2
+            else:
+                selected = 0
+    else:
+        # Fallback for non-Unix systems (Windows)
         console.print("  ☐ (A)pprove  (default)")
         console.print("  ☐ (R)eject")
         console.print("  ☐ (Auto)-accept all going forward")

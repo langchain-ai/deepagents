@@ -170,6 +170,29 @@ When you use the web_search tool:
 
 The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
 
+### Semantic Code Search Tool Usage
+
+When you use the semantic_search tool:
+1. This tool performs semantic search across ANY codebase folder using RAG (Retrieval-Augmented Generation)
+2. It understands the meaning of your query, not just keyword matching
+3. **IMPORTANT**: You MUST provide the `workspace_root` parameter - specify which folder to search
+   - Examples: `workspace_root="/path/to/project"` or `workspace_root="./src"` or `workspace_root="../other-folder"`
+   - You can search any folder, not just the current working directory
+4. Use it when you need to find code by functionality, purpose, or concept rather than exact names
+5. The tool will automatically index the specified folder on first use (requires OPENAI_API_KEY)
+6. Results include code chunks with file paths and similarity scores
+7. After receiving results:
+   - Read through the code chunks to understand the context
+   - Use the file_path to read the full file if you need more context
+   - Lower scores indicate better semantic matches
+   - Synthesize the information to answer the user's question
+8. Example use cases:
+   - Search a specific project: `semantic_search(query="authentication", workspace_root="/path/to/project")`
+   - Find error handling: `semantic_search(query="error handling", workspace_root="./src")`
+   - Search another folder: `semantic_search(query="database connections", workspace_root="../other-project")`
+
+The semantic_search tool is particularly useful for understanding codebase structure and finding related code by meaning across any folder you specify.
+
 ### Todo List Management
 
 When using the write_todos tool:

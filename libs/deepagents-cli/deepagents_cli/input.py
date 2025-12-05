@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import time
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -142,7 +143,7 @@ def get_bottom_toolbar(
             if session:
                 current_text = session.default_buffer.text
                 if current_text.startswith("!"):
-                    parts.append(("bg:#ff1493 fg:#ffffff bold", " BASH MODE "))
+                    parts.append(("bg:#ff1493 fg:#ffffff bold", " SHELL MODE "))
                     parts.append(("", " | "))
         except (AttributeError, TypeError):
             # Silently ignore - toolbar is non-critical and called frequently
@@ -177,7 +178,7 @@ def create_prompt_session(_assistant_id: str, session_state: SessionState) -> Pr
     """Create a configured PromptSession with all features."""
     # Set default editor if not already set
     if "EDITOR" not in os.environ:
-        os.environ["EDITOR"] = "nano"
+        os.environ["EDITOR"] = "notepad" if sys.platform.startswith("win") else "nano"
 
     # Create key bindings
     kb = KeyBindings()

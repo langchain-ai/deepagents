@@ -517,7 +517,7 @@ def show_interactive_help() -> None:
     )
     console.print("  /command        Type / to see available commands", style=COLORS["dim"])
     console.print(
-        "  !command        Type ! to run bash commands (e.g., !ls, !git status)",
+        "  !command        Type ! to run shell commands (e.g., !dir on Windows, !ls on macOS/Linux)",
         style=COLORS["dim"],
     )
     console.print(

@@ -249,6 +249,16 @@ Skills follow Anthropic's [progressive disclosure pattern](https://www.anthropic
 
 ## Development
 
+### Windows Compatibility
+
+- The CLI now supports Windows absolute paths (e.g., `C:\...`) and absolute glob patterns.
+- Approval prompts avoid Unix-only imports at startup; Windows uses a safe fallback.
+- Default editor on Windows is `notepad`; macOS/Linux keep `nano`.
+- UI shows “SHELL MODE” and help examples for `!dir` (Windows) and `!ls` (macOS/Linux).
+- During development, the CLI prefers the local `libs/deepagents` library so patched filesystem middleware is used.
+
+See `windows_fixed.md` for detailed before/after code snippets and upgrade guidance.
+
 ### Running Tests
 
 To run the test suite:

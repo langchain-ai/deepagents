@@ -316,10 +316,11 @@ def create_agent_with_config(
         # Get working directory from environment variable or use current directory
         agent_working_dir = get_agent_working_directory()
         
-        # Backend: Local filesystem for code with /memories/ route to permanent filesystem storage
-        # FilesystemBackend with virtual_mode=True allows /memories/ paths to map to the memories directory
+        # Backend: Local filesystem rooted at the working directory
         composite_backend = CompositeBackend(
-            default=FilesystemBackend(root_dir=str(agent_working_dir), virtual_mode=True),  # Use configured working directory
+            # Disable virtual mode to let absolute paths under the working directory work without being
+            # re-prefixed (temporary workaround for path resolution issues with uploaded files)
+            default=FilesystemBackend(root_dir=str(agent_working_dir), virtual_mode=False),
             routes={
             },
         )
@@ -330,7 +331,7 @@ def create_agent_with_config(
             SkillsMiddleware(
                 skills_dir=skills_dir,
                 assistant_id=assistant_id,
-                working_dir=agent_working_dir,  # For virtual_mode relative path compatibility
+                working_dir=agent_working_dir,
             ),
             ResumableShellToolMiddleware(
                 workspace_root=str(agent_working_dir),

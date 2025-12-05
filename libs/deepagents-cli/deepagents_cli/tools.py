@@ -20,6 +20,8 @@ tavily_client = TavilyClient(api_key=settings.tavily_api_key) if settings.has_ta
 # --- AviationBot helpers and tools -----------------------------------------------------------
 
 AVIATIONBOT_BASE_URL = os.getenv("AVIATION_BOT_BASE_URL", "https://beta.aviation.bot/api/v1")
+# AVIATIONBOT_BASE_URL = "https://localhost:8000/api/v1"
+
 AVIATIONBOT_DEFAULT_TIMEOUT = int(os.getenv("AVIATION_BOT_TIMEOUT", "60"))
 AVIATIONBOT_API_KEY = os.getenv("AVIATION_BOT_API_KEY", "")
 
@@ -73,8 +75,11 @@ def _aviationbot_request(
 @tool(
     "easa_document_retrieval",
     description=(
-        "Retrieve EASA Easy Access Rules context by query. REQUIRED: provide one or more "
-        "Easy Access Rules file_ids (choose specific files; use multiple if scope spans domains)."
+        "Primary tool to answer questions about EASA Easy Access Rules. "
+        "Use this AFTER you have identified the relevant Easy Access Rules document(s) and their file_id "
+        "values (typically via easa_doc_finder or other mapping tools). "
+        "REQUIRED: provide one or more file_ids from those results; do NOT keep calling easa_doc_finder "
+        "once you already have suitable file_ids for the current question."
     ),
 )
 def easa_document_retrieval(
@@ -118,6 +123,27 @@ def get_easa_regulatory_metamodel(query: str) -> Any:
         "GET",
         "/tool/EASA/meta-model",
         params={"query": query},
+        timeout=AVIATIONBOT_DEFAULT_TIMEOUT,
+    )
+
+
+@tool(
+    "easa_doc_finder",
+    description=(
+        "FIRST STEP for EASA questions that require Easy Access Rules. "
+        "Given a natural-language description of the topic or user background, returns candidate EASA Easy Access Rules "
+        "documents including their file.file_id values. Use this to select 1–3 relevant file_ids, then immediately call "
+        "easa_document_retrieval with the user's question and those file_ids. Avoid calling this tool more than 1–2 times "
+        "for the same user question unless the topic or scope changes significantly."
+    ),
+)
+def easa_doc_finder(query: str) -> Any:
+
+    return _aviationbot_request(
+        "GET",
+        "/tool/EASA/doc-finder",
+        # return_file_ids is True so the agent can see the file_ids per EASA EAR
+        params={"query": query, "return_file_ids": True},
         timeout=AVIATIONBOT_DEFAULT_TIMEOUT,
     )
 
@@ -444,22 +470,22 @@ def fetch_easa_parent_title_path(
 
 
 class FetchRulesDocumentInput(BaseModel):
-    erules_ids: list[str] = Field(
-        description="List of ERULES IDs to fetch, e.g., ['ERULES-1963177438-2103']. One ERulesId can result in multiple instances due to amendments."
+    perma_ids: list[str] = Field(
+        description="List of perma_id's to retrieve specific documents"
     )
     metadata: list[str] = Field(
-        description="List of metadata fields to include, e.g., ['markdown_with_html_table', 'markdown', 'html']"
+        description="List of metadata fields to include, e.g., ['markdown_with_html_table', 'parent_perma_ids', 'child_perma_ids', 'parent_titles', 'children_titles']"
     )
 
 
 @tool(args_schema=FetchRulesDocumentInput)
-def fetch_easa_rules_document(erules_ids: list[str], metadata: list[str]) -> dict:
+def fetch_easa_rules_document(perma_ids: list[str], metadata: list[str]) -> dict:
     """Fetch one or multiple regulatory rules documents with their content and metadata."""
 
     if not AVIATIONBOT_API_KEY:
         return {"error": "AVIATION_BOT_API_KEY environment variable not set"}
 
-    payload = {"erules_ids": erules_ids, "metadata": metadata}
+    payload = {"perma_ids": perma_ids, "metadata": metadata}
 
     return _aviationbot_request(
         "POST",

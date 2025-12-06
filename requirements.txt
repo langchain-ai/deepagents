@@ -1,0 +1,15 @@
+langchain
+langchain-core
+langchain-anthropic
+wcmatch
+langchain-openai
+langchain-google-genai
+requests
+rich
+prompt-toolkit
+tavily-python
+python-dotenv
+daytona
+modal
+markdownify
+runloop-api-client

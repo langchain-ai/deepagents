@@ -1346,7 +1346,7 @@ class TestTruncation:
 
 class TestBuiltinTruncationTools:
     def test_builtin_truncation_tool_not_evicted(self):
-        """Test that tools with built-in truncation (grep, ls, glob) are NOT evicted to filesystem."""
+        """Test that tools excluded from eviction (grep, ls, glob, etc.) are NOT evicted to filesystem."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)  # Very low limit
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_grep_123", store=None, stream_writer=lambda _: None, config={})
@@ -1359,7 +1359,7 @@ class TestBuiltinTruncationTools:
         def mock_handler(request):
             return expected_result
 
-        # Create a request for a tool in TOOLS_WITH_BUILTIN_TRUNCATION
+        # Create a request for a tool in TOOLS_EXCLUDED_FROM_EVICTION
         request = ToolCallRequest(
             runtime=runtime,
             tool_call={"id": "test_grep_123", "name": "grep", "args": {"pattern": "test"}},

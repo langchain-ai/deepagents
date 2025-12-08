@@ -27,6 +27,8 @@ from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import (
     easa_document_retrieval,
     easa_doc_finder,
+    search_easa_uas_regulations,
+    query_urls,
     get_easa_regulatory_metamodel,
     fetch_easa_nested_rules,
     fetch_easa_parent_title_path,
@@ -35,6 +37,7 @@ from deepagents_cli.tools import (
     get_easa_certification_specifications,
     get_easa_regulations_map,
     fetch_url,
+    file_to_launching_tool,
     http_request,
     web_search,
 )
@@ -293,11 +296,14 @@ async def _run_agent_session(
     tools = [
         easa_document_retrieval,
         easa_doc_finder,
+        search_easa_uas_regulations,
+        query_urls,
         # filter_easa_regulations_by_domain,
         # fetch_easa_nested_rules,
         # fetch_easa_parent_title_path,
         fetch_easa_rules_document,
         # get_easa_certification_specifications,
+        file_to_launching_tool,  # Bridge local files to launching tools
     ]
     if settings.has_tavily:
         tools.append(web_search)

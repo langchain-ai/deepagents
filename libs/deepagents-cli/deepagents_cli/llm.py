@@ -304,7 +304,7 @@ llm_openrouter_gemini_pro = ChatOpenAI(
     api_key=getenv("OPENROUTER_API_KEY"),
     base_url=getenv("OPENROUTER_BASE_URL"),
     model="google/gemini-3-pro-preview",
-    temperature=0.1,
+    temperature=1,
     default_headers={
     },
     model_kwargs={

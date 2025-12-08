@@ -3,7 +3,7 @@ name = "deepagents-cli"
 version = "0.0.9"
 description = "Deepagents CLI"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.11,<4.0"
 dependencies = [
   "deepagents==0.2.7",
@@ -11,6 +11,7 @@ dependencies = [
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",
   "langchain-openai>=0.1.0",
+  "langchain-google-genai",
   "tavily-python",
   "python-dotenv",
   "daytona>=0.113.0",
@@ -55,6 +56,9 @@ lint = [
 [build-system]
 requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["deepagents_cli"]
 
 [tool.setuptools.package-data]
 deepagents_cli = ["default_agent_prompt.md"]

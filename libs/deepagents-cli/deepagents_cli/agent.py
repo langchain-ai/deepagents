@@ -11,6 +11,20 @@ from deepagents.backends.sandbox import SandboxBackendProtocol
 from langchain.agents.middleware import (
     HostExecutionPolicy,
     InterruptOnConfig,
+    ClearToolUsesEdit,
+    ContextEditingMiddleware,
+    # FilesystemFileSearchMiddleware,
+    # HumanInTheLoopMiddleware,
+    # LLMToolEmulator,
+    # LLMToolSelectorMiddleware,
+    # ModelCallLimitMiddleware,
+    # ModelFallbackMiddleware,
+    # PIIMiddleware,
+    # ShellToolMiddleware,
+    # SummarizationMiddleware, # already inserted by langchain
+    # TodoListMiddleware, # already inserted by langchain
+    # ToolCallLimitMiddleware,
+    # ToolRetryMiddleware,
 )
 from langchain.agents.middleware.types import AgentState
 from langchain.messages import ToolCall
@@ -337,6 +351,44 @@ def create_agent_with_config(
                 workspace_root=str(agent_working_dir),
                 execution_policy=HostExecutionPolicy(),
             ),
+            ContextEditingMiddleware(
+                edits=[ClearToolUsesEdit(trigger=100_000, keep=3)],
+            ),  # clears older tool outputs when tokens climb toward limits
+            # PIIMiddleware(
+            #     "email",
+            #     strategy="redact",
+            #     apply_to_input=True,
+            #     apply_to_output=True,
+            # ),  # blocks or redacts common PII (email/credit card/IP/etc.)
+            # FilesystemFileSearchMiddleware(
+            #     root_path=str(agent_working_dir),
+            # ),  # adds glob/grep search tools rooted in the workspace
+            # ModelCallLimitMiddleware(
+            #     thread_limit=50,
+            #     run_limit=25,
+            # ),  # prevents runaway LLM calls; can end run or raise
+            # ModelFallbackMiddleware(
+            #     "openai:gpt-4o-mini",
+            # ),  # retries a backup model if the primary errors
+            # ToolRetryMiddleware(
+            #     max_retries=2,
+            # ),  # retries failing tool calls with exponential backoff
+            # ToolCallLimitMiddleware(
+            #     run_limit=30,
+            # ),  # caps total tool invocations to avoid loops
+            # LLMToolSelectorMiddleware(
+            #     max_tools=6,
+            # ),  # uses a smaller model to pre-filter relevant tools
+            # LLMToolEmulator(
+            #     tools=None,
+            # ),  # emulates tool outputs with an LLM for dry-run/testing
+            # HumanInTheLoopMiddleware(
+            #     {"shell": shell_interrupt_config},
+            # ),  # forces approval/edit/reject decisions on selected tools
+            # ShellToolMiddleware(
+            #     workspace_root=str(agent_working_dir),
+            #     execution_policy=HostExecutionPolicy(),
+            # ),  # built-in persistent shell (use instead of ResumableShellToolMiddleware)
         ]
     else:
         # ========== REMOTE SANDBOX MODE ==========
@@ -353,6 +405,37 @@ def create_agent_with_config(
         agent_middleware = [
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
             SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
+            # ContextEditingMiddleware(
+            #     edits=[ClearToolUsesEdit(trigger=100_000, keep=3)],
+            # ),  # clears older tool outputs when tokens climb toward limits
+            # PIIMiddleware(
+            #     "email",
+            #     strategy="redact",
+            #     apply_to_input=True,
+            #     apply_to_output=True,
+            # ),  # blocks or redacts common PII (email/credit card/IP/etc.)
+            # ModelCallLimitMiddleware(
+            #     thread_limit=50,
+            #     run_limit=25,
+            # ),  # prevents runaway LLM calls; can end run or raise
+            # ModelFallbackMiddleware(
+            #     "openai:gpt-4o-mini",
+            # ),  # retries a backup model if the primary errors
+            # ToolRetryMiddleware(
+            #     max_retries=2,
+            # ),  # retries failing tool calls with exponential backoff
+            # ToolCallLimitMiddleware(
+            #     run_limit=30,
+            # ),  # caps total tool invocations to avoid loops
+            # LLMToolSelectorMiddleware(
+            #     max_tools=6,
+            # ),  # uses a smaller model to pre-filter relevant tools
+            # LLMToolEmulator(
+            #     tools=None,
+            # ),  # emulates tool outputs with an LLM for dry-run/testing
+            # HumanInTheLoopMiddleware(
+            #     {"shell": shell_interrupt_config},
+            # ),  # forces approval/edit/reject decisions on selected tools
         ]
 
     # Get the system prompt (sandbox-aware and with skills)

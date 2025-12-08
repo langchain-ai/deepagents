@@ -10,6 +10,7 @@ from markdownify import markdownify
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 from langchain.tools import tool
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from deepagents_cli.config import settings
 
@@ -474,7 +475,7 @@ class FetchRulesDocumentInput(BaseModel):
         description="List of perma_id's to retrieve specific documents"
     )
     metadata: list[str] = Field(
-        description="List of metadata fields to include, e.g., ['markdown_with_html_table', 'parent_perma_ids', 'child_perma_ids', 'parent_titles', 'children_titles']"
+        description="Optional list of metadata fields to include, e.g., ['markdown_with_html_table', 'parent_perma_ids', 'child_perma_ids', 'parent_titles', 'children_titles']"
     )
 
 
@@ -523,6 +524,154 @@ def get_easa_certification_specifications() -> str:
         return json.dumps({"error": f"Failed to load certification specifications: {str(e)}"})
 
 
+class FileToLaunchingToolInput(BaseModel):
+    """Input schema for the file_to_launching_tool."""
+
+    file_path: str = Field(
+        description="Absolute path to the file on the local filesystem to read."
+    )
+    start_line: int | None = Field(
+        default=None,
+        description="Optional 1-indexed start line number. If provided, only content from this line onwards will be included.",
+    )
+    end_line: int | None = Field(
+        default=None,
+        description="Optional 1-indexed end line number (inclusive). If provided, only content up to this line will be included.",
+    )
+
+
+@tool(
+    "file_to_launching_tool",
+    args_schema=FileToLaunchingToolInput,
+    description=(
+        "Read a file from the local filesystem to prepare it for use with launching tools. "
+        "This tool bridges the gap between local files and external API-connected tools. "
+        "Optionally specify start_line and end_line to read only a portion of the file. "
+        "Currently returns the first 2 lines as a test to verify the tool works correctly."
+    ),
+)
+def file_to_launching_tool(
+    file_path: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> dict[str, Any]:
+    """Read a file from the filesystem with optional line range selection.
+
+    This tool reads file content from the local filesystem and prepares it for use
+    with launching tools that connect to external APIs. It supports reading entire
+    files or specific line ranges.
+
+    Args:
+        file_path: Absolute path to the file to read.
+        start_line: Optional 1-indexed start line (inclusive). Defaults to beginning of file.
+        end_line: Optional 1-indexed end line (inclusive). Defaults to end of file.
+
+    Returns:
+        Dictionary containing:
+        - success: Whether the file was read successfully
+        - file_path: The path that was read
+        - content: The file content (or selected lines)
+        - total_lines: Total number of lines in the original file
+        - lines_read: Number of lines in the returned content
+        - line_range: The actual line range that was read (start, end)
+        - preview: First 2 lines as a test preview
+    """
+    try:
+        path = Path(file_path)
+
+        # Validate file exists
+        if not path.exists():
+            return {
+                "success": False,
+                "error": f"File not found: {file_path}",
+                "file_path": file_path,
+            }
+
+        if not path.is_file():
+            return {
+                "success": False,
+                "error": f"Path is not a file: {file_path}",
+                "file_path": file_path,
+            }
+
+        # Read file content
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Try with latin-1 as fallback for binary-like files
+            try:
+                content = path.read_text(encoding="latin-1")
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to decode file content: {str(e)}",
+                    "file_path": file_path,
+                }
+
+        lines = content.splitlines(keepends=True)
+        total_lines = len(lines)
+
+        # Validate and adjust line ranges
+        actual_start = 1
+        actual_end = total_lines
+
+        if start_line is not None:
+            if start_line < 1:
+                return {
+                    "success": False,
+                    "error": f"start_line must be >= 1, got {start_line}",
+                    "file_path": file_path,
+                }
+            actual_start = min(start_line, total_lines)
+
+        if end_line is not None:
+            if end_line < 1:
+                return {
+                    "success": False,
+                    "error": f"end_line must be >= 1, got {end_line}",
+                    "file_path": file_path,
+                }
+            actual_end = min(end_line, total_lines)
+
+        if actual_start > actual_end:
+            return {
+                "success": False,
+                "error": f"start_line ({actual_start}) cannot be greater than end_line ({actual_end})",
+                "file_path": file_path,
+            }
+
+        # Extract the requested line range (convert to 0-indexed for slicing)
+        selected_lines = lines[actual_start - 1 : actual_end]
+        selected_content = "".join(selected_lines)
+
+        # TEST: For now, return first 2 lines as a preview to verify the tool works
+        preview_lines = selected_lines[:2]
+        preview_content = "".join(preview_lines).rstrip("\n")
+
+        return {
+            "success": True,
+            "file_path": file_path,
+            "content": selected_content,
+            "total_lines": total_lines,
+            "lines_read": len(selected_lines),
+            "line_range": {"start": actual_start, "end": actual_end},
+            "preview": preview_content,  # TEST: First 2 lines to verify tool works
+        }
+
+    except PermissionError:
+        return {
+            "success": False,
+            "error": f"Permission denied reading file: {file_path}",
+            "file_path": file_path,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Unexpected error reading file: {str(e)}",
+            "file_path": file_path,
+        }
+
+
 def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
     """Fetch content from a URL and convert HTML to markdown format.
 
@@ -567,3 +716,391 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
         }
     except Exception as e:
         return {"error": f"Fetch URL error: {e!s}", "url": url}
+
+
+# --- Google Custom Search Engine (CSE) helpers and tools -------------------------------------------
+
+# API key from environment (set in .env as GOOGLE_CLOUD_CONSOLE_CUSTOM_SEARCH_API)
+GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CLOUD_CONSOLE_CUSTOM_SEARCH_API", "")
+
+
+def _google_cse_search(
+    query: str,
+    cse_id: str,
+    api_key: str | None = None,
+    num_results: int = 10,
+    start_index: int = 1,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Perform a Google Custom Search Engine query.
+    
+    This is a reusable helper function for making CSE API requests.
+    
+    Args:
+        query: The search query string.
+        cse_id: The Custom Search Engine ID (cx parameter).
+        api_key: Google API key. If None, uses GOOGLE_CLOUD_CONSOLE_CUSTOM_SEARCH_API env var.
+        num_results: Number of results to return (max 10 per request).
+        start_index: Starting index for results (1-indexed, for pagination).
+        **kwargs: Additional parameters to pass to the CSE API.
+    
+    Returns:
+        Dictionary containing:
+        - success: Whether the request succeeded
+        - query: The original query
+        - total_results: Total number of matching results
+        - items: List of search results, each with title, link, snippet
+        - error: Error message if the request failed
+    """
+    effective_api_key = api_key or GOOGLE_CSE_API_KEY
+    
+    if not effective_api_key:
+        return {
+            "success": False,
+            "error": "Google CSE API key not configured. Set GOOGLE_CLOUD_CONSOLE_CUSTOM_SEARCH_API environment variable.",
+            "query": query,
+        }
+    
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "q": query,
+        "key": effective_api_key,
+        "cx": cse_id,
+        "num": min(num_results, 10),  # API max is 10 per request
+        "start": start_index,
+    }
+    params.update(kwargs)
+    
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Extract and format results
+        items = []
+        if "items" in data:
+            for item in data["items"]:
+                items.append({
+                    "title": item.get("title", ""),
+                    "link": item.get("link", ""),
+                    "snippet": item.get("snippet", ""),
+                    "display_link": item.get("displayLink", ""),
+                })
+        
+        # Get total results count
+        search_info = data.get("searchInformation", {})
+        total_results = search_info.get("totalResults", "0")
+        
+        return {
+            "success": True,
+            "query": query,
+            "total_results": total_results,
+            "items": items,
+            "result_count": len(items),
+        }
+        
+    except requests.HTTPError as exc:
+        error_msg = f"HTTP error {exc.response.status_code}"
+        try:
+            error_data = exc.response.json()
+            if "error" in error_data:
+                error_msg = error_data["error"].get("message", error_msg)
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "error": error_msg,
+            "query": query,
+        }
+    except requests.RequestException as exc:
+        return {
+            "success": False,
+            "error": f"Request error: {str(exc)}",
+            "query": query,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"Unexpected error: {str(exc)}",
+            "query": query,
+        }
+
+
+def create_google_cse_tool(
+    cse_id: str,
+    tool_name: str,
+    tool_description: str,
+    cse_name: str | None = None,
+):
+    """Factory function to create a LangChain tool for a specific Google CSE.
+    
+    This allows easily creating multiple CSE-based search tools with different
+    search engine IDs while sharing the common search logic.
+    
+    Args:
+        cse_id: The Google Custom Search Engine ID.
+        tool_name: Name for the LangChain tool (should be snake_case).
+        tool_description: Description for the tool that helps the LLM understand when to use it.
+        cse_name: Human-readable name for the CSE (used in return data). Defaults to tool_name.
+    
+    Returns:
+        A LangChain tool function that can be added to an agent's toolset.
+    
+    Example:
+        >>> my_cse_tool = create_google_cse_tool(
+        ...     cse_id="your_cse_id_here",
+        ...     tool_name="search_my_domain",
+        ...     tool_description="Search for information in my custom knowledge base.",
+        ...     cse_name="My Custom Search"
+        ... )
+    """
+    effective_cse_name = cse_name or tool_name
+    
+    @tool(tool_name, description=tool_description)
+    def cse_search_tool(
+        query: str,
+        num_results: int = 10,
+    ) -> dict[str, Any]:
+        """Search using a Google Custom Search Engine."""
+        result = _google_cse_search(
+            query=query,
+            cse_id=cse_id,
+            num_results=num_results,
+        )
+        result["cse_name"] = effective_cse_name
+        result["cse_id"] = cse_id
+        return result
+    
+    return cse_search_tool
+
+
+# --- Pre-configured CSE Tools ----------------------------------------------------------------
+
+# Aviation.bot EASA UAS Custom Search Engine
+# Public URL: https://cse.google.com/cse?cx=67b0166f411444635
+EASA_UAS_CSE_ID = "67b0166f411444635"
+
+
+class SearchEasaUasInput(BaseModel):
+    """Input schema for the EASA UAS search tool."""
+    
+    query: str = Field(
+        description="Search query for EASA UAS (Unmanned Aircraft Systems) regulations, drone rules, and related aviation documentation."
+    )
+    num_results: int = Field(
+        default=10,
+        description="Number of search results to return (max 10).",
+        ge=1,
+        le=10,
+    )
+
+
+@tool(
+    "search_easa_uas_regulations",
+    args_schema=SearchEasaUasInput,
+    description=(
+        "Search the EASA UAS (Unmanned Aircraft Systems) regulatory corpus using Google Custom Search. "
+        "This tool searches official EASA documentation specifically focused on drone regulations, "
+        "UAS operations, specific category requirements, open category rules, and certified category "
+        "operations. Use this for questions about European drone regulations, SORA methodology, "
+        "remote pilot requirements, and UAS operational authorizations."
+    ),
+)
+def search_easa_uas_regulations(
+    query: str,
+    num_results: int = 10,
+) -> dict[str, Any]:
+    """Search EASA UAS regulations using Aviation.bot's custom search engine.
+    
+    This tool queries the EASA UAS (Unmanned Aircraft Systems) documentation corpus
+    to find relevant regulatory information about drone operations in Europe.
+    
+    Args:
+        query: The search query for UAS/drone regulations.
+        num_results: Number of results to return (1-10, default 10).
+    
+    Returns:
+        Dictionary containing:
+        - success: Whether the search succeeded
+        - query: The original search query
+        - total_results: Total number of matching documents
+        - items: List of results with title, link, snippet, and display_link
+        - result_count: Number of results returned
+        - cse_name: Name of the custom search engine used
+        - cse_id: The CSE identifier
+        - error: Error message if the request failed
+    """
+    result = _google_cse_search(
+        query=query,
+        cse_id=EASA_UAS_CSE_ID,
+        num_results=num_results,
+    )
+    result["cse_name"] = "Aviation.bot EASA UAS"
+    result["cse_id"] = EASA_UAS_CSE_ID
+    return result
+
+
+# --- URL Document Query Tool -------------------------------------------------------------------
+
+# Google AI Studio API key (used for underlying LLM)
+GOOGLE_AI_STUDIO_API_KEY = os.getenv("GOOGLE_AI_STUDIO_API_KEY", "")
+
+
+class QueryUrlsInput(BaseModel):
+    """Input schema for the URL document query tool."""
+    
+    query: str = Field(
+        description=(
+            "The question to answer based on the content of the external documents at the URLs. "
+            "Be specific about what information you need. The query will be answered using the "
+            "actual full content of the documents, not just snippets."
+        )
+    )
+    urls: list[str] = Field(
+        description=(
+            "List of URLs pointing to external documents (web pages or PDFs) to analyze. "
+            "These are the source documents that will be read to answer your query. "
+            "Maximum recommended: 1 URLs per request, unless a comparison of multiple documents is required. Make seperate tool calls per url."
+        ),
+        min_length=1,
+    )
+    additional_context: str | None = Field(
+        default=None,
+        description=(
+            "Optional additional instructions to guide the extraction. "
+            "For example: 'Focus on section 3.2' or 'Extract the table on page 5'."
+        ),
+    )
+
+
+@tool(
+    "query_urls",
+    args_schema=QueryUrlsInput,
+    description=(
+        "Query external documents at specified URLs to extract information and answer questions. "
+        "This tool reads the FULL CONTENT of web pages or PDF documents and answers your query "
+        "based on what it finds. Use this when you need to: "
+        "1) Read full documents from URLs returned by search tools (which only give snippets), "
+        "2) Extract specific sections, tables, or requirements from regulatory documents, "
+        "3) Answer detailed questions that require reading the actual document content. "
+        "The response prioritizes literal/verbatim text from the documents rather than rewrites. "
+        "If documents are large, use follow-up queries on the same URLs to explore other sections."
+    ),
+)
+def query_urls(
+    query: str,
+    urls: list[str],
+    additional_context: str | None = None,
+) -> dict[str, Any]:
+    """Query external documents at URLs to extract information.
+    
+    This tool loads the full content of documents at the specified URLs and
+    answers your query based on what it finds. It's designed for:
+    - Following up on search results to read full documents (not just snippets)
+    - Extracting specific regulatory text, tables, or requirements
+    - Getting verbatim quotes and literal content from source documents
+    
+    The tool prioritizes returning actual text from the documents rather than
+    paraphrased summaries. For large documents, it will indicate what other
+    sections are available for follow-up queries.
+    
+    Args:
+        query: The question to answer based on the document content.
+        urls: List of URLs to external documents (web pages or PDFs).
+        additional_context: Optional extra instructions for the extraction.
+    
+    Returns:
+        Dictionary containing:
+        - success: Whether the query succeeded
+        - query: The original query
+        - urls: The URLs that were analyzed
+        - answer: The extracted information/answer from the documents
+        - error: Error message if the request failed
+    """
+    if not GOOGLE_AI_STUDIO_API_KEY:
+        return {
+            "success": False,
+            "error": "API key not configured. Set GOOGLE_AI_STUDIO_API_KEY environment variable.",
+            "query": query,
+            "urls": urls,
+        }
+    
+    if not urls:
+        return {
+            "success": False,
+            "error": "At least one URL must be provided.",
+            "query": query,
+            "urls": urls,
+        }
+
+    # TODO whitelist domains to prevent malicious urls
+
+    
+    try:
+        # Initialize the LLM with URL reading capability
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            # model="gemini-3-flash-preview",
+
+            temperature=0,
+            google_api_key=GOOGLE_AI_STUDIO_API_KEY,
+        )
+        
+        # Bind the url_context tool for native URL reading
+        llm_with_url_context = llm.bind(
+            tools=[{"url_context": {}}]
+        )
+        
+        # Build the prompt with URLs and query
+        urls_formatted = "\n".join(f"- {url}" for url in urls)
+        
+        prompt_parts = [
+            f"Question: {query}", # Repeat in begin and end
+            f"Read the following external documents:\n{urls_formatted}",
+            "",
+            f"Question: {query}", # Repeat in begin and end
+        ]
+        
+        if additional_context:
+            prompt_parts.append(f"\nAdditional instructions: {additional_context}")
+        
+        # Key instruction: prioritize literal text over rewrites
+        prompt_parts.append(
+            "\n\n## Response Instructions\n"
+            "1. PRIORITIZE LITERAL TEXT: Quote or reproduce the actual text from the documents "
+            "rather than paraphrasing or rewriting. Use verbatim excerpts where relevant.\n"
+            "2. CITE LOCATIONS: Indicate where in the document(s) the information comes from "
+            "(e.g., section numbers, page references, headings).\n"
+            "3. TRUNCATION ALLOWED: If the relevant content is extensive, you may truncate and "
+            "indicate what additional sections or content exist. Mention that follow-up queries "
+            "using the same URLs can retrieve more detail from specific sections.\n"
+            "4. STRUCTURE FOR DENSITY: Present information in a dense, structured format "
+            "(bullet points, tables, or numbered lists) rather than prose when appropriate.\n"
+            "5. NOT FOUND: If the information is not available in the provided documents, "
+            "clearly state that and list what topics/sections ARE covered that might be related."
+        )
+        
+        prompt = "\n".join(prompt_parts)
+        
+        # Invoke the model with URL context
+        response = llm_with_url_context.invoke(prompt)
+        
+        # Extract the response content
+        answer = response.content if hasattr(response, 'content') else str(response)
+        
+        return {
+            "success": True,
+            "query": query,
+            "urls": urls,
+            "answer": answer,
+        }
+        
+    except Exception as exc:
+        error_message = str(exc)
+        
+        return {
+            "success": False,
+            "error": f"Failed to query documents: {error_message}",
+            "query": query,
+            "urls": urls,
+        }

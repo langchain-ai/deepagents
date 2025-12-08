@@ -32,7 +32,9 @@ Before executing tools, analyze the user's query:
   3) Run `easa_document_retrieval` with:
      - `query`: a focused version of the user’s question (e.g., “QTG background sound tolerances for aeroplane FSTD”) You can combine it with user memory and user background information (e.g. user works only with helicopters instead of airplanes)
      - `file_ids`: the selected `file_id`s from step 2.
+     - Only use it to get overview of relevant info (do not ask for full documents)
   4) If the answer is incomplete, adjust the `query` and/or add or remove `file_id`s and call `easa_document_retrieval` again. Avoid repeatedly calling `easa_doc_finder` with minor query variations once you already have suitable `file_id`s for the current question.
+  5) To zoom in on specific information, you can use the `fetch_easa_rules_document` tool to get the full document content. Use the FS tools to find specific keywords (based on the `easa_document_retrieval` results) and read specific lines.
 
 - **For User Compliance Documents:** The file system tools to understand the folder structure and to find specific keywords (e.g., "certifying staff", "tools control").
 

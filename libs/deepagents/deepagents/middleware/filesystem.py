@@ -20,6 +20,7 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
+from deepagents.backends.composite import CompositeBackend
 
 # Re-export type here for backwards compatibility
 from deepagents.backends.protocol import BACKEND_TYPES as BACKEND_TYPES
@@ -654,9 +655,6 @@ def _supports_execution(backend: BackendProtocol) -> bool:
     Returns:
         True if the backend supports execution, False otherwise.
     """
-    # Import here to avoid circular dependency
-    from deepagents.backends.composite import CompositeBackend
-
     # For CompositeBackend, check the default backend
     if isinstance(backend, CompositeBackend):
         return isinstance(backend.default, SandboxBackendProtocol)
@@ -752,6 +750,18 @@ def _execute_tool_generator(
         func=sync_execute,
         coroutine=async_execute,
     )
+
+
+# `ls` / `glob` / `grep` will truncate their own output if too large
+# (other tools rely on general middleware truncation handling).
+# For these tools we basically don't want to offload the results to the filesystem
+# as when there are many matches, we should instead ask the LLM to refine its query.
+# (i.e., the matches from these tools when they require trunction are potentialyl more like noise)
+TOOLS_WITH_BUILTIN_TRUNCATION = (
+    "ls",
+    "glob",
+    "grep",
+)
 
 
 TOOL_GENERATORS = {
@@ -1061,7 +1071,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_WITH_BUILTIN_TRUNCATION:
             return handler(request)
 
         tool_result = handler(request)
@@ -1081,7 +1091,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_WITH_BUILTIN_TRUNCATION:
             return await handler(request)
 
         tool_result = await handler(request)

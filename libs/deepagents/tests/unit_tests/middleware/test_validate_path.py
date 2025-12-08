@@ -36,21 +36,15 @@ class TestValidatePath:
         with pytest.raises(ValueError, match="Path traversal not allowed"):
             _validate_path("~/secret.txt")
 
-    def test_windows_absolute_path_rejected_backslash(self):
-        """Test that Windows absolute paths with backslashes are rejected."""
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
-            _validate_path("C:\\Users\\Documents\\file.txt")
+    def test_windows_absolute_path_converted_backslash(self):
+        """Test that Windows absolute paths with backslashes are converted to virtual paths."""
+        assert _validate_path("C:\\Users\\Documents\\file.txt") == "/Users/Documents/file.txt"
+        assert _validate_path("F:\\git\\project\\file.txt") == "/git/project/file.txt"
 
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
-            _validate_path("F:\\git\\project\\file.txt")
-
-    def test_windows_absolute_path_rejected_forward_slash(self):
-        """Test that Windows absolute paths with forward slashes are rejected."""
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
-            _validate_path("C:/Users/Documents/file.txt")
-
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
-            _validate_path("D:/data/output.csv")
+    def test_windows_absolute_path_converted_forward_slash(self):
+        """Test that Windows absolute paths with forward slashes are converted to virtual paths."""
+        assert _validate_path("C:/Users/Documents/file.txt") == "/Users/Documents/file.txt"
+        assert _validate_path("D:/data/output.csv") == "/data/output.csv"
 
     def test_allowed_prefixes_enforcement(self):
         """Test that allowed_prefixes parameter is enforced."""

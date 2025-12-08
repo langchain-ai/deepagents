@@ -752,20 +752,34 @@ def _execute_tool_generator(
     )
 
 
-# Tools that handle their own output truncation internally.
+# Tools that should be excluded from the large result eviction logic.
 #
-# The `ls`, `glob`, and `grep` tools truncate their own output when it becomes too large,
-# unlike other tools that rely on general middleware truncation handling.
+# This tuple contains tools that should NOT have their results evicted to the filesystem
+# when they exceed token limits. Tools are excluded for different reasons:
 #
-# For these tools, we intentionally avoid offloading results to the filesystem.
-# When these tools produce truncated output due to many matches, it typically indicates
-# the query needs refinement rather than full result preservation. In such cases,
-# the truncated matches are potentially more like noise and the LLM should be prompted
-# to narrow its search criteria instead.
-TOOLS_WITH_BUILTIN_TRUNCATION = (
+# 1. Tools with built-in truncation (ls, glob, grep):
+#    These tools truncate their own output when it becomes too large. When these tools
+#    produce truncated output due to many matches, it typically indicates the query
+#    needs refinement rather than full result preservation. In such cases, the truncated
+#    matches are potentially more like noise and the LLM should be prompted to narrow
+#    its search criteria instead.
+#
+# 2. Tools with problematic truncation behavior (read_file):
+#    read_file is tricky to handle as the failure mode here are single long lines
+#    (e.g., imagine a jsonl file with very long payloads on each line). If we try to
+#    truncate the result of read_file, the agent may then attempt to re-read the
+#    truncated file using read_file again, which won't help.
+#
+# 3. Tools that never exceed limits (edit_file, write_file):
+#    These tools return minimal confirmation messages and are never expected to produce
+#    output large enough to exceed token limits, so checking them would be unnecessary.
+TOOLS_EXCLUDED_FROM_EVICTION = (
     "ls",
     "glob",
     "grep",
+    "read_file",
+    "edit_file",
+    "write_file",
 )
 
 
@@ -1076,7 +1090,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_WITH_BUILTIN_TRUNCATION:
+        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return handler(request)
 
         tool_result = handler(request)
@@ -1096,7 +1110,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_WITH_BUILTIN_TRUNCATION:
+        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return await handler(request)
 
         tool_result = await handler(request)

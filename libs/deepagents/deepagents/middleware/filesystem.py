@@ -752,11 +752,16 @@ def _execute_tool_generator(
     )
 
 
-# `ls` / `glob` / `grep` will truncate their own output if too large
-# (other tools rely on general middleware truncation handling).
-# For these tools we basically don't want to offload the results to the filesystem
-# as when there are many matches, we should instead ask the LLM to refine its query.
-# (i.e., the matches from these tools when they require trunction are potentialyl more like noise)
+# Tools that handle their own output truncation internally.
+#
+# The `ls`, `glob`, and `grep` tools truncate their own output when it becomes too large,
+# unlike other tools that rely on general middleware truncation handling.
+#
+# For these tools, we intentionally avoid offloading results to the filesystem.
+# When these tools produce truncated output due to many matches, it typically indicates
+# the query needs refinement rather than full result preservation. In such cases,
+# the truncated matches are potentially more like noise and the LLM should be prompted
+# to narrow its search criteria instead.
 TOOLS_WITH_BUILTIN_TRUNCATION = (
     "ls",
     "glob",

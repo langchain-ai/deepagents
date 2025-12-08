@@ -128,7 +128,9 @@ class Settings:
 
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
+        google_api_key: Google API key if available
         tavily_api_key: Tavily API key if available
+        siliconflow_api_key: SiliconFlow API key if available
     """
 
     # API keys
@@ -136,6 +138,7 @@ class Settings:
     anthropic_api_key: str | None
     google_api_key: str | None
     tavily_api_key: str | None
+    siliconflow_api_key: str | None
 
     # Project information
     project_root: Path | None
@@ -155,6 +158,7 @@ class Settings:
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         google_key = os.environ.get("GOOGLE_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
+        siliconflow_key = os.environ.get("SILICONFLOW_API_KEY")
 
         # Detect project
         project_root = _find_project_root(start_path)
@@ -164,28 +168,56 @@ class Settings:
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
             tavily_api_key=tavily_key,
+            siliconflow_api_key=siliconflow_key,
             project_root=project_root,
         )
 
     @property
     def has_openai(self) -> bool:
-        """Check if OpenAI API key is configured."""
-        return self.openai_api_key is not None
+        """Check if OpenAI API key is configured and not a placeholder."""
+        return (
+            self.openai_api_key is not None 
+            and self.openai_api_key.strip() 
+            and not self.openai_api_key.startswith("your_")
+            and not self.openai_api_key.startswith("sk-")
+        )
 
     @property
     def has_anthropic(self) -> bool:
-        """Check if Anthropic API key is configured."""
-        return self.anthropic_api_key is not None
+        """Check if Anthropic API key is configured and not a placeholder."""
+        return (
+            self.anthropic_api_key is not None 
+            and self.anthropic_api_key.strip() 
+            and not self.anthropic_api_key.startswith("your_")
+        )
 
     @property
     def has_google(self) -> bool:
-        """Check if Google API key is configured."""
-        return self.google_api_key is not None
+        """Check if Google API key is configured and not a placeholder."""
+        return (
+            self.google_api_key is not None 
+            and self.google_api_key.strip() 
+            and not self.google_api_key.startswith("your_")
+        )
 
     @property
     def has_tavily(self) -> bool:
-        """Check if Tavily API key is configured."""
-        return self.tavily_api_key is not None
+        """Check if Tavily API key is configured and not a placeholder."""
+        return (
+            self.tavily_api_key is not None 
+            and self.tavily_api_key.strip() 
+            and len(self.tavily_api_key) > 10
+        )
+
+    @property
+    def has_siliconflow(self) -> bool:
+        """Check if SiliconFlow API key is configured and not a placeholder."""
+        return (
+            self.siliconflow_api_key is not None 
+            and self.siliconflow_api_key.strip() 
+            and not self.siliconflow_api_key.startswith("your_")
+            and self.siliconflow_api_key.startswith("sk-")
+        )
 
     @property
     def has_project(self) -> bool:
@@ -357,7 +389,7 @@ def get_default_coding_instructions() -> str:
     Long-term memory (agent.md) is handled separately by the middleware.
     """
     default_prompt_path = Path(__file__).parent / "default_agent_prompt.md"
-    return default_prompt_path.read_text()
+    return default_prompt_path.read_text(encoding='utf-8')
 
 
 def create_model() -> BaseChatModel:
@@ -371,6 +403,16 @@ def create_model() -> BaseChatModel:
     Raises:
         SystemExit if no API key is configured
     """
+    if settings.has_siliconflow:
+        from langchain_openai import ChatOpenAI
+
+        model_name = os.environ.get("SILICONFLOW_MODEL", "Qwen/Qwen2.5-72B-Instruct")
+        console.print(f"[dim]Using SiliconFlow model: {model_name}[/dim]")
+        return ChatOpenAI(
+            model=model_name,
+            base_url="https://api.siliconflow.cn/v1",
+            api_key=settings.siliconflow_api_key,
+        )
     if settings.has_openai:
         from langchain_openai import ChatOpenAI
 
@@ -402,9 +444,10 @@ def create_model() -> BaseChatModel:
         )
     console.print("[bold red]Error:[/bold red] No API key configured.")
     console.print("\nPlease set one of the following environment variables:")
-    console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
-    console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-    console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
+    console.print("  - OPENAI_API_KEY        (for OpenAI models like gpt-5-mini)")
+    console.print("  - ANTHROPIC_API_KEY     (for Claude models)")
+    console.print("  - GOOGLE_API_KEY        (for Google Gemini models)")
+    console.print("  - SILICONFLOW_API_KEY   (for SiliconFlow models)")
     console.print("\nExample:")
     console.print("  export OPENAI_API_KEY=your_api_key_here")
     console.print("\nOr add it to your .env file.")

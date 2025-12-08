@@ -1376,7 +1376,7 @@ class TestBuiltinTruncationTools:
         assert result.content == large_content
 
     def test_non_builtin_truncation_tool_evicted(self):
-        """Test that tools NOT in TOOLS_WITH_BUILTIN_TRUNCATION are evicted to filesystem."""
+        """Test that tools NOT in TOOLS_EXCLUDED_FROM_EVICTION are evicted to filesystem."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)  # Very low limit
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_custom_123", store=None, stream_writer=lambda _: None, config={})
@@ -1389,7 +1389,7 @@ class TestBuiltinTruncationTools:
         def mock_handler(request):
             return large_result
 
-        # Create a request for a tool NOT in TOOLS_WITH_BUILTIN_TRUNCATION
+        # Create a request for a tool NOT in TOOLS_EXCLUDED_FROM_EVICTION
         request = ToolCallRequest(
             runtime=runtime,
             tool_call={"id": "test_custom_123", "name": "custom_tool", "args": {"input": "test"}},

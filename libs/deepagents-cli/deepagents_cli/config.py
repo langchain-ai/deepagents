@@ -129,7 +129,6 @@ class Settings:
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
         tavily_api_key: Tavily API key if available
-        model_provider: Normalized provider string from DEEPAGENTS_MODEL_PROVIDER
     """
 
     # API keys
@@ -137,7 +136,6 @@ class Settings:
     anthropic_api_key: str | None
     google_api_key: str | None
     tavily_api_key: str | None
-    model_provider: str | None
 
     # Project information
     project_root: Path | None
@@ -157,9 +155,6 @@ class Settings:
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         google_key = os.environ.get("GOOGLE_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
-        model_provider = os.environ.get("DEEPAGENTS_MODEL_PROVIDER")
-        if model_provider:
-            model_provider = model_provider.strip().lower() or None
 
         # Detect project
         project_root = _find_project_root(start_path)
@@ -169,7 +164,6 @@ class Settings:
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
             tavily_api_key=tavily_key,
-            model_provider=model_provider,
             project_root=project_root,
         )
 
@@ -192,17 +186,6 @@ class Settings:
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
         return self.tavily_api_key is not None
-
-    @property
-    def configured_model_provider(self) -> str | None:
-        """Return the normalized model provider if configured."""
-        return self.model_provider
-
-    def is_model_provider(self, provider: str) -> bool:
-        """Case-insensitive check for the configured model provider."""
-        if not self.model_provider:
-            return False
-        return self.model_provider == provider.lower()
 
     @property
     def has_project(self) -> bool:
@@ -388,15 +371,8 @@ def create_model() -> BaseChatModel:
     Raises:
         SystemExit if no API key is configured
     """
-    provider = settings.configured_model_provider
-    if provider and provider not in {"openai", "anthropic", "google", "ollama"}:
-        console.print(
-            f"[bold red]Error:[/bold red] Unsupported DEEPAGENTS_MODEL_PROVIDER='{provider}'. "
-            "Supported values are: openai, anthropic, google, ollama."
-        )
-        sys.exit(1)
-
-    if provider == "ollama":
+    ollama_model = os.environ.get("OLLAMA_MODEL")
+    if ollama_model:
         try:
             from langchain_ollama import ChatOllama
         except ImportError as exc:  # pragma: no cover - dependency error
@@ -408,60 +384,12 @@ def create_model() -> BaseChatModel:
             )
             raise SystemExit(1) from exc
 
-        model_name = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
         base_url = os.environ.get("OLLAMA_BASE_URL")
-        console.print(f"[dim]Using Ollama model: {model_name}[/dim]")
-        init_kwargs = {"model": model_name, "temperature": 0}
+        console.print(f"[dim]Using Ollama model: {ollama_model}[/dim]")
+        init_kwargs = {"model": ollama_model, "temperature": 0}
         if base_url:
             init_kwargs["base_url"] = base_url
         return ChatOllama(**init_kwargs)
-
-    if provider == "openai":
-        if not settings.has_openai:
-            console.print(
-                "[bold red]Error:[/bold red] OPENAI_API_KEY is required when DEEPAGENTS_MODEL_PROVIDER=openai."
-            )
-            sys.exit(1)
-        from langchain_openai import ChatOpenAI
-
-        model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-        console.print(f"[dim]Using OpenAI model: {model_name}[/dim]")
-        return ChatOpenAI(
-            model=model_name,
-        )
-
-    if provider == "anthropic":
-        if not settings.has_anthropic:
-            console.print(
-                "[bold red]Error:[/bold red] ANTHROPIC_API_KEY is required when DEEPAGENTS_MODEL_PROVIDER=anthropic."
-            )
-            sys.exit(1)
-        from langchain_anthropic import ChatAnthropic
-
-        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        console.print(f"[dim]Using Anthropic model: {model_name}[/dim]")
-        return ChatAnthropic(
-            model_name=model_name,
-            # The attribute exists, but it has a Pydantic alias which
-            # causes issues in IDEs/type checkers.
-            max_tokens=20_000,  # type: ignore[arg-type]
-        )
-
-    if provider == "google":
-        if not settings.has_google:
-            console.print(
-                "[bold red]Error:[/bold red] GOOGLE_API_KEY is required when DEEPAGENTS_MODEL_PROVIDER=google."
-            )
-            sys.exit(1)
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
-        console.print(f"[dim]Using Google Gemini model: {model_name}[/dim]")
-        return ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=0,
-            max_tokens=None,
-        )
 
     if settings.has_openai:
         from langchain_openai import ChatOpenAI
@@ -497,8 +425,9 @@ def create_model() -> BaseChatModel:
     console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
     console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
     console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
-    console.print("  - Or configure Ollama: set DEEPAGENTS_MODEL_PROVIDER=ollama")
-    console.print("    (optional: OLLAMA_MODEL, OLLAMA_BASE_URL)")
+    console.print(
+        "  - Or configure Ollama: set OLLAMA_MODEL (optional: OLLAMA_BASE_URL)"
+    )
     console.print("\nExample:")
     console.print("  export OPENAI_API_KEY=your_api_key_here")
     console.print("\nOr add it to your .env file.")

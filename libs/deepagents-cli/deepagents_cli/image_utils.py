@@ -56,7 +56,7 @@ def _get_macos_clipboard_image() -> ImageData | None:
     # Try pngpaste first (fast if installed)
     try:
         result = subprocess.run(
-            ["pngpaste", "-"],  # Output to stdout
+            ["pngpaste", "-"],
             capture_output=True,
             check=False,
             timeout=2,
@@ -68,7 +68,7 @@ def _get_macos_clipboard_image() -> ImageData | None:
                 base64_data = base64.b64encode(result.stdout).decode("utf-8")
                 return ImageData(
                     base64_data=base64_data,
-                    format="png",
+                    format="png",  # 'pngpaste -' always outputs PNG
                     placeholder="[image]",
                 )
             except Exception:

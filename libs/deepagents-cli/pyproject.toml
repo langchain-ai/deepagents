@@ -1,23 +1,23 @@
 [project]
 name = "deepagents-cli"
-version = "0.0.9"
+version = "0.0.10"
 description = "Deepagents CLI"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "deepagents==0.2.7",
+  "deepagents==0.3.0",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",
   "langchain-openai>=0.1.0",
-  "langchain-google-genai",
   "tavily-python",
   "python-dotenv",
   "daytona>=0.113.0",
   "modal>=0.65.0",
   "markdownify>=0.13.0",
-  "langchain>=1.0.7",
+  "langchain>=1.1.3",
+  "runloop-api-client>=0.69.0",
 ]
 
 [project.scripts]
@@ -106,6 +106,7 @@ ignore-var-parameters = true
     "S311",    # Allow pseudo-random generators in tests
     "ANN201",  # Missing return type annotation
     "INP001",  # Implicit namespace package
+    "PLR2004", # Magic value comparisons are fine in tests
 ]
 
 [tool.pytest.ini_options]

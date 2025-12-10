@@ -113,6 +113,42 @@ def _find_project_agent_md(project_root: Path) -> list[Path]:
     return paths
 
 
+def _find_agents_md(start_path: Path | None = None, project_root: Path | None = None) -> list[Path]:
+    """Find AGENTS.md files hierarchically from current directory up to project root.
+
+    Following the AGENTS.md specification:
+    - Searches from current working directory up to (but not including) project root
+    - For monorepos, nested AGENTS.md files take precedence over parent ones
+    - All found files are returned in order from most specific (current dir) to least (near project root)
+
+    Args:
+        start_path: Directory to start searching from. Defaults to current working directory.
+        project_root: Project root directory. Searching stops before reaching this. Defaults to None.
+
+    Returns:
+        List of paths to AGENTS.md files, ordered from most specific to least specific.
+    """
+    current = Path(start_path or Path.cwd()).resolve()
+    agents_md_files = []
+
+    # If we have a project root, resolve it
+    if project_root:
+        project_root = project_root.resolve()
+
+    # Walk up the directory tree
+    for parent in [current, *list(current.parents)]:
+        # Stop before reaching project root (project root itself is not included)
+        if project_root and parent == project_root:
+            break
+
+        # Check for AGENTS.md in this directory
+        agents_md = parent / "AGENTS.md"
+        if agents_md.exists():
+            agents_md_files.append(agents_md)
+
+    return agents_md_files
+
+
 @dataclass
 class Settings:
     """Global settings and environment detection for deepagents-cli.
@@ -328,6 +364,25 @@ class Settings:
         skills_dir = self.get_project_skills_dir()
         skills_dir.mkdir(parents=True, exist_ok=True)
         return skills_dir
+
+    def get_agents_md_files(self, start_path: Path | None = None) -> list[Path]:
+        """Get all AGENTS.md files hierarchically from current directory to project root.
+
+        Following the AGENTS.md specification, this searches from the current working
+        directory (or start_path) up to (but not including) the project root, collecting
+        all AGENTS.md files found. Files are returned in order from most specific
+        (current directory) to least specific (nearest to project root).
+
+        For monorepos, this allows nested AGENTS.md files to provide subproject-specific
+        context while still including parent directory guidance.
+
+        Args:
+            start_path: Directory to start searching from. Defaults to current working directory.
+
+        Returns:
+            List of paths to AGENTS.md files, ordered from most specific to least specific.
+        """
+        return _find_agents_md(start_path=start_path, project_root=self.project_root)
 
 
 # Global settings instance (initialized once)

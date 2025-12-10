@@ -18,12 +18,21 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.lexers import Lexer
+
+# contains many punctuation used as natural sentence delimiters in multiple languages
+MULTILINGUAL_PATH_TERMINATORS = ",，。．！？!?、；;：:（）()【】［］[]{}<>「」『』“”‘’\"'`~·…"
+TERMINATOR_CLASS = re.escape(MULTILINGUAL_PATH_TERMINATORS)
+PATH_CHAR_CLASS = r"A-Za-z0-9._~/\\:-"
 
 from .config import COLORS, COMMANDS, SessionState, console
 
 # Regex patterns for context-aware completion
-AT_MENTION_RE = re.compile(r"@(?P<path>(?:[^\s@]|(?<=\\)\s)*)$")
+AT_MENTION_RE = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])*)$")
 SLASH_COMMAND_RE = re.compile(r"^/(?P<command>[a-z]*)$")
+# Shared mention parser for injecting file content
+FILE_MENTION_PATTERN = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])+)")
+INPUT_HIGHLIGHT_PATTERN = re.compile(r"(^\/[a-zA-Z0-9_-]+|@(?:\\.|[" + PATH_CHAR_CLASS + r"])+)")
 
 EXIT_CONFIRM_WINDOW = 3.0
 
@@ -101,29 +110,66 @@ class CommandCompleter(Completer):
                 )
 
 
+class MentionHighlightLexer(Lexer):
+    """Highlight slash commands and @file mentions in the prompt."""
+
+    def lex_document(self, document):
+        lines = document.lines
+        default_style = f"fg:{COLORS['user']}"
+        path_style = f"bold fg:{COLORS['primary']}"
+        command_style = f"bold fg:{COLORS['tool']}"
+
+        def get_line(i: int):
+            if i >= len(lines):
+                return []
+
+            line = lines[i]
+            tokens: list[tuple[str, str]] = []
+            last_index = 0
+
+            for match in INPUT_HIGHLIGHT_PATTERN.finditer(line):
+                start, end = match.span()
+                if start > last_index:
+                    tokens.append((default_style, line[last_index:start]))
+
+                token_text = match.group()
+                if token_text.startswith("/") and start == 0 and i == 0:
+                    tokens.append((command_style, token_text))
+                elif token_text.startswith("@"):
+                    tokens.append((path_style, token_text))
+                else:
+                    tokens.append((default_style, token_text))
+                last_index = end
+
+            if last_index < len(line):
+                tokens.append((default_style, line[last_index:]))
+
+            return tokens
+
+        return get_line
+
+
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     """Extract @file mentions and return cleaned text with resolved file paths."""
-    pattern = r"@((?:[^\s@]|(?<=\\)\s)+)"  # Match @filename, allowing escaped spaces
-    matches = re.findall(pattern, text)
+    matches = re.finditer(FILE_MENTION_PATTERN, text)
 
     files = []
     for match in matches:
-        # Remove escape characters
-        clean_path = match.replace("\\ ", " ")
+        raw_path = match.group("path")
+        clean_path = raw_path.replace("\\ ", " ")
         path = Path(clean_path).expanduser()
 
-        # Try to resolve relative to cwd
         if not path.is_absolute():
             path = Path.cwd() / path
 
         try:
-            path = path.resolve()
-            if path.exists() and path.is_file():
-                files.append(path)
+            resolved = path.resolve()
+            if resolved.exists() and resolved.is_file():
+                files.append(resolved)
             else:
-                console.print(f"[yellow]Warning: File not found: {match}[/yellow]")
+                console.print(f"[yellow]Warning: File not found: {raw_path}[/yellow]")
         except Exception as e:
-            console.print(f"[yellow]Warning: Invalid path {match}: {e}[/yellow]")
+            console.print(f"[yellow]Warning: Invalid path {raw_path}: {e}[/yellow]")
 
     return text, files
 
@@ -305,6 +351,7 @@ def create_prompt_session(_assistant_id: str, session_state: SessionState) -> Pr
         multiline=True,  # Keep multiline support but Enter submits
         key_bindings=kb,
         completer=merge_completers([CommandCompleter(), FilePathCompleter()]),
+        lexer=MentionHighlightLexer(),
         editing_mode=EditingMode.EMACS,
         complete_while_typing=True,  # Show completions as you type
         complete_in_thread=True,  # Async completion prevents menu freezing

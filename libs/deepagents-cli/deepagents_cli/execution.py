@@ -23,8 +23,8 @@ from rich.panel import Panel
 
 from deepagents_cli.config import COLORS, console
 from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
-from deepagents_cli.input import parse_file_mentions, ImageTracker
 from deepagents_cli.image_utils import create_multimodal_content
+from deepagents_cli.input import ImageTracker, parse_file_mentions
 from deepagents_cli.ui import (
     TokenTracker,
     format_tool_display,
@@ -43,8 +43,9 @@ def _display_user_message_with_images(text: str) -> None:
     Args:
         text: User message text potentially containing [image] or [image N] placeholders
     """
-    from rich.text import Text
     import re
+
+    from rich.text import Text
 
     # Pattern to match [image] or [image N]
     pattern = r"(\[image(?:\s+\d+)?\])"

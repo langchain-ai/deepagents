@@ -18,10 +18,9 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.clipboard import ClipboardData
 
 from .config import COLORS, COMMANDS, SessionState, console
-from .image_utils import get_clipboard_image, ImageData
+from .image_utils import ImageData, get_clipboard_image
 
 # Regex patterns for context-aware completion
 AT_MENTION_RE = re.compile(r"@(?P<path>(?:[^\s@]|(?<=\\)\s)*)$")
@@ -222,7 +221,9 @@ def get_bottom_toolbar(
     return toolbar
 
 
-def create_prompt_session(_assistant_id: str, session_state: SessionState, image_tracker: ImageTracker | None = None) -> PromptSession:
+def create_prompt_session(
+    _assistant_id: str, session_state: SessionState, image_tracker: ImageTracker | None = None
+) -> PromptSession:
     """Create a configured PromptSession with all features."""
     # Set default editor if not already set
     if "EDITOR" not in os.environ:

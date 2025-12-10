@@ -4,7 +4,6 @@ import base64
 import io
 from unittest.mock import MagicMock, patch
 
-import pytest
 from PIL import Image
 
 from deepagents_cli.image_utils import (
@@ -240,8 +239,6 @@ class TestGetClipboardImage:
     @patch("deepagents_cli.image_utils.subprocess.run")
     def test_pngpaste_not_installed_falls_back(self, mock_run: MagicMock) -> None:
         """Test fallback to osascript when pngpaste is not installed."""
-        from subprocess import TimeoutExpired
-
         # First call (pngpaste) raises FileNotFoundError
         # Second call (osascript clipboard info) returns no image info
         mock_run.side_effect = [
@@ -259,9 +256,7 @@ class TestGetClipboardImage:
     @patch("deepagents_cli.image_utils.sys.platform", "darwin")
     @patch("deepagents_cli.image_utils._get_clipboard_via_osascript")
     @patch("deepagents_cli.image_utils.subprocess.run")
-    def test_no_image_in_clipboard(
-        self, mock_run: MagicMock, mock_osascript: MagicMock
-    ) -> None:
+    def test_no_image_in_clipboard(self, mock_run: MagicMock, mock_osascript: MagicMock) -> None:
         """Test behavior when clipboard has no image."""
         # pngpaste fails
         mock_run.return_value = MagicMock(returncode=1, stdout=b"")

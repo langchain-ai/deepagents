@@ -113,21 +113,21 @@ def _get_clipboard_via_osascript() -> ImageData | None:
 
         # Try to get PNG first, fall back to TIFF
         if "pngf" in clipboard_info:
-            get_script = f'''
+            get_script = f"""
             set pngData to the clipboard as «class PNGf»
             set theFile to open for access POSIX file "{temp_path}" with write permission
             write pngData to theFile
             close access theFile
             return "success"
-            '''
+            """
         else:
-            get_script = f'''
+            get_script = f"""
             set tiffData to the clipboard as TIFF picture
             set theFile to open for access POSIX file "{temp_path}" with write permission
             write tiffData to theFile
             close access theFile
             return "success"
-            '''
+            """
 
         result = subprocess.run(
             ["osascript", "-e", get_script],

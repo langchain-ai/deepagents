@@ -19,7 +19,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.execution import execute_task
-from deepagents_cli.input import create_prompt_session
+from deepagents_cli.input import create_prompt_session, ImageTracker
 from deepagents_cli.integrations.sandbox_factory import (
     create_sandbox,
     get_default_working_dir,
@@ -221,8 +221,9 @@ async def simple_cli(
 
     console.print()
 
-    # Create prompt session and token tracker
-    session = create_prompt_session(assistant_id, session_state)
+    # Create prompt session, image tracker, and token tracker
+    image_tracker = ImageTracker()
+    session = create_prompt_session(assistant_id, session_state, image_tracker=image_tracker)
     token_tracker = TokenTracker()
     token_tracker.set_baseline(baseline_tokens)
 
@@ -264,7 +265,7 @@ async def simple_cli(
             break
 
         await execute_task(
-            user_input, agent, assistant_id, session_state, token_tracker, backend=backend
+            user_input, agent, assistant_id, session_state, token_tracker, backend=backend, image_tracker=image_tracker
         )
 
 

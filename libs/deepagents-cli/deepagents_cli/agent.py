@@ -16,7 +16,7 @@ from langchain.agents.middleware import (
     # FilesystemFileSearchMiddleware,
     # HumanInTheLoopMiddleware,
     # LLMToolEmulator,
-    # LLMToolSelectorMiddleware,
+    LLMToolSelectorMiddleware,
     # ModelCallLimitMiddleware,
     # ModelFallbackMiddleware,
     # PIIMiddleware,
@@ -354,6 +354,11 @@ def create_agent_with_config(
             ContextEditingMiddleware(
                 edits=[ClearToolUsesEdit(trigger=100_000, keep=3)],
             ),  # clears older tool outputs when tokens climb toward limits
+            LLMToolSelectorMiddleware(
+                model=model,
+                max_tools=8,
+                always_include=["shell", "write_file", "read_file", "edit_file"],
+            ),  # uses a fast/cheap model (Gemini Flash) to pre-filter relevant tools
             # PIIMiddleware(
             #     "email",
             #     strategy="redact",
@@ -405,6 +410,11 @@ def create_agent_with_config(
         agent_middleware = [
             AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
             SkillsMiddleware(skills_dir=skills_dir, assistant_id=assistant_id),
+            LLMToolSelectorMiddleware(
+                model=model,
+                max_tools=8,
+                always_include=["shell", "execute", "write_file", "read_file", "edit_file"],
+            ),  # uses a fast/cheap model (Gemini Flash) to pre-filter relevant tools
             # ContextEditingMiddleware(
             #     edits=[ClearToolUsesEdit(trigger=100_000, keep=3)],
             # ),  # clears older tool outputs when tokens climb toward limits

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import sys
 import termios
 import tty
@@ -20,6 +21,7 @@ from pydantic import TypeAdapter, ValidationError
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.text import Text
 
 from deepagents_cli.config import COLORS, console
 from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
@@ -43,10 +45,6 @@ def _display_user_message_with_images(text: str) -> None:
     Args:
         text: User message text potentially containing [image] or [image N] placeholders
     """
-    import re
-
-    from rich.text import Text
-
     # Pattern to match [image] or [image N]
     pattern = r"(\[image(?:\s+\d+)?\])"
 

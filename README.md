@@ -158,7 +158,7 @@ For complex cases, pass a pre-built LangGraph graph:
 ```python
 from deepagents import CompiledSubAgent, create_deep_agent
 
-custom_graph = create_agent(model=..., tools=..., prompt=...)
+custom_graph = create_agent(model=..., tools=..., system_prompt=...)
 
 agent = create_deep_agent(
     subagents=[CompiledSubAgent(

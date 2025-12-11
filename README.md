@@ -23,6 +23,7 @@ Set `TAVILY_API_KEY` in your environment ([get one here](https://www.tavily.com/
 ```python
 import os
 from deepagents import create_deep_agent
+from tavily import TavilyClient
 
 tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 

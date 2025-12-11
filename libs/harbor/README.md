@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository demonstrates how to evaluate and improve your DeepAgent harness using [Harbor](https://github.com/HarborAI/harbor) and [LangSmith](https://smith.langchain.com).
+This repository demonstrates how to evaluate and improve your DeepAgent harness using [Harbor](https://github.com/laude-institute/harbor) and [LangSmith](https://smith.langchain.com).
 
 ### What is Harbor?
 
@@ -15,7 +15,7 @@ Harbor is an evaluation framework that simplifies running agents on challenging 
 
 ### What is Terminal Bench 2.0?
 
-[Terminal Bench 2.0](https://github.com/HarborAI/harbor) is an evaluation benchmark that measures agent capabilities across several domains, testing how well an agent operates using a computer environment, primarily via the terminal. The benchmark includes 90+ tasks across domains like software engineering, biology, security, gaming, and more.
+[Terminal Bench 2.0](https://github.com/laude-institute/terminal-bench-2) is an evaluation benchmark that measures agent capabilities across several domains, testing how well an agent operates using a computer environment, primarily via the terminal. The benchmark includes 90+ tasks across domains like software engineering, biology, security, gaming, and more.
 
 **Example tasks:**
 - `path-tracing`: Reverse-engineer C program from rendered image
@@ -156,5 +156,5 @@ Makefile shortcuts are available for common workflows:
 ## Resources
 
 - [DeepAgents Documentation](https://docs.langchain.com/oss/python/deepagents/overview)
-- [Harbor GitHub](https://github.com/HarborAI/harbor)
+- [Harbor GitHub](https://github.com/laude-institute/harbor)
 - [LangSmith](https://smith.langchain.com)

@@ -374,7 +374,7 @@ def create_model() -> BaseChatModel:
     if settings.has_openai:
         from langchain_openai import ChatOpenAI
 
-        model_name = os.environ.get("OPENAI_MODEL", "gpt-5.1")
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-5.2")
         console.print(f"[dim]Using OpenAI model: {model_name}[/dim]")
         return ChatOpenAI(
             model=model_name,
@@ -402,7 +402,7 @@ def create_model() -> BaseChatModel:
         )
     console.print("[bold red]Error:[/bold red] No API key configured.")
     console.print("\nPlease set one of the following environment variables:")
-    console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5.1)")
+    console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5.2)")
     console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
     console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
     console.print("\nExample:")

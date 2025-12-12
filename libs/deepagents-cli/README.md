@@ -53,6 +53,17 @@ deepagents --sandbox-id dbx_123   # reuse existing sandbox
 
 Type naturally as you would in a chat interface. The agent will use its built-in tools, skills, and memory to help you with tasks. 
 
+### Local Ollama
+
+The CLI loads environment variables from a local `.env` file via `python-dotenv`. To run with a local Ollama model instead of a hosted provider (ensure `langchain-ollama` is installed):
+
+```bash
+OLLAMA_MODEL=llama3.1:8b         # Any model available in your Ollama install
+OLLAMA_BASE_URL=http://127.0.0.1:11434  # Optional; defaults to the local Ollama endpoint
+```
+
+Save these values in `.env` (or export them in your shell), ensure Ollama is running locally, and launch the CLI with `uv run deepagents` or `deepagents`. The CLI detects `OLLAMA_MODEL` and uses `langchain-ollama` under the hood.
+
 ## Built-in Tools
 
 The agent comes with the following built-in tools (always available without configuration):

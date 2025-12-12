@@ -371,6 +371,26 @@ def create_model() -> BaseChatModel:
     Raises:
         SystemExit if no API key is configured
     """
+    ollama_model = os.environ.get("OLLAMA_MODEL")
+    if ollama_model:
+        try:
+            from langchain_ollama import ChatOllama
+        except ImportError as exc:  # pragma: no cover - dependency error
+            console.print(
+                "[bold red]Error:[/bold red] Missing optional dependency 'langchain-ollama'."
+            )
+            console.print(
+                "Install it with `uv pip install langchain-ollama` or add it to your environment."
+            )
+            raise SystemExit(1) from exc
+
+        base_url = os.environ.get("OLLAMA_BASE_URL")
+        console.print(f"[dim]Using Ollama model: {ollama_model}[/dim]")
+        init_kwargs = {"model": ollama_model, "temperature": 0}
+        if base_url:
+            init_kwargs["base_url"] = base_url
+        return ChatOllama(**init_kwargs)
+
     if settings.has_openai:
         from langchain_openai import ChatOpenAI
 
@@ -405,6 +425,9 @@ def create_model() -> BaseChatModel:
     console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
     console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
     console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
+    console.print(
+        "  - Or configure Ollama: set OLLAMA_MODEL (optional: OLLAMA_BASE_URL)"
+    )
     console.print("\nExample:")
     console.print("  export OPENAI_API_KEY=your_api_key_here")
     console.print("\nOr add it to your .env file.")

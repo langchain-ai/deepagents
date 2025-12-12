@@ -101,7 +101,7 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
 
     This function is designed for virtual filesystem paths and rejects
     Windows absolute paths (e.g., C:/..., F:/...) to maintain consistency
-    and prevent path format ambiguity.
+    and prevent path format ambiguity. (Modified to support windows path)
 
     Args:
         path: The path to validate and normalize.
@@ -129,13 +129,14 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
     if ".." in path or path.startswith("~"):
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)
-
-    # Reject Windows absolute paths (e.g., C:\..., D:/...)
-    # This maintains consistency in virtual filesystem paths
-    if re.match(r"^[a-zA-Z]:", path):
-        msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
-        raise ValueError(msg)
-
+    
+    windows_drive_match = re.match(r"^([a-zA-Z]):[/\\](.*)$", path)
+    if windows_drive_match:
+        drive_letter = windows_drive_match.group(1).lower()
+        rest_of_path = windows_drive_match.group(2)
+        path = f"/{drive_letter}/{rest_of_path}"
+    
+    
     normalized = os.path.normpath(path)
     normalized = normalized.replace("\\", "/")
 

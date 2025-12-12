@@ -4,8 +4,6 @@ import asyncio
 import json
 import re
 import sys
-import termios
-import tty
 
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
@@ -37,6 +35,14 @@ from deepagents_cli.ui import (
 )
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+
+# Platform detection
+IS_WINDOWS = sys.platform == "win32"
+
+# Import platform-specific terminal control modules
+if not IS_WINDOWS:
+    import termios
+    import tty
 
 
 def _display_user_message_with_images(text: str) -> None:
@@ -104,6 +110,92 @@ def prompt_for_tool_approval(
     options = ["approve", "reject", "auto-accept all going forward"]
     selected = 0  # Start with approve selected
 
+    # Use platform-specific implementation
+    if IS_WINDOWS:
+        return _prompt_windows(options, selected)
+    else:
+        return _prompt_unix(options, selected)
+
+
+def _prompt_windows(options: list[str], selected: int) -> Decision | dict:
+    """Windows-specific arrow key navigation using msvcrt."""
+    try:
+        import msvcrt
+
+        # Hide cursor during menu interaction
+        sys.stdout.write("\033[?25l")
+        sys.stdout.flush()
+
+        first_render = True
+
+        while True:
+            if not first_render:
+                # Move cursor back to start of menu (up 3 lines, then to start of line)
+                sys.stdout.write("\033[3A\r")
+
+            first_render = False
+
+            # Display options vertically with ANSI color codes
+            for i, option in enumerate(options):
+                sys.stdout.write("\r\033[K")  # Clear line from cursor to end
+
+                if i == selected:
+                    if option == "approve":
+                        sys.stdout.write("\033[1;32m☑ Approve\033[0m\n")
+                    elif option == "reject":
+                        sys.stdout.write("\033[1;31m☑ Reject\033[0m\n")
+                    else:
+                        sys.stdout.write("\033[1;34m☑ Auto-accept all going forward\033[0m\n")
+                elif option == "approve":
+                    sys.stdout.write("\033[2m☐ Approve\033[0m\n")
+                elif option == "reject":
+                    sys.stdout.write("\033[2m☐ Reject\033[0m\n")
+                else:
+                    sys.stdout.write("\033[2m☐ Auto-accept all going forward\033[0m\n")
+
+            sys.stdout.flush()
+
+            # Read key on Windows
+            if msvcrt.kbhit():
+                key = msvcrt.getch()
+
+                if key == b"\xe0":  # Arrow key prefix on Windows
+                    key = msvcrt.getch()
+                    if key == b"H":  # Up arrow
+                        selected = (selected - 1) % len(options)
+                    elif key == b"P":  # Down arrow
+                        selected = (selected + 1) % len(options)
+                elif key in {b"\r", b"\n"}:  # Enter
+                    sys.stdout.write("\r\n")
+                    break
+                elif key == b"\x03":  # Ctrl+C
+                    sys.stdout.write("\r\n")
+                    raise KeyboardInterrupt
+                elif key.lower() == b"a":
+                    selected = 0
+                    sys.stdout.write("\r\n")
+                    break
+                elif key.lower() == b"r":
+                    selected = 1
+                    sys.stdout.write("\r\n")
+                    break
+
+    except ImportError:
+        # Fallback if msvcrt not available (shouldn't happen on Windows)
+        return _prompt_fallback(options, selected)
+    except KeyboardInterrupt:
+        sys.stdout.write("\r\n")
+        raise
+    finally:
+        # Show cursor again
+        sys.stdout.write("\033[?25h")
+        sys.stdout.flush()
+
+    return _selection_to_decision(selected)
+
+
+def _prompt_unix(options: list[str], selected: int) -> Decision | dict:
+    """Unix-specific arrow key navigation using termios."""
     try:
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
@@ -114,7 +206,6 @@ def prompt_for_tool_approval(
             sys.stdout.write("\033[?25l")
             sys.stdout.flush()
 
-            # Initial render flag
             first_render = True
 
             while True:
@@ -130,22 +221,16 @@ def prompt_for_tool_approval(
 
                     if i == selected:
                         if option == "approve":
-                            # Green bold with filled checkbox
                             sys.stdout.write("\033[1;32m☑ Approve\033[0m\n")
                         elif option == "reject":
-                            # Red bold with filled checkbox
                             sys.stdout.write("\033[1;31m☑ Reject\033[0m\n")
                         else:
-                            # Blue bold with filled checkbox for auto-accept
                             sys.stdout.write("\033[1;34m☑ Auto-accept all going forward\033[0m\n")
                     elif option == "approve":
-                        # Dim with empty checkbox
                         sys.stdout.write("\033[2m☐ Approve\033[0m\n")
                     elif option == "reject":
-                        # Dim with empty checkbox
                         sys.stdout.write("\033[2m☐ Reject\033[0m\n")
                     else:
-                        # Dim with empty checkbox
                         sys.stdout.write("\033[2m☐ Auto-accept all going forward\033[0m\n")
 
                 sys.stdout.flush()
@@ -162,18 +247,18 @@ def prompt_for_tool_approval(
                         elif next2 == "A":  # Up arrow
                             selected = (selected - 1) % len(options)
                 elif char in {"\r", "\n"}:  # Enter
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
+                    sys.stdout.write("\r\n")
                     break
                 elif char == "\x03":  # Ctrl+C
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
+                    sys.stdout.write("\r\n")
                     raise KeyboardInterrupt
                 elif char.lower() == "a":
                     selected = 0
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
+                    sys.stdout.write("\r\n")
                     break
                 elif char.lower() == "r":
                     selected = 1
-                    sys.stdout.write("\r\n")  # Move to start of line and add newline
+                    sys.stdout.write("\r\n")
                     break
 
         finally:
@@ -183,19 +268,33 @@ def prompt_for_tool_approval(
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     except (termios.error, AttributeError):
-        # Fallback for non-Unix systems
-        console.print("  ☐ (A)pprove  (default)")
-        console.print("  ☐ (R)eject")
-        console.print("  ☐ (Auto)-accept all going forward")
-        choice = input("\nChoice (A/R/Auto, default=Approve): ").strip().lower()
-        if choice in {"r", "reject"}:
-            selected = 1
-        elif choice in {"auto", "auto-accept"}:
-            selected = 2
-        else:
-            selected = 0
+        return _prompt_fallback(options, selected)
+    except KeyboardInterrupt:
+        sys.stdout.write("\r\n")
+        raise
 
-    # Return decision based on selection
+    return _selection_to_decision(selected)
+
+
+def _prompt_fallback(options: list[str], selected: int) -> Decision | dict:
+    """Fallback prompt for systems without arrow key support."""
+    console.print("  ☐ (A)pprove  (default)")
+    console.print("  ☐ (R)eject")
+    console.print("  ☐ (Auto)-accept all going forward")
+    choice = input("\nChoice (A/R/Auto, default=Approve): ").strip().lower()
+    
+    if choice in {"r", "reject"}:
+        selected = 1
+    elif choice in {"auto", "auto-accept"}:
+        selected = 2
+    else:
+        selected = 0
+    
+    return _selection_to_decision(selected)
+
+
+def _selection_to_decision(selected: int) -> Decision | dict:
+    """Convert selection index to Decision or auto-approve marker."""
     if selected == 0:
         return ApproveDecision(type="approve")
     if selected == 1:
@@ -268,7 +367,7 @@ async def execute_task(
         "shell": "⚡",
         "execute": "🔧",
         "web_search": "🌐",
-        "http_request": "🌍",
+        "http_request": "🌐",
         "task": "🤖",
         "write_todos": "📋",
     }
@@ -291,7 +390,7 @@ async def execute_task(
             status.stop()
             spinner_active = False
         if not has_responded:
-            console.print("●", style=COLORS["agent"], markup=False, end=" ")
+            console.print("◆", style=COLORS["agent"], markup=False, end=" ")
             has_responded = True
         markdown = Markdown(pending_text.rstrip())
         console.print(markdown, style=COLORS["agent"])
@@ -386,7 +485,7 @@ async def execute_task(
                                 status.stop()
                                 spinner_active = False
                             if not has_responded:
-                                console.print("●", style=COLORS["agent"], markup=False, end=" ")
+                                console.print("◆", style=COLORS["agent"], markup=False, end=" ")
                                 has_responded = True
                             markdown = Markdown(content)
                             console.print(markdown, style=COLORS["agent"])

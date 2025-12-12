@@ -50,10 +50,14 @@ class FilesystemBackend(BackendProtocol):
 
         Args:
             root_dir: Optional root directory for file operations. If provided,
-                     all file paths will be resolved relative to this directory.
-                     If not provided, uses the current working directory.
+                    all file paths will be resolved relative to this directory.
+                    If not provided, uses the current working directory.
         """
-        self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
+        if root_dir:
+            self.cwd = Path(root_dir).resolve()
+        else:
+            self.cwd = Path.cwd().resolve()
+    
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
@@ -71,6 +75,7 @@ class FilesystemBackend(BackendProtocol):
         Returns:
             Resolved absolute Path object
         """
+        #print(f"[DEBUG] _resolve_path input: {key}")
         if self.virtual_mode:
             vpath = key if key.startswith("/") else "/" + key
             if ".." in vpath or vpath.startswith("~"):
@@ -82,10 +87,30 @@ class FilesystemBackend(BackendProtocol):
                 raise ValueError(f"Path:{full} outside root directory: {self.cwd}") from None
             return full
 
+        # Check if this is a converted Windows path (e.g., /c/Users/...)
+        # Pattern: starts with /, followed by single letter, followed by /
+        if key.startswith("/") and len(key) > 2 and key[1].isalpha() and key[2] == "/":
+            # This might be a converted Windows path like /c/Users/...
+            # Convert back: /c/Users/... -> C:/Users/...
+            drive_letter = key[1].upper()
+            rest_path = key[3:]  # Skip /c/
+            windows_path = f"{drive_letter}:/{rest_path}"
+            resolved = Path(windows_path).resolve()
+            #print(f"[DEBUG] Converted path: {key} -> {windows_path} -> {resolved}")
+            return resolved
+        
         path = Path(key)
+
+        # If it's already an absolute path, use it directly
         if path.is_absolute():
-            return path
-        return (self.cwd / path).resolve()
+            resolved = path.resolve()
+            #print(f"[DEBUG] Absolute path: {key} -> {resolved}")
+            return resolved
+    
+        # Otherwise, resolve relative to cwd
+        resolved = (self.cwd / path).resolve()
+        #print(f"[DEBUG] Relative path: {key} -> {resolved}")
+        return resolved
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
@@ -104,7 +129,7 @@ class FilesystemBackend(BackendProtocol):
         results: list[FileInfo] = []
 
         # Convert cwd to string for comparison
-        cwd_str = str(self.cwd)
+        cwd_str = str(self.cwd).replace('\\','/')
         if not cwd_str.endswith("/"):
             cwd_str += "/"
 
@@ -117,7 +142,7 @@ class FilesystemBackend(BackendProtocol):
                 except OSError:
                     continue
 
-                abs_path = str(child_path)
+                abs_path = str(child_path).replace('\\','/')
 
                 if not self.virtual_mode:
                     # Non-virtual mode: use absolute paths
@@ -150,10 +175,9 @@ class FilesystemBackend(BackendProtocol):
                 else:
                     # Virtual mode: strip cwd prefix
                     if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        # Handle case where cwd doesn't end with /
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
+                        relative_path = abs_path[len(cwd_str):]
+                    elif abs_path.startswith(str(self.cwd).replace('\\', '/')):
+                        relative_path = abs_path[len(str(self.cwd).replace('\\', '/')):].lstrip("/")
                     else:
                         # Path is outside cwd, return as-is or skip
                         relative_path = abs_path
@@ -244,7 +268,10 @@ class FilesystemBackend(BackendProtocol):
         """Create a new file with content.
         Returns WriteResult. External storage sets files_update=None.
         """
-        resolved_path = self._resolve_path(file_path)
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except ValueError as e:
+            return WriteResult(error=f"Invalid path: {e}")
 
         if resolved_path.exists():
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
@@ -436,7 +463,7 @@ class FilesystemBackend(BackendProtocol):
                     continue
                 if not is_file:
                     continue
-                abs_path = str(matched_path)
+                abs_path = str(matched_path).replace('\\','/')
                 if not self.virtual_mode:
                     try:
                         st = matched_path.stat()
@@ -451,13 +478,13 @@ class FilesystemBackend(BackendProtocol):
                     except OSError:
                         results.append({"path": abs_path, "is_dir": False})
                 else:
-                    cwd_str = str(self.cwd)
+                    cwd_str = str(self.cwd).replace('\\','/')
                     if not cwd_str.endswith("/"):
                         cwd_str += "/"
                     if abs_path.startswith(cwd_str):
-                        relative_path = abs_path[len(cwd_str) :]
-                    elif abs_path.startswith(str(self.cwd)):
-                        relative_path = abs_path[len(str(self.cwd)) :].lstrip("/")
+                        relative_path = abs_path[len(cwd_str):]
+                    elif abs_path.startswith(str(self.cwd).replace('\\', '/')):
+                        relative_path = abs_path[len(str(self.cwd).replace('\\', '/')):].lstrip("/")
                     else:
                         relative_path = abs_path
                     virt = "/" + relative_path

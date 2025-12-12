@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import sys
 import termios
 import tty
@@ -20,10 +21,12 @@ from pydantic import TypeAdapter, ValidationError
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.text import Text
 
 from deepagents_cli.config import COLORS, console
 from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
-from deepagents_cli.input import parse_file_mentions
+from deepagents_cli.image_utils import create_multimodal_content
+from deepagents_cli.input import ImageTracker, parse_file_mentions
 from deepagents_cli.ui import (
     TokenTracker,
     format_tool_display,
@@ -34,6 +37,30 @@ from deepagents_cli.ui import (
 )
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+
+
+def _display_user_message_with_images(text: str) -> None:
+    """Display user message with image placeholders colored in magenta.
+
+    Args:
+        text: User message text potentially containing [image] or [image N] placeholders
+    """
+    # Pattern to match [image] or [image N]
+    pattern = r"(\[image(?:\s+\d+)?\])"
+
+    # Split text by pattern and build Rich Text object
+    parts = re.split(pattern, text)
+    rich_text = Text()
+
+    for part in parts:
+        if re.match(pattern, part):
+            # This is an image placeholder - render in magenta
+            rich_text.append(part, style="#ff00ff")
+        else:
+            # Regular text - render in user color
+            rich_text.append(part, style=COLORS["user"])
+
+    console.print(rich_text)
 
 
 def prompt_for_tool_approval(
@@ -184,6 +211,7 @@ async def execute_task(
     session_state,
     token_tracker: TokenTracker | None = None,
     backend=None,
+    image_tracker: ImageTracker | None = None,
 ) -> None:
     """Execute any task by passing it directly to the AI agent."""
     # Parse file mentions and inject content if any
@@ -206,6 +234,15 @@ async def execute_task(
         final_input = "\n".join(context_parts)
     else:
         final_input = prompt_text
+
+    # Include images in the message content
+    images_to_send = []
+    if image_tracker:
+        images_to_send = image_tracker.get_images()
+    if images_to_send:
+        message_content = create_multimodal_content(final_input, images_to_send)
+    else:
+        message_content = final_input
 
     config = {
         "configurable": {"thread_id": session_state.thread_id},
@@ -260,8 +297,16 @@ async def execute_task(
         console.print(markdown, style=COLORS["agent"])
         pending_text = ""
 
+    # Display user input with colored image placeholders
+    _display_user_message_with_images(final_input)
+
+    # Clear images from tracker after creating the message
+    # (they've been encoded into the message content)
+    if image_tracker:
+        image_tracker.clear()
+
     # Stream input - may need to loop if there are interrupts
-    stream_input = {"messages": [{"role": "user", "content": final_input}]}
+    stream_input = {"messages": [{"role": "user", "content": message_content}]}
 
     try:
         while True:

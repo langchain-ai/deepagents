@@ -344,6 +344,8 @@ class FileOpTracker:
             offset = record.args.get("offset")
             limit = record.args.get("limit")
             if isinstance(offset, int):
+                if offset > lines:
+                    offset = lines
                 record.metrics.start_line = offset + 1
                 if lines:
                     record.metrics.end_line = offset + lines

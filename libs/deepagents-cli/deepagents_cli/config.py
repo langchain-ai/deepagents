@@ -129,6 +129,8 @@ class Settings:
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
         tavily_api_key: Tavily API key if available
+        deepagents_langchain_project: LangSmith project name for deepagents agent tracing
+        user_langchain_project: Original LANGSMITH_PROJECT from environment (for user code)
     """
 
     # API keys
@@ -136,6 +138,10 @@ class Settings:
     anthropic_api_key: str | None
     google_api_key: str | None
     tavily_api_key: str | None
+
+    # LangSmith configuration
+    deepagents_langchain_project: str | None  # For deepagents agent tracing
+    user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
 
     # Project information
     project_root: Path | None
@@ -156,6 +162,12 @@ class Settings:
         google_key = os.environ.get("GOOGLE_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
 
+        # Detect LangSmith configuration
+        # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
+        # LANGSMITH_PROJECT: Preserve original for user's code (e.g., shell commands)
+        deepagents_langchain_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+        user_langchain_project = os.environ.get("LANGSMITH_PROJECT")
+
         # Detect project
         project_root = _find_project_root(start_path)
 
@@ -164,6 +176,8 @@ class Settings:
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
             tavily_api_key=tavily_key,
+            deepagents_langchain_project=deepagents_langchain_project,
+            user_langchain_project=user_langchain_project,
             project_root=project_root,
         )
 
@@ -186,6 +200,11 @@ class Settings:
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
         return self.tavily_api_key is not None
+
+    @property
+    def has_deepagents_langchain_project(self) -> bool:
+        """Check if deepagents LangChain project name is configured."""
+        return self.deepagents_langchain_project is not None
 
     @property
     def has_project(self) -> bool:

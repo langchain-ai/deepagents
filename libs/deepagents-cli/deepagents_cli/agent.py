@@ -409,10 +409,16 @@ def create_cli_agent(
 
         # Add shell middleware (only in local mode)
         if enable_shell:
+            # Create environment for shell commands
+            # Restore user's original LANGCHAIN_PROJECT so their code traces separately
+            shell_env = os.environ.copy()
+            if settings.user_langchain_project:
+                shell_env["LANGCHAIN_PROJECT"] = settings.user_langchain_project
+
             agent_middleware.append(
                 ShellMiddleware(
                     workspace_root=str(Path.cwd()),
-                    env=os.environ,
+                    env=shell_env,
                 )
             )
     else:

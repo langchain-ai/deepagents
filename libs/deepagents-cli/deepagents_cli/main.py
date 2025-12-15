@@ -189,6 +189,15 @@ async def simple_cli(
         )
         console.print()
 
+    if settings.has_deepagents_langchain_project:
+        console.print(
+            f"[green]✓ LangSmith tracing enabled:[/green] Deepagents → '{settings.deepagents_langchain_project}'",
+            style=COLORS["dim"],
+        )
+        if settings.user_langchain_project:
+            console.print(f"  [dim]User code (shell) → '{settings.user_langchain_project}'[/dim]")
+        console.print()
+
     console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
 
     if sandbox_type:
@@ -399,6 +408,11 @@ def cli_main() -> None:
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
+    # Set LangSmith project for deepagents agent tracing
+    # Note: User's original LANGCHAIN_PROJECT is preserved for shell commands
+    if settings.deepagents_langchain_project:
+        os.environ["LANGCHAIN_PROJECT"] = settings.deepagents_langchain_project
 
     # Check dependencies first
     check_cli_dependencies()

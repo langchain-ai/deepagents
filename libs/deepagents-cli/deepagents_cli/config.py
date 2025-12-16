@@ -8,10 +8,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import dotenv
-from langchain_core.language_models import BaseChatModel
 from rich.console import Console
 
 dotenv.load_dotenv()
+
+# CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
+# LangSmith reads LANGSMITH_PROJECT at invocation time, so we override it here
+# and preserve the user's original value for shell commands
+_deepagents_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
+_original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
+if _deepagents_project:
+    # Override LANGSMITH_PROJECT for agent traces
+    os.environ["LANGSMITH_PROJECT"] = _deepagents_project
+
+# Now safe to import LangChain modules
+from langchain_core.language_models import BaseChatModel
 
 # Color scheme
 COLORS = {
@@ -164,9 +175,11 @@ class Settings:
 
         # Detect LangSmith configuration
         # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
-        # LANGSMITH_PROJECT: Preserve original for user's code (e.g., shell commands)
+        # user_langchain_project: User's ORIGINAL LANGSMITH_PROJECT (before override)
+        # Note: LANGSMITH_PROJECT was already overridden at module import time (above)
+        # so we use the saved original value, not the current os.environ value
         deepagents_langchain_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
-        user_langchain_project = os.environ.get("LANGSMITH_PROJECT")
+        user_langchain_project = _original_langsmith_project  # Use saved original!
 
         # Detect project
         project_root = _find_project_root(start_path)

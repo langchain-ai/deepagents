@@ -8,8 +8,7 @@ from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
-from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
-from deepagents_cli.commands import execute_bash_command, handle_command
+# CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import (
     COLORS,
     DEEP_AGENTS_ASCII,
@@ -18,6 +17,9 @@ from deepagents_cli.config import (
     create_model,
     settings,
 )
+# Now safe to import agent (which imports LangChain modules)
+from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
+from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import ImageTracker, create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
@@ -409,10 +411,9 @@ def cli_main() -> None:
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
 
-    # Set LangSmith project for deepagents agent tracing
-    # Note: User's original LANGCHAIN_PROJECT is preserved for shell commands
-    if settings.deepagents_langchain_project:
-        os.environ["LANGCHAIN_PROJECT"] = settings.deepagents_langchain_project
+    # Note: LANGSMITH_PROJECT is already overridden in config.py (before LangChain imports)
+    # This ensures agent traces → DEEPAGENTS_LANGSMITH_PROJECT
+    # Shell commands → user's original LANGSMITH_PROJECT (via ShellMiddleware env)
 
     # Check dependencies first
     check_cli_dependencies()

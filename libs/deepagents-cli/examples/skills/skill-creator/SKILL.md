@@ -15,6 +15,19 @@ specialized knowledge, workflows, and tools. Think of them as "onboarding guides
 domains or tasks—they transform Claude from a general-purpose agent into a specialized agent
 equipped with procedural knowledge that no model can fully possess.
 
+### Skill Location for Deepagents
+
+In deepagents CLI, skills are stored in `~/.deepagents/<agent>/skills/` where `<agent>` is your agent configuration name (default is `agent`). For example, with the default configuration, skills live at:
+
+```
+~/.deepagents/agent/skills/
+├── skill-name-1/
+│   └── SKILL.md
+├── skill-name-2/
+│   └── SKILL.md
+└── ...
+```
+
 ### What Skills Provide
 
 1. Specialized workflows - Multi-step procedures for specific domains
@@ -265,6 +278,12 @@ Usage:
 
 ```bash
 scripts/init_skill.py <skill-name> --path <output-directory>
+```
+
+For deepagents CLI, use the agent's skills directory:
+
+```bash
+scripts/init_skill.py <skill-name> --path ~/.deepagents/agent/skills
 ```
 
 The script:

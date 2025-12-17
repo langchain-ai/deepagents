@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
 Quick validation script for skills - minimal version
+
+For deepagents CLI, skills are located at:
+~/.deepagents/<agent>/skills/<skill-name>/
+
+Example:
+ python quick_validate.py ~/.deepagents/agent/skills/my-skill
 """
 
 import sys

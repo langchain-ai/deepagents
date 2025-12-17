@@ -408,9 +408,9 @@ def _detect_provider(model_name: str) -> str | None:
     model_lower = model_name.lower()
     if any(x in model_lower for x in ["gpt", "o1", "o3"]):
         return "openai"
-    elif "claude" in model_lower:
+    if "claude" in model_lower:
         return "anthropic"
-    elif "gemini" in model_lower:
+    if "gemini" in model_lower:
         return "google"
     return None
 
@@ -461,27 +461,26 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             sys.exit(1)
 
         model_name = model_name_override
+    # Use environment variable defaults, detect provider by API key priority
+    elif settings.has_openai:
+        provider = "openai"
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+    elif settings.has_anthropic:
+        provider = "anthropic"
+        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+    elif settings.has_google:
+        provider = "google"
+        model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
     else:
-        # Use environment variable defaults, detect provider by API key priority
-        if settings.has_openai:
-            provider = "openai"
-            model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-        elif settings.has_anthropic:
-            provider = "anthropic"
-            model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        elif settings.has_google:
-            provider = "google"
-            model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
-        else:
-            console.print("[bold red]Error:[/bold red] No API key configured.")
-            console.print("\nPlease set one of the following environment variables:")
-            console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
-            console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-            console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
-            console.print("\nExample:")
-            console.print("  export OPENAI_API_KEY=your_api_key_here")
-            console.print("\nOr add it to your .env file.")
-            sys.exit(1)
+        console.print("[bold red]Error:[/bold red] No API key configured.")
+        console.print("\nPlease set one of the following environment variables:")
+        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
+        console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
+        console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
+        console.print("\nExample:")
+        console.print("  export OPENAI_API_KEY=your_api_key_here")
+        console.print("\nOr add it to your .env file.")
+        sys.exit(1)
 
     # Store model info in settings for display
     settings.model_name = model_name
@@ -492,14 +491,14 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(model=model_name)
-    elif provider == "anthropic":
+    if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
             model_name=model_name,
             max_tokens=20_000,  # type: ignore[arg-type]
         )
-    elif provider == "google":
+    if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(

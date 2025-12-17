@@ -8,6 +8,10 @@ from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
+# Now safe to import agent (which imports LangChain modules)
+from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
+from deepagents_cli.commands import execute_bash_command, handle_command
+
 # CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import (
     COLORS,
@@ -17,10 +21,6 @@ from deepagents_cli.config import (
     create_model,
     settings,
 )
-
-# Now safe to import agent (which imports LangChain modules)
-from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
-from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import ImageTracker, create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (

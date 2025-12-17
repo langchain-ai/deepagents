@@ -434,7 +434,9 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         # Use provided model, auto-detect provider
         provider = _detect_provider(model_name_override)
         if not provider:
-            console.print(f"[bold red]Error:[/bold red] Could not detect provider from model name: {model_name_override}")
+            console.print(
+                f"[bold red]Error:[/bold red] Could not detect provider from model name: {model_name_override}"
+            )
             console.print("\nSupported model name patterns:")
             console.print("  - OpenAI: gpt-*, o1-*, o3-*")
             console.print("  - Anthropic: claude-*")
@@ -443,13 +445,19 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
 
         # Check if API key for detected provider is available
         if provider == "openai" and not settings.has_openai:
-            console.print(f"[bold red]Error:[/bold red] Model '{model_name_override}' requires OPENAI_API_KEY")
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires OPENAI_API_KEY"
+            )
             sys.exit(1)
         elif provider == "anthropic" and not settings.has_anthropic:
-            console.print(f"[bold red]Error:[/bold red] Model '{model_name_override}' requires ANTHROPIC_API_KEY")
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires ANTHROPIC_API_KEY"
+            )
             sys.exit(1)
         elif provider == "google" and not settings.has_google:
-            console.print(f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY")
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY"
+            )
             sys.exit(1)
 
         model_name = model_name_override

@@ -1,11 +1,3 @@
-"""CLI commands for agent management.
-
-These commands are registered with the CLI via main.py:
-- deepagents push <name> [--public|--private]  (pushes from ~/.deepagents/<name>/)
-- deepagents pull <name> [--public] [--version N]  (pulls to ~/.deepagents/<name>/)
-- deepagents agents [--public|--private]
-"""
-
 import argparse
 import re
 from pathlib import Path
@@ -23,14 +15,6 @@ from .client import (
 
 
 def _validate_agent_name(name: str) -> tuple[bool, str]:
-    """Validate agent name to prevent path traversal attacks.
-
-    Args:
-        name: The agent name to validate
-
-    Returns:
-        Tuple of (is_valid, error_message). If valid, error_message is empty.
-    """
     if not name or not name.strip():
         return False, "Agent name cannot be empty"
 
@@ -51,14 +35,6 @@ def _validate_agent_name(name: str) -> tuple[bool, str]:
 
 
 def _load_local_files(local_dir: Path) -> list[dict[str, Any]]:
-    """Load all files from a local directory for pushing.
-
-    Args:
-        local_dir: Path to the local directory
-
-    Returns:
-        List of file dicts with path (relative), content, and size
-    """
     files = []
     for path in local_dir.rglob("*"):
         if path.is_file():
@@ -81,16 +57,6 @@ def _load_local_files(local_dir: Path) -> list[dict[str, Any]]:
 
 
 def _save_agent_files(agent_name: str, files: list, settings: Settings) -> Path:
-    """Save pulled agent files to local storage.
-
-    Args:
-        agent_name: Name of the agent
-        files: List of AgentFile objects
-        settings: Settings instance
-
-    Returns:
-        Path to the agent directory
-    """
     agent_dir = settings.get_agent_dir(agent_name)
 
     # Clear existing directory if it exists
@@ -113,10 +79,6 @@ def _save_agent_files(agent_name: str, files: list, settings: Settings) -> Path:
 
 
 def _push(args: argparse.Namespace) -> None:
-    """Handle the push command.
-
-    Push an agent from ~/.deepagents/<name>/ to the remote filesystem.
-    """
     settings = Settings.from_environment()
 
     # Validate agent name
@@ -200,10 +162,6 @@ def _push(args: argparse.Namespace) -> None:
 
 
 def _pull(args: argparse.Namespace) -> None:
-    """Handle the pull command.
-
-    Pull an agent from the remote filesystem to local storage.
-    """
     settings = Settings.from_environment()
 
     # Validate agent name
@@ -271,7 +229,6 @@ def _pull(args: argparse.Namespace) -> None:
 
 
 def _display_agent_group(agents: list, title: str, color: str) -> None:
-    """Display a group of agents with a title."""
     if not agents:
         return
     console.print(f"[bold {color}]{title}:[/bold {color}]", style=COLORS["primary"])
@@ -282,7 +239,6 @@ def _display_agent_group(agents: list, title: str, color: str) -> None:
 
 
 def _get_empty_message(*, show_public: bool, show_private: bool) -> str:
-    """Get the appropriate 'no agents found' message."""
     if show_public:
         return "[yellow]No public agents found.[/yellow]"
     if show_private:
@@ -291,7 +247,6 @@ def _get_empty_message(*, show_public: bool, show_private: bool) -> str:
 
 
 def _list_agents(args: argparse.Namespace) -> None:
-    """Handle the agents (list) command."""
     settings = Settings.from_environment()
 
     if not settings.has_agent_fs_url:
@@ -343,7 +298,6 @@ def _list_agents(args: argparse.Namespace) -> None:
 
 
 def setup_push_parser(subparsers: Any) -> argparse.ArgumentParser:
-    """Setup the push subcommand parser."""
     push_parser = subparsers.add_parser(
         "push",
         help="Push an agent from ~/.deepagents/<name>/ to the remote filesystem",
@@ -364,7 +318,6 @@ def setup_push_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def setup_pull_parser(subparsers: Any) -> argparse.ArgumentParser:
-    """Setup the pull subcommand parser."""
     pull_parser = subparsers.add_parser(
         "pull",
         help="Pull an agent from the remote filesystem",
@@ -385,7 +338,6 @@ def setup_pull_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def setup_agents_parser(subparsers: Any) -> argparse.ArgumentParser:
-    """Setup the agents subcommand parser."""
     agents_parser = subparsers.add_parser(
         "agents",
         help="List available agents on the remote filesystem",
@@ -405,17 +357,14 @@ def setup_agents_parser(subparsers: Any) -> argparse.ArgumentParser:
 
 
 def execute_push_command(args: argparse.Namespace) -> None:
-    """Execute the push command."""
     _push(args)
 
 
 def execute_pull_command(args: argparse.Namespace) -> None:
-    """Execute the pull command."""
     _pull(args)
 
 
 def execute_agents_command(args: argparse.Namespace) -> None:
-    """Execute the agents command."""
     _list_agents(args)
 
 

@@ -1,6 +1,4 @@
 """Agent management module for deepagents CLI.
-
-This module provides commands for managing agents:
 - push: Upload an agent from ~/.deepagents/<name>/ to the remote filesystem
 - pull: Download an agent to ~/.deepagents/<name>/
 - agents: List available agents

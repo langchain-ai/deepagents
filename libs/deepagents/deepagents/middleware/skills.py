@@ -157,15 +157,16 @@ def _list_skills_from_backend(
 
 
 class _StateProxy:
-    """Adapter to make request.state accessible as runtime.state for StateBackend.
+    """Adapter to make request.state accessible as runtime.state for backends.
 
     In wrap_model_call, request.runtime is Runtime (no state attribute),
     but request.state contains the actual state. This proxy bridges that gap
-    for StateBackend which expects runtime.state.
+    for backends which expect runtime.state or runtime.store.
     """
 
-    def __init__(self, state: dict[str, Any]) -> None:
+    def __init__(self, state: dict[str, Any], store: Any = None) -> None:
         self.state = state
+        self.store = store
 
 
 class SkillsMiddleware(AgentMiddleware):
@@ -333,10 +334,15 @@ class SkillsMiddleware(AgentMiddleware):
             self._check_backend_consistency(request.tools)
             self._backend_checked = True
 
-        # Use _StateProxy to bridge request.state → runtime.state for StateBackend
+        # Use _StateProxy to bridge request.state/store → runtime for backends
         # In wrap_model_call, request.runtime is Runtime (no state), but request.state exists
         runtime_or_proxy = (
-            _StateProxy(request.state) if hasattr(request, "state") else request.runtime
+            _StateProxy(
+                state=request.state,
+                store=getattr(request.runtime, "store", None),
+            )
+            if hasattr(request, "state")
+            else request.runtime
         )
         skills = self._get_skills(runtime_or_proxy)  # type: ignore[arg-type]
         skills_section = self.system_prompt_template.format(

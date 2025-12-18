@@ -156,6 +156,18 @@ def _list_skills_from_backend(
     return skills
 
 
+class _StateProxy:
+    """Adapter to make request.state accessible as runtime.state for StateBackend.
+
+    In wrap_model_call, request.runtime is Runtime (no state attribute),
+    but request.state contains the actual state. This proxy bridges that gap
+    for StateBackend which expects runtime.state.
+    """
+
+    def __init__(self, state: dict[str, Any]) -> None:
+        self.state = state
+
+
 class SkillsMiddleware(AgentMiddleware):
     """Middleware for loading and exposing agent skills via BackendProtocol.
 
@@ -321,7 +333,12 @@ class SkillsMiddleware(AgentMiddleware):
             self._check_backend_consistency(request.tools)
             self._backend_checked = True
 
-        skills = self._get_skills(request.runtime)
+        # Use _StateProxy to bridge request.state → runtime.state for StateBackend
+        # In wrap_model_call, request.runtime is Runtime (no state), but request.state exists
+        runtime_or_proxy = (
+            _StateProxy(request.state) if hasattr(request, "state") else request.runtime
+        )
+        skills = self._get_skills(runtime_or_proxy)  # type: ignore[arg-type]
         skills_section = self.system_prompt_template.format(
             skills_locations=self._format_skills_locations(),
             skills_list=self._format_skills_list(skills),

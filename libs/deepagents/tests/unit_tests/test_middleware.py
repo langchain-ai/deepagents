@@ -1,3 +1,4 @@
+import pytest
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
 from langchain_core.messages import (
@@ -1337,3 +1338,446 @@ class TestTruncation:
         # Should end with truncation message
         assert "results truncated" in result
         assert "try being more specific" in result
+
+
+class TestSkillsMiddleware:
+    """Tests for SkillsMiddleware with BackendProtocol."""
+
+    # ========== Helper ==========
+
+    def _make_runtime(self, files: dict | None = None) -> ToolRuntime:
+        """Create ToolRuntime with optional files."""
+        state = FilesystemState(messages=[], files=files or {})
+        return ToolRuntime(
+            state=state, context=None, tool_call_id="test",
+            store=None, stream_writer=lambda _: None, config={},
+        )
+
+    def _make_skill_file(self, name: str, description: str) -> FileData:
+        """Create SKILL.md FileData."""
+        return FileData(
+            content=["---", f"name: {name}", f"description: {description}", "---", "", f"# {name}"],
+            modified_at="2021-01-01", created_at="2021-01-01",
+        )
+
+    # ========== Initialization Tests ==========
+
+    def test_init_requires_backend(self):
+        """Backend is required."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        with pytest.raises(TypeError, match="backend is required"):
+            SkillsMiddleware(backend=None)
+
+    def test_init_defaults(self):
+        """Default initialization."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        assert callable(middleware.backend)
+        assert middleware.skills_paths == [("/skills", None)]
+        assert middleware._cached_skills is None
+
+    def test_init_custom_paths(self):
+        """Custom skills paths."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        middleware = SkillsMiddleware(
+            backend=lambda rt: StateBackend(rt),
+            skills_paths=["/user/", ("/project/", "Project Skills")],
+        )
+        assert middleware.skills_paths == [("/user/", None), ("/project/", "Project Skills")]
+
+    # ========== Path Validation Tests ==========
+
+    def test_normalize_paths_valid(self):
+        """Valid path normalization."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        result = SkillsMiddleware._normalize_paths([
+            "/path1",
+            ("/path2", "Label"),
+            ("/path3", "   "),  # whitespace label → None
+        ])
+        assert result == [("/path1", None), ("/path2", "Label"), ("/path3", None)]
+
+    def test_normalize_paths_invalid_tuple(self):
+        """Invalid tuple length."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        with pytest.raises(ValueError, match="2 elements"):
+            SkillsMiddleware._normalize_paths([("/a", "b", "c")])
+
+    def test_normalize_paths_empty(self):
+        """Empty path rejected."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        with pytest.raises(ValueError, match="cannot be empty"):
+            SkillsMiddleware._normalize_paths([""])
+
+    def test_normalize_paths_relative(self):
+        """Relative path rejected."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        with pytest.raises(ValueError, match="must be absolute"):
+            SkillsMiddleware._normalize_paths(["relative/path"])
+
+    # ========== Metadata Parsing Tests ==========
+
+    def test_parse_skill_metadata_valid(self):
+        """Valid YAML frontmatter."""
+        from deepagents.middleware.skills import _parse_skill_metadata
+        content = "---\nname: test\ndescription: Test skill\n---\n# Content"
+        result = _parse_skill_metadata(content)
+        assert result == {"name": "test", "description": "Test skill"}
+
+    def test_parse_skill_metadata_multiline_description(self):
+        """Multi-line description support."""
+        from deepagents.middleware.skills import _parse_skill_metadata
+        content = "---\nname: test\ndescription: |\n  Line 1\n  Line 2\n---\n"
+        result = _parse_skill_metadata(content)
+        assert result is not None
+        assert "Line 1" in result["description"]
+
+    def test_parse_skill_metadata_missing_fields(self):
+        """Missing required fields returns None."""
+        from deepagents.middleware.skills import _parse_skill_metadata
+        assert _parse_skill_metadata("---\nname: test\n---\n") is None
+        assert _parse_skill_metadata("---\ndescription: test\n---\n") is None
+
+    def test_parse_skill_metadata_no_frontmatter(self):
+        """No frontmatter returns None."""
+        from deepagents.middleware.skills import _parse_skill_metadata
+        assert _parse_skill_metadata("# No frontmatter") is None
+
+    # ========== Strip Line Numbers Tests ==========
+
+    def test_strip_line_numbers(self):
+        """Line number stripping."""
+        from deepagents.middleware.skills import _strip_line_numbers
+        content = "     1\t---\n     2\tname: test\n     3\t---"
+        result = _strip_line_numbers(content)
+        assert result == "---\nname: test\n---"
+
+    def test_strip_line_numbers_no_numbers(self):
+        """Content without line numbers unchanged."""
+        from deepagents.middleware.skills import _strip_line_numbers
+        content = "---\nname: test\n---"
+        assert _strip_line_numbers(content) == content
+
+    # ========== Backend Resolution Tests ==========
+
+    def test_get_backend_instance(self):
+        """Direct backend instance."""
+        from deepagents.backends.filesystem import FilesystemBackend
+        from deepagents.middleware.skills import SkillsMiddleware
+        backend = FilesystemBackend(root_dir="/")
+        middleware = SkillsMiddleware(backend=backend)
+        assert middleware._get_backend(self._make_runtime()) is backend
+
+    def test_get_backend_factory(self):
+        """Backend factory callable."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        runtime = self._make_runtime()
+        result = middleware._get_backend(runtime)
+        assert isinstance(result, StateBackend)
+
+    # ========== Skill Loading Tests ==========
+
+    def test_list_skills_from_backend(self):
+        """Load skills from StateBackend."""
+        from deepagents.middleware.skills import _list_skills_from_backend
+        runtime = self._make_runtime({
+            "/skills/web-research/SKILL.md": self._make_skill_file("web-research", "Research the web"),
+            "/skills/code-review/SKILL.md": self._make_skill_file("code-review", "Review code"),
+        })
+        skills = _list_skills_from_backend(StateBackend(runtime), "/skills")
+        assert len(skills) == 2
+        assert {s["name"] for s in skills} == {"web-research", "code-review"}
+
+    def test_list_skills_empty_directory(self):
+        """Empty directory returns empty list."""
+        from deepagents.middleware.skills import _list_skills_from_backend
+        runtime = self._make_runtime()
+        assert _list_skills_from_backend(StateBackend(runtime), "/skills") == []
+
+    def test_list_skills_skips_invalid(self):
+        """Invalid skills are skipped."""
+        from deepagents.middleware.skills import _list_skills_from_backend
+        runtime = self._make_runtime({
+            "/skills/valid/SKILL.md": self._make_skill_file("valid", "Valid skill"),
+            "/skills/invalid/SKILL.md": FileData(
+                content=["# No frontmatter"], modified_at="2021-01-01", created_at="2021-01-01",
+            ),
+        })
+        skills = _list_skills_from_backend(StateBackend(runtime), "/skills")
+        assert len(skills) == 1
+        assert skills[0]["name"] == "valid"
+
+    def test_multiple_paths_precedence(self):
+        """Later paths override earlier ones."""
+        from deepagents.middleware.skills import _list_skills_from_backend
+        runtime = self._make_runtime({
+            "/user/shared/SKILL.md": self._make_skill_file("shared", "User version"),
+            "/project/shared/SKILL.md": self._make_skill_file("shared", "Project version"),
+            "/user/unique/SKILL.md": self._make_skill_file("unique", "Only in user"),
+        })
+        backend = StateBackend(runtime)
+
+        all_skills: dict[str, dict] = {}
+        for path in ["/user/", "/project/"]:  # project loads last, wins
+            for skill in _list_skills_from_backend(backend, path):
+                all_skills[skill["name"]] = skill
+
+        assert len(all_skills) == 2
+        assert all_skills["shared"]["description"] == "Project version"
+
+    # ========== Caching Tests ==========
+
+    def test_caching_initial_state(self):
+        """Cache is None initially."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        assert middleware._cached_skills is None
+
+    def test_caching_after_get_skills(self):
+        """Cache is populated after _get_skills."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        runtime = self._make_runtime({
+            "/skills/test/SKILL.md": self._make_skill_file("test", "Test skill"),
+        })
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        middleware._get_skills(runtime)
+        assert middleware._cached_skills is not None
+        assert len(middleware._cached_skills) == 1
+
+    def test_caching_reuses_result(self):
+        """Subsequent calls use cache."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        call_count = [0]
+        def counting_backend(rt):
+            call_count[0] += 1
+            return StateBackend(rt)
+
+        runtime = self._make_runtime()
+        middleware = SkillsMiddleware(backend=counting_backend)
+
+        middleware._get_skills(runtime)
+        middleware._get_skills(runtime)
+        assert call_count[0] == 1  # Only called once
+
+    # ========== Formatting Tests ==========
+
+    def test_format_skills_list_empty(self):
+        """Empty skills list message."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        result = middleware._format_skills_list([])
+        assert "No skills available" in result
+
+    def test_format_skills_list_with_skills(self):
+        """Skills list formatting."""
+        from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        skills = [
+            SkillMetadata(name="skill-a", description="Desc A", path="/a/SKILL.md", label="Group"),
+            SkillMetadata(name="skill-b", description="Desc B", path="/b/SKILL.md", label="Group"),
+        ]
+        result = middleware._format_skills_list(skills)
+        assert "skill-a" in result and "Desc A" in result
+        assert "skill-b" in result and "Desc B" in result
+
+    def test_format_skills_list_sorted(self):
+        """Skills sorted by label then name."""
+        from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        skills = [
+            SkillMetadata(name="zebra", description="Z", path="/z/SKILL.md", label="B"),
+            SkillMetadata(name="alpha", description="A", path="/a/SKILL.md", label="A"),
+        ]
+        result = middleware._format_skills_list(skills)
+        # alpha (label A) should come before zebra (label B)
+        assert result.index("alpha") < result.index("zebra")
+
+    def test_format_skills_locations_single(self):
+        """Single path location."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt), skills_paths=["/skills"])
+        result = middleware._format_skills_locations()
+        assert "/skills" in result
+
+    def test_format_skills_locations_labeled(self):
+        """Labeled paths in locations."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        middleware = SkillsMiddleware(
+            backend=lambda rt: StateBackend(rt),
+            skills_paths=[("/user/", "User"), ("/project/", "Project")],
+        )
+        result = middleware._format_skills_locations()
+        assert "User" in result and "Project" in result
+
+    # ========== Backend Consistency Tests ==========
+
+    def test_backend_consistency_warning(self):
+        """Warning when backends differ."""
+        import warnings
+        from deepagents.backends.filesystem import FilesystemBackend
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+        from deepagents.middleware.skills import SkillsMiddleware
+
+        class MockBackend:
+            def read(self, path): pass
+            def ls_info(self, path): pass
+
+        fs_middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir="/"))
+        skills_middleware = SkillsMiddleware(backend=MockBackend())
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            skills_middleware._check_backend_consistency(fs_middleware.tools)
+            assert len(w) == 1
+            assert "FilesystemBackend" in str(w[0].message)
+
+    def test_backend_consistency_no_warning_same_type(self):
+        """No warning when backends match."""
+        import warnings
+        from deepagents.backends.filesystem import FilesystemBackend
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+        from deepagents.middleware.skills import SkillsMiddleware
+
+        backend = FilesystemBackend(root_dir="/")
+        fs_middleware = FilesystemMiddleware(backend=backend)
+        skills_middleware = SkillsMiddleware(backend=backend)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            skills_middleware._check_backend_consistency(fs_middleware.tools)
+            assert all("SkillsMiddleware" not in str(x.message) for x in w)
+
+    # ========== Edge Case Tests ==========
+
+    def test_parse_skill_metadata_yaml_error(self):
+        """Invalid YAML returns None."""
+        from deepagents.middleware.skills import _parse_skill_metadata
+        content = "---\nname: test\n  bad indent: oops\n---\n"
+        assert _parse_skill_metadata(content) is None
+
+    def test_parse_skill_metadata_non_dict(self):
+        """Non-dict YAML returns None."""
+        from deepagents.middleware.skills import _parse_skill_metadata
+        content = "---\n- item1\n- item2\n---\n"
+        assert _parse_skill_metadata(content) is None
+
+    def test_list_skills_os_error(self):
+        """OSError during ls_info returns empty list."""
+        from deepagents.middleware.skills import _list_skills_from_backend
+
+        class ErrorBackend:
+            def ls_info(self, path):
+                raise OSError("Permission denied")
+
+        assert _list_skills_from_backend(ErrorBackend(), "/skills") == []
+
+    def test_list_skills_read_error(self):
+        """Error reading SKILL.md skips that skill."""
+        from deepagents.middleware.skills import _list_skills_from_backend
+        runtime = self._make_runtime({
+            "/skills/good/SKILL.md": self._make_skill_file("good", "Good skill"),
+        })
+        backend = StateBackend(runtime)
+
+        # Patch ls_info to return an extra dir that doesn't have SKILL.md
+        original_ls_info = backend.ls_info
+        def patched_ls_info(path):
+            result = original_ls_info(path)
+            result.append({"path": "bad", "is_dir": True})
+            return result
+        backend.ls_info = patched_ls_info
+
+        skills = _list_skills_from_backend(backend, "/skills")
+        assert len(skills) == 1
+        assert skills[0]["name"] == "good"
+
+    def test_get_backend_invalid_type(self):
+        """Invalid backend type raises TypeError."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        middleware.backend = "invalid"  # Force invalid type
+        with pytest.raises(TypeError, match="Invalid backend type"):
+            middleware._get_backend(self._make_runtime())
+
+    def test_normalize_paths_invalid_type(self):
+        """Non-string/tuple raises TypeError."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        with pytest.raises(TypeError, match="must be str or"):
+            SkillsMiddleware._normalize_paths([123])
+
+    # ========== Prompt Generation Tests ==========
+
+    def test_prepare_skills_prompt_with_existing_prompt(self):
+        """_prepare_skills_prompt appends to existing system prompt."""
+        from unittest.mock import MagicMock
+        from deepagents.middleware.skills import SkillsMiddleware
+
+        middleware = SkillsMiddleware(
+            backend=lambda rt: StateBackend(rt),
+            skills_paths=["/skills"],
+        )
+        middleware._cached_skills = []  # Pre-cache empty
+
+        request = MagicMock()
+        request.system_prompt = "Original prompt"
+        request.tools = []
+        request.runtime = self._make_runtime()
+
+        result = middleware._prepare_skills_prompt(request)
+        assert result.startswith("Original prompt\n\n")
+        assert "Skills System" in result
+
+    def test_prepare_skills_prompt_no_existing_prompt(self):
+        """_prepare_skills_prompt works without existing system prompt."""
+        from unittest.mock import MagicMock
+        from deepagents.middleware.skills import SkillsMiddleware
+
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        middleware._cached_skills = []
+
+        request = MagicMock()
+        request.system_prompt = None
+        request.tools = []
+        request.runtime = self._make_runtime()
+
+        result = middleware._prepare_skills_prompt(request)
+        assert "Skills System" in result
+        # No "Original prompt" prefix when system_prompt is None
+        assert "Original prompt" not in result
+
+    def test_wrap_model_call(self):
+        """wrap_model_call injects skills into system prompt."""
+        from unittest.mock import MagicMock
+        from deepagents.middleware.skills import SkillsMiddleware
+
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        middleware._cached_skills = []
+
+        request = MagicMock()
+        request.system_prompt = "Base"
+        request.tools = []
+        request.runtime = self._make_runtime()
+        request.override = MagicMock(return_value=request)
+
+        handler = MagicMock(return_value="response")
+        result = middleware.wrap_model_call(request, handler)
+
+        request.override.assert_called_once()
+        call_kwargs = request.override.call_args[1]
+        assert "Skills System" in call_kwargs["system_prompt"]
+        handler.assert_called_once()
+
+    def test_load_skills_auto_label(self):
+        """_load_skills generates label from path."""
+        from deepagents.middleware.skills import SkillsMiddleware
+        runtime = self._make_runtime({
+            "/custom-tools/my-skill/SKILL.md": self._make_skill_file("my-skill", "Desc"),
+        })
+        middleware = SkillsMiddleware(
+            backend=lambda rt: StateBackend(rt),
+            skills_paths=["/custom-tools"],
+        )
+        skills = middleware._load_skills(runtime)
+        assert len(skills) == 1
+        assert skills[0]["label"] == "Custom Tools"

@@ -154,6 +154,10 @@ class Settings:
     deepagents_langchain_project: str | None  # For deepagents agent tracing
     user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
 
+    # Agent filesystem configuration
+    agent_fs_url: str | None  # Base URL for agent filesystem server
+    agent_fs_api_key: str | None  # API key for agent filesystem authentication
+
     # Project information
     project_root: Path | None
 
@@ -181,6 +185,10 @@ class Settings:
         deepagents_langchain_project = os.environ.get("DEEPAGENTS_LANGSMITH_PROJECT")
         user_langchain_project = _original_langsmith_project  # Use saved original!
 
+        # Detect agent filesystem configuration
+        agent_fs_url = os.environ.get("AGENT_FS_URL")
+        agent_fs_api_key = os.environ.get("AGENT_FS_API_KEY")
+
         # Detect project
         project_root = _find_project_root(start_path)
 
@@ -191,6 +199,8 @@ class Settings:
             tavily_api_key=tavily_key,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
+            agent_fs_url=agent_fs_url,
+            agent_fs_api_key=agent_fs_api_key,
             project_root=project_root,
         )
 
@@ -218,6 +228,16 @@ class Settings:
     def has_deepagents_langchain_project(self) -> bool:
         """Check if deepagents LangChain project name is configured."""
         return self.deepagents_langchain_project is not None
+
+    @property
+    def has_agent_fs_url(self) -> bool:
+        """Check if agent filesystem URL is configured."""
+        return self.agent_fs_url is not None
+
+    @property
+    def has_agent_fs_api_key(self) -> bool:
+        """Check if agent filesystem API key is configured."""
+        return self.agent_fs_api_key is not None
 
     @property
     def has_project(self) -> bool:

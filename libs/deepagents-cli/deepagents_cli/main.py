@@ -28,6 +28,14 @@ from deepagents_cli.integrations.sandbox_factory import (
     get_default_working_dir,
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
+from deepagents_cli.agents import (
+    execute_agents_command,
+    execute_pull_command,
+    execute_push_command,
+    setup_agents_parser,
+    setup_pull_parser,
+    setup_push_parser,
+)
 from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.ui import TokenTracker, show_help
 
@@ -98,6 +106,11 @@ def parse_args():
 
     # Skills command - setup delegated to skills module
     setup_skills_parser(subparsers)
+
+    # Agent commands - push, pull, agents
+    setup_push_parser(subparsers)
+    setup_pull_parser(subparsers)
+    setup_agents_parser(subparsers)
 
     # Default interactive mode
     parser.add_argument(
@@ -430,6 +443,12 @@ def cli_main() -> None:
             reset_agent(args.agent, args.source_agent)
         elif args.command == "skills":
             execute_skills_command(args)
+        elif args.command == "push":
+            execute_push_command(args)
+        elif args.command == "pull":
+            execute_pull_command(args)
+        elif args.command == "agents":
+            execute_agents_command(args)
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve, no_splash=args.no_splash)

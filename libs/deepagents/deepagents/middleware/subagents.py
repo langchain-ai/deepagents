@@ -314,10 +314,12 @@ def _create_task_tool(
 
     def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
+        # Strip trailing whitespace to prevent API errors with Anthropic
+        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(result["messages"][-1].text, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
             }
         )
 

@@ -1,9 +1,7 @@
 """Implement harbor backend."""
 
-import asyncio
 import base64
 import shlex
-import threading
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -13,76 +11,75 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.sandbox import BaseSandbox
 from harbor.environments.base import BaseEnvironment
 
-_loop = asyncio.new_event_loop()
 
+class HarborSandbox(SandboxBackendProtocol):
+    """A sandbox implementation without assuming that python3 is available."""
 
-def run_loop(loop: asyncio.AbstractEventLoop) -> None:
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-
-# Temporary work-around. We need to transition to full async support.
-_thread = threading.Thread(target=run_loop, args=(_loop,), daemon=True, name="HarborSandboxLoop")
-_thread.start()
-
-
-class HarborSandbox(BaseSandbox):
     def __init__(self, environment: BaseEnvironment) -> None:
         """Initialize HarborSandbox with the given environment."""
         self.environment = environment
+
+    async def aexecute(
+        self,
+        command: str,
+    ) -> ExecuteResponse:
+        """Execute a bash command in the task environment."""
+        result = await self.environment.exec(command)
+
+        # These errors appear in harbor environments when running bash commands
+        # in non-interactive/non-TTY contexts. They're harmless artifacts.
+        # Filter them from both stdout and stderr, then collect them to show in stderr.
+        error_messages = [
+            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device",
+            "bash: no job control in this shell",
+            "bash: initialize_job_control: no job control in background: Bad file descriptor",
+        ]
+
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        # Collect the bash messages if they appear (to move to stderr)
+        bash_messages = []
+        for error_msg in error_messages:
+            if error_msg in stdout:
+                bash_messages.append(error_msg)
+                stdout = stdout.replace(error_msg, "")
+            if error_msg in stderr:
+                stderr = stderr.replace(error_msg, "")
+
+        stdout = stdout.strip()
+        stderr = stderr.strip()
+
+        # Add bash messages to stderr
+        if bash_messages:
+            bash_msg_text = "\n".join(bash_messages)
+            stderr = f"{bash_msg_text}\n{stderr}".strip() if stderr else bash_msg_text
+
+        # Only append stderr label if there's actual stderr content
+        if stderr:
+            output = stdout + "\n\n stderr: " + stderr if stdout else "\n stderr: " + stderr
+        else:
+            output = stdout
+        return ExecuteResponse(
+            output=output,
+            exit_code=result.return_code,
+        )
 
     def execute(
         self,
         command: str,
     ) -> ExecuteResponse:
         """Execute a bash command in the task environment."""
-        coro = self.environment.exec(command)
-
-        # Submit the async task to the background loop and wait for the result
-        future = asyncio.run_coroutine_threadsafe(coro, _loop)
-        result = future.result()
-        output = (result.stdout or "") + "\n stderr: " + (result.stderr or "")
-        return ExecuteResponse(
-            output=output,
-            exit_code=result.return_code,
-        )
+        raise NotImplementedError("This backend only supports async execution")
 
     @property
     def id(self) -> str:
         """Unique identifier for the sandbox backend."""
         return self.environment.session_id
 
-
-class HarborSandboxFallback(SandboxBackendProtocol):
-    def __init__(self, environment: BaseEnvironment) -> None:
-        """Initialize HarborSandbox with the given environment."""
-        self.environment = environment
-
-    def execute(
-        self,
-        command: str,
-    ) -> ExecuteResponse:
-        """Execute a bash command in the task environment."""
-        coro = self.environment.exec(command)
-
-        # Submit the async task to the background loop and wait for the result
-        future = asyncio.run_coroutine_threadsafe(coro, _loop)
-        result = future.result()
-        output = (result.stdout or "") + "\n stderr: " + (result.stderr or "")
-        return ExecuteResponse(
-            output=output,
-            exit_code=result.return_code,
-        )
-
-    @property
-    def id(self) -> str:
-        """Unique identifier for the sandbox backend."""
-        return self.environment.session_id
-
-    def read(
+    async def aread(
         self,
         file_path: str,
         offset: int = 0,
@@ -110,14 +107,23 @@ awk -v offset={offset} -v limit={limit} '
     NR > offset + limit {{ exit }}
 ' {safe_path}
 """
-        result = self.execute(cmd)
+        result = await self.aexecute(cmd)
 
         if result.exit_code != 0 or "Error: File not found" in result.output:
             return f"Error: File '{file_path}' not found"
 
         return result.output.rstrip()
 
-    def write(
+    def read(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> str:
+        """Read file content with line numbers using shell commands."""
+        raise NotImplementedError("Use aread instead")
+
+    async def awrite(
         self,
         file_path: str,
         content: str,
@@ -136,7 +142,7 @@ parent_dir=$(dirname {safe_path})
 mkdir -p "$parent_dir" 2>/dev/null
 echo '{content_b64}' | base64 -d > {safe_path}
 """
-        result = self.execute(cmd)
+        result = await self.aexecute(cmd)
 
         if result.exit_code != 0 or "Error:" in result.output:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
@@ -144,7 +150,15 @@ echo '{content_b64}' | base64 -d > {safe_path}
 
         return WriteResult(path=file_path, files_update=None)
 
-    def edit(
+    def write(
+        self,
+        file_path: str,
+        content: str,
+    ) -> WriteResult:
+        """Create a new file using shell commands."""
+        raise NotImplementedError("Use awrite instead")
+
+    async def aedit(
         self,
         file_path: str,
         old_string: str,
@@ -185,7 +199,7 @@ fi
 
 echo "$count"
 """
-        result = self.execute(cmd)
+        result = await self.aexecute(cmd)
 
         exit_code = result.exit_code
         output = result.output.strip()
@@ -208,7 +222,17 @@ echo "$count"
 
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """Edit a file by replacing string occurrences using shell commands."""
+        raise NotImplementedError("Use aedit instead")
+
+    async def als_info(self, path: str) -> list[FileInfo]:
         """List directory contents with metadata using shell commands."""
         safe_path = shlex.quote(path)
 
@@ -227,7 +251,7 @@ for entry in {safe_path}/*; do
     fi
 done
 """
-        result = self.execute(cmd)
+        result = await self.aexecute(cmd)
 
         if result.exit_code != 0:
             return []
@@ -242,7 +266,11 @@ done
 
         return file_infos
 
-    def grep_raw(
+    def ls_info(self, path: str) -> list[FileInfo]:
+        """List directory contents with metadata using shell commands."""
+        raise NotImplementedError("Use als_info instead")
+
+    async def agrep_raw(
         self,
         pattern: str,
         path: str | None = None,
@@ -263,7 +291,7 @@ done
         safe_pattern = shlex.quote(pattern)
 
         cmd = f"grep {grep_opts} {glob_pattern} -e {safe_pattern} {search_path} 2>/dev/null || true"
-        result = self.execute(cmd)
+        result = await self.aexecute(cmd)
 
         output = result.output.rstrip()
         if not output:
@@ -288,8 +316,21 @@ done
 
         return matches
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        """Find files matching glob pattern using shell commands."""
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list[GrepMatch] | str:
+        """Search for pattern in files using grep."""
+        raise NotImplementedError("Use agrep_raw instead")
+
+    async def aglob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+        """Find files matching glob pattern using shell commands.
+
+        Please note that this implementation does not currently support all glob
+        patterns.
+        """
         safe_path = shlex.quote(path)
         safe_pattern = shlex.quote(pattern)
 
@@ -306,7 +347,7 @@ for file in {safe_pattern}; do
     fi
 done
 """
-        result = self.execute(cmd)
+        result = await self.aexecute(cmd)
 
         if result.exit_code != 0:
             return []
@@ -330,3 +371,7 @@ done
                 )
 
         return file_infos
+
+    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+        """Find files matching glob pattern using shell commands."""
+        raise NotImplementedError("Use aglob_info instead")

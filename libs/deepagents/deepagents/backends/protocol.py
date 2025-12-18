@@ -5,9 +5,11 @@ must follow. Backends can store files in different locations (state, filesystem,
 database, etc.) and provide a uniform interface for file operations.
 """
 
+import abc
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, NotRequired, Protocol, TypeAlias, runtime_checkable
+from typing import Any, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
@@ -156,8 +158,7 @@ class EditResult:
     occurrences: int | None = None
 
 
-@runtime_checkable
-class BackendProtocol(Protocol):
+class BackendProtocol(abc.ABC):
     """Protocol for pluggable memory backends (single, unified).
 
     Backends can store files in different locations (state, filesystem, database, etc.)
@@ -185,7 +186,10 @@ class BackendProtocol(Protocol):
             - `size` (optional): File size in bytes
             - `modified_at` (optional): ISO 8601 timestamp
         """
-        ...
+
+    async def als_info(self, path: str) -> list["FileInfo"]:
+        """Async version of ls_info."""
+        return await asyncio.to_thread(self.ls_info, path)
 
     def read(
         self,
@@ -213,7 +217,15 @@ class BackendProtocol(Protocol):
             - ALWAYS read a file before editing it
             - If file exists but is empty, you'll receive a system reminder warning
         """
-        ...
+
+    async def aread(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> str:
+        """Async version of read."""
+        return await asyncio.to_thread(self.read, file_path, offset, limit)
 
     def grep_raw(
         self,
@@ -254,7 +266,15 @@ class BackendProtocol(Protocol):
 
             On error: str with error message (e.g., invalid path, permission denied)
         """
-        ...
+
+    async def agrep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list["GrepMatch"] | str:
+        """Async version of grep_raw."""
+        return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
 
     def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Find files matching a glob pattern.
@@ -273,7 +293,10 @@ class BackendProtocol(Protocol):
         Returns:
             list of FileInfo
         """
-        ...
+
+    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+        """Async version of glob_info."""
+        return await asyncio.to_thread(self.glob_info, pattern, path)
 
     def write(
         self,
@@ -290,7 +313,14 @@ class BackendProtocol(Protocol):
         Returns:
             WriteResult
         """
-        ...
+
+    async def awrite(
+        self,
+        file_path: str,
+        content: str,
+    ) -> WriteResult:
+        """Async version of write."""
+        return await asyncio.to_thread(self.write, file_path, content)
 
     def edit(
         self,
@@ -313,7 +343,16 @@ class BackendProtocol(Protocol):
         Returns:
             EditResult
         """
-        ...
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """Async version of edit."""
+        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
@@ -339,7 +378,10 @@ class BackendProtocol(Protocol):
             )
             ```
         """
-        ...
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Async version of upload_files."""
+        return await asyncio.to_thread(self.upload_files, files)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the sandbox.
@@ -355,7 +397,10 @@ class BackendProtocol(Protocol):
             Response order matches input order (response[i] for paths[i]).
             Check the error field to determine success/failure per file.
         """
-        ...
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Async version of download_files."""
+        return await asyncio.to_thread(self.download_files, paths)
 
 
 @dataclass
@@ -375,8 +420,7 @@ class ExecuteResponse:
     """Whether the output was truncated due to backend limitations."""
 
 
-@runtime_checkable
-class SandboxBackendProtocol(BackendProtocol, Protocol):
+class SandboxBackendProtocol(BackendProtocol):
     """Protocol for sandboxed backends with isolated runtime.
 
     Sandboxed backends run in isolated environments (e.g., separate processes,
@@ -397,12 +441,17 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
         Returns:
             ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
         """
-        ...
+
+    async def aexecute(
+        self,
+        command: str,
+    ) -> ExecuteResponse:
+        """Async version of execute."""
+        return await asyncio.to_thread(self.execute, command)
 
     @property
     def id(self) -> str:
         """Unique identifier for the sandbox backend instance."""
-        ...
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

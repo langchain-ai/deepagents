@@ -98,6 +98,50 @@ deepagents list
 deepagents create <agent_name>
 ```
 
+### Environment Variables
+
+#### LangSmith Tracing
+
+The CLI supports separate LangSmith project configuration for agent tracing vs user code tracing:
+
+**Agent Tracing** - Traces deepagents operations (tool calls, agent decisions):
+```bash
+export DEEPAGENTS_LANGSMITH_PROJECT="my-agent-project"
+```
+
+**User Code Tracing** - Traces code executed via shell commands:
+```bash
+export LANGSMITH_PROJECT="my-user-code-project"
+```
+
+**Complete Setup Example:**
+```bash
+# Enable LangSmith tracing
+export LANGCHAIN_TRACING_V2=true
+export LANGCHAIN_API_KEY="your-api-key"
+
+# Configure separate projects
+export DEEPAGENTS_LANGSMITH_PROJECT="agent-traces"
+export LANGSMITH_PROJECT="user-code-traces"
+
+# Run deepagents
+deepagents
+```
+
+When both are configured, the CLI displays:
+```
+✓ LangSmith tracing enabled: Deepagents → 'agent-traces'
+  User code (shell) → 'user-code-traces'
+```
+
+**Why separate projects?**
+- Keep agent operations separate from your application code traces
+- Easier debugging by isolating agent vs user code behavior
+- Different retention policies or access controls per project
+
+**Backwards Compatibility:**
+If `DEEPAGENTS_LANGSMITH_PROJECT` is not set, both agent and user code trace to the same project specified by `LANGSMITH_PROJECT`.
+
 ## Customization 
 
 There are two primary ways to customize any agent: **memory** and **skills**. 

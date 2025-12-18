@@ -11,6 +11,7 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -983,10 +984,9 @@ class TestFilesystemMiddleware:
 
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""
-        from deepagents.backends.protocol import ExecuteResponse
 
         # Mock sandbox backend that returns specific output
-        class FormattingMockSandboxBackend(StateBackend):
+        class FormattingMockSandboxBackend(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Hello world\nLine 2",
@@ -1020,10 +1020,9 @@ class TestFilesystemMiddleware:
 
     def test_execute_tool_output_formatting_with_failure(self):
         """Test execute tool formats failure output correctly."""
-        from deepagents.backends.protocol import ExecuteResponse
 
         # Mock sandbox backend that returns failure
-        class FailureMockSandboxBackend(StateBackend):
+        class FailureMockSandboxBackend(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Error: command not found",
@@ -1057,10 +1056,9 @@ class TestFilesystemMiddleware:
 
     def test_execute_tool_output_formatting_with_truncation(self):
         """Test execute tool formats truncated output correctly."""
-        from deepagents.backends.protocol import ExecuteResponse
 
         # Mock sandbox backend that returns truncated output
-        class TruncatedMockSandboxBackend(StateBackend):
+        class TruncatedMockSandboxBackend(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Very long output...",
@@ -1093,11 +1091,10 @@ class TestFilesystemMiddleware:
 
     def test_supports_execution_helper_with_composite_backend(self):
         """Test _supports_execution correctly identifies CompositeBackend capabilities."""
-        from deepagents.backends.protocol import ExecuteResponse
         from deepagents.middleware.filesystem import _supports_execution
 
         # Mock sandbox backend
-        class TestSandboxBackend(StateBackend):
+        class TestSandboxBackend(SandboxBackendProtocol, StateBackend):
             def execute(self, command: str) -> ExecuteResponse:
                 return ExecuteResponse(output="test", exit_code=0, truncated=False)
 

@@ -8,8 +8,7 @@ from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
-from deepagents_cli.agent import create_agent_with_config, list_agents, reset_agent
-from deepagents_cli.commands import execute_bash_command, handle_command
+# CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import (
     COLORS,
     DEEP_AGENTS_ASCII,
@@ -18,8 +17,12 @@ from deepagents_cli.config import (
     create_model,
     settings,
 )
+
+# Now safe to import agent (which imports LangChain modules)
+from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
+from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.execution import execute_task
-from deepagents_cli.input import create_prompt_session
+from deepagents_cli.input import ImageTracker, create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
     create_sandbox,
     get_default_working_dir,
@@ -189,6 +192,15 @@ async def simple_cli(
         )
         console.print()
 
+    if settings.has_deepagents_langchain_project:
+        console.print(
+            f"[green]✓ LangSmith tracing enabled:[/green] Deepagents → '{settings.deepagents_langchain_project}'",
+            style=COLORS["dim"],
+        )
+        if settings.user_langchain_project:
+            console.print(f"  [dim]User code (shell) → '{settings.user_langchain_project}'[/dim]")
+        console.print()
+
     console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
 
     if sandbox_type:
@@ -221,8 +233,9 @@ async def simple_cli(
 
     console.print()
 
-    # Create prompt session and token tracker
-    session = create_prompt_session(assistant_id, session_state)
+    # Create prompt session, image tracker, and token tracker
+    image_tracker = ImageTracker()
+    session = create_prompt_session(assistant_id, session_state, image_tracker=image_tracker)
     token_tracker = TokenTracker()
     token_tracker.set_baseline(baseline_tokens)
 
@@ -264,7 +277,13 @@ async def simple_cli(
             break
 
         await execute_task(
-            user_input, agent, assistant_id, session_state, token_tracker, backend=backend
+            user_input,
+            agent,
+            assistant_id,
+            session_state,
+            token_tracker,
+            backend=backend,
+            image_tracker=image_tracker,
         )
 
 
@@ -293,8 +312,13 @@ async def _run_agent_session(
     if settings.has_tavily:
         tools.append(web_search)
 
-    agent, composite_backend = create_agent_with_config(
-        model, assistant_id, tools, sandbox=sandbox_backend, sandbox_type=sandbox_type
+    agent, composite_backend = create_cli_agent(
+        model=model,
+        assistant_id=assistant_id,
+        tools=tools,
+        sandbox=sandbox_backend,
+        sandbox_type=sandbox_type,
+        auto_approve=session_state.auto_approve,
     )
 
     # Calculate baseline token count for accurate token tracking
@@ -387,6 +411,10 @@ def cli_main() -> None:
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
+
+    # Note: LANGSMITH_PROJECT is already overridden in config.py (before LangChain imports)
+    # This ensures agent traces → DEEPAGENTS_LANGSMITH_PROJECT
+    # Shell commands → user's original LANGSMITH_PROJECT (via ShellMiddleware env)
 
     # Check dependencies first
     check_cli_dependencies()

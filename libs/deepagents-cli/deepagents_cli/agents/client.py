@@ -1,7 +1,7 @@
 """HTTP client for the agent filesystem API.
 
 This module provides a client for interacting with the remote agent filesystem
-server to push, pull, and list agent profiles.
+server to push, pull, and list agents.
 """
 
 from dataclasses import dataclass
@@ -19,17 +19,17 @@ class AuthenticationError(AgentFilesystemError):
     """Raised when authentication fails or is required."""
 
 
-class ProfileNotFoundError(AgentFilesystemError):
-    """Raised when a profile is not found."""
+class AgentNotFoundError(AgentFilesystemError):
+    """Raised when an agent is not found."""
 
 
-class ProfileConflictError(AgentFilesystemError):
-    """Raised when there's a conflict (e.g., duplicate public profile name)."""
+class AgentConflictError(AgentFilesystemError):
+    """Raised when there's a conflict (e.g., duplicate public agent name)."""
 
 
 @dataclass
-class ProfileFile:
-    """Represents a file in a profile."""
+class AgentFile:
+    """Represents a file in an agent."""
 
     path: str
     content: str
@@ -37,8 +37,8 @@ class ProfileFile:
 
 
 @dataclass
-class ProfileInfo:
-    """Metadata about a profile."""
+class AgentInfo:
+    """Metadata about an agent."""
 
     name: str
     owner_id: str
@@ -49,7 +49,7 @@ class ProfileInfo:
 
 @dataclass
 class PushResponse:
-    """Response from pushing a profile."""
+    """Response from pushing an agent."""
 
     name: str
     version: int
@@ -58,11 +58,11 @@ class PushResponse:
 
 @dataclass
 class PullResponse:
-    """Response from pulling a profile."""
+    """Response from pulling an agent."""
 
     name: str
     version: int
-    files: list[ProfileFile]
+    files: list[AgentFile]
 
 
 class AgentFilesystemClient:
@@ -97,8 +97,8 @@ class AgentFilesystemClient:
 
         Raises:
             AuthenticationError: If authentication fails
-            ProfileNotFoundError: If profile is not found
-            ProfileConflictError: If there's a conflict
+            AgentNotFoundError: If agent is not found
+            AgentConflictError: If there's a conflict
             AgentFilesystemError: For other errors
         """
         if response.status_code == HTTPStatus.UNAUTHORIZED:
@@ -108,11 +108,11 @@ class AgentFilesystemClient:
             msg = "Permission denied. Check your API key."
             raise AuthenticationError(msg)
         if response.status_code == HTTPStatus.NOT_FOUND:
-            msg = "Profile not found."
-            raise ProfileNotFoundError(msg)
+            msg = "Agent not found."
+            raise AgentNotFoundError(msg)
         if response.status_code == HTTPStatus.CONFLICT:
-            msg = "Profile name conflict. A public profile with this name already exists."
-            raise ProfileConflictError(msg)
+            msg = "Agent name conflict. A public agent with this name already exists."
+            raise AgentConflictError(msg)
 
         try:
             data = response.json()
@@ -136,19 +136,19 @@ class AgentFilesystemClient:
         *,
         is_public: bool = False,
     ) -> PushResponse:
-        """Push a profile to the remote filesystem.
+        """Push an agent to the remote filesystem.
 
         Args:
-            name: Profile name
+            name: Agent name
             files: List of files with path, content, and size
-            is_public: Whether the profile should be public
+            is_public: Whether the agent should be public
 
         Returns:
             PushResponse with name, version, and files_count
 
         Raises:
             AuthenticationError: If not authenticated
-            ProfileConflictError: If public profile name already exists
+            AgentConflictError: If public agent name already exists
             AgentFilesystemError: For other errors
         """
         url = f"{self.base_url}/v1/profiles/{name}/push"
@@ -176,10 +176,10 @@ class AgentFilesystemClient:
         version: int | None = None,
         is_public: bool | None = None,
     ) -> PullResponse:
-        """Pull a profile from the remote filesystem.
+        """Pull an agent from the remote filesystem.
 
         Args:
-            name: Profile name
+            name: Agent name
             version: Specific version to pull (default: latest)
             is_public: Force lookup type (True=public only, False=private only, None=auto)
 
@@ -187,8 +187,8 @@ class AgentFilesystemClient:
             PullResponse with name, version, and files
 
         Raises:
-            ProfileNotFoundError: If profile is not found
-            AuthenticationError: If private profile and not authenticated
+            AgentNotFoundError: If agent is not found
+            AuthenticationError: If private agent and not authenticated
             AgentFilesystemError: For other errors
         """
         url = f"{self.base_url}/v1/profiles/{name}/pull"
@@ -207,7 +207,7 @@ class AgentFilesystemClient:
 
         data = self._handle_response(response)
         files = [
-            ProfileFile(
+            AgentFile(
                 path=f["path"],
                 content=f["content"],
                 size=f["size"],
@@ -220,16 +220,16 @@ class AgentFilesystemClient:
             files=files,
         )
 
-    def list_profiles(self, *, is_public: bool | None = None) -> list[ProfileInfo]:
-        """List all accessible profiles.
+    def list_agents(self, *, is_public: bool | None = None) -> list[AgentInfo]:
+        """List all accessible agents.
 
-        Returns all public profiles and (if authenticated) the user's private profiles.
+        Returns all public agents and (if authenticated) the user's private agents.
 
         Args:
             is_public: Filter by visibility (True=public only, False=private only, None=all)
 
         Returns:
-            List of ProfileInfo objects
+            List of AgentInfo objects
 
         Raises:
             AgentFilesystemError: For API errors
@@ -248,7 +248,7 @@ class AgentFilesystemClient:
 
         data = self._handle_response(response)
         return [
-            ProfileInfo(
+            AgentInfo(
                 name=p["name"],
                 owner_id=p["owner_id"],
                 is_public=p["is_public"],
@@ -258,23 +258,23 @@ class AgentFilesystemClient:
             for p in data
         ]
 
-    def get_profile(
+    def get_agent(
         self,
         name: str,
         *,
         is_public: bool | None = None,
-    ) -> ProfileInfo:
-        """Get information about a specific profile.
+    ) -> AgentInfo:
+        """Get information about a specific agent.
 
         Args:
-            name: Profile name
+            name: Agent name
             is_public: Force lookup type (True=public only, False=private only, None=auto)
 
         Returns:
-            ProfileInfo object
+            AgentInfo object
 
         Raises:
-            ProfileNotFoundError: If profile is not found
+            AgentNotFoundError: If agent is not found
             AgentFilesystemError: For other errors
         """
         url = f"{self.base_url}/v1/profiles/{name}"
@@ -290,7 +290,7 @@ class AgentFilesystemClient:
         )
 
         data = self._handle_response(response)
-        return ProfileInfo(
+        return AgentInfo(
             name=data["name"],
             owner_id=data["owner_id"],
             is_public=data["is_public"],

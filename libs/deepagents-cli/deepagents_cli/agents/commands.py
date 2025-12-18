@@ -1,9 +1,9 @@
-"""CLI commands for profile management.
+"""CLI commands for agent management.
 
 These commands are registered with the CLI via main.py:
-- deepagents push <name> <local_dir> [--public|--private]
-- deepagents pull <name> [--public] [--version N]
-- deepagents profiles [--public|--private]
+- deepagents push <name> [--public|--private]  (pushes from ~/.deepagents/<name>/)
+- deepagents pull <name> [--public] [--version N]  (pulls to ~/.deepagents/<name>/)
+- deepagents agents [--public|--private]
 """
 
 import argparse
@@ -14,38 +14,38 @@ from typing import Any
 from deepagents_cli.config import COLORS, Settings, console
 
 from .client import (
+    AgentConflictError,
     AgentFilesystemClient,
     AgentFilesystemError,
+    AgentNotFoundError,
     AuthenticationError,
-    ProfileConflictError,
-    ProfileNotFoundError,
 )
 
 
-def _validate_profile_name(name: str) -> tuple[bool, str]:
-    """Validate profile name to prevent path traversal attacks.
+def _validate_agent_name(name: str) -> tuple[bool, str]:
+    """Validate agent name to prevent path traversal attacks.
 
     Args:
-        name: The profile name to validate
+        name: The agent name to validate
 
     Returns:
         Tuple of (is_valid, error_message). If valid, error_message is empty.
     """
     if not name or not name.strip():
-        return False, "Profile name cannot be empty"
+        return False, "Agent name cannot be empty"
 
     if ".." in name:
-        return False, "Profile name cannot contain '..'"
+        return False, "Agent name cannot contain '..'"
 
     if name.startswith(("/", "\\")):
-        return False, "Profile name cannot be an absolute path"
+        return False, "Agent name cannot be an absolute path"
 
     if "/" in name or "\\" in name:
-        return False, "Profile name cannot contain path separators"
+        return False, "Agent name cannot contain path separators"
 
     # Only allow alphanumeric, hyphens, underscores
     if not re.match(r"^[a-zA-Z0-9_-]+$", name):
-        return False, "Profile name can only contain letters, numbers, hyphens, and underscores"
+        return False, "Agent name can only contain letters, numbers, hyphens, and underscores"
 
     return True, ""
 
@@ -80,47 +80,47 @@ def _load_local_files(local_dir: Path) -> list[dict[str, Any]]:
     return files
 
 
-def _save_profile_files(profile_name: str, files: list, settings: Settings) -> Path:
-    """Save pulled profile files to local storage.
+def _save_agent_files(agent_name: str, files: list, settings: Settings) -> Path:
+    """Save pulled agent files to local storage.
 
     Args:
-        profile_name: Name of the profile
-        files: List of ProfileFile objects
+        agent_name: Name of the agent
+        files: List of AgentFile objects
         settings: Settings instance
 
     Returns:
-        Path to the profile directory
+        Path to the agent directory
     """
-    profile_dir = settings.get_agent_dir(profile_name)
+    agent_dir = settings.get_agent_dir(agent_name)
 
     # Clear existing directory if it exists
-    if profile_dir.exists():
+    if agent_dir.exists():
         import shutil
-        shutil.rmtree(profile_dir)
+        shutil.rmtree(agent_dir)
 
-    # Create profile directory
-    profile_dir.mkdir(parents=True, exist_ok=True)
+    # Create agent directory
+    agent_dir.mkdir(parents=True, exist_ok=True)
 
     # Write each file
     for file in files:
         # Handle both leading slash and no leading slash in path
         file_path = file.path.lstrip("/")
-        full_path = profile_dir / file_path
+        full_path = agent_dir / file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         full_path.write_text(file.content)
 
-    return profile_dir
+    return agent_dir
 
 
 def _push(args: argparse.Namespace) -> None:
     """Handle the push command.
 
-    Push a local directory to the remote filesystem as a profile.
+    Push an agent from ~/.deepagents/<name>/ to the remote filesystem.
     """
     settings = Settings.from_environment()
 
-    # Validate profile name
-    is_valid, error_msg = _validate_profile_name(args.name)
+    # Validate agent name
+    is_valid, error_msg = _validate_agent_name(args.name)
     if not is_valid:
         console.print(f"[bold red]Error:[/bold red] {error_msg}")
         return
@@ -144,22 +144,27 @@ def _push(args: argparse.Namespace) -> None:
         console.print("  export AGENT_FS_API_KEY=your_api_key", style=COLORS["dim"])
         return
 
-    # Validate local directory
-    local_dir = Path(args.local_dir).resolve()
-    if not local_dir.exists():
-        console.print(f"[bold red]Error:[/bold red] Directory not found: {local_dir}")
+    # Get agent directory from ~/.deepagents/<name>/
+    agent_dir = settings.get_agent_dir(args.name)
+    if not agent_dir.exists():
+        console.print(f"[bold red]Error:[/bold red] Agent directory not found: {agent_dir}")
+        console.print(
+            f"\n[dim]Create the directory first, or use 'deepagents pull {args.name}' "
+            "to fetch an existing agent.[/dim]",
+            style=COLORS["dim"],
+        )
         return
 
-    if not local_dir.is_dir():
-        console.print(f"[bold red]Error:[/bold red] Not a directory: {local_dir}")
+    if not agent_dir.is_dir():
+        console.print(f"[bold red]Error:[/bold red] Not a directory: {agent_dir}")
         return
 
     # Determine if public or private
     is_public = args.public if hasattr(args, "public") and args.public else False
 
-    # Load files from local directory
-    console.print(f"Loading files from {local_dir}...", style=COLORS["dim"])
-    files = _load_local_files(local_dir)
+    # Load files from agent directory
+    console.print(f"Loading files from {agent_dir}...", style=COLORS["dim"])
+    files = _load_local_files(agent_dir)
 
     if not files:
         console.print("[bold red]Error:[/bold red] No files found in directory.")
@@ -178,16 +183,16 @@ def _push(args: argparse.Namespace) -> None:
         visibility = "public" if is_public else "private"
         console.print(
             f"\n[bold green]Success![/bold green] "
-            f"Profile '{response.name}' pushed as {visibility}.",
+            f"Agent '{response.name}' pushed as {visibility}.",
             style=COLORS["primary"],
         )
         console.print(f"  Version: {response.version}", style=COLORS["dim"])
         console.print(f"  Files: {response.files_count}", style=COLORS["dim"])
     except AuthenticationError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
-    except ProfileConflictError:
+    except AgentConflictError:
         console.print(
-            f"[bold red]Error:[/bold red] A public profile named '{args.name}' already exists "
+            f"[bold red]Error:[/bold red] A public agent named '{args.name}' already exists "
             "and is owned by another user."
         )
     except AgentFilesystemError as e:
@@ -197,12 +202,12 @@ def _push(args: argparse.Namespace) -> None:
 def _pull(args: argparse.Namespace) -> None:
     """Handle the pull command.
 
-    Pull a profile from the remote filesystem to local storage.
+    Pull an agent from the remote filesystem to local storage.
     """
     settings = Settings.from_environment()
 
-    # Validate profile name
-    is_valid, error_msg = _validate_profile_name(args.name)
+    # Validate agent name
+    is_valid, error_msg = _validate_agent_name(args.name)
     if not is_valid:
         console.print(f"[bold red]Error:[/bold red] {error_msg}")
         return
@@ -224,7 +229,7 @@ def _pull(args: argparse.Namespace) -> None:
     # Warn if no API key and not explicitly pulling public
     if not settings.has_agent_fs_api_key and not is_public:
         console.print(
-            "[yellow]Note:[/yellow] No AGENT_FS_API_KEY set. Only public profiles available.",
+            "[yellow]Note:[/yellow] No AGENT_FS_API_KEY set. Only public agents available.",
             style=COLORS["dim"],
         )
 
@@ -235,28 +240,28 @@ def _pull(args: argparse.Namespace) -> None:
     )
 
     try:
-        console.print(f"Pulling profile '{args.name}'...", style=COLORS["dim"])
+        console.print(f"Pulling agent '{args.name}'...", style=COLORS["dim"])
         response = client.pull(args.name, version=version, is_public=is_public)
 
         # Save files locally
-        profile_dir = _save_profile_files(args.name, response.files, settings)
+        agent_dir = _save_agent_files(args.name, response.files, settings)
 
         console.print(
-            f"\n[bold green]Success![/bold green] Profile '{response.name}' pulled.",
+            f"\n[bold green]Success![/bold green] Agent '{response.name}' pulled.",
             style=COLORS["primary"],
         )
         console.print(f"  Version: {response.version}", style=COLORS["dim"])
         console.print(f"  Files: {len(response.files)}", style=COLORS["dim"])
-        console.print(f"  Location: {profile_dir}", style=COLORS["dim"])
+        console.print(f"  Location: {agent_dir}", style=COLORS["dim"])
         console.print(
             f"\n[dim]Use it with: deepagents --agent {args.name}[/dim]",
             style=COLORS["dim"],
         )
-    except ProfileNotFoundError:
-        console.print(f"[bold red]Error:[/bold red] Profile '{args.name}' not found.")
+    except AgentNotFoundError:
+        console.print(f"[bold red]Error:[/bold red] Agent '{args.name}' not found.")
         if not settings.has_agent_fs_api_key:
             console.print(
-                "\n[dim]If this is a private profile, set AGENT_FS_API_KEY to access it.[/dim]",
+                "\n[dim]If this is a private agent, set AGENT_FS_API_KEY to access it.[/dim]",
                 style=COLORS["dim"],
             )
     except AuthenticationError as e:
@@ -265,28 +270,28 @@ def _pull(args: argparse.Namespace) -> None:
         console.print(f"[bold red]Error:[/bold red] {e}")
 
 
-def _display_profile_group(profiles: list, title: str, color: str) -> None:
-    """Display a group of profiles with a title."""
-    if not profiles:
+def _display_agent_group(agents: list, title: str, color: str) -> None:
+    """Display a group of agents with a title."""
+    if not agents:
         return
     console.print(f"[bold {color}]{title}:[/bold {color}]", style=COLORS["primary"])
-    for profile in profiles:
-        console.print(f"  - [bold]{profile.name}[/bold]", style=COLORS["primary"])
-        console.print(f"    Version: {profile.latest_version}", style=COLORS["dim"])
+    for agent in agents:
+        console.print(f"  - [bold]{agent.name}[/bold]", style=COLORS["primary"])
+        console.print(f"    Version: {agent.latest_version}", style=COLORS["dim"])
     console.print()
 
 
 def _get_empty_message(*, show_public: bool, show_private: bool) -> str:
-    """Get the appropriate 'no profiles found' message."""
+    """Get the appropriate 'no agents found' message."""
     if show_public:
-        return "[yellow]No public profiles found.[/yellow]"
+        return "[yellow]No public agents found.[/yellow]"
     if show_private:
-        return "[yellow]No private profiles found.[/yellow]"
-    return "[yellow]No profiles found.[/yellow]"
+        return "[yellow]No private agents found.[/yellow]"
+    return "[yellow]No agents found.[/yellow]"
 
 
-def _list_profiles(args: argparse.Namespace) -> None:
-    """Handle the profiles (list) command."""
+def _list_agents(args: argparse.Namespace) -> None:
+    """Handle the agents (list) command."""
     settings = Settings.from_environment()
 
     if not settings.has_agent_fs_url:
@@ -300,7 +305,7 @@ def _list_profiles(args: argparse.Namespace) -> None:
 
     if show_private and not settings.has_agent_fs_api_key:
         console.print(
-            "[bold red]Error:[/bold red] AGENT_FS_API_KEY required to list private profiles."
+            "[bold red]Error:[/bold red] AGENT_FS_API_KEY required to list private agents."
         )
         console.print("\n[dim]Set your API key:[/dim]", style=COLORS["dim"])
         console.print("  export AGENT_FS_API_KEY=your_api_key", style=COLORS["dim"])
@@ -319,19 +324,19 @@ def _list_profiles(args: argparse.Namespace) -> None:
         is_public_filter = False
 
     try:
-        profiles = client.list_profiles(is_public=is_public_filter)
+        agents = client.list_agents(is_public=is_public_filter)
 
-        if not profiles:
+        if not agents:
             console.print(_get_empty_message(show_public=show_public, show_private=show_private))
             return
 
-        console.print("\n[bold]Available Profiles:[/bold]\n", style=COLORS["primary"])
+        console.print("\n[bold]Available Agents:[/bold]\n", style=COLORS["primary"])
 
-        public_profiles = [p for p in profiles if p.is_public]
-        private_profiles = [p for p in profiles if not p.is_public]
+        public_agents = [p for p in agents if p.is_public]
+        private_agents = [p for p in agents if not p.is_public]
 
-        _display_profile_group(public_profiles, "Public Profiles", "cyan")
-        _display_profile_group(private_profiles, "Private Profiles", "green")
+        _display_agent_group(public_agents, "Public Agents", "cyan")
+        _display_agent_group(private_agents, "Private Agents", "green")
 
     except (AuthenticationError, AgentFilesystemError) as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
@@ -341,20 +346,19 @@ def setup_push_parser(subparsers: Any) -> argparse.ArgumentParser:
     """Setup the push subcommand parser."""
     push_parser = subparsers.add_parser(
         "push",
-        help="Push a local directory as a profile to the remote filesystem",
-        description="Push a local directory to the agent filesystem as a profile",
+        help="Push an agent from ~/.deepagents/<name>/ to the remote filesystem",
+        description="Push an agent from ~/.deepagents/<name>/ to the remote filesystem",
     )
-    push_parser.add_argument("name", help="Profile name")
-    push_parser.add_argument("local_dir", help="Local directory to push")
+    push_parser.add_argument("name", help="Agent name (must match folder name in ~/.deepagents/)")
     push_parser.add_argument(
         "--public",
         action="store_true",
-        help="Make the profile public (default: private)",
+        help="Make the agent public (default: private)",
     )
     push_parser.add_argument(
         "--private",
         action="store_true",
-        help="Make the profile private (this is the default)",
+        help="Make the agent private (this is the default)",
     )
     return push_parser
 
@@ -363,14 +367,14 @@ def setup_pull_parser(subparsers: Any) -> argparse.ArgumentParser:
     """Setup the pull subcommand parser."""
     pull_parser = subparsers.add_parser(
         "pull",
-        help="Pull a profile from the remote filesystem",
-        description="Pull a profile from the agent filesystem to local storage",
+        help="Pull an agent from the remote filesystem",
+        description="Pull an agent from the agent filesystem to local storage",
     )
-    pull_parser.add_argument("name", help="Profile name to pull")
+    pull_parser.add_argument("name", help="Agent name to pull")
     pull_parser.add_argument(
         "--public",
         action="store_true",
-        help="Pull public profile only (no authentication required)",
+        help="Pull public agent only (no authentication required)",
     )
     pull_parser.add_argument(
         "--version",
@@ -380,24 +384,24 @@ def setup_pull_parser(subparsers: Any) -> argparse.ArgumentParser:
     return pull_parser
 
 
-def setup_profiles_parser(subparsers: Any) -> argparse.ArgumentParser:
-    """Setup the profiles subcommand parser."""
-    profiles_parser = subparsers.add_parser(
-        "profiles",
-        help="List available profiles on the remote filesystem",
-        description="List profiles from the agent filesystem",
+def setup_agents_parser(subparsers: Any) -> argparse.ArgumentParser:
+    """Setup the agents subcommand parser."""
+    agents_parser = subparsers.add_parser(
+        "agents",
+        help="List available agents on the remote filesystem",
+        description="List agents from the agent filesystem",
     )
-    profiles_parser.add_argument(
+    agents_parser.add_argument(
         "--public",
         action="store_true",
-        help="Show only public profiles",
+        help="Show only public agents",
     )
-    profiles_parser.add_argument(
+    agents_parser.add_argument(
         "--private",
         action="store_true",
-        help="Show only private profiles (requires AGENT_FS_API_KEY)",
+        help="Show only private agents (requires AGENT_FS_API_KEY)",
     )
-    return profiles_parser
+    return agents_parser
 
 
 def execute_push_command(args: argparse.Namespace) -> None:
@@ -410,16 +414,16 @@ def execute_pull_command(args: argparse.Namespace) -> None:
     _pull(args)
 
 
-def execute_profiles_command(args: argparse.Namespace) -> None:
-    """Execute the profiles command."""
-    _list_profiles(args)
+def execute_agents_command(args: argparse.Namespace) -> None:
+    """Execute the agents command."""
+    _list_agents(args)
 
 
 __all__ = [
-    "execute_profiles_command",
+    "execute_agents_command",
     "execute_pull_command",
     "execute_push_command",
-    "setup_profiles_parser",
+    "setup_agents_parser",
     "setup_pull_parser",
     "setup_push_parser",
 ]

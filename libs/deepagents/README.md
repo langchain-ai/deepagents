@@ -453,6 +453,64 @@ agent = create_agent(
 )
 ```
 
+### SkillsMiddleware (Optional)
+
+> **Note:** This middleware is **not included by default** in `create_deep_agent`. Add it explicitly via the `middleware` parameter.
+
+Skills are reusable instruction sets (stored as `SKILL.md` files) that the agent can read when needed. This implements Anthropic's "progressive disclosure" pattern - only skill names and descriptions appear in the system prompt, and the agent reads full instructions on demand.
+
+**Important:** SkillsMiddleware must use the **same backend** as FilesystemMiddleware. The agent reads skill metadata via SkillsMiddleware, then reads full instructions via FilesystemMiddleware's `read_file` tool - both must access the same storage.
+
+**Supported backends:**
+- **StateBackend**: Skills in agent state (programmatic injection)
+- **FilesystemBackend**: Skills on local disk
+- **StoreBackend**: Skills in LangGraph Store (persistent)
+- **CompositeBackend**: Mix of the above (e.g., user skills in state + project skills on disk)
+
+```python
+from langchain.agents import create_agent
+from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.backends import FilesystemBackend
+
+backend = FilesystemBackend(root_dir="/path/to/project")
+
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    middleware=[
+        FilesystemMiddleware(backend=backend),
+        SkillsMiddleware(backend=backend, skills_paths=["/skills"]),
+    ],
+)
+```
+
+**Organizing skills with labels:**
+
+```python
+SkillsMiddleware(
+    backend=backend,
+    skills_paths=[
+        "/skills",                           # No label (auto-generated)
+        ("/user/skills", "User Skills"),     # With label
+        ("/project/skills", "Project Skills"),
+    ],
+)
+```
+
+Skills are defined with YAML frontmatter:
+
+```markdown
+---
+name: web-research
+description: Conduct comprehensive web research with planning and synthesis
+---
+
+# Web Research Skill
+
+## When to Use
+- Research complex topics requiring multiple sources
+...
+```
+
 ## Sync vs Async
 
 Prior versions of deepagents separated sync and async agent factories. 

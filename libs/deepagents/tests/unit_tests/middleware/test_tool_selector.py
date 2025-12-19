@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 from typing import Any
 
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
@@ -34,22 +35,16 @@ def unindexed_tool(query: str) -> str:
     return query
 
 
-@dataclass(frozen=True)
-class DummyRequest:
-    messages: list[Any]
-    tools: list[Any]
-    system_prompt: str | None = None
-    runtime: Any = None
-
-    def override(self, **kwargs: Any) -> "DummyRequest":
-        return replace(self, **kwargs)
+def _build_request(messages: list[Any], tools: list[Any]) -> ModelRequest:
+    model = GenericFakeChatModel(messages=iter([]))
+    return ModelRequest(model=model, messages=messages, tools=tools)
 
 
 def test_tool_selector_keeps_always_tools_and_selects_top_k() -> None:
     tools = [ls, read_file, alpha_tool, beta_tool]
     config = ToolSelectorConfig(k=1, fallback_k=2, last_n_messages=1, always_tool_names=("ls", "read_file"))
     middleware = ToolSelectorMiddleware(tools=tools, config=config)
-    request = DummyRequest(messages=[HumanMessage(content="Use alpha tool")], tools=tools)
+    request = _build_request(messages=[HumanMessage(content="Use alpha tool")], tools=tools)
 
     selected_tools = middleware.wrap_model_call(request, lambda req: req.tools)
     selected_names = {tool.name for tool in selected_tools}
@@ -64,7 +59,7 @@ def test_tool_selector_preserves_unindexed_tools_by_default() -> None:
     tools = [alpha_tool]
     config = ToolSelectorConfig(k=1, fallback_k=1, last_n_messages=1, always_tool_names=())
     middleware = ToolSelectorMiddleware(tools=tools, config=config)
-    request = DummyRequest(messages=[HumanMessage(content="alpha")], tools=[alpha_tool, unindexed_tool])
+    request = _build_request(messages=[HumanMessage(content="alpha")], tools=[alpha_tool, unindexed_tool])
 
     selected_tools = middleware.wrap_model_call(request, lambda req: req.tools)
     selected_names = {tool.name for tool in selected_tools}
@@ -83,7 +78,7 @@ def test_tool_selector_allows_empty_selection() -> None:
         allow_empty_selection=True,
     )
     middleware = ToolSelectorMiddleware(tools=tools, config=config)
-    request = DummyRequest(messages=[HumanMessage(content="alpha")], tools=[alpha_tool])
+    request = _build_request(messages=[HumanMessage(content="alpha")], tools=[alpha_tool])
 
     selected_tools = middleware.wrap_model_call(request, lambda req: req.tools)
 

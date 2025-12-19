@@ -24,20 +24,26 @@ COLORS = {
 }
 
 # ASCII art banner
-DEEP_AGENTS_ASCII = """
- ██████╗  ███████╗ ███████╗ ██████╗
- ██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
- ██║  ██║ █████╗   █████╗   ██████╔╝
- ██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝
- ██████╔╝ ███████╗ ███████╗ ██║
- ╚═════╝  ╚══════╝ ╚══════╝ ╚═╝
-
-  █████╗   ██████╗  ███████╗ ███╗   ██╗ ████████╗ ███████╗
- ██╔══██╗ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝ ██╔════╝
- ███████║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║    ███████╗
- ██╔══██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║    ╚════██║
- ██║  ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║    ███████║
- ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
+DEEP_AGENTS_ASCII = r"""
+[deep_sky_blue1]               ++============++               
+            +=====++[/deep_sky_blue1]        [deep_sky_blue1]++++++            
+          +++=-=[/deep_sky_blue1][bright_cyan]:::..[/bright_cyan]           [deep_sky_blue1]+++++         
+       ++++=+     [/deep_sky_blue1][bright_cyan]:::..[/bright_cyan]     [deep_sky_blue1]+++++  +=+++      
+      +++ +++       [/deep_sky_blue1][bright_cyan]:::.[/bright_cyan][deep_sky_blue1]+++++      [bright_cyan].::[/bright_cyan]=++[/deep_sky_blue1]      
+[magenta]  ____ _ [/magenta][cyan]          _______ _            _____ [/cyan][magenta]
+ / ___| |      [/magenta][cyan] /\|__   __| |      /\  /  ___| [/cyan][magenta]
+| |   | |__   [/magenta][cyan] /  \  | |  | |     /  \ | (___  [/cyan][magenta]
+| |   | '_ \ [/magenta][cyan] / /\ \ | |  | |    / /\ \ \__  \ [/cyan][magenta]
+| |___| | | |[/magenta][cyan]/ ____ \| |  | |__ / ____ \___) | [/cyan][magenta]
+ \____|_| |_[/magenta][cyan]/_/    \_\_|  |____/_/    \_\____/ 
+[/cyan]                                              
+[deep_sky_blue1]       ++++[/deep_sky_blue1][bright_cyan].:::[/bright_cyan]   [deep_sky_blue1]++++       [/deep_sky_blue1][bright_cyan]::::.[/bright_cyan] [bright_cyan]::[/bright_cyan][deep_sky_blue1]=+++      
+        ++++       +++++      [/deep_sky_blue1][bright_cyan]:::.[/bright_cyan][deep_sky_blue1].++++       
+         ++++         +++     [/deep_sky_blue1][bright_cyan].::[/bright_cyan][deep_sky_blue1]+==+         
+        +++++++       +++++[/deep_sky_blue1][bright_cyan]:.:[/bright_cyan][deep_sky_blue1]==++           
+       +++   ++++============+++              
+      ++====++[/deep_sky_blue1]
+[dim]AI Agents for ATLAS • Powered by DeepAgents[/dim]
 """
 
 # Interactive commands

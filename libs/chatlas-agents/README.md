@@ -68,26 +68,56 @@ CHATLAS_LLM_API_KEY=your-api-key-here
 
 ### Running an Agent
 
-#### Using the CLI
+The ChATLAS CLI is built on top of DeepAgents CLI, providing an interactive coding assistant with ChATLAS MCP tools.
+
+#### Interactive Mode (Recommended)
 
 ```bash
-# Interactive mode with conversation persistence
-python -m chatlas_agents.cli run --interactive --thread my-session
+# Run with ChATLAS MCP tools
+python -m chatlas_agents.cli run --interactive
 
-# Stream responses
-python -m chatlas_agents.cli run --input "Hello!" --stream
+# With custom agent name (for separate conversation memory)
+python -m chatlas_agents.cli run --interactive --agent my-agent
 
-# With sandbox for secure code execution (default: Apptainer)
-python -m chatlas_agents.cli run --interactive --sandbox
-
-# With sandbox using Docker backend
-python -m chatlas_agents.cli run --interactive --sandbox --sandbox-backend docker
-
-# Specify custom container image
-python -m chatlas_agents.cli run --interactive --sandbox --sandbox-image python:3.11
+# With auto-approve (no confirmation for tool execution)
+python -m chatlas_agents.cli run --interactive --auto-approve
 
 # With configuration file
-python -m chatlas_agents.cli run --config my-agent.yaml --interactive
+python -m chatlas_agents.cli run --interactive --config my-agent.yaml
+```
+
+#### Interactive Features
+
+The CLI provides a rich interactive experience:
+
+- **Slash Commands**: Type `/help` to see available commands
+  - `/clear` - Clear screen and reset conversation
+  - `/tokens` - Show token usage
+  - `/help` - Show help
+  - `/quit` or `/exit` - Exit
+
+- **Bash Commands**: Execute bash commands directly with `!`
+  ```
+  !ls -la
+  !git status
+  ```
+
+- **File Operations**: The agent can read, write, and edit files
+- **Code Execution**: Run code in various languages
+- **Web Search**: Search the web (requires `TAVILY_API_KEY`)
+- **ChATLAS MCP Tools**: Access ATLAS documentation and data
+
+#### Configuration Options
+
+```bash
+# Override MCP server URL
+python -m chatlas_agents.cli run --interactive --mcp-url https://custom-mcp.cern.ch/mcp
+
+# Set MCP timeout
+python -m chatlas_agents.cli run --interactive --mcp-timeout 180
+
+# Enable verbose logging
+python -m chatlas_agents.cli run --interactive --verbose
 ```
 
 #### Using Environment Variables

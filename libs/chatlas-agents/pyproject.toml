@@ -3,65 +3,15 @@ name = "chatlas-agents"
 version = "0.1.0"
 description = "AI agents for the ChATLAS AI assistant using DeepAgents and LangChain"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
-    "deepagents>=0.3.0",
-    "langchain>=0.3.0",
-    "langchain-openai>=0.2.0",
-    "langchain-anthropic>=0.2.0",
-    "langchain-groq>=0.2.0",
-    "langgraph>=1.0.0",
-    "langgraph-checkpoint>=2.0.0",
-    "httpx>=0.27.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-    "python-dotenv>=1.0.0",
-    "pyyaml>=6.0.0",
-    "typer>=0.12.0",
-    "rich>=13.0.0",
-    "deepagents-cli>=0.0.3",
-    "langchain-mcp-adapters>=0.2.1",
-    "setuptools>=80.9.0",
+    "deepagents-cli",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "black>=24.0.0",
-    "ruff>=0.3.0",
+[tool.uv.workspace]
+members = [
+    "deepagents/libs/deepagents-cli",
 ]
-
-[project.scripts]
-chatlas = "chatlas_agents.cli:main"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.uv]
 
 [tool.uv.sources]
-deepagents = { path = "../deepagents" }
-deepagents-cli = { path = "../deepagents-cli" }
-
-[dependency-groups]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "black>=24.0.0",
-    "ruff>=0.3.0",
-]
-
-[tool.black]
-line-length = 100
-target-version = ['py311']
-
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-asyncio_mode = "auto"
+deepagents-cli = { workspace = true, editable = true }

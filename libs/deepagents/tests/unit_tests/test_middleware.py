@@ -1,5 +1,8 @@
+from typing import Any, Callable, Sequence
+
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
@@ -7,15 +10,20 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
+from langchain_core.tools import BaseTool, tool
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Overwrite
+from pydantic import PrivateAttr
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
+from deepagents.middleware.tool_selector import ToolSelectorConfig, ToolSelectorMiddleware
+from ..utils import SampleMiddlewareWithTools
 
 
 def build_composite_state_backend(runtime: ToolRuntime, *, routes):
@@ -1303,6 +1311,65 @@ class TestPatchToolCallsMiddleware:
         assert patched_messages[6].tool_call_id == "456"
         assert patched_messages[7].type == "human"
         assert patched_messages[7].content == "What is the weather in Tokyo?"
+
+
+@tool(description="Alpha tool for alpha keyword.")
+def alpha_tool(query: str) -> str:
+    return query
+
+
+@tool(description="Beta tool for beta keyword.")
+def beta_tool(query: str) -> str:
+    return query
+
+
+class ToolCaptureFakeChatModel(GenericFakeChatModel):
+    _bound_tools: Sequence[dict[str, Any] | type | Callable | BaseTool] | None = PrivateAttr(default=None)
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> "ToolCaptureFakeChatModel":
+        self._bound_tools = tools
+        return self
+
+
+class TestToolSelectorMiddleware:
+    def test_tool_selector_filters_tools_before_model_call(self) -> None:
+        model = ToolCaptureFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        selector = ToolSelectorMiddleware(
+            tools=[alpha_tool, beta_tool],
+            config=ToolSelectorConfig(k=1, fallback_k=1, last_n_messages=1, always_tool_names=(), allow_unindexed_tools=False),
+        )
+        agent = create_deep_agent(model=model, tools=[alpha_tool, beta_tool], middleware=[selector])
+
+        agent.invoke({"messages": [HumanMessage(content="Use alpha tool")]})
+
+        assert model._bound_tools is not None
+        bound_names = {tool.name if hasattr(tool, "name") else tool.get("name") for tool in model._bound_tools}
+        assert bound_names == {"alpha_tool"}
+
+    def test_tool_selector_keeps_unindexed_tools(self) -> None:
+        model = ToolCaptureFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        selector = ToolSelectorMiddleware(
+            tools=[alpha_tool],
+            config=ToolSelectorConfig(k=1, fallback_k=1, last_n_messages=1, always_tool_names=(), allow_unindexed_tools=True),
+        )
+        agent = create_deep_agent(
+            model=model,
+            tools=[alpha_tool],
+            middleware=[SampleMiddlewareWithTools(), selector],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="Use alpha tool")]})
+
+        assert model._bound_tools is not None
+        bound_names = {tool.name if hasattr(tool, "name") else tool.get("name") for tool in model._bound_tools}
+        assert "alpha_tool" in bound_names
+        assert "sample_tool" in bound_names
 
 
 class TestTruncation:

@@ -8,6 +8,8 @@ dependencies = [
     "deepagents-cli",
 ]
 
+[project.scripts]
+chatlas = "chatlas_agents.cli:main"
 [tool.uv.workspace]
 members = [
     "deepagents/libs/deepagents-cli",

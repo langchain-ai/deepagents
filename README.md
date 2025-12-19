@@ -310,3 +310,14 @@ The middleware automatically adds instructions about the standard tools. Your cu
 - When to use sub-agents vs when NOT to use them
 - Guidance on parallel execution
 - Subagent lifecycle (spawn → run → return → reconcile)
+
+## RunLedger CI gate
+
+This repo includes a deterministic CI gate for tool-using agents:
+
+```bash
+runledger run evals/runledger --mode replay --baseline baselines/runledger-demo.json
+```
+
+It replays recorded tool calls and fails the PR on schema/tool/budget regressions.
+

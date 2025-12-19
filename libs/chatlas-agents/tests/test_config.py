@@ -38,7 +38,7 @@ def test_mcp_config_default():
     """Test default MCP server configuration."""
     config = MCPServerConfig()
     assert config.url == "https://chatlas-mcp.app.cern.ch/mcp"
-    assert config.timeout == 30
+    assert config.timeout == 120  # Updated default timeout
     assert config.max_retries == 3
 
 

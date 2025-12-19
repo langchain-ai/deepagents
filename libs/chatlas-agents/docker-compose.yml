@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  chatlas-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chatlas-agent
+    environment:
+      # LLM Configuration
+      - CHATLAS_LLM_PROVIDER=${CHATLAS_LLM_PROVIDER:-openai}
+      - CHATLAS_LLM_MODEL=${CHATLAS_LLM_MODEL:-gpt-4}
+      - CHATLAS_LLM_API_KEY=${CHATLAS_LLM_API_KEY}
+      - CHATLAS_LLM_BASE_URL=${CHATLAS_LLM_BASE_URL}
+      - CHATLAS_LLM_TEMPERATURE=${CHATLAS_LLM_TEMPERATURE:-0.7}
+      
+      # MCP Server Configuration
+      - CHATLAS_MCP_URL=${CHATLAS_MCP_URL:-https://chatlas-mcp.app.cern.ch/mcp}
+      - CHATLAS_MCP_TIMEOUT=${CHATLAS_MCP_TIMEOUT:-30}
+      
+      # Agent Configuration
+      - CHATLAS_AGENT_NAME=${CHATLAS_AGENT_NAME:-chatlas-agent}
+      - CHATLAS_AGENT_VERBOSE=${CHATLAS_AGENT_VERBOSE:-false}
+      - CHATLAS_AGENT_MAX_ITERATIONS=${CHATLAS_AGENT_MAX_ITERATIONS:-10}
+    volumes:
+      - ./configs:/app/configs:ro
+      - agent-data:/app/data
+    networks:
+      - chatlas-network
+    restart: unless-stopped
+
+volumes:
+  agent-data:
+
+networks:
+  chatlas-network:
+    driver: bridge

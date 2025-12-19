@@ -1,0 +1,29 @@
+# Example Agent Configuration for ChATLAS
+
+name: chatlas-agent
+description: ChATLAS AI assistant agent with OpenAI backend
+
+# LLM Configuration
+llm:
+  provider: openai
+  model: gpt-4
+  temperature: 0.7
+  streaming: false
+  # api_key: "your-openai-api-key"  # Or set via CHATLAS_LLM_API_KEY env var
+
+# MCP Server Configuration
+mcp:
+  url: https://chatlas-mcp.app.cern.ch/mcp
+  timeout: 120
+  max_retries: 3
+  headers: {}
+
+# Agent Settings
+max_iterations: 10
+verbose: false
+
+# Tools (loaded automatically from MCP server)
+tools: []
+
+# Sub-agents (optional)
+sub_agents: []

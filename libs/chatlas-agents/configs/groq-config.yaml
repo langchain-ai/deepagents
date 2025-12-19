@@ -1,0 +1,17 @@
+# Example Configuration with Groq
+
+name: chatlas-groq-agent
+description: ChATLAS AI assistant agent with Groq backend
+
+llm:
+  provider: groq
+  model: llama-3.1-70b-versatile
+  temperature: 0.7
+  # api_key: "your-groq-api-key"  # Or set via CHATLAS_LLM_API_KEY env var
+
+mcp:
+  url: https://chatlas-mcp.app.cern.ch/mcp
+  timeout: 30
+
+max_iterations: 10
+verbose: false

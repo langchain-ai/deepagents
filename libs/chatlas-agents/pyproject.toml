@@ -12,7 +12,7 @@ dependencies = [
 chatlas = "chatlas_agents.cli:main"
 [tool.uv.workspace]
 members = [
-    "deepagents/libs/deepagents-cli",
+    "../deepagents-cli",
 ]
 
 [tool.uv.sources]

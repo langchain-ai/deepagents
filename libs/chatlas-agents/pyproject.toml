@@ -42,6 +42,8 @@ build-backend = "hatchling.build"
 [tool.uv]
 
 [tool.uv.sources]
+deepagents = { path = "../deepagents" }
+deepagents-cli = { path = "../deepagents-cli" }
 
 [dependency-groups]
 dev = [

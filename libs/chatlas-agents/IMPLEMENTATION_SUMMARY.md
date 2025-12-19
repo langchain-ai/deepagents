@@ -145,7 +145,7 @@ Possible future improvements:
 
 The following features were removed/changed:
 - ❌ `--input` flag for single-shot queries (use interactive mode instead)
-- ❌ `--thread` flag (use `--agent` for separate conversations)
+- ❌ `--thread` flag (thread-ID–based conversation persistence removed; `--agent` now selects the agent/memory configuration, not the conversation thread)
 - ❌ `--stream` flag (streaming happens automatically in interactive mode)
 - ❌ `--sandbox` flags (use DeepAgents sandbox options if needed)
 - ❌ `htcondor-submit` command (can be restored if needed)

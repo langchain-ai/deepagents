@@ -10,4 +10,5 @@ else
 fi
 
 source .atlas-pip/setup.sh
+source .env
 uv sync 

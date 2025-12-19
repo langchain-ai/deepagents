@@ -52,50 +52,40 @@ class SkillsStateUpdate(TypedDict):
     """List of loaded skill metadata (name, description, path)."""
 
 
-# Skills System Documentation
+# Skills System Documentation (per Agent Skills spec: https://agentskills.io/specification)
 SKILLS_SYSTEM_PROMPT = """
 
 ## Skills System
 
 You have access to a skills library that provides specialized capabilities and domain knowledge.
 
-{skills_locations}
-
-**Available Skills:**
-
 {skills_list}
 
 **How to Use Skills (Progressive Disclosure):**
 
-Skills follow a **progressive disclosure** pattern - you know they exist (name + description above), but you only read the full instructions when needed:
+Skills follow a progressive disclosure pattern - you see their name and description above,
+but read full instructions only when needed:
 
-1. **Recognize when a skill applies**: Check if the user's task matches any skill's description
-2. **Read the skill's full instructions**: The skill list above shows the exact path to use with read_file
-3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
-4. **Access supporting files**: Skills may include Python scripts, configs, or reference docs - use absolute paths
+1. **Recognize when a skill applies**: Check if the user's task matches any skill description
+2. **Read full instructions**: Use `read_file` with the `<location>` path from the skill list
+3. **Follow the instructions**: SKILL.md contains workflows, best practices, and examples
+4. **Access supporting files**: Skills may include scripts, configs, or docs in the same dir
 
 **When to Use Skills:**
 - When the user's request matches a skill's domain (e.g., "research X" → web-research skill)
 - When you need specialized knowledge or structured workflows
 - When a skill provides proven patterns for complex tasks
 
-**Skills are Self-Documenting:**
-- Each SKILL.md tells you exactly what the skill does and how to use it
-- The skill list above shows the full path for each skill's SKILL.md file
-
-**Executing Skill Scripts:**
-Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
-
 **Example Workflow:**
 
 User: "Can you research the latest developments in quantum computing?"
 
-1. Check available skills above → See "web-research" skill with its full path
-2. Read the skill using the path shown in the list
-3. Follow the skill's research workflow (search → organize → synthesize)
-4. Use any helper scripts with absolute paths
+1. Check `<available_skills>` above → Find skill with matching description
+2. Read the skill's SKILL.md using the `<location>` path
+3. Follow the skill's workflow instructions
+4. Access any helper scripts in the skill directory
 
-Remember: Skills are tools to make you more capable and consistent. When in doubt, check if a skill exists for the task!
+Remember: Skills make you more capable. When in doubt, check if a skill exists for the task!
 """
 
 
@@ -143,43 +133,43 @@ class SkillsMiddleware(AgentMiddleware):
         self.user_skills_display = f"~/.deepagents/{assistant_id}/skills"
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 
-    def _format_skills_locations(self) -> str:
-        """Format skills locations for display in system prompt."""
-        locations = [f"**User Skills**: `{self.user_skills_display}`"]
-        if self.project_skills_dir:
-            locations.append(
-                f"**Project Skills**: `{self.project_skills_dir}` (overrides user skills)"
-            )
-        return "\n".join(locations)
+    def _escape_xml(self, text: str) -> str:
+        """Escape special XML characters in text.
+
+        Args:
+            text: The text to escape.
+
+        Returns:
+            Text with &, <, > escaped for safe XML inclusion.
+        """
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
-        """Format skills metadata for display in system prompt."""
+        """Format skills metadata as XML per Agent Skills spec.
+
+        Generates XML format recommended for Claude models:
+        https://agentskills.io/docs/integrate-skills
+
+        Args:
+            skills: List of skill metadata to format.
+
+        Returns:
+            XML-formatted string with available skills, or a message if no skills.
+        """
         if not skills:
             locations = [f"{self.user_skills_display}/"]
             if self.project_skills_dir:
                 locations.append(f"{self.project_skills_dir}/")
             return f"(No skills available yet. You can create skills in {' or '.join(locations)})"
 
-        # Group skills by source
-        user_skills = [s for s in skills if s["source"] == "user"]
-        project_skills = [s for s in skills if s["source"] == "project"]
-
-        lines = []
-
-        # Show user skills
-        if user_skills:
-            lines.append("**User Skills:**")
-            for skill in user_skills:
-                lines.append(f"- **{skill['name']}**: {skill['description']}")
-                lines.append(f"  → Read `{skill['path']}` for full instructions")
-            lines.append("")
-
-        # Show project skills
-        if project_skills:
-            lines.append("**Project Skills:**")
-            for skill in project_skills:
-                lines.append(f"- **{skill['name']}**: {skill['description']}")
-                lines.append(f"  → Read `{skill['path']}` for full instructions")
+        lines = ["<available_skills>"]
+        for skill in skills:
+            lines.append("  <skill>")
+            lines.append(f"    <name>{self._escape_xml(skill['name'])}</name>")
+            lines.append(f"    <description>{self._escape_xml(skill['description'])}</description>")
+            lines.append(f"    <location>{skill['path']}</location>")
+            lines.append("  </skill>")
+        lines.append("</available_skills>")
 
         return "\n".join(lines)
 
@@ -223,13 +213,11 @@ class SkillsMiddleware(AgentMiddleware):
         # Get skills metadata from state
         skills_metadata = request.state.get("skills_metadata", [])
 
-        # Format skills locations and list
-        skills_locations = self._format_skills_locations()
+        # Format skills list as XML
         skills_list = self._format_skills_list(skills_metadata)
 
         # Format the skills documentation
         skills_section = self.system_prompt_template.format(
-            skills_locations=skills_locations,
             skills_list=skills_list,
         )
 
@@ -258,13 +246,11 @@ class SkillsMiddleware(AgentMiddleware):
         state = cast("SkillsState", request.state)
         skills_metadata = state.get("skills_metadata", [])
 
-        # Format skills locations and list
-        skills_locations = self._format_skills_locations()
+        # Format skills list as XML
         skills_list = self._format_skills_list(skills_metadata)
 
         # Format the skills documentation
         skills_section = self.system_prompt_template.format(
-            skills_locations=skills_locations,
             skills_list=skills_list,
         )
 

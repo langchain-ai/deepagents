@@ -28,7 +28,7 @@ Modified the deepagents submodule (`chatlas-integration` branch) to add ChATLAS 
 ### 2. ChATLAS CLI Simplification
 
 **File: `chatlas_agents/cli.py`**
-- Simplified from 422 lines to 219 lines (48% reduction)
+- Simplified from 422 lines to 198 lines (53% reduction)
 - Removed complex async agent management code
 - Changed from custom agent implementation to DeepAgents CLI wrapper
 - Key changes:

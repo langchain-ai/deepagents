@@ -12,11 +12,18 @@ from pathlib import Path
 from typing import Any
 
 from deepagents_cli.config import COLORS, Settings, console
-from deepagents_cli.skills.load import list_skills
+from deepagents_cli.skills.load import MAX_SKILL_NAME_LENGTH, list_skills
 
 
 def _validate_name(name: str) -> tuple[bool, str]:
-    """Validate name to prevent path traversal attacks.
+    """Validate name per Agent Skills spec.
+
+    Requirements (https://agentskills.io/specification):
+    - Max 64 characters
+    - Lowercase alphanumeric and hyphens only (a-z, 0-9, -)
+    - Cannot start or end with hyphen
+    - No consecutive hyphens
+    - No path traversal sequences
 
     Args:
         name: The name to validate
@@ -28,21 +35,22 @@ def _validate_name(name: str) -> tuple[bool, str]:
     if not name or not name.strip():
         return False, "cannot be empty"
 
+    # Check length (spec: max 64 chars)
+    if len(name) > MAX_SKILL_NAME_LENGTH:
+        return False, "cannot exceed 64 characters"
+
     # Check for path traversal sequences
-    if ".." in name:
-        return False, "name cannot contain '..' (path traversal)"
+    if ".." in name or "/" in name or "\\" in name:
+        return False, "cannot contain path components"
 
-    # Check for absolute paths
-    if name.startswith(("/", "\\")):
-        return False, "name cannot be an absolute path"
-
-    # Check for path separators
-    if "/" in name or "\\" in name:
-        return False, "name cannot contain path separators"
-
-    # Only allow alphanumeric, hyphens, underscores
-    if not re.match(r"^[a-zA-Z0-9_-]+$", name):
-        return False, "name can only contain letters, numbers, hyphens, and underscores"
+    # Spec: lowercase alphanumeric and hyphens only
+    # Pattern ensures: no start/end hyphen, no consecutive hyphens
+    if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+        return (
+            False,
+            "must be lowercase letters, numbers, and hyphens only "
+            "(no uppercase, no underscores, cannot start/end with hyphen)",
+        )
 
     return True, ""
 
@@ -169,12 +177,13 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
         project: If True, create in project skills directory.
             If False, create in user skills directory.
     """
-    # Validate skill name first
+    # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
     if not is_valid:
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
         console.print(
-            "[dim]Skill names must only contain letters, numbers, hyphens, and underscores.[/dim]",
+            "[dim]Per Agent Skills spec: names must be lowercase alphanumeric with hyphens only.\n"
+            "Examples: web-research, code-review, data-analysis[/dim]",
             style=COLORS["dim"],
         )
         return
@@ -210,10 +219,17 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
     # Create skill directory
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create template SKILL.md
+    # Create template SKILL.md (per Agent Skills spec: https://agentskills.io/specification)
     template = f"""---
 name: {skill_name}
-description: [Brief description of what this skill does]
+description: Brief description of what this skill does and when to use it.
+# Optional fields per Agent Skills spec:
+# license: Apache-2.0
+# compatibility: Designed for deepagents CLI
+# metadata:
+#   author: your-org
+#   version: "1.0"
+# allowed-tools: Bash(git:*) Read
 ---
 
 # {skill_name.title().replace("-", " ")} Skill

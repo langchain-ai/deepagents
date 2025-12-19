@@ -117,8 +117,7 @@ class TestSkillsPathResolution:
 
         # Check paths are correctly set
         assert middleware.skills_dir == skills_dir
-        assert middleware.skills_dir_display == "~/.deepagents/test_agent/skills"
-        assert middleware.skills_dir_absolute == str(skills_dir)
+        assert middleware.user_skills_display == "~/.deepagents/test_agent/skills"
 
     def test_skills_dir_per_agent(self, tmp_path: Path) -> None:
         """Test that different agents have separate skills directories."""
@@ -136,5 +135,5 @@ class TestSkillsPathResolution:
 
         # Should have different paths
         assert middleware1.skills_dir != middleware2.skills_dir
-        assert "agent1" in middleware1.skills_dir_display
-        assert "agent2" in middleware2.skills_dir_display
+        assert "agent1" in middleware1.user_skills_display
+        assert "agent2" in middleware2.user_skills_display

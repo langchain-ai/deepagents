@@ -1,23 +1,35 @@
 """Tests for the CLI module."""
 
 from unittest.mock import MagicMock, patch
-from chatlas_agents.cli import show_splash, SPLASH_ART
+from chatlas_agents.cli import app, version, init, setup_logging, CHATLAS_AGENTS_VERSION
 
 
-def test_splash_art_defined():
-    """Test that the splash art is properly defined."""
-    assert SPLASH_ART is not None
-    assert isinstance(SPLASH_ART, str)
-    # Splash art uses ASCII art representation and mentions "AI Agents for ATLAS"
-    assert "AI Agents for ATLAS" in SPLASH_ART or "Powered by DeepAgents" in SPLASH_ART
-    assert "v." in SPLASH_ART  # Version number is included
+def test_cli_app_exists():
+    """Test that the CLI app is properly defined."""
+    assert app is not None
+    assert hasattr(app, 'command')
 
 
-def test_show_splash():
-    """Test that show_splash prints the splash art."""
-    with patch("chatlas_agents.cli.console") as mock_console:
-        show_splash()
-        # Verify that print was called at least once
-        assert mock_console.print.call_count >= 1
-        # Verify the splash art was printed
-        mock_console.print.assert_any_call(SPLASH_ART)
+def test_version_command_exists():
+    """Test that version command exists."""
+    assert version is not None
+    assert callable(version)
+
+
+def test_init_command_exists():
+    """Test that init command exists."""
+    assert init is not None
+    assert callable(init)
+
+
+def test_setup_logging():
+    """Test that setup_logging works correctly."""
+    # Should not raise an exception
+    setup_logging(verbose=False)
+    setup_logging(verbose=True)
+
+
+def test_version_info():
+    """Test that version info is available."""
+    assert CHATLAS_AGENTS_VERSION is not None
+    assert isinstance(CHATLAS_AGENTS_VERSION, str)

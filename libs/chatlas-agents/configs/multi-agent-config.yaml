@@ -1,0 +1,37 @@
+# Example Configuration with Sub-agents
+
+name: chatlas-multi-agent
+description: ChATLAS AI assistant with specialized sub-agents
+
+llm:
+  provider: openai
+  model: gpt-4
+  temperature: 0.7
+
+mcp:
+  url: https://chatlas-mcp.app.cern.ch/mcp
+  timeout: 120
+
+max_iterations: 10
+verbose: false
+
+# Define sub-agents for specialized tasks
+sub_agents:
+  - name: research-agent
+    description: Specialized in research and information gathering
+    enabled: true
+    tools: []
+    config:
+      focus: research
+  
+  - name: analysis-agent
+    description: Specialized in data analysis
+    enabled: true
+    llm:
+      # Override with different model for this sub-agent
+      provider: openai
+      model: gpt-4-turbo
+      temperature: 0.3
+    tools: []
+    config:
+      focus: analysis

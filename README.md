@@ -1,3 +1,21 @@
+# ChATLAS Agents
+
+This repository is a fork of the LangChain `deepagents` library, modified to integrate with ChATLAS. Extends the functionality of deep agents in the following ways:
+- **ChATLAS MCP** search ChATLAS vector stores by connecting to the MCP server.
+- **ATLAS software** compatible through SetupATLAS (on Lxplus).
+- **HTCondor integration** submit agent sandboxes to the HTCondor batch farm.
+
+ChATLAS-specific features can be found in `libs/chatlas-agents`. 
+
+Fetaures to be added:
+- Agent configurations for common HEP tasks:
+    - [] Document review: generate comments on content and style (cf. ATLAS style guide) of analysis notes or paper drafts. Generate responses to CDS comments, apply in-line to latex documents.
+    - [] Genrate documentation for analysis code.    
+- [] local tools (MCP or LC) interfacing with the ATLAS software stack.
+
+
+--- 
+
 # 🚀🧠 Deep Agents
 
 Agents can increasingly tackle long-horizon tasks, [with agent task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)! But, long horizon tasks often span dozens of tool calls, which present cost and reliability challenges. Popular agents such as [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8) use some common principles to address these challenges, including **planning** (prior to task execution), **computer access** (giving the agent access to a shell and a filesystem), and **sub-agent delegation** (isolated task execution). `deepagents` is a simple agent harness that implements these tools, but is open source and easily extendable with your own custom tools and instructions.

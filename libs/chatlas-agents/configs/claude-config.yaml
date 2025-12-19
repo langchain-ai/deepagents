@@ -1,0 +1,17 @@
+# Example Configuration with Anthropic Claude
+
+name: chatlas-claude-agent
+description: ChATLAS AI assistant agent with Claude backend
+
+llm:
+  provider: anthropic
+  model: claude-3-5-sonnet-20241022
+  temperature: 0.7
+  # api_key: "your-anthropic-api-key"  # Or set via CHATLAS_LLM_API_KEY env var
+
+mcp:
+  url: https://chatlas-mcp.app.cern.ch/mcp
+  timeout: 30
+
+max_iterations: 10
+verbose: false

@@ -1,0 +1,20 @@
+{
+  "python_version": "3.11",
+  "dockerfile_lines": [],
+  "dependencies": [
+    ".",
+    "langchain",
+    "langchain-openai",
+    "langchain-anthropic",
+    "langchain-groq",
+    "langgraph",
+    "langgraph-checkpoint",
+    "httpx",
+    "pydantic",
+    "pydantic-settings"
+  ],
+  "graphs": {
+    "chatlas_agent": "./chatlas_agents/graph.py:graph"
+  },
+  "env": ".env"
+}

@@ -34,7 +34,7 @@ def main_with_factory():
         # Create agent directly with the backend
         # Note: Using synchronous deepagents.create_deep_agent
         # Initialize model using init_chat_model to avoid AttributeError
-        model = init_chat_model("anthropic:claude-sonnet-4-5-20250929")
+        model = init_chat_model("openai:gpt-5-mini")
         
         agent = create_deep_agent_sync(
             model=model,

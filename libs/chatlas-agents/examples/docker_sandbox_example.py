@@ -8,6 +8,7 @@ This example demonstrates two approaches:
 import asyncio
 import os
 from deepagents import create_deep_agent as create_deep_agent_sync
+from langchain.chat_models import init_chat_model
 from chatlas_agents.config import AgentConfig, LLMConfig, LLMProvider
 from chatlas_agents.agents import create_deep_agent
 from chatlas_agents.sandbox import create_docker_sandbox
@@ -29,8 +30,11 @@ def main_with_factory():
     ) as backend:
         # Create agent directly with the backend
         # Note: Using synchronous deepagents.create_deep_agent
+        # Initialize model using init_chat_model to avoid AttributeError
+        model = init_chat_model("anthropic:claude-sonnet-4-5-20250929")
+        
         agent = create_deep_agent_sync(
-            model="anthropic:claude-sonnet-4-5-20250929",  # or use init_chat_model
+            model=model,
             backend=backend,
             system_prompt="You are a helpful coding assistant with access to a Docker sandbox.",
         )

@@ -7,6 +7,7 @@ factory functions that follow the deepagents-cli pattern for lifecycle managemen
 import os
 from chatlas_agents.sandbox import create_docker_sandbox, create_apptainer_sandbox
 from deepagents import create_deep_agent
+from langchain.chat_models import init_chat_model
 
 
 def docker_factory_example():
@@ -27,8 +28,11 @@ def docker_factory_example():
         print(f"✓ Sandbox ID: {backend.id[:12]}")
         
         # Create agent with the sandbox backend
+        # Initialize model using init_chat_model to avoid AttributeError
+        model = init_chat_model("anthropic:claude-sonnet-4-5-20250929")
+        
         agent = create_deep_agent(
-            model="anthropic:claude-sonnet-4-5-20250929",
+            model=model,
             backend=backend,
         )
         
@@ -60,8 +64,11 @@ def apptainer_factory_example():
         print(f"✓ Sandbox ID: {backend.id}")
         
         # Create agent with the sandbox backend
+        # Initialize model using init_chat_model to avoid AttributeError
+        model = init_chat_model("anthropic:claude-sonnet-4-5-20250929")
+        
         agent = create_deep_agent(
-            model="anthropic:claude-sonnet-4-5-20250929",
+            model=model,
             backend=backend,
         )
         
@@ -124,8 +131,11 @@ def atlas_container_example():
             print(f"✓ ATLAS sandbox ready: {backend.id}")
             
             # Now you can use ATLAS software in the agent
+            # Initialize model using init_chat_model to avoid AttributeError
+            model = init_chat_model("anthropic:claude-sonnet-4-5-20250929")
+            
             agent = create_deep_agent(
-                model="anthropic:claude-sonnet-4-5-20250929",
+                model=model,
                 backend=backend,
                 system_prompt=(
                     "You are an ATLAS physics analysis assistant. "

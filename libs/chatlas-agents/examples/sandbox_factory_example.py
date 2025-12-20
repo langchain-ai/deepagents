@@ -4,16 +4,13 @@ This example shows how to use the new create_docker_sandbox and create_apptainer
 factory functions that follow the deepagents-cli pattern for lifecycle management.
 """
 
-import asyncio
 import os
-from chatlas_agents.config import AgentConfig, LLMConfig, LLMProvider
 from chatlas_agents.sandbox import create_docker_sandbox, create_apptainer_sandbox
 from deepagents import create_deep_agent
 
 
-async def docker_factory_example():
+def docker_factory_example():
     """Example using create_docker_sandbox factory."""
-    api_key = os.getenv("CHATLAS_LLM_API_KEY", "your-api-key-here")
     
     print("=" * 60)
     print("Docker Sandbox Factory Example")
@@ -36,18 +33,17 @@ async def docker_factory_example():
         )
         
         # Run a simple task
-        result = agent.invoke({
+        agent.invoke({
             "messages": [{"role": "user", "content": "Echo 'Hello from Docker!' to a file"}]
         })
         
-        print(f"Agent completed task")
+        print("Agent completed task")
     
     print("✓ Sandbox cleaned up automatically")
 
 
-async def apptainer_factory_example():
+def apptainer_factory_example():
     """Example using create_apptainer_sandbox factory."""
-    api_key = os.getenv("CHATLAS_LLM_API_KEY", "your-api-key-here")
     
     print("\n" + "=" * 60)
     print("Apptainer Sandbox Factory Example")
@@ -70,16 +66,16 @@ async def apptainer_factory_example():
         )
         
         # Run a simple task
-        result = agent.invoke({
+        agent.invoke({
             "messages": [{"role": "user", "content": "Create a Python script that prints system info"}]
         })
         
-        print(f"Agent completed task")
+        print("Agent completed task")
     
     print("✓ Sandbox cleaned up automatically")
 
 
-async def with_setup_script_example():
+def with_setup_script_example():
     """Example using a setup script to configure the sandbox."""
     
     print("\n" + "=" * 60)
@@ -110,7 +106,7 @@ echo "Setup complete!"
         os.unlink(setup_script)
 
 
-async def atlas_container_example():
+def atlas_container_example():
     """Example for ATLAS physics analysis on lxplus."""
     
     print("\n" + "=" * 60)
@@ -138,7 +134,7 @@ async def atlas_container_example():
             )
             
             # Agent can now run ATLAS commands
-            result = agent.invoke({
+            agent.invoke({
                 "messages": [{
                     "role": "user",
                     "content": "Check what ATLAS release is available"
@@ -155,15 +151,15 @@ if __name__ == "__main__":
     import shutil
     if shutil.which('docker'):
         print("\n🐳 Running Docker examples...")
-        asyncio.run(docker_factory_example())
-        asyncio.run(with_setup_script_example())
+        docker_factory_example()
+        with_setup_script_example()
     else:
         print("⚠️  Docker not available, skipping Docker examples")
     
     # Run Apptainer example if Apptainer is available
     if shutil.which('apptainer'):
         print("\n🔷 Running Apptainer examples...")
-        asyncio.run(apptainer_factory_example())
-        asyncio.run(atlas_container_example())
+        apptainer_factory_example()
+        atlas_container_example()
     else:
         print("⚠️  Apptainer not available, skipping Apptainer examples")

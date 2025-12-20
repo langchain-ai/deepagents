@@ -10,12 +10,13 @@ it doesn't require root privileges or a daemon.
 
 import asyncio
 import os
+from deepagents import create_deep_agent as create_deep_agent_sync
 from chatlas_agents.config import AgentConfig, LLMConfig, LLMProvider
 from chatlas_agents.agents import create_deep_agent
 from chatlas_agents.sandbox import SandboxBackendType, create_apptainer_sandbox
 
 
-async def main_with_factory():
+def main_with_factory():
     """Run DeepAgent example with Apptainer sandbox using factory function.
     
     This is the recommended approach as it follows deepagents-cli patterns
@@ -30,10 +31,8 @@ async def main_with_factory():
         auto_remove=True,
     ) as backend:
         # Create agent directly with the backend
-        # Note: No need for chatlas-agents wrapper, use deepagents directly
-        from deepagents import create_deep_agent
-        
-        agent = create_deep_agent(
+        # Note: Using synchronous deepagents.create_deep_agent
+        agent = create_deep_agent_sync(
             model="anthropic:claude-sonnet-4-5-20250929",  # or use init_chat_model
             backend=backend,
             system_prompt="You are a helpful coding assistant with access to an Apptainer sandbox.",
@@ -200,7 +199,7 @@ async def data_analysis_example():
 if __name__ == "__main__":
     # Run factory-based example (recommended)
     print("\n🆕 Running factory-based example (recommended)...")
-    asyncio.run(main_with_factory())
+    main_with_factory()
     
     # Uncomment to run original approach
     # print("\n📦 Running original approach...")

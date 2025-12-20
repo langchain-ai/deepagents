@@ -173,23 +173,38 @@ async def demo_usage():
     
     logger.info("Agent created successfully with MCP + CLI features")
     
-    # Example query
-    logger.info("\nExample: Running a simple query...")
+    # Example query that will trigger MCP tool usage
+    logger.info("\nExample: Querying with MCP tool (search_chatlas)...")
     try:
         # CLI agents use InMemorySaver checkpointer, which requires a thread_id
         config = {"configurable": {"thread_id": "demo-session"}}
+        
+        # Ask a question that requires using the search_chatlas MCP tool
         result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": "List available tools"}]},
+            {"messages": [{"role": "user", "content": "What is ChATLAS? Use the search_chatlas tool to find information."}]},
             config=config
         )
         
         messages = result.get("messages", [])
         if messages:
+            # Show the final response
             last_message = messages[-1]
-            logger.info(f"\nAgent response: {last_message.content[:200]}...")
+            logger.info(f"\nAgent final response: {last_message.content[:300]}...")
+            
+            # Check if search_chatlas tool was actually called
+            tool_calls_made = [msg for msg in messages if hasattr(msg, 'type') and msg.type == 'ai' and hasattr(msg, 'tool_calls') and msg.tool_calls]
+            if tool_calls_made:
+                logger.info(f"\n✓ MCP tool was called successfully!")
+                for msg in tool_calls_made:
+                    for tool_call in msg.tool_calls:
+                        logger.info(f"  - Tool used: {tool_call.get('name', 'unknown')}")
+            else:
+                logger.info("\nNote: No tool calls detected in response")
     except Exception as e:
         logger.error(f"Error during demo: {e}")
-        logger.info("(This is expected if MCP server is not available)")
+        import traceback
+        traceback.print_exc()
+        logger.info("(This may occur if MCP server is not available or credentials are invalid)")
 
 
 async def main():

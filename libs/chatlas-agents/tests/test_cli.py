@@ -4,7 +4,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 
-import pytest
 from typer.testing import CliRunner
 
 from chatlas_agents.cli import app, version, init, setup_logging, CHATLAS_AGENTS_VERSION

@@ -1,14 +1,88 @@
-"""Example of using ChATLAS agents with Apptainer sandbox backend."""
+"""Example of using ChATLAS agents with Apptainer sandbox backend.
+
+This example demonstrates two approaches:
+1. Direct instantiation of ApptainerSandboxBackend (original approach)
+2. Using create_apptainer_sandbox factory function (recommended for new code)
+
+Apptainer is particularly useful in HPC environments like CERN lxplus where
+it doesn't require root privileges or a daemon.
+"""
 
 import asyncio
 import os
 from chatlas_agents.config import AgentConfig, LLMConfig, LLMProvider
 from chatlas_agents.agents import create_deep_agent
-from chatlas_agents.sandbox import SandboxBackendType
+from chatlas_agents.sandbox import SandboxBackendType, create_apptainer_sandbox
+
+
+async def main_with_factory():
+    """Run DeepAgent example with Apptainer sandbox using factory function.
+    
+    This is the recommended approach as it follows deepagents-cli patterns
+    and provides automatic lifecycle management.
+    """
+    # Get API key from environment or use placeholder
+    api_key = os.getenv("CHATLAS_LLM_API_KEY", "your-api-key-here")
+    
+    # Create configuration
+    config = AgentConfig(
+        name="chatlas-apptainer-agent",
+        description="ChATLAS agent with Apptainer sandbox for secure code execution",
+        llm=LLMConfig(
+            provider=LLMProvider.OPENAI,
+            model="gpt-4",
+            temperature=0.7,
+            api_key=api_key,  # Set via CHATLAS_LLM_API_KEY environment variable
+        ),
+        verbose=True,
+    )
+
+    print("Creating DeepAgent with Apptainer sandbox (factory approach)...")
+    
+    # Use factory function with context manager for automatic cleanup
+    with create_apptainer_sandbox(
+        image="docker://python:3.13-slim",
+        working_dir="/workspace",
+        auto_remove=True,
+    ) as backend:
+        # Create agent with the sandbox backend
+        agent = await create_deep_agent(
+            config,
+            use_docker_sandbox=True,
+            docker_image="python:3.13-slim",
+            sandbox_backend=SandboxBackendType.APPTAINER,
+        )
+
+        try:
+            # Run queries that may involve file operations or command execution
+            thread_id = "apptainer-session"
+            
+            queries = [
+                "Create a Python script that prints 'Hello from Apptainer sandbox!'",
+                "Execute the Python script you just created",
+                "List all files in the current directory",
+            ]
+
+            for query in queries:
+                print(f"\n{'='*60}")
+                print(f"Query: {query}")
+                print('='*60)
+                
+                # Run with conversation memory
+                result = await agent.run(query, thread_id=thread_id)
+                print(f"\nAgent: {result.get('output', result)}\n")
+        finally:
+            await agent.close()
+    
+    print("✓ Sandbox cleaned up automatically")
 
 
 async def main():
-    """Run DeepAgent example with Apptainer sandbox."""
+    """Run DeepAgent example with Apptainer sandbox (original approach).
+    
+    This demonstrates direct instantiation without factory functions.
+    Kept for backwards compatibility.
+    """
     # Get API key from environment or use placeholder
     api_key = os.getenv("CHATLAS_LLM_API_KEY", "your-api-key-here")
     
@@ -143,8 +217,13 @@ async def data_analysis_example():
 
 
 if __name__ == "__main__":
-    # Run basic example
-    asyncio.run(main())
+    # Run factory-based example (recommended)
+    print("\n🆕 Running factory-based example (recommended)...")
+    asyncio.run(main_with_factory())
+    
+    # Uncomment to run original approach
+    # print("\n📦 Running original approach...")
+    # asyncio.run(main())
     
     # Uncomment to run code execution example
     # asyncio.run(code_execution_example())

@@ -324,8 +324,8 @@ OPENAI_API_KEY=your-openai-api-key-here
     console.print(f"[green]✓ Created configuration file: {output}[/green]")
     console.print("[dim]Edit this file and add your API keys, then run:[/dim]")
     console.print(f"[dim]  export $(cat {output} | xargs)[/dim]")
-    console.print("[dim]Or use:[/dim]")
-    console.print(f"[dim]  chatlas --config config.yaml[/dim]")
+    console.print("[dim]You can now run the CLI:[/dim]")
+    console.print("[dim]  chatlas[/dim]")
 
 
 @app.command()

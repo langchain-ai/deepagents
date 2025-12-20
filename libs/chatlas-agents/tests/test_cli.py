@@ -1,5 +1,6 @@
 """Tests for the CLI module."""
 
+import re
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -73,7 +74,6 @@ def test_help_command():
     assert result.exit_code == 0
     
     # Strip ANSI color codes for easier assertion
-    import re
     output = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout)
     
     assert "ChATLAS AI agents" in output

@@ -148,47 +148,65 @@ async def _run_interactive_session(
             sys.exit(1)
 
     # Create LLM model
-    llm_model = create_model(config.llm.model)
+    # Note: create_model() uses global settings, we need to set the model first
+    import os
+    if config.llm.model:
+        os.environ["OPENAI_MODEL"] = config.llm.model
+    llm_model = create_model()
 
     # Create CLI agent with MCP tools
     logger.info(f"Creating ChATLAS agent '{agent_id}'...")
-    agent, composite_backend = create_cli_agent(
-        model=llm_model,
-        assistant_id=agent_id,
-        tools=mcp_tools,
-        sandbox=sandbox_backend,
-        sandbox_type=sandbox_type_str,
-        auto_approve=auto_approve,
-        enable_memory=True,
-        enable_skills=True,
-        enable_shell=(sandbox is None),  # Shell only in local mode
-    )
+    
+    # Use try-finally to ensure sandbox cleanup
+    try:
+        agent, composite_backend = create_cli_agent(
+            model=llm_model,
+            assistant_id=agent_id,
+            tools=mcp_tools,
+            sandbox=sandbox_backend,
+            sandbox_type=sandbox_type_str,
+            auto_approve=auto_approve,
+            enable_memory=True,
+            enable_skills=True,
+            enable_shell=(sandbox is None),  # Shell only in local mode
+        )
 
-    # Calculate baseline tokens for tracking
-    from deepagents_cli.agent import get_system_prompt
-    from deepagents_cli.config import settings
+        # Calculate baseline tokens for tracking
+        from deepagents_cli.agent import get_system_prompt
+        from deepagents_cli.config import settings
 
-    agent_dir = settings.get_agent_dir(agent_id)
-    system_prompt = get_system_prompt(assistant_id=agent_id, sandbox_type=sandbox_type_str)
-    baseline_tokens = calculate_baseline_tokens(llm_model, agent_dir, system_prompt, agent_id)
+        agent_dir = settings.get_agent_dir(agent_id)
+        system_prompt = get_system_prompt(assistant_id=agent_id, sandbox_type=sandbox_type_str)
+        baseline_tokens = calculate_baseline_tokens(llm_model, agent_dir, system_prompt, agent_id)
 
-    # Create session state
-    session_state = SessionState()
-    session_state.auto_approve = auto_approve
-    session_state.no_splash = False
+        # Create session state
+        session_state = SessionState()
+        session_state.auto_approve = auto_approve
+        session_state.no_splash = False
 
-    # Run interactive CLI
-    logger.info("Starting interactive session...")
-    await simple_cli(
-        agent,
-        agent_id,
-        session_state,
-        baseline_tokens=baseline_tokens,
-        backend=composite_backend,
-        sandbox_type=sandbox_type_str,
-        setup_script_path=None,
-        no_splash=False,
-    )
+        # Run interactive CLI
+        logger.info("Starting interactive session...")
+        await simple_cli(
+            agent,
+            agent_id,
+            session_state,
+            baseline_tokens=baseline_tokens,
+            backend=composite_backend,
+            sandbox_type=sandbox_type_str,
+            setup_script_path=None,
+            no_splash=False,
+        )
+    finally:
+        # Cleanup sandbox backend if it was created
+        if sandbox_backend is not None:
+            try:
+                logger.info("Cleaning up sandbox backend...")
+                if hasattr(sandbox_backend, 'cleanup'):
+                    sandbox_backend.cleanup()
+                elif hasattr(sandbox_backend, '__exit__'):
+                    sandbox_backend.__exit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup sandbox backend: {e}")
 
 
 @app.callback(invoke_without_command=True)

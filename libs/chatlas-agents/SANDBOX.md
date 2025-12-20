@@ -138,14 +138,16 @@ export ATLAS_VERSION=${ATLAS_VERSION}
 ```python
 from chatlas_agents.sandbox import create_docker_sandbox
 from deepagents import create_deep_agent
+from deepagents.llm import init_chat_model
 
 with create_docker_sandbox() as backend:
+    model = init_chat_model("anthropic:claude-sonnet-4-5-20250929")
+
     agent = create_deep_agent(
-        model="anthropic:claude-sonnet-4-5-20250929",
+        model=model,
         backend=backend,
         system_prompt="You are an AI assistant with access to a sandbox environment.",
     )
-    
     result = agent.invoke({
         "messages": [{
             "role": "user",

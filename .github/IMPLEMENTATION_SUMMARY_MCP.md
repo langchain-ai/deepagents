@@ -102,7 +102,7 @@ libs/chatlas-agents/examples/
 ### Documentation
 
 ```
-/
+.github/
 ├── MCP_INTEGRATION.md                  # Comprehensive integration guide
 └── MCP_APPROACHES_COMPARISON.md        # Quick comparison reference
 ```

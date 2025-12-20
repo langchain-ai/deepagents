@@ -153,7 +153,7 @@ uv run pytest tests/test_mcp_middleware.py -v
 
 ### Code Style
 
-- **Python 3.11+** compatible
+- **Python 3.13+** required (Note: base packages use 3.11+)
 - **Type hints** for all public functions
 - **Docstrings** for all classes and functions
 - **Snake_case** for functions/variables

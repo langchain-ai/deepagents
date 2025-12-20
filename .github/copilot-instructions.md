@@ -96,6 +96,7 @@ async def create_agent(
 ### Code Style Guidelines
 
 **Python Standards:**
+- Python 3.13+ required (chatlas-agents)
 - Python 3.11+ features allowed
 - Type hints required for public APIs
 - Docstrings required (Google style preferred)

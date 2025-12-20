@@ -36,7 +36,7 @@ deepagents-cli    chatlas-agents (v0.1.0)
 - **Path Configuration**:
   ```toml
   [tool.uv.sources]
-  deepagents = { path = "../deepagents" }
+  deepagents = { workspace = true, editable = true }
   ```
 - **Depended on by**: chatlas-agents
 - **Status**: ✅ No circular dependencies
@@ -50,8 +50,8 @@ deepagents-cli    chatlas-agents (v0.1.0)
 - **Path Configuration**:
   ```toml
   [tool.uv.sources]
-  deepagents = { path = "../deepagents" }
-  deepagents-cli = { path = "../deepagents-cli" }
+  deepagents = { workspace = true, editable = true }
+  deepagents-cli = { workspace = true, editable = true }
   ```
 - **Status**: ✅ No circular dependencies
 
@@ -79,8 +79,8 @@ deepagents-cli    chatlas-agents (v0.1.0)
 **Solution**: Added to `chatlas-agents/pyproject.toml`:
 ```toml
 [tool.uv.sources]
-deepagents = { path = "../deepagents" }
-deepagents-cli = { path = "../deepagents-cli" }
+deepagents = { workspace = true, editable = true }
+deepagents-cli = { workspace = true, editable = true }
 ```
 
 ## Verification: No Circular Dependencies
@@ -113,9 +113,9 @@ uv sync
 ```
 
 The `uv` tool will:
-1. Read the `[tool.uv.sources]` configuration
-2. Automatically install `deepagents` from `../deepagents`
-3. Automatically install `deepagents-cli` from `../deepagents-cli`
+1. Read the `[tool.uv.workspace]` and `[tool.uv.sources]` configuration
+2. Automatically install `deepagents` from workspace
+3. Automatically install `deepagents-cli` from workspace
 4. Install all external dependencies
 5. Install `chatlas-agents` itself
 

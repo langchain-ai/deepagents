@@ -95,12 +95,25 @@ async def _run_interactive_session(
     # Create MCP middleware and load tools
     logger.info(f"Connecting to ChATLAS MCP server at {config.mcp.url}...")
     try:
-        mcp_middleware = await MCPMiddleware.create(config.mcp)
+        # Enforce an explicit timeout so users are not stuck waiting indefinitely
+        connect_timeout = getattr(config.mcp, "timeout", None) or 120
+        mcp_middleware = await asyncio.wait_for(
+            MCPMiddleware.create(config.mcp),
+            timeout=connect_timeout,
+        )
         mcp_tools = mcp_middleware.tools
         logger.info(f"Successfully loaded {len(mcp_tools)} MCP tools")
+    except asyncio.TimeoutError:
+        console.print(
+            f"[red]Timed out after {connect_timeout} seconds while connecting to MCP server at {config.mcp.url}[/red]"
+        )
+        raise typer.Exit(1)
+    except KeyboardInterrupt:
+        console.print("[yellow]MCP connection cancelled by user (Ctrl+C).[/yellow]")
+        raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Failed to connect to MCP server: {e}[/red]")
-        sys.exit(1)
+        raise typer.Exit(1)
 
     # Setup sandbox backend if requested
     sandbox_backend = None

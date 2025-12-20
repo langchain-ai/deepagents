@@ -34,6 +34,140 @@ agent = create_deep_agent(
 )
 ```
 
+## ChATLAS CLI Usage
+
+The `chatlas` command-line interface provides an interactive AI assistant with access to ChATLAS MCP tools for searching ATLAS documentation and resources.
+
+### Installation
+
+```bash
+# Install from repository
+cd libs/chatlas-agents
+pip install -e .
+
+# Or install with uv (recommended)
+uv pip install -e .
+```
+
+### Quick Start
+
+Simply run `chatlas` to start an interactive session:
+
+```bash
+chatlas
+```
+
+This launches an interactive agent session with:
+- **ChATLAS MCP tools** for searching ATLAS documentation
+- **DeepAgents capabilities** (file operations, planning, sub-agents)
+- **Skills system** for custom tools
+- **Memory** for conversation persistence
+- **Human-in-the-loop** approval for destructive operations
+
+### Configuration
+
+Initialize a configuration file with your API keys:
+
+```bash
+chatlas init
+```
+
+This creates a `.env` file. Edit it to add your API keys:
+
+```bash
+# .env
+CHATLAS_MCP_URL=https://chatlas-mcp.app.cern.ch/mcp
+CHATLAS_MCP_TIMEOUT=120
+
+CHATLAS_LLM_PROVIDER=openai
+CHATLAS_LLM_MODEL=gpt-4
+
+OPENAI_API_KEY=your-api-key-here
+```
+
+Load the configuration:
+
+```bash
+export $(cat .env | xargs)
+chatlas
+```
+
+### Usage Examples
+
+**Basic interactive session:**
+```bash
+chatlas
+```
+
+**Use a custom agent name (for separate memory):**
+```bash
+chatlas --agent my-research-agent
+```
+
+**Override MCP server:**
+```bash
+chatlas --mcp-url https://custom-mcp.example.com/mcp
+```
+
+**Use a different model:**
+```bash
+chatlas --model gpt-4o
+```
+
+**Enable Docker sandbox for isolated code execution:**
+```bash
+chatlas --sandbox docker
+```
+
+**Use Apptainer sandbox (for HPC environments like lxplus):**
+```bash
+chatlas --sandbox apptainer --sandbox-image docker://python:3.13-slim
+```
+
+**Auto-approve all tool calls (non-interactive mode):**
+```bash
+chatlas --auto-approve
+```
+
+**Enable verbose logging:**
+```bash
+chatlas --verbose
+```
+
+**Use YAML configuration file:**
+```bash
+chatlas --config my-config.yaml
+```
+
+### Sandbox Execution
+
+ChATLAS supports isolated code execution in containers:
+
+- **Docker sandbox**: Uses Docker containers for code execution
+- **Apptainer sandbox**: Uses Apptainer/Singularity (ideal for HPC environments like CERN lxplus)
+
+Sandbox execution provides:
+- Isolated environment for running code
+- Secure execution boundaries
+- Support for custom container images
+- File upload/download capabilities
+
+Example with Apptainer on lxplus:
+```bash
+# SSH to lxplus
+ssh lxplus.cern.ch
+
+# Run ChATLAS with Apptainer sandbox
+chatlas --sandbox apptainer --sandbox-image docker://python:3.13-slim
+```
+
+### CLI Commands
+
+- **`chatlas`** - Start interactive session (default)
+- **`chatlas init`** - Create configuration file
+- **`chatlas version`** - Show version information
+- **`chatlas --help`** - Show help for all options
+
 ### Documentation
 
 **For Developers & AI Agents:**

@@ -8,7 +8,7 @@ The middleware follows the standard deepagents middleware pattern:
 2. Exposes tools to the agent via the tools property
 3. Can be composed with other middleware
 
-Example usage:
+Example usage with deepagents:
     from chatlas_agents.middleware import MCPMiddleware
     from chatlas_agents.config import MCPServerConfig
     from deepagents import create_deep_agent
@@ -28,14 +28,16 @@ Example usage:
 
 For deepagents-cli integration:
     from deepagents_cli.agent import create_cli_agent
+    from chatlas_agents.middleware import MCPMiddleware
     
-    # Create CLI agent with MCP middleware
+    # Create MCP middleware and extract tools
+    mcp_middleware = await MCPMiddleware.create(mcp_config)
+    
+    # Pass tools to CLI agent
     agent, backend = create_cli_agent(
         model="anthropic:claude-sonnet-4-5-20250929",
         assistant_id="my-agent",
-        tools=[],  # MCP tools are provided by middleware
-        enable_mcp=True,  # Enable via custom parameter
-        mcp_config=mcp_config,
+        tools=mcp_middleware.tools,  # Use MCP tools
     )
 """
 

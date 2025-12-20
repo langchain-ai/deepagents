@@ -6,6 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from chatlas_agents.config import MCPServerConfig
 from chatlas_agents.middleware import MCPMiddleware
 
+# Constant for the patch path used throughout tests
+MCP_LOAD_TOOLS_PATCH = 'chatlas_agents.middleware.mcp.create_mcp_client_and_load_tools'
+
 
 @pytest.fixture
 def mcp_config():
@@ -29,7 +32,7 @@ def mock_tool():
 async def test_mcp_middleware_create(mcp_config, mock_tool):
     """Test MCPMiddleware.create() factory method."""
     # Mock the create_mcp_client_and_load_tools function
-    with patch('chatlas_agents.middleware.mcp.create_mcp_client_and_load_tools') as mock_load:
+    with patch(MCP_LOAD_TOOLS_PATCH) as mock_load:
         mock_load.return_value = [mock_tool]
         
         # Create middleware
@@ -47,7 +50,7 @@ async def test_mcp_middleware_create(mcp_config, mock_tool):
 async def test_mcp_middleware_create_connection_error(mcp_config):
     """Test MCPMiddleware.create() handles connection errors gracefully."""
     # Mock the create_mcp_client_and_load_tools to raise an error
-    with patch('chatlas_agents.middleware.mcp.create_mcp_client_and_load_tools') as mock_load:
+    with patch(MCP_LOAD_TOOLS_PATCH) as mock_load:
         mock_load.side_effect = ConnectionError("Connection refused")
         
         # Verify that a ConnectionError is raised with helpful message
@@ -69,7 +72,7 @@ async def test_mcp_middleware_load_tools(mcp_config, mock_tool):
     assert len(middleware.tools) == 0
     
     # Mock the load function
-    with patch('chatlas_agents.middleware.mcp.create_mcp_client_and_load_tools') as mock_load:
+    with patch(MCP_LOAD_TOOLS_PATCH) as mock_load:
         mock_load.return_value = [mock_tool]
         
         # Load tools
@@ -212,7 +215,7 @@ async def test_mcp_middleware_integration_scenario(mcp_config):
     tool2.description = "Query the ATLAS database"
     
     # Create middleware with mock
-    with patch('chatlas_agents.middleware.mcp.create_mcp_client_and_load_tools') as mock_load:
+    with patch(MCP_LOAD_TOOLS_PATCH) as mock_load:
         mock_load.return_value = [tool1, tool2]
         
         middleware = await MCPMiddleware.create(mcp_config)

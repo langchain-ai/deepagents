@@ -106,8 +106,16 @@ async def _run_interactive_session(
     sandbox_backend = None
     sandbox_type_str = None
     if sandbox:
-        sandbox_type = SandboxBackendType(sandbox)
         sandbox_type_str = sandbox.lower()
+        try:
+            sandbox_type = SandboxBackendType(sandbox_type_str)
+        except ValueError:
+            valid_types = ", ".join(t.value for t in SandboxBackendType)
+            console.print(
+                f"[red]Invalid sandbox type '{sandbox}'. "
+                f"Valid options are: {valid_types}[/red]"
+            )
+            sys.exit(1)
         image = sandbox_image or "python:3.13-slim"
 
         try:

@@ -216,3 +216,4 @@ __marimo__/
 
 # local agent configurations
 .deepagents/*
+.deepagents_old/*

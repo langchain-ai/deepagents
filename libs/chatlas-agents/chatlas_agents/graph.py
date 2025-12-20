@@ -1,4 +1,8 @@
-"""DeepAgents-based agent implementation for ChATLAS."""
+"""DeepAgents-based agent implementation for ChATLAS.
+
+This module provides integration between ChATLAS and the deepagents framework,
+with support for MCP tools and container-based sandbox execution.
+"""
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -9,7 +13,13 @@ from langchain_core.tools import BaseTool
 from chatlas_agents.config import AgentConfig
 from chatlas_agents.llm import create_llm_from_config
 from chatlas_agents.tools import load_mcp_tools
-from chatlas_agents.sandbox import DockerSandboxBackend, ApptainerSandboxBackend, SandboxBackendType
+from chatlas_agents.sandbox import (
+    DockerSandboxBackend,
+    ApptainerSandboxBackend,
+    SandboxBackendType,
+    create_docker_sandbox,
+    create_apptainer_sandbox,
+)
 
 logger = logging.getLogger(__name__)
 

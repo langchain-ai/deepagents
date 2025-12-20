@@ -1,10 +1,39 @@
-"""Docker and Apptainer sandbox backends for DeepAgents."""
+"""Docker and Apptainer sandbox backends for DeepAgents.
+
+This module provides container-based sandbox backends compatible with the deepagents
+framework. These backends enable secure code execution in isolated environments,
+particularly useful for HPC environments like CERN's lxplus.
+
+The implementation follows the deepagents backend protocol by inheriting from
+BaseSandbox, which provides default implementations for file operations (ls_info,
+read, write, edit, grep_raw, glob_info) using the execute() method. Each backend
+only needs to implement:
+- execute(command) -> ExecuteResponse
+- upload_files(files) -> list[FileUploadResponse]
+- download_files(paths) -> list[FileDownloadResponse]
+- id property -> str
+
+Integration with deepagents:
+    >>> from chatlas_agents.sandbox import create_docker_sandbox
+    >>> from deepagents import create_deep_agent
+    >>> 
+    >>> with create_docker_sandbox(image="python:3.13-slim") as backend:
+    ...     agent = create_deep_agent(backend=backend)
+    ...     result = agent.invoke({"messages": [{"role": "user", "content": "..."}]})
+"""
 
 import logging
+import os
+import shlex
+import string
 import subprocess
 import sys
-from typing import Any
+import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from enum import Enum
+from pathlib import Path
+from typing import Any
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -181,8 +210,6 @@ class DockerSandboxBackend(BaseSandbox):
         for path, content in files:
             try:
                 # Write content to a temporary file
-                import tempfile
-
                 with tempfile.NamedTemporaryFile(delete=False, mode="wb") as tmp_file:
                     tmp_file.write(content)
                     tmp_path = tmp_file.name
@@ -201,8 +228,6 @@ class DockerSandboxBackend(BaseSandbox):
                 )
 
                 # Clean up temp file
-                import os
-
                 os.unlink(tmp_path)
 
                 responses.append(FileUploadResponse(path=path, error=None))
@@ -228,8 +253,6 @@ class DockerSandboxBackend(BaseSandbox):
         for path in paths:
             try:
                 # Copy file from container to temp location
-                import tempfile
-
                 with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
                     tmp_path = tmp_file.name
 
@@ -245,8 +268,6 @@ class DockerSandboxBackend(BaseSandbox):
                     content = f.read()
 
                 # Clean up temp file
-                import os
-
                 os.unlink(tmp_path)
 
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
@@ -471,9 +492,6 @@ class ApptainerSandboxBackend(BaseSandbox):
             try:
                 # For Apptainer, we write to the bound working directory
                 # Since working_dir is bound, we can write directly to the host filesystem
-                import tempfile
-                import os
-                import shutil
 
                 # Create full destination path
                 dest_path = f"{self._working_dir}/{path}".replace("//", "/")
@@ -611,3 +629,195 @@ class ApptainerSandboxBackend(BaseSandbox):
             except Exception:
                 # Be silent — don't raise during garbage collection/ interpreter teardown
                 pass
+
+
+def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
+    """Run user's setup script in sandbox with env var expansion.
+
+    Args:
+        backend: Sandbox backend instance
+        setup_script_path: Path to setup script file
+
+    Raises:
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
+    """
+    script_path = Path(setup_script_path)
+    if not script_path.exists():
+        msg = f"Setup script not found: {setup_script_path}"
+        raise FileNotFoundError(msg)
+
+    logger.info(f"Running setup script: {setup_script_path}...")
+
+    # Read script content
+    script_content = script_path.read_text()
+
+    # Expand ${VAR} syntax using local environment
+    template = string.Template(script_content)
+    expanded_script = template.safe_substitute(os.environ)
+
+    # Execute in sandbox with 5-minute timeout
+    result = backend.execute(f"bash -c {shlex.quote(expanded_script)}")
+
+    if result.exit_code != 0:
+        logger.error(f"Setup script failed (exit {result.exit_code}):")
+        logger.error(f"{result.output}")
+        msg = "Setup failed - aborting"
+        raise RuntimeError(msg)
+
+    logger.info("✓ Setup complete")
+
+
+@contextmanager
+def create_docker_sandbox(
+    *,
+    container_id: str | None = None,
+    image: str = "python:3.13-slim",
+    auto_remove: bool = True,
+    working_dir: str = "/workspace",
+    setup_script_path: str | None = None,
+) -> Generator[DockerSandboxBackend, None, None]:
+    """Create or connect to a Docker sandbox with lifecycle management.
+
+    This factory function provides a context manager for Docker sandbox creation
+    that handles cleanup automatically. It follows the same pattern as deepagents-cli
+    sandbox factories (create_modal_sandbox, create_runloop_sandbox).
+
+    Args:
+        container_id: Optional existing container ID to reuse. If not provided,
+            creates a new container.
+        image: Docker image to use (default: python:3.13-slim).
+        auto_remove: Whether to automatically remove the container on exit.
+        working_dir: Working directory inside the container (default: /workspace).
+        setup_script_path: Optional path to setup script to run after sandbox starts.
+            Script supports ${VAR} environment variable expansion.
+
+    Yields:
+        DockerSandboxBackend instance ready for use
+
+    Raises:
+        RuntimeError: Docker container creation or setup failed
+        FileNotFoundError: Setup script not found
+
+    Example:
+        >>> from chatlas_agents.sandbox import create_docker_sandbox
+        >>> from deepagents import create_deep_agent
+        >>> 
+        >>> with create_docker_sandbox(image="python:3.13-slim") as backend:
+        ...     agent = create_deep_agent(backend=backend)
+        ...     result = agent.invoke(...)
+    """
+    logger.info("Starting Docker sandbox...")
+
+    if container_id:
+        backend = DockerSandboxBackend(
+            container_id=container_id,
+            image=image,
+            auto_remove=False,  # Don't remove existing container
+            working_dir=working_dir,
+        )
+        should_cleanup = False
+        logger.info(f"✓ Connected to existing Docker container: {backend.id[:12]}")
+    else:
+        backend = DockerSandboxBackend(
+            image=image,
+            auto_remove=auto_remove,
+            working_dir=working_dir,
+        )
+        should_cleanup = auto_remove
+        logger.info(f"✓ Docker sandbox ready: {backend.id[:12]}")
+
+    # Run setup script if provided
+    if setup_script_path:
+        _run_sandbox_setup(backend, setup_script_path)
+
+    try:
+        yield backend
+    finally:
+        if should_cleanup:
+            try:
+                logger.debug(f"Cleaning up Docker sandbox {backend.id[:12]}...")
+                backend.cleanup()
+                logger.debug(f"✓ Docker sandbox {backend.id[:12]} cleaned up")
+            except Exception as e:
+                logger.warning(f"⚠ Cleanup failed: {e}")
+
+
+@contextmanager
+def create_apptainer_sandbox(
+    *,
+    instance_name: str | None = None,
+    image: str = "docker://python:3.13-slim",
+    auto_remove: bool = True,
+    working_dir: str = "/workspace",
+    setup_script_path: str | None = None,
+) -> Generator[ApptainerSandboxBackend, None, None]:
+    """Create or connect to an Apptainer sandbox with lifecycle management.
+
+    This factory function provides a context manager for Apptainer sandbox creation
+    that handles cleanup automatically. It follows the same pattern as deepagents-cli
+    sandbox factories. Apptainer is designed for HPC environments and doesn't require
+    root privileges or a daemon, making it ideal for CERN lxplus.
+
+    Args:
+        instance_name: Optional existing instance name to reuse. If not provided,
+            creates a new instance with auto-generated name.
+        image: Container image to use (default: docker://python:3.13-slim).
+            Can be docker://, oras://, library://, or a local .sif file.
+        auto_remove: Whether to automatically stop the instance on exit.
+        working_dir: Working directory inside the container (default: /workspace).
+        setup_script_path: Optional path to setup script to run after sandbox starts.
+            Script supports ${VAR} environment variable expansion.
+
+    Yields:
+        ApptainerSandboxBackend instance ready for use
+
+    Raises:
+        RuntimeError: Apptainer instance creation or setup failed
+        FileNotFoundError: Setup script not found
+
+    Example:
+        >>> from chatlas_agents.sandbox import create_apptainer_sandbox
+        >>> from deepagents import create_deep_agent
+        >>> 
+        >>> # Use on CERN lxplus with ATLAS software container
+        >>> with create_apptainer_sandbox(
+        ...     image="docker://atlas/athanalysis:latest"
+        ... ) as backend:
+        ...     agent = create_deep_agent(backend=backend)
+        ...     result = agent.invoke(...)
+    """
+    logger.info("Starting Apptainer sandbox...")
+
+    if instance_name:
+        backend = ApptainerSandboxBackend(
+            instance_name=instance_name,
+            image=image,
+            auto_remove=False,  # Don't stop existing instance
+            working_dir=working_dir,
+        )
+        should_cleanup = False
+        logger.info(f"✓ Connected to existing Apptainer instance: {backend.id}")
+    else:
+        backend = ApptainerSandboxBackend(
+            image=image,
+            auto_remove=auto_remove,
+            working_dir=working_dir,
+        )
+        should_cleanup = auto_remove
+        logger.info(f"✓ Apptainer sandbox ready: {backend.id}")
+
+    # Run setup script if provided
+    if setup_script_path:
+        _run_sandbox_setup(backend, setup_script_path)
+
+    try:
+        yield backend
+    finally:
+        if should_cleanup:
+            try:
+                logger.debug(f"Cleaning up Apptainer sandbox {backend.id}...")
+                backend.cleanup()
+                logger.debug(f"✓ Apptainer sandbox {backend.id} cleaned up")
+            except Exception as e:
+                logger.warning(f"⚠ Cleanup failed: {e}")

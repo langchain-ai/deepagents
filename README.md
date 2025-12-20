@@ -1,11 +1,45 @@
 # ChATLAS Agents
 
 This repository is a fork of the LangChain `deepagents` library, modified to integrate with ChATLAS. Extends the functionality of deep agents in the following ways:
+- **Native MCP Support**: MCPMiddleware for seamless integration with Model Context Protocol servers without modifying upstream packages
 - **ChATLAS MCP** search ChATLAS vector stores by connecting to the MCP server.
 - **ATLAS software** compatible through SetupATLAS (on Lxplus).
 - **HTCondor integration** submit agent sandboxes to the HTCondor batch farm.
 
 ChATLAS-specific features can be found in `libs/chatlas-agents`. 
+
+## MCP Server Integration
+
+DeepAgents v0.3.0 does not provide native MCP server support. We've extended it with a **middleware-based approach** that:
+- ✅ Requires **zero changes** to upstream packages (deepagents, deepagents-cli)
+- ✅ Provides **full lifecycle integration** with tool loading, system prompt injection, and state management
+- ✅ Is **composable** with other middleware (Skills, Memory, Shell)
+- ✅ Maintains **forward compatibility** with future deepagents versions
+
+### Quick Start
+
+```python
+from chatlas_agents.middleware import MCPMiddleware
+from chatlas_agents.config import MCPServerConfig
+from deepagents import create_deep_agent
+
+# Create MCP middleware
+mcp_config = MCPServerConfig(url="https://chatlas-mcp.app.cern.ch/mcp", timeout=60)
+mcp_middleware = await MCPMiddleware.create(mcp_config)
+
+# Create agent with MCP support
+agent = create_deep_agent(
+    model="anthropic:claude-sonnet-4-5-20250929",
+    middleware=[mcp_middleware],
+)
+```
+
+### Documentation
+
+- **[MCP_INTEGRATION.md](MCP_INTEGRATION.md)** - Comprehensive guide to MCP integration approaches and architecture
+- **[MCP_APPROACHES_COMPARISON.md](MCP_APPROACHES_COMPARISON.md)** - Quick comparison of different integration strategies
+- **[examples/mcp_middleware_example.py](libs/chatlas-agents/examples/mcp_middleware_example.py)** - Working example with deepagents
+- **[examples/mcp_cli_integration_example.py](libs/chatlas-agents/examples/mcp_cli_integration_example.py)** - CLI integration patterns 
 
 Fetaures to be added:
 - Agent configurations for common HEP tasks:

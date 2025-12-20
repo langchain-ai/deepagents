@@ -44,6 +44,24 @@ async def test_mcp_middleware_create(mcp_config, mock_tool):
 
 
 @pytest.mark.asyncio
+async def test_mcp_middleware_create_connection_error(mcp_config):
+    """Test MCPMiddleware.create() handles connection errors gracefully."""
+    # Mock the create_mcp_client_and_load_tools to raise an error
+    with patch('chatlas_agents.middleware.mcp.create_mcp_client_and_load_tools') as mock_load:
+        mock_load.side_effect = ConnectionError("Connection refused")
+        
+        # Verify that a ConnectionError is raised with helpful message
+        with pytest.raises(ConnectionError) as exc_info:
+            await MCPMiddleware.create(mcp_config)
+        
+        # Check error message contains helpful diagnostics
+        error_msg = str(exc_info.value)
+        assert "Failed to connect to MCP server" in error_msg
+        assert mcp_config.url in error_msg
+        assert "verify" in error_msg.lower()
+
+
+@pytest.mark.asyncio
 async def test_mcp_middleware_load_tools(mcp_config, mock_tool):
     """Test MCPMiddleware.load_tools() method."""
     # Create middleware without pre-loaded tools
@@ -72,6 +90,18 @@ def test_mcp_middleware_format_tools_description(mcp_config, mock_tool):
     assert "test_tool" in description
     assert "A test tool for unit testing" in description
     assert "**Available MCP Tools:**" in description
+
+
+def test_mcp_middleware_custom_system_prompt(mcp_config, mock_tool):
+    """Test custom system prompt template."""
+    custom_template = "Custom MCP Section:\n{tools_description}"
+    middleware = MCPMiddleware(
+        config=mcp_config, 
+        tools=[mock_tool],
+        system_prompt_template=custom_template
+    )
+    
+    assert middleware.system_prompt_template == custom_template
 
 
 def test_mcp_middleware_format_tools_description_empty(mcp_config):

@@ -68,7 +68,7 @@ class MCPStateUpdate(TypedDict):
     """List of tools loaded from MCP server."""
 
 
-MCP_SYSTEM_PROMPT = """
+DEFAULT_MCP_SYSTEM_PROMPT = """
 
 ## MCP Server Tools
 
@@ -100,6 +100,7 @@ class MCPMiddleware(AgentMiddleware):
         config: MCP server configuration (url, timeout, headers)
         inject_prompt: Whether to inject MCP tool descriptions into system prompt (default: True)
         tools: Pre-loaded MCP tools (optional, loaded from server if not provided)
+        system_prompt_template: Custom template for MCP section in system prompt (optional)
     """
 
     state_schema = MCPState
@@ -110,6 +111,7 @@ class MCPMiddleware(AgentMiddleware):
         config: MCPServerConfig,
         inject_prompt: bool = True,
         tools: list[BaseTool] | None = None,
+        system_prompt_template: str | None = None,
     ) -> None:
         """Initialize MCP middleware.
 
@@ -120,18 +122,22 @@ class MCPMiddleware(AgentMiddleware):
             config: MCP server configuration
             inject_prompt: Whether to inject tool descriptions into system prompt
             tools: Pre-loaded MCP tools (if None, must call load_tools())
+            system_prompt_template: Custom template for MCP section. Must contain
+                {tools_description} placeholder. If None, uses DEFAULT_MCP_SYSTEM_PROMPT.
         """
         super().__init__()
         self.config = config
         self.inject_prompt = inject_prompt
         self._tools = tools or []
         self._tools_loaded = tools is not None
+        self.system_prompt_template = system_prompt_template or DEFAULT_MCP_SYSTEM_PROMPT
 
     @classmethod
     async def create(
         cls,
         config: MCPServerConfig,
         inject_prompt: bool = True,
+        system_prompt_template: str | None = None,
     ) -> MCPMiddleware:
         """Create and initialize MCP middleware with tools loaded from server.
 
@@ -140,29 +146,62 @@ class MCPMiddleware(AgentMiddleware):
         Args:
             config: MCP server configuration
             inject_prompt: Whether to inject tool descriptions into system prompt
+            system_prompt_template: Custom template for MCP section (optional)
 
         Returns:
             Initialized MCPMiddleware with tools loaded from the MCP server
 
         Raises:
-            Exception: If connection to MCP server fails
+            ConnectionError: If unable to connect to MCP server
+            TimeoutError: If connection to MCP server times out
+            ValueError: If MCP server returns invalid tool definitions
         """
         logger.info(f"Creating MCP middleware for server: {config.url}")
-        tools = await create_mcp_client_and_load_tools(config)
-        logger.info(f"Loaded {len(tools)} tools from MCP server")
-        return cls(config=config, inject_prompt=inject_prompt, tools=tools)
+        try:
+            tools = await create_mcp_client_and_load_tools(config)
+            logger.info(f"Successfully loaded {len(tools)} tools from MCP server")
+            return cls(
+                config=config, 
+                inject_prompt=inject_prompt, 
+                tools=tools,
+                system_prompt_template=system_prompt_template
+            )
+        except Exception as e:
+            error_msg = (
+                f"Failed to connect to MCP server at {config.url}. "
+                f"Error: {type(e).__name__}: {str(e)}. "
+                f"Please verify:\n"
+                f"  1. The MCP server URL is correct: {config.url}\n"
+                f"  2. The MCP server is running and accessible\n"
+                f"  3. Network connectivity is available\n"
+                f"  4. The server timeout ({config.timeout}s) is sufficient"
+            )
+            logger.error(error_msg)
+            raise ConnectionError(error_msg) from e
 
     async def load_tools(self) -> None:
         """Load tools from MCP server.
 
         This is called automatically by create() but can be called manually
         if tools need to be reloaded.
+        
+        Raises:
+            ConnectionError: If unable to connect to MCP server
+            TimeoutError: If connection to MCP server times out
         """
         if not self._tools_loaded:
-            logger.info("Loading tools from MCP server...")
-            self._tools = await create_mcp_client_and_load_tools(self.config)
-            self._tools_loaded = True
-            logger.info(f"Loaded {len(self._tools)} tools from MCP server")
+            logger.info(f"Loading tools from MCP server at {self.config.url}...")
+            try:
+                self._tools = await create_mcp_client_and_load_tools(self.config)
+                self._tools_loaded = True
+                logger.info(f"Successfully loaded {len(self._tools)} tools from MCP server")
+            except Exception as e:
+                error_msg = (
+                    f"Failed to load tools from MCP server at {self.config.url}. "
+                    f"Error: {type(e).__name__}: {str(e)}"
+                )
+                logger.error(error_msg)
+                raise ConnectionError(error_msg) from e
 
     @property
     def tools(self) -> list[BaseTool]:
@@ -230,7 +269,7 @@ class MCPMiddleware(AgentMiddleware):
         tools_description = self._format_tools_description()
 
         # Format the MCP section
-        mcp_section = MCP_SYSTEM_PROMPT.format(
+        mcp_section = self.system_prompt_template.format(
             tools_description=tools_description,
         )
 
@@ -263,7 +302,7 @@ class MCPMiddleware(AgentMiddleware):
         tools_description = self._format_tools_description()
 
         # Format the MCP section
-        mcp_section = MCP_SYSTEM_PROMPT.format(
+        mcp_section = self.system_prompt_template.format(
             tools_description=tools_description,
         )
 

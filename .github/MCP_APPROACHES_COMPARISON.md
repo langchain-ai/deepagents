@@ -290,6 +290,6 @@ Use this for:
 
 ## Further Reading
 
-- [MCP_INTEGRATION.md](../MCP_INTEGRATION.md) - Comprehensive integration guide
+- [MCP_INTEGRATION.md](MCP_INTEGRATION.md) - Comprehensive integration guide
 - [examples/mcp_middleware_example.py](../libs/chatlas-agents/examples/mcp_middleware_example.py) - Working example with deepagents
 - [examples/mcp_cli_integration_example.py](../libs/chatlas-agents/examples/mcp_cli_integration_example.py) - CLI integration patterns

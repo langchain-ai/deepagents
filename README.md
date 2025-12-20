@@ -54,10 +54,10 @@ agent = create_deep_agent(
 - **[libs/chatlas-agents/README.md](libs/chatlas-agents/README.md)** - ChATLAS agents module documentation
 - **[libs/chatlas-agents/SETUP.md](libs/chatlas-agents/SETUP.md)** - Detailed setup instructions 
 
-Fetaures to be added:
+Features to be added:
 - Agent configurations for common HEP tasks:
     - [] Document review: generate comments on content and style (cf. ATLAS style guide) of analysis notes or paper drafts. Generate responses to CDS comments, apply in-line to latex documents.
-    - [] Genrate documentation for analysis code.    
+    - [] Generate documentation for analysis code.    
 - [] local tools (MCP or LC) interfacing with the ATLAS software stack.
 
 

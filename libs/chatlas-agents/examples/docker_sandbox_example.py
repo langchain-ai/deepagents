@@ -21,19 +21,6 @@ async def main_with_factory():
     # Get API key from environment or use placeholder
     api_key = os.getenv("CHATLAS_LLM_API_KEY", "your-api-key-here")
     
-    # Create configuration
-    config = AgentConfig(
-        name="chatlas-sandbox-agent",
-        description="ChATLAS agent with Docker sandbox for secure code execution",
-        llm=LLMConfig(
-            provider=LLMProvider.OPENAI,
-            model="gpt-4",
-            temperature=0.7,
-            api_key=api_key,  # Set via CHATLAS_LLM_API_KEY environment variable
-        ),
-        verbose=True,
-    )
-
     print("Creating DeepAgent with Docker sandbox (factory approach)...")
     
     # Use factory function with context manager for automatic cleanup
@@ -42,33 +29,31 @@ async def main_with_factory():
         working_dir="/workspace",
         auto_remove=True,
     ) as backend:
-        # Create agent with the sandbox backend
-        agent = await create_deep_agent(
-            config,
-            use_docker_sandbox=True,
-            docker_image="python:3.13-slim",  # Can use any Docker image
+        # Create agent directly with the backend
+        # Note: No need for chatlas-agents wrapper, use deepagents directly
+        from deepagents import create_deep_agent
+        
+        agent = create_deep_agent(
+            model="anthropic:claude-sonnet-4-5-20250929",  # or use init_chat_model
+            backend=backend,
+            system_prompt="You are a helpful coding assistant with access to a Docker sandbox.",
         )
 
-        try:
-            # Run queries that may involve file operations or command execution
-            thread_id = "sandbox-session"
-            
-            queries = [
-                "Create a Python script that prints 'Hello from Docker sandbox!'",
-                "Execute the Python script you just created",
-                "List all files in the current directory",
-            ]
-
-            for query in queries:
-                print(f"\n{'='*60}")
-                print(f"Query: {query}")
-                print('='*60)
-                
-                # Run with conversation memory
-                result = await agent.run(query, thread_id=thread_id)
-                print(f"\nAgent: {result.get('output', result)}\n")
-        finally:
-            await agent.close()
+        # Run queries that may involve file operations or command execution
+        print("\n" + "="*60)
+        print("Querying agent...")
+        print("="*60)
+        
+        result = agent.invoke({
+            "messages": [{
+                "role": "user",
+                "content": "Create a Python script that prints 'Hello from Docker sandbox!' and execute it"
+            }]
+        })
+        
+        # Extract the final response
+        final_message = result["messages"][-1]
+        print(f"\nAgent: {final_message.content}\n")
     
     print("✓ Sandbox cleaned up automatically")
 
@@ -208,6 +193,8 @@ async def data_analysis_example():
 if __name__ == "__main__":
     # Run factory-based example (recommended)
     print("\n🆕 Running factory-based example (recommended)...")
+    # Note: main_with_factory is now sync, not async
+    import asyncio
     asyncio.run(main_with_factory())
     
     # Uncomment to run original approach

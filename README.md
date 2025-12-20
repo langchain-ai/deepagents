@@ -36,10 +36,23 @@ agent = create_deep_agent(
 
 ### Documentation
 
-- **[MCP_INTEGRATION.md](MCP_INTEGRATION.md)** - Comprehensive guide to MCP integration approaches and architecture
-- **[MCP_APPROACHES_COMPARISON.md](MCP_APPROACHES_COMPARISON.md)** - Quick comparison of different integration strategies
+**For Developers & AI Agents:**
+- **[AGENTS.md](AGENTS.md)** - Quick reference for coding agents working on this repository
+- **[.github/copilot-instructions.md](.github/copilot-instructions.md)** - GitHub Copilot specific guidance
+
+**Technical Documentation:**
+- **[.github/MCP_INTEGRATION.md](.github/MCP_INTEGRATION.md)** - Comprehensive guide to MCP integration approaches and architecture
+- **[.github/MCP_APPROACHES_COMPARISON.md](.github/MCP_APPROACHES_COMPARISON.md)** - Quick comparison of different integration strategies
+- **[.github/DEPENDENCY_ANALYSIS.md](.github/DEPENDENCY_ANALYSIS.md)** - Module dependency analysis and setup
+- **[.github/IMPLEMENTATION_SUMMARY_MCP.md](.github/IMPLEMENTATION_SUMMARY_MCP.md)** - MCP implementation summary
+
+**Examples:**
 - **[examples/mcp_middleware_example.py](libs/chatlas-agents/examples/mcp_middleware_example.py)** - Working example with deepagents
-- **[examples/mcp_cli_integration_example.py](libs/chatlas-agents/examples/mcp_cli_integration_example.py)** - CLI integration patterns 
+- **[examples/mcp_cli_integration_example.py](libs/chatlas-agents/examples/mcp_cli_integration_example.py)** - CLI integration patterns
+
+**Module Documentation:**
+- **[libs/chatlas-agents/README.md](libs/chatlas-agents/README.md)** - ChATLAS agents module documentation
+- **[libs/chatlas-agents/SETUP.md](libs/chatlas-agents/SETUP.md)** - Detailed setup instructions 
 
 Fetaures to be added:
 - Agent configurations for common HEP tasks:

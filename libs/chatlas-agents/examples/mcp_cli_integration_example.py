@@ -62,6 +62,8 @@ async def approach1_tools_parameter():
     logger.info("  - Skills system")
     logger.info("  - Memory system")
     logger.info("  - Shell commands")
+    logger.info("\nNote: CLI agents use checkpointer and require thread_id in config")
+    logger.info("Example: agent.ainvoke(input, config={'configurable': {'thread_id': 'session-1'}})")
     
     return agent, backend
 
@@ -123,6 +125,10 @@ async def create_chatlas_cli_agent(
         
     Returns:
         Tuple of (agent, backend) from create_cli_agent
+        
+    Note:
+        CLI agents use InMemorySaver checkpointer which requires a thread_id.
+        When invoking the agent, pass config={'configurable': {'thread_id': 'your-session-id'}}
     """
     tools = kwargs.get('tools', [])
     
@@ -169,9 +175,12 @@ async def demo_usage():
     # Example query
     logger.info("\nExample: Running a simple query...")
     try:
-        result = await agent.ainvoke({
-            "messages": [{"role": "user", "content": "List available tools"}]
-        })
+        # CLI agents use InMemorySaver checkpointer, which requires a thread_id
+        config = {"configurable": {"thread_id": "demo-session"}}
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "List available tools"}]},
+            config=config
+        )
         
         messages = result.get("messages", [])
         if messages:

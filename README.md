@@ -36,15 +36,28 @@ agent = create_deep_agent(
 
 ### Documentation
 
-- **[MCP_INTEGRATION.md](MCP_INTEGRATION.md)** - Comprehensive guide to MCP integration approaches and architecture
-- **[MCP_APPROACHES_COMPARISON.md](MCP_APPROACHES_COMPARISON.md)** - Quick comparison of different integration strategies
-- **[examples/mcp_middleware_example.py](libs/chatlas-agents/examples/mcp_middleware_example.py)** - Working example with deepagents
-- **[examples/mcp_cli_integration_example.py](libs/chatlas-agents/examples/mcp_cli_integration_example.py)** - CLI integration patterns 
+**For Developers & AI Agents:**
+- **[AGENTS.md](AGENTS.md)** - Quick reference for coding agents working on this repository
+- **[.github/copilot-instructions.md](.github/copilot-instructions.md)** - GitHub Copilot specific guidance
 
-Fetaures to be added:
+**Technical Documentation:**
+- **[.github/MCP_INTEGRATION.md](.github/MCP_INTEGRATION.md)** - Comprehensive guide to MCP integration approaches and architecture
+- **[.github/MCP_APPROACHES_COMPARISON.md](.github/MCP_APPROACHES_COMPARISON.md)** - Quick comparison of different integration strategies
+- **[.github/DEPENDENCY_ANALYSIS.md](.github/DEPENDENCY_ANALYSIS.md)** - Module dependency analysis and setup
+- **[.github/IMPLEMENTATION_SUMMARY_MCP.md](.github/IMPLEMENTATION_SUMMARY_MCP.md)** - MCP implementation summary
+
+**Examples:**
+- **[examples/mcp_middleware_example.py](libs/chatlas-agents/examples/mcp_middleware_example.py)** - Working example with deepagents
+- **[examples/mcp_cli_integration_example.py](libs/chatlas-agents/examples/mcp_cli_integration_example.py)** - CLI integration patterns
+
+**Module Documentation:**
+- **[libs/chatlas-agents/README.md](libs/chatlas-agents/README.md)** - ChATLAS agents module documentation
+- **[libs/chatlas-agents/SETUP.md](libs/chatlas-agents/SETUP.md)** - Detailed setup instructions 
+
+Features to be added:
 - Agent configurations for common HEP tasks:
     - [] Document review: generate comments on content and style (cf. ATLAS style guide) of analysis notes or paper drafts. Generate responses to CDS comments, apply in-line to latex documents.
-    - [] Genrate documentation for analysis code.    
+    - [] Generate documentation for analysis code.    
 - [] local tools (MCP or LC) interfacing with the ATLAS software stack.
 
 

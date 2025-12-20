@@ -8,8 +8,12 @@ dependencies = [
     "deepagents-cli",
     "deepagents",
     "pydantic-settings>=2.12.0",
+    "langchain-mcp-adapters>=0.2.1",
+    "httpx>=0.28.1",
 ]
 
+[tool.uv]
+package = true
 
 [project.scripts]
 chatlas = "chatlas_agents.cli:main"

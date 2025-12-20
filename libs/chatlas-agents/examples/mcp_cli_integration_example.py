@@ -45,7 +45,8 @@ async def approach1_tools_parameter():
     logger.info(f"Loaded {len(mcp_tools)} MCP tools")
     
     # Create CLI agent with MCP tools
-    model = create_model()  # No arguments - reads from environment variables
+    # model = create_model("openai:gpt-5.1-mini")
+    model = create_model()
     agent, backend = create_cli_agent(
         model=model,
         assistant_id="mcp-cli-agent",
@@ -159,7 +160,7 @@ async def demo_usage():
     mcp_config = MCPServerConfig(url=mcp_url, timeout=60)
     
     # Create agent with MCP support in one line
-    model = create_model()  # No arguments - reads from environment variables
+    model = create_model()
     agent, backend = await create_chatlas_cli_agent(
         model=model,
         assistant_id="demo-agent",

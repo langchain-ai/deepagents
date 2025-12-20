@@ -193,8 +193,6 @@ async def data_analysis_example():
 if __name__ == "__main__":
     # Run factory-based example (recommended)
     print("\n🆕 Running factory-based example (recommended)...")
-    # Note: main_with_factory is now sync, not async
-    import asyncio
     asyncio.run(main_with_factory())
     
     # Uncomment to run original approach

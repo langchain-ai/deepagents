@@ -181,7 +181,7 @@ async def demo_usage():
         
         # Ask a question that requires using the search_chatlas MCP tool
         result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": "What is ChATLAS? Use the search_chatlas tool to find information."}]},
+            {"messages": [{"role": "user", "content": "How are photons calibrated in ATLAS? Use the search_chatlas tool to find information. Use no more than 2 tool calls."}]},
             config=config
         )
         

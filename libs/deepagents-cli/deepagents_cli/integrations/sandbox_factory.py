@@ -12,6 +12,16 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 
 from deepagents_cli.config import console
 
+# Optional imports for local sandbox backends (Docker/Apptainer)
+try:
+    from chatlas_agents.sandbox import (
+        create_docker_sandbox as _chatlas_create_docker_sandbox,
+        create_apptainer_sandbox as _chatlas_create_apptainer_sandbox,
+    )
+    _CHATLAS_AVAILABLE = True
+except ImportError:
+    _CHATLAS_AVAILABLE = False
+
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
     """Run users setup script in sandbox with env var expansion.
@@ -266,10 +276,88 @@ def create_daytona_sandbox(
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
+@contextmanager
+def create_docker_sandbox(
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
+    """Create or connect to Docker sandbox.
+
+    Args:
+        sandbox_id: Optional existing container ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        (DockerBackend, container_id)
+
+    Raises:
+        ImportError: chatlas-agents not installed
+        RuntimeError: Docker not available or container creation failed
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
+    """
+    if not _CHATLAS_AVAILABLE:
+        msg = (
+            "chatlas-agents package not installed. "
+            "Install with: pip install chatlas-agents"
+        )
+        raise ImportError(msg)
+
+    console.print("[yellow]Starting Docker sandbox...[/yellow]")
+
+    with _chatlas_create_docker_sandbox(
+        container_id=sandbox_id,
+        setup_script_path=setup_script_path,
+    ) as backend:
+        console.print(f"[green]✓ Docker sandbox ready: {backend.id[:12]}[/green]")
+        yield backend
+
+
+@contextmanager
+def create_apptainer_sandbox(
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
+    """Create or connect to Apptainer sandbox.
+
+    Args:
+        sandbox_id: Optional existing instance name to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        (ApptainerBackend, instance_name)
+
+    Raises:
+        ImportError: chatlas-agents not installed
+        RuntimeError: Apptainer not available or instance creation failed
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
+
+    Note:
+        Apptainer is ideal for HPC environments like CERN lxplus where
+        it doesn't require root privileges or a daemon.
+    """
+    if not _CHATLAS_AVAILABLE:
+        msg = (
+            "chatlas-agents package not installed. "
+            "Install with: pip install chatlas-agents"
+        )
+        raise ImportError(msg)
+
+    console.print("[yellow]Starting Apptainer sandbox...[/yellow]")
+
+    with _chatlas_create_apptainer_sandbox(
+        instance_name=sandbox_id,
+        setup_script_path=setup_script_path,
+    ) as backend:
+        console.print(f"[green]✓ Apptainer sandbox ready: {backend.id}[/green]")
+        yield backend
+
+
 _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
+    "docker": "/workspace",
+    "apptainer": "/workspace",
 }
 
 
@@ -279,6 +367,11 @@ _SANDBOX_PROVIDERS = {
     "runloop": create_runloop_sandbox,
     "daytona": create_daytona_sandbox,
 }
+
+# Add local sandbox providers if chatlas-agents is available
+if _CHATLAS_AVAILABLE:
+    _SANDBOX_PROVIDERS["docker"] = create_docker_sandbox
+    _SANDBOX_PROVIDERS["apptainer"] = create_apptainer_sandbox
 
 
 @contextmanager

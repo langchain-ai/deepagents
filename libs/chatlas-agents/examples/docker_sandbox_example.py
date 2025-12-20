@@ -1,13 +1,69 @@
-"""Example of using ChATLAS agents with Docker sandbox backend."""
+"""Example of using ChATLAS agents with Docker sandbox backend.
+
+This example demonstrates two approaches:
+1. Direct instantiation of DockerSandboxBackend (original approach)
+2. Using create_docker_sandbox factory function (recommended for new code)
+"""
 
 import asyncio
 import os
+from deepagents import create_deep_agent as create_deep_agent_sync
+from langchain.chat_models import init_chat_model
 from chatlas_agents.config import AgentConfig, LLMConfig, LLMProvider
 from chatlas_agents.agents import create_deep_agent
+from chatlas_agents.sandbox import create_docker_sandbox
+
+
+def main_with_factory():
+    """Run DeepAgent example with Docker sandbox using factory function.
+    
+    This is the recommended approach as it follows deepagents-cli patterns
+    and provides automatic lifecycle management.
+    """
+    print("Creating DeepAgent with Docker sandbox (factory approach)...")
+    
+    # Use factory function with context manager for automatic cleanup
+    with create_docker_sandbox(
+        image="python:3.13-slim",
+        working_dir="/workspace",
+        auto_remove=True,
+    ) as backend:
+        # Create agent directly with the backend
+        # Note: Using synchronous deepagents.create_deep_agent
+        # Initialize model using init_chat_model to avoid AttributeError
+        model = init_chat_model("anthropic:claude-sonnet-4-5-20250929")
+        
+        agent = create_deep_agent_sync(
+            model=model,
+            backend=backend,
+            system_prompt="You are a helpful coding assistant with access to a Docker sandbox.",
+        )
+
+        # Run queries that may involve file operations or command execution
+        print("\n" + "="*60)
+        print("Querying agent...")
+        print("="*60)
+        
+        result = agent.invoke({
+            "messages": [{
+                "role": "user",
+                "content": "Create a Python script that prints 'Hello from Docker sandbox!' and execute it"
+            }]
+        })
+        
+        # Extract the final response
+        final_message = result["messages"][-1]
+        print(f"\nAgent: {final_message.content}\n")
+    
+    print("✓ Sandbox cleaned up automatically")
 
 
 async def main():
-    """Run DeepAgent example with Docker sandbox."""
+    """Run DeepAgent example with Docker sandbox (original approach).
+    
+    This demonstrates direct instantiation without factory functions.
+    Kept for backwards compatibility.
+    """
     # Get API key from environment or use placeholder
     api_key = os.getenv("CHATLAS_LLM_API_KEY", "your-api-key-here")
     
@@ -135,8 +191,13 @@ async def data_analysis_example():
 
 
 if __name__ == "__main__":
-    # Run basic example
-    asyncio.run(main())
+    # Run factory-based example (recommended)
+    print("\n🆕 Running factory-based example (recommended)...")
+    main_with_factory()
+    
+    # Uncomment to run original approach
+    # print("\n📦 Running original approach...")
+    # asyncio.run(main())
     
     # Uncomment to run code execution example
     # asyncio.run(code_execution_example())

@@ -238,7 +238,7 @@ def main(
         None,
         "--model",
         "-m",
-        help="LLM model to use (default: from config or gpt-4)",
+        help="LLM model to use (default: from config or gpt-5-mini)",
     ),
     auto_approve: bool = typer.Option(
         False,
@@ -339,7 +339,7 @@ CHATLAS_MCP_TIMEOUT=120
 
 # LLM Configuration
 CHATLAS_LLM_PROVIDER=openai
-CHATLAS_LLM_MODEL=gpt-4
+CHATLAS_LLM_MODEL=gpt-5-mini
 
 # LLM API Keys (at least one required)
 OPENAI_API_KEY=your-openai-api-key-here

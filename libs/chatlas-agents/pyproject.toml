@@ -16,7 +16,7 @@ dependencies = [
 package = true
 
 [project.scripts]
-chatlas = "chatlas_agents.cli:main"
+chatlas = "chatlas_agents.cli:app"
 
 [tool.uv.workspace]
 members = [

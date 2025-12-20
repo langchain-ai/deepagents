@@ -5,7 +5,7 @@ AI agent framework for the ChATLAS AI RAG system using DeepAgents and LangChain.
 ## Features
 
 - 🚀 **DeepAgents Framework**: Built on LangChain's DeepAgents with planning, file operations, and sub-agent spawning
-- 🔌 **ChATLAS MCP Server**: Connect to ChATLAS Model Context Protocol server
+- 🔌 **Native MCP Support**: MCPMiddleware for seamless integration with Model Context Protocol servers
 - 🐳 **Container Sandboxes**: Run agents in isolated containers for secure code execution (Docker & Apptainer)
 - ⚡ **HTCondor Integration**: Submit batch jobs to CERN's HTCondor batch farm system
 - 🧠 **Multiple LLM Backends**: Support for OpenAI, Anthropic Claude, and Groq
@@ -180,6 +180,47 @@ result = await agent.run("""
     3. Write a comparative report
 """, thread_id="research-session")
 ```
+
+### MCP Server Integration
+
+ChATLAS Agents provides native MCP (Model Context Protocol) support through the `MCPMiddleware`:
+
+```python
+from deepagents import create_deep_agent
+from chatlas_agents.middleware import MCPMiddleware
+from chatlas_agents.config import MCPServerConfig
+
+# Configure MCP server
+mcp_config = MCPServerConfig(
+    url="https://chatlas-mcp.app.cern.ch/mcp",
+    timeout=60
+)
+
+# Create MCP middleware (loads tools from server)
+mcp_middleware = await MCPMiddleware.create(mcp_config)
+
+# Create agent with MCP support
+agent = create_deep_agent(
+    model="anthropic:claude-sonnet-4-5-20250929",
+    middleware=[mcp_middleware],
+    system_prompt="You are a helpful assistant with access to ChATLAS tools.",
+)
+
+# Agent now has access to all MCP server tools
+result = await agent.ainvoke({
+    "messages": [{"role": "user", "content": "Search ChATLAS documentation for information about..."}]
+})
+```
+
+**Key Features:**
+- ✅ **No upstream modifications** - Works with standard deepagents and deepagents-cli
+- ✅ **Automatic tool loading** - Discovers and loads all tools from MCP server
+- ✅ **System prompt injection** - Automatically documents available tools
+- ✅ **Composable** - Works alongside other middleware (Skills, Shell, Memory)
+- ✅ **Forward compatible** - Uses stable middleware API
+
+See `examples/mcp_middleware_example.py` for a complete working example.
+For detailed documentation on MCP integration approaches, see `MCP_INTEGRATION.md` in the repository root.
 
 ### Sub-Agent Delegation
 

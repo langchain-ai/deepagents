@@ -1,0 +1,31 @@
+default:
+  image: "docker:20.10.16"
+  services:
+  - docker:20.10.16-dind
+  tags:
+  - docker-privileged-xl
+
+stages:
+  - docker-build
+
+variables:
+  TO: ${CI_REGISTRY_IMAGE}/${CONTEXT_DIR}
+  DOCKER_TLS_CERTDIR: "/certs"
+  GIT_SUBMODULE_STRATEGY: recursive
+
+.docker-build-and-push: &docker-build-and-push
+  - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+  - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+  - docker build --pull -t ${TO} -f ${CONTEXT_DIR}/Dockerfile ${CONTEXT_DIR} 
+  - docker push ${TO}
+
+build_gpu_basic_test:
+  stage: "base-images"
+  variables:
+    CONTEXT_DIR: .
+  only:
+    changes:
+      - libs/*
+  script:
+    - *docker-build-and-push
+    

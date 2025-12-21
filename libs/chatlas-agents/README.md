@@ -24,6 +24,7 @@ AI agent framework for the ChATLAS AI RAG system using DeepAgents and LangChain.
   - [x] Sandboxes set up with new CLI and MCP middleware.
   - [ ] Need to understand how to handle file transfers between host and sandbox. Implement this. 
   - [ ] Set up and test HTCondor submission.
+  - [ ] Alternative container solution: set up registry with chatlas-deepagents packages pre-installed, mount workdir into sandbox & tell agent to copy files there.
 - [ ] Interface with ATLAS software stack. Create local MCP, tools for ATLAS data sources: AMI, Rucio, Upcoming indico meetings
   - [ ] Simple, preliminary solution: use deepagents skills to wrap command line tools that access ATLAS data sources.
   - [ ] Longer term: create proper MCP server with tools for ATLAS data sources (can interface this with other agent providers eg. Copilot).

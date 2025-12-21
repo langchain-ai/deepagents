@@ -186,68 +186,7 @@ class DeepagentsACP(Agent):
                         sessionId=params.sessionId,
                     )
                 )
-            elif block_type == "tool_call_chunk":
-                # ToolCallChunk: type="tool_call_chunk"
-                # Has fields: id (str | None), name (str | None), args (str | None)
-                # TODO: Add tool call chunk handling when ACP schema supports it
-                pass
 
-        # Check for complete tool calls (not chunks)
-        # Note: During streaming, tool_calls on AIMessageChunk accumulates as chunks
-        # are merged. Complete tool calls are only reliably available in the
-        # "updates" stream mode when the model node completes.
-        if hasattr(message, "tool_calls") and message.tool_calls:
-            for tool_call in message.tool_calls:
-                # If this is a todo tool call, send a plan update
-                if tool_call["name"] == "todo":
-                    await self._handle_todo_tool_call(params, tool_call)
-
-    async def _handle_todo_tool_call(
-        self,
-        params: PromptRequest,
-        tool_call: ToolCall,
-    ) -> None:
-        """Handle a todo tool call and send plan update."""
-        try:
-            # Get the tool call arguments
-            args = tool_call.get("args", {})
-
-            # Extract todos list
-            todos = args.get("todos", [])
-
-            # Convert todos to PlanEntry objects
-            plan_entries = []
-            for todo in todos:
-                if isinstance(todo, dict):
-                    content = todo.get("content", "")
-                    status_str = todo.get("status", "pending")
-
-                    # Map status to PlanEntry status
-                    entry_status: Literal["pending", "in_progress", "completed"] = "pending"
-                    if status_str in ("pending", "in_progress", "completed"):
-                        entry_status = status_str
-
-                    plan_entries.append(
-                        PlanEntry(
-                            content=content,
-                            status=entry_status,
-                        )
-                    )
-
-            # Send plan update
-            if plan_entries:
-                await self._connection.sessionUpdate(
-                    SessionNotification(
-                        update=AgentPlanUpdate(
-                            sessionUpdate="plan",
-                            entries=plan_entries,
-                        ),
-                        sessionId=params.sessionId,
-                    )
-                )
-        except Exception:
-            # If parsing fails, just skip the plan update
-            pass
 
     async def _handle_completed_tool_calls(
         self,
@@ -284,7 +223,7 @@ class DeepagentsACP(Agent):
 
             # Skip todo tool calls as they're handled separately
             if tool_name == "todo":
-                continue
+                raise NotImplementedError("TODO tool call handling not implemented yet")
 
             # Send tool call progress update showing the tool is running
             await self._connection.sessionUpdate(
@@ -294,7 +233,7 @@ class DeepagentsACP(Agent):
                         toolCallId=tool_call_id,
                         title=tool_name,
                         rawInput=tool_args,
-                        status="running",
+                        status="pending",
                     ),
                     sessionId=params.sessionId,
                 )
@@ -328,36 +267,23 @@ class DeepagentsACP(Agent):
             status = "failed"
 
         # Build content blocks if message has content
-        content_blocks = None
-        if message.content:
-            # Convert tool message content to text
-            # message.content can be str or list[str | dict]
-            if isinstance(message.content, str):
-                content_text = message.content
-            elif isinstance(message.content, list):
-                # Join list items into a single string
-                content_text = "\n".join(
-                    item if isinstance(item, str) else str(item) for item in message.content
-                )
-            else:
-                content_text = str(message.content)
-
-            content_blocks = [
-                ContentToolCallContent(
-                    type="content",
-                    content=TextContentBlock(text=content_text, type="text"),
-                )
-            ]
-
-        # Extract tool_call_id - it's a required attribute on ToolMessage
-        tool_call_id = message.tool_call_id
-
+        content_blocks = []
+        for content_block in message.content_blocks:
+            if content_block.get("type") == "text":
+                text = content_block.get("text", "")
+                if text:
+                    content_blocks.append(
+                        ContentToolCallContent(
+                            type="content",
+                            content=TextContentBlock(text=text, type="text"),
+                        )
+                    )
         # Send tool call progress update with the result
         await self._connection.sessionUpdate(
             SessionNotification(
                 update=ToolCallProgress(
                     sessionUpdate="tool_call_update",
-                    toolCallId=tool_call_id,
+                    toolCallId=message.tool_call_id,
                     title=tool_call["name"],
                     content=content_blocks,
                     rawOutput=message.content,
@@ -382,12 +308,9 @@ class DeepagentsACP(Agent):
                 prompt_text += block.text
             elif isinstance(block, dict) and "text" in block:
                 prompt_text += block["text"]
-
         # # Stream the agent's response
         agent = session["agent"]
         thread_id = session["thread_id"]
-
-        ai_message = None
 
         async for stream_mode, data in agent.astream(
             {"messages": [{"role": "user", "content": prompt_text}]},
@@ -395,31 +318,37 @@ class DeepagentsACP(Agent):
             stream_mode=["messages", "updates"],
         ):
             if stream_mode == "messages":
+                # Handle streaming message chunks (AIMessageChunk)
                 message, metadata = data
                 if isinstance(message, AIMessageChunk):
-                    ai_message = message if ai_message is None else ai_message + message
                     await self._handle_ai_message_chunk(params, message)
             elif stream_mode == "updates":
-                # Handle updates from the agent (completed messages)
-                for source, update in data.items():
-                    if source in ("model", "tools"):
-                        # Get the last message from the update
-                        messages = update.get("messages", [])
-                        if not messages:
-                            continue
+                # Handle completed node updates
+                for node_name, update in data.items():
+                    # Only process model and tools nodes
+                    if node_name not in ("model", "tools"):
+                        continue
 
-                        last_message = messages[-1]
+                    # Get messages from the update
+                    messages = update.get("messages", [])
+                    if not messages:
+                        continue
 
-                        # Handle completed tool calls (AIMessage with tool_calls)
-                        if isinstance(last_message, AIMessage) and source == "model":
+                    # Process the last message from this node
+                    last_message = messages[-1]
+
+                    # Handle completed AI messages from model node
+                    if node_name == "model" and isinstance(last_message, AIMessage):
+                        # Check if this AIMessage has tool calls
+                        if last_message.tool_calls:
                             await self._handle_completed_tool_calls(params, last_message)
 
-                        # Handle tool results (ToolMessage)
-                        elif isinstance(last_message, ToolMessage) and source == "tools":
-                            # Look up the tool call by ID
-                            tool_call = self._tool_calls.get(last_message.tool_call_id)
-                            if tool_call:
-                                await self._handle_tool_message(params, tool_call, last_message)
+                    # Handle tool execution results from tools node
+                    elif node_name == "tools" and isinstance(last_message, ToolMessage):
+                        # Look up the original tool call by ID
+                        tool_call = self._tool_calls.get(last_message.tool_call_id)
+                        if tool_call:
+                            await self._handle_tool_message(params, tool_call, last_message)
 
         return PromptResponse(stopReason="end_turn")
 

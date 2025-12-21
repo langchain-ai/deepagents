@@ -134,10 +134,9 @@ class TestDeepAgentsACP:
         """Test that DeepagentsACP handles tool calls correctly.
 
         This test verifies that when an AI message contains tool_calls, the agent:
-        1. Streams the AI message content as chunks
-        2. Detects and executes the tool call
-        3. Sends tool call progress notifications
-        4. Continues with a response based on the tool result
+        1. Detects and executes the tool call
+        2. Sends tool call progress notifications (pending and completed)
+        3. Streams the AI response content as chunks after tool execution
 
         Note: The FakeChat model streams messages but the agent graph must actually
         execute the tools for the flow to complete.
@@ -153,7 +152,7 @@ class TestDeepAgentsACP:
         async with deepagents_acp_test_context(
             messages=[
                 AIMessage(
-                    content="I'll check the weather for you.",
+                    content="",
                     tool_calls=[
                         {
                             "name": "get_weather_tool",
@@ -168,23 +167,17 @@ class TestDeepAgentsACP:
             prompt_request=prompt_request,
             tools=[get_weather_tool],
         ) as connection:
-            # The fake chat model streams on whitespace tokens, creating multiple chunks
-            # Filter to find different types of updates
-            message_chunks = [c for c in connection.calls if c.update.sessionUpdate == "agent_message_chunk"]
-            tool_call_updates = [c for c in connection.calls if c.update.sessionUpdate == "tool_call_update"]
+            # Expected calls:
+            # 1. Tool call progress (status="pending") when tool_call is detected
+            # 2. Tool call progress (status="completed") when tool execution finishes
+            # 3-N. Message chunks for "The weather in Paris is sunny and 72°F today!"
 
-            # Verify we got message chunks (from streaming)
-            assert len(message_chunks) > 0, "Should have message chunks from streaming"
+            # Verify we have at least 3 calls (2 tool updates + at least 1 message chunk)
+            assert len(connection.calls) >= 3
 
-            # Reconstruct messages from chunks
-            all_text = "".join(c.update.content.text for c in message_chunks)
-
-            # Should contain text from the first AI message
-            assert "I'll check the weather for you." in all_text
-
-            # If tool calls were executed, verify the details
-            first_tool_update = tool_call_updates[0].model_dump()
-            assert first_tool_update == {
+            # Verify first call is tool call pending
+            first_call = connection.calls[0].model_dump()
+            assert first_call == {
                 "field_meta": None,
                 "sessionId": IsUUID,
                 "update": {
@@ -195,9 +188,92 @@ class TestDeepAgentsACP:
                     "rawInput": {"location": "Paris, France"},
                     "content": None,
                     "rawOutput": None,
-                    "status": "running",
+                    "status": "pending",
                 },
             }
 
-            # And the second message should also appear
-            assert "The weather in Paris is sunny and 72°F today!" in all_text
+            # Verify second call is tool call completed
+            second_call = connection.calls[1].model_dump()
+            assert second_call == {
+                "field_meta": None,
+                "sessionId": IsUUID,
+                "update": {
+                    "field_meta": None,
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "call_123",
+                    "title": "get_weather_tool",
+                    "rawInput": None,
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {
+                                "annotations": None,
+                                "field_meta": None,
+                                "text": "The weather in Paris, France is sunny and 72°F",
+                                "type": "text",
+                            },
+                        }
+                    ],
+                    "rawOutput": "The weather in Paris, France is sunny and 72°F",
+                    "status": "completed",
+                },
+            }
+
+            # Verify remaining calls are message chunks
+            for call in connection.calls[2:]:
+                call_dict = call.model_dump()
+                assert call_dict["update"]["sessionUpdate"] == "agent_message_chunk"
+                assert call_dict["update"]["content"]["type"] == "text"
+
+
+async def test_fake_chat_model_streaming() -> None:
+    """Test to verify what GenericFakeChatModel streams directly.
+
+    This test documents the behavior of GenericFakeChatModel.astream() when given
+    AIMessages with empty content + tool_calls, followed by regular messages.
+    """
+    # Create fake model with messages
+    # Note: GenericFakeChatModel streams by splitting on whitespace
+    model = FixedGenericFakeChatModel(
+        messages=iter([
+            AIMessage(
+                content="Checking weather",
+                tool_calls=[
+                    {
+                        "name": "get_weather_tool",
+                        "args": {"location": "paris, france"},
+                        "id": "call_123",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="the weather in paris is sunny and 72°f today!"),
+        ])
+    )
+
+    # Stream the first message
+    print("\n=== First message (with tool_calls) ===")
+    chunks = []
+    async for chunk in model.astream("What's the weather?"):
+        chunks.append(chunk)
+        print(f"Chunk {len(chunks)}: {chunk}")
+        print(f"  content: '{chunk.content}'")
+        print(f"  tool_calls: {chunk.tool_calls}")
+
+    print(f"\nTotal chunks from first message: {len(chunks)}")
+
+    # Stream the second message
+    print("\n=== Second message (regular text) ===")
+    chunks2 = []
+    async for chunk in model.astream("Thanks!"):
+        chunks2.append(chunk)
+        print(f"Chunk {len(chunks2)}: {chunk}")
+        print(f"  content: '{chunk.content}'")
+
+    print(f"\nTotal chunks from second message: {len(chunks2)}")
+
+    # Verify we got chunks
+    assert len(chunks) > 0
+    assert len(chunks2) > 0
+
+

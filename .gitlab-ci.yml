@@ -23,9 +23,9 @@ build_gpu_basic_test:
   stage: "docker-build"
   variables:
     CONTEXT_DIR: .
-  only:
-    changes:
-      - libs/*
+  # only:
+  #   changes:
+  #     - libs/*
   script:
     - *docker-build-and-push
     

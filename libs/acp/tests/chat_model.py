@@ -30,11 +30,11 @@ class FakeMessagesListChatModel(BaseChatModel):
 
     @override
     def _generate(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: CallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
     ) -> ChatResult:
         if self.sleep is not None:
             time.sleep(self.sleep)
@@ -74,9 +74,9 @@ class FakeListChatModel(SimpleChatModel):
 
     @override
     def _call(
-            self,
-            *args: Any,
-            **kwargs: Any,
+        self,
+        *args: Any,
+        **kwargs: Any,
     ) -> str:
         """Return the next response in the list.
 
@@ -93,11 +93,11 @@ class FakeListChatModel(SimpleChatModel):
 
     @override
     def _stream(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: CallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         response = self.responses[self.i]
         if self.i < len(self.responses) - 1:
@@ -108,8 +108,8 @@ class FakeListChatModel(SimpleChatModel):
             if self.sleep is not None:
                 time.sleep(self.sleep)
             if (
-                    self.error_on_chunk_number is not None
-                    and i_c == self.error_on_chunk_number
+                self.error_on_chunk_number is not None
+                and i_c == self.error_on_chunk_number
             ):
                 raise FakeListChatModelError
 
@@ -122,11 +122,11 @@ class FakeListChatModel(SimpleChatModel):
 
     @override
     async def _astream(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: AsyncCallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
     ) -> AsyncIterator[ChatGenerationChunk]:
         response = self.responses[self.i]
         if self.i < len(self.responses) - 1:
@@ -137,8 +137,8 @@ class FakeListChatModel(SimpleChatModel):
             if self.sleep is not None:
                 await asyncio.sleep(self.sleep)
             if (
-                    self.error_on_chunk_number is not None
-                    and i_c == self.error_on_chunk_number
+                self.error_on_chunk_number is not None
+                and i_c == self.error_on_chunk_number
             ):
                 raise FakeListChatModelError
             chunk_position: Literal["last"] | None = (
@@ -156,12 +156,12 @@ class FakeListChatModel(SimpleChatModel):
     @override
     # manually override batch to preserve batch ordering with no concurrency
     def batch(
-            self,
-            inputs: list[Any],
-            config: RunnableConfig | list[RunnableConfig] | None = None,
-            *,
-            return_exceptions: bool = False,
-            **kwargs: Any,
+        self,
+        inputs: list[Any],
+        config: RunnableConfig | list[RunnableConfig] | None = None,
+        *,
+        return_exceptions: bool = False,
+        **kwargs: Any,
     ) -> list[AIMessage]:
         if isinstance(config, list):
             return [
@@ -172,12 +172,12 @@ class FakeListChatModel(SimpleChatModel):
 
     @override
     async def abatch(
-            self,
-            inputs: list[Any],
-            config: RunnableConfig | list[RunnableConfig] | None = None,
-            *,
-            return_exceptions: bool = False,
-            **kwargs: Any,
+        self,
+        inputs: list[Any],
+        config: RunnableConfig | list[RunnableConfig] | None = None,
+        *,
+        return_exceptions: bool = False,
+        **kwargs: Any,
     ) -> list[AIMessage]:
         if isinstance(config, list):
             # do Not use an async iterator here because need explicit ordering
@@ -194,21 +194,21 @@ class FakeChatModel(SimpleChatModel):
 
     @override
     def _call(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: CallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
     ) -> str:
         return "fake response"
 
     @override
     async def _agenerate(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: AsyncCallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
     ) -> ChatResult:
         output_str = "fake response"
         message = AIMessage(content=output_str)
@@ -280,11 +280,11 @@ class GenericFakeChatModel(BaseChatModel):
 
     @override
     def _generate(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: CallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
     ) -> ChatResult:
         message = next(self.messages)
         message_ = AIMessage(content=message) if isinstance(message, str) else message
@@ -292,11 +292,11 @@ class GenericFakeChatModel(BaseChatModel):
         return ChatResult(generations=[generation])
 
     def _stream(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: CallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         chat_result = self._generate(
             messages, stop=stop, run_manager=run_manager, **kwargs
@@ -332,7 +332,9 @@ class GenericFakeChatModel(BaseChatModel):
             else:
                 # Split content using the delimiter
                 # Use re.split to support both string and regex patterns
-                content_chunks = cast("list[str]", re.split(self.stream_delimiter, content))
+                content_chunks = cast(
+                    "list[str]", re.split(self.stream_delimiter, content)
+                )
                 # Remove empty strings that can result from splitting
                 content_chunks = [chunk for chunk in content_chunks if chunk]
 
@@ -349,9 +351,9 @@ class GenericFakeChatModel(BaseChatModel):
                     )
                 )
                 if (
-                        is_last
-                        and isinstance(chunk.message, AIMessageChunk)
-                        and not message.additional_kwargs
+                    is_last
+                    and isinstance(chunk.message, AIMessageChunk)
+                    and not message.additional_kwargs
                 ):
                     chunk.message.chunk_position = "last"
                 if run_manager:
@@ -437,11 +439,11 @@ class ParrotFakeChatModel(BaseChatModel):
 
     @override
     def _generate(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: CallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
     ) -> ChatResult:
         return ChatResult(generations=[ChatGeneration(message=messages[-1])])
 

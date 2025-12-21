@@ -203,7 +203,10 @@ class TestDeepAgentsACP:
             assert completed_call["update"]["status"] == "completed"
             assert completed_call["update"]["toolCallId"] == "call_123"
             assert completed_call["update"]["title"] == "get_weather_tool"
-            assert completed_call["update"]["rawOutput"] == "The weather in Paris, France is sunny and 72°F"
+            assert (
+                completed_call["update"]["rawOutput"]
+                == "The weather in Paris, France is sunny and 72°F"
+            )
 
             # Verify all non-tool-call updates are message chunks
             for i, call in enumerate(connection.calls):
@@ -211,6 +214,96 @@ class TestDeepAgentsACP:
                     call_dict = call.model_dump()
                     assert call_dict["update"]["sessionUpdate"] == "agent_message_chunk"
                     assert call_dict["update"]["content"]["type"] == "text"
+
+
+async def test_todo_list_handling() -> None:
+    """Test that DeepagentsACP handles todo list updates correctly."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    prompt_request = PromptRequest(
+        sessionId="",  # Will be set by context manager
+        prompt=[TextContentBlock(text="Create a shopping list", type="text")],
+    )
+
+    # Create a mock connection to track calls
+    connection = FakeAgentSideConnection()
+    model = FixedGenericFakeChatModel(
+        messages=iter([AIMessage(content="I'll create that shopping list for you.")]),
+        stream_delimiter=r"(\s)",
+    )
+
+    deepagents_acp = DeepagentsACP(
+        connection=connection,
+        model=model,
+        tools=[get_weather_tool],
+    )
+
+    # Create a new session
+    session_response = await deepagents_acp.newSession(
+        NewSessionRequest(cwd="/tmp", mcpServers=[])
+    )
+    session_id = session_response.sessionId
+    prompt_request.sessionId = session_id
+
+    # Manually inject a tools update with todos into the agent stream
+    # Simulate the graph's behavior by patching the astream method
+    agent = deepagents_acp._sessions[session_id]["agent"]
+    original_astream = agent.astream
+
+    async def mock_astream(*args, **kwargs):
+        # First yield the normal message chunks
+        async for item in original_astream(*args, **kwargs):
+            yield item
+
+        # Then inject a tools update with todos
+        yield (
+            "updates",
+            {
+                "tools": {
+                    "todos": [
+                        {"content": "Buy fresh bananas", "status": "pending"},
+                        {"content": "Buy whole grain bread", "status": "in_progress"},
+                        {"content": "Buy organic eggs", "status": "completed"},
+                    ],
+                    "messages": [],
+                }
+            },
+        )
+
+    agent.astream = mock_astream
+
+    # Call prompt
+    await deepagents_acp.prompt(prompt_request)
+
+    # Find the plan update in the calls
+    plan_updates = [
+        call
+        for call in connection.calls
+        if call.model_dump()["update"]["sessionUpdate"] == "plan"
+    ]
+
+    # Verify we got exactly one plan update
+    assert len(plan_updates) == 1
+
+    # Verify the plan update contains the correct entries
+    plan_update = plan_updates[0].model_dump()
+    entries = plan_update["update"]["entries"]
+    assert len(entries) == 3
+
+    # Check first entry
+    assert entries[0]["content"] == "Buy fresh bananas"
+    assert entries[0]["status"] == "pending"
+    assert entries[0]["priority"] == "medium"
+
+    # Check second entry
+    assert entries[1]["content"] == "Buy whole grain bread"
+    assert entries[1]["status"] == "in_progress"
+    assert entries[1]["priority"] == "medium"
+
+    # Check third entry
+    assert entries[2]["content"] == "Buy organic eggs"
+    assert entries[2]["status"] == "completed"
+    assert entries[2]["priority"] == "medium"
 
 
 async def test_fake_chat_model_streaming() -> None:
@@ -245,19 +338,21 @@ async def test_fake_chat_model_streaming() -> None:
 
     # Test 3: Stream with tool_calls
     model_with_tools = FixedGenericFakeChatModel(
-        messages=iter([
-            AIMessage(
-                content="Checking weather",
-                tool_calls=[
-                    {
-                        "name": "get_weather_tool",
-                        "args": {"location": "paris, france"},
-                        "id": "call_123",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-        ]),
+        messages=iter(
+            [
+                AIMessage(
+                    content="Checking weather",
+                    tool_calls=[
+                        {
+                            "name": "get_weather_tool",
+                            "args": {"location": "paris, france"},
+                            "id": "call_123",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+            ]
+        ),
         stream_delimiter=r"(\s)",
     )
     chunks = []
@@ -276,5 +371,3 @@ async def test_fake_chat_model_streaming() -> None:
     # Earlier chunks should not have tool_calls
     for chunk in chunks[:-1]:
         assert chunk.tool_calls == []
-
-

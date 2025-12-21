@@ -188,11 +188,23 @@ chatlas --sandbox apptainer --sandbox-image docker://python:3.13-slim
 - **[libs/chatlas-agents/README.md](libs/chatlas-agents/README.md)** - ChATLAS agents module documentation
 - **[libs/chatlas-agents/SETUP.md](libs/chatlas-agents/SETUP.md)** - Detailed setup instructions 
 
-Features to be added:
-- Agent configurations for common HEP tasks:
-    - [] Document review: generate comments on content and style (cf. ATLAS style guide) of analysis notes or paper drafts. Generate responses to CDS comments, apply in-line to latex documents.
-    - [] Generate documentation for analysis code.    
-- [] local tools (MCP or LC) interfacing with the ATLAS software stack.
+
+## TODO list for ChatLAS Agents
+### v0.3
+- [x] Fix timeout issues with MCP server -- increased timeout client side and provided more pods on the server. Should be able to handle many concurrent requests now and return answers more quickly.
+- [ ] Fix known bugs:
+  - [ ] Agent seems to get stuck sometimes when using MCP tools in interactive mode. Needs investigation.
+  - [ ] Not all tools seem to be available / configured properly with the chatlas agent. Web search tool seems to be missing, for example.
+- [ ] Properly set up docker and apptainer sandbox. 
+  - [x] Sandboxes set up with new CLI and MCP middleware.
+  - [ ] Need to understand how to handle file transfers between host and sandbox. Implement this. 
+  - [ ] Set up and test HTCondor submission.
+- [ ] Interface with ATLAS software stack. Create local MCP, tools for ATLAS data sources: AMI, Rucio, Upcoming indico meetings
+  - [ ] Simple, preliminary solution: use deepagents skills to wrap command line tools that access ATLAS data sources.
+  - [ ] Longer term: create proper MCP server with tools for ATLAS data sources (can interface this with other agent providers eg. Copilot).
+
+### v0.4+
+- [ ] Add GitLab remote. Set up CI/CD. Would be cool to have agents running in GitLab runners, eg. to produce automated reviews of paper latex sources.
 
 
 --- 

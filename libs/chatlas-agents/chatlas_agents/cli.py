@@ -71,9 +71,10 @@ async def _run_interactive_session(
         SandboxBackendType,
     )
     from deepagents_cli.agent import create_cli_agent
-    from deepagents_cli.config import SessionState, create_model
+    from deepagents_cli.config import SessionState, create_model, settings
     from deepagents_cli.main import simple_cli
     from deepagents_cli.token_utils import calculate_baseline_tokens
+    from deepagents_cli.tools import fetch_url, http_request, web_search
 
     logger = logging.getLogger(__name__)
 
@@ -154,7 +155,20 @@ async def _run_interactive_session(
         os.environ["OPENAI_MODEL"] = config.llm.model
     llm_model = create_model()
 
-    # Create CLI agent with MCP tools
+    # Combine standard tools with MCP tools
+    # Standard tools from deepagents-cli (http_request, fetch_url, web_search)
+    standard_tools = [http_request, fetch_url]
+    if settings.has_tavily:
+        standard_tools.append(web_search)
+        logger.info("Web search enabled (Tavily API key found)")
+    else:
+        logger.info("Web search disabled (TAVILY_API_KEY not found)")
+    
+    # Combine with MCP tools
+    all_tools = standard_tools + mcp_tools
+    logger.info(f"Total tools available: {len(all_tools)} ({len(standard_tools)} standard + {len(mcp_tools)} MCP)")
+
+    # Create CLI agent with all tools
     logger.info(f"Creating ChATLAS agent '{agent_id}'...")
     
     # Use try-finally to ensure sandbox cleanup
@@ -162,7 +176,7 @@ async def _run_interactive_session(
         agent, composite_backend = create_cli_agent(
             model=llm_model,
             assistant_id=agent_id,
-            tools=mcp_tools,
+            tools=all_tools,
             sandbox=sandbox_backend,
             sandbox_type=sandbox_type_str,
             auto_approve=auto_approve,

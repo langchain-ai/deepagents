@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "agent-client-protocol>=0.6.2",
     "deepagents",
+    "dirty-equals>=0.11",
 ]
 
 [dependency-groups]
@@ -50,3 +51,7 @@ Issues = "https://github.com/deepagents/deepagents/issues"
 
 [project.scripts]
 deepacp = "deepagents_acp.server:cli_main"
+
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto" # or "strict"

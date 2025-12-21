@@ -6,12 +6,12 @@ from acp.schema import NewSessionRequest, PromptRequest
 from acp.schema import TextContentBlock
 from dirty_equals import IsUUID
 from langchain_core.language_models import LanguageModelInput
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 
 from deepagents_acp.server import DeepagentsACP, get_weather
+from tests.chat_model import GenericFakeChatModel
 
 
 class FakeAgentSideConnection:
@@ -59,6 +59,7 @@ async def deepagents_acp_test_context(
     messages: list[BaseMessage],
     prompt_request: PromptRequest,
     tools: list[Any] | None = None,
+    stream_delimiter: str | None = r"(\s)",
 ):
     """Context manager for testing DeepagentsACP.
 
@@ -66,12 +67,16 @@ async def deepagents_acp_test_context(
         messages: List of messages for the fake model to return
         prompt_request: The prompt request to send to the agent
         tools: List of tools to provide to the agent (defaults to [])
+        stream_delimiter: How to chunk content when streaming (default: r"(\\s)" for whitespace)
 
     Yields:
         FakeAgentSideConnection: The connection object that tracks sessionUpdate calls
     """
     connection = FakeAgentSideConnection()
-    model = FixedGenericFakeChatModel(messages=iter(messages))
+    model = FixedGenericFakeChatModel(
+        messages=iter(messages),
+        stream_delimiter=stream_delimiter,
+    )
     tools = tools if tools is not None else []
 
     deepagents_acp = DeepagentsACP(
@@ -167,74 +172,79 @@ class TestDeepAgentsACP:
             prompt_request=prompt_request,
             tools=[get_weather_tool],
         ) as connection:
-            # Expected calls:
-            # 1. Tool call progress (status="pending") when tool_call is detected
-            # 2. Tool call progress (status="completed") when tool execution finishes
-            # 3-N. Message chunks for "The weather in Paris is sunny and 72°F today!"
+            # Expected call sequence:
+            # Call 0: Tool call progress (status="pending")
+            # Call 1: Tool call progress (status="completed")
+            # Calls 2+: Message chunks for "The weather in Paris is sunny and 72°F today!"
 
-            # Verify we have at least 3 calls (2 tool updates + at least 1 message chunk)
-            assert len(connection.calls) >= 3
-
-            # Verify first call is tool call pending
-            first_call = connection.calls[0].model_dump()
-            assert first_call == {
-                "field_meta": None,
-                "sessionId": IsUUID,
-                "update": {
-                    "field_meta": None,
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "call_123",
-                    "title": "get_weather_tool",
-                    "rawInput": {"location": "Paris, France"},
-                    "content": None,
-                    "rawOutput": None,
-                    "status": "pending",
-                },
-            }
-
-            # Verify second call is tool call completed
-            second_call = connection.calls[1].model_dump()
-            assert second_call == {
-                "field_meta": None,
-                "sessionId": IsUUID,
-                "update": {
-                    "field_meta": None,
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": "call_123",
-                    "title": "get_weather_tool",
-                    "rawInput": None,
-                    "content": [
-                        {
-                            "type": "content",
-                            "content": {
-                                "annotations": None,
-                                "field_meta": None,
-                                "text": "The weather in Paris, France is sunny and 72°F",
-                                "type": "text",
-                            },
-                        }
-                    ],
-                    "rawOutput": "The weather in Paris, France is sunny and 72°F",
-                    "status": "completed",
-                },
-            }
-
-            # Verify remaining calls are message chunks
-            for call in connection.calls[2:]:
+            # Find tool call indices
+            tool_call_indices = []
+            for i, call in enumerate(connection.calls):
                 call_dict = call.model_dump()
-                assert call_dict["update"]["sessionUpdate"] == "agent_message_chunk"
-                assert call_dict["update"]["content"]["type"] == "text"
+                if call_dict["update"]["sessionUpdate"] == "tool_call_update":
+                    tool_call_indices.append(i)
+
+            # Verify we have exactly 2 tool call updates
+            assert len(tool_call_indices) == 2
+
+            # Verify tool call pending
+            pending_idx = tool_call_indices[0]
+            pending_call = connection.calls[pending_idx].model_dump()
+            assert pending_call["update"]["sessionUpdate"] == "tool_call_update"
+            assert pending_call["update"]["status"] == "pending"
+            assert pending_call["update"]["toolCallId"] == "call_123"
+            assert pending_call["update"]["title"] == "get_weather_tool"
+            assert pending_call["update"]["rawInput"] == {"location": "Paris, France"}
+
+            # Verify tool call completed
+            completed_idx = tool_call_indices[1]
+            completed_call = connection.calls[completed_idx].model_dump()
+            assert completed_call["update"]["sessionUpdate"] == "tool_call_update"
+            assert completed_call["update"]["status"] == "completed"
+            assert completed_call["update"]["toolCallId"] == "call_123"
+            assert completed_call["update"]["title"] == "get_weather_tool"
+            assert completed_call["update"]["rawOutput"] == "The weather in Paris, France is sunny and 72°F"
+
+            # Verify all non-tool-call updates are message chunks
+            for i, call in enumerate(connection.calls):
+                if i not in tool_call_indices:
+                    call_dict = call.model_dump()
+                    assert call_dict["update"]["sessionUpdate"] == "agent_message_chunk"
+                    assert call_dict["update"]["content"]["type"] == "text"
 
 
 async def test_fake_chat_model_streaming() -> None:
-    """Test to verify what GenericFakeChatModel streams directly.
+    """Test to verify GenericFakeChatModel stream_delimiter API.
 
-    This test documents the behavior of GenericFakeChatModel.astream() when given
-    AIMessages with empty content + tool_calls, followed by regular messages.
+    This test demonstrates the different streaming modes available via stream_delimiter.
     """
-    # Create fake model with messages
-    # Note: GenericFakeChatModel streams by splitting on whitespace
-    model = FixedGenericFakeChatModel(
+    # Test 1: No streaming (stream_delimiter=None) - single chunk
+    model_no_stream = FixedGenericFakeChatModel(
+        messages=iter([AIMessage(content="Hello world")]),
+        stream_delimiter=None,
+    )
+    chunks = []
+    async for chunk in model_no_stream.astream("test"):
+        chunks.append(chunk)
+    assert len(chunks) == 1
+    assert chunks[0].content == "Hello world"
+
+    # Test 2: Stream on whitespace using regex (default behavior)
+    model_whitespace = FixedGenericFakeChatModel(
+        messages=iter([AIMessage(content="Hello world")]),
+        stream_delimiter=r"(\s)",
+    )
+    chunks = []
+    async for chunk in model_whitespace.astream("test"):
+        chunks.append(chunk)
+    # Should split into: "Hello", " ", "world"
+    assert len(chunks) == 3
+    assert chunks[0].content == "Hello"
+    assert chunks[1].content == " "
+    assert chunks[2].content == "world"
+
+    # Test 3: Stream with tool_calls
+    model_with_tools = FixedGenericFakeChatModel(
         messages=iter([
             AIMessage(
                 content="Checking weather",
@@ -247,33 +257,24 @@ async def test_fake_chat_model_streaming() -> None:
                     }
                 ],
             ),
-            AIMessage(content="the weather in paris is sunny and 72°f today!"),
-        ])
+        ]),
+        stream_delimiter=r"(\s)",
     )
-
-    # Stream the first message
-    print("\n=== First message (with tool_calls) ===")
     chunks = []
-    async for chunk in model.astream("What's the weather?"):
+    async for chunk in model_with_tools.astream("test"):
         chunks.append(chunk)
-        print(f"Chunk {len(chunks)}: {chunk}")
-        print(f"  content: '{chunk.content}'")
-        print(f"  tool_calls: {chunk.tool_calls}")
-
-    print(f"\nTotal chunks from first message: {len(chunks)}")
-
-    # Stream the second message
-    print("\n=== Second message (regular text) ===")
-    chunks2 = []
-    async for chunk in model.astream("Thanks!"):
-        chunks2.append(chunk)
-        print(f"Chunk {len(chunks2)}: {chunk}")
-        print(f"  content: '{chunk.content}'")
-
-    print(f"\nTotal chunks from second message: {len(chunks2)}")
-
-    # Verify we got chunks
+    # Tool calls should only be in the last chunk
     assert len(chunks) > 0
-    assert len(chunks2) > 0
+    assert chunks[-1].tool_calls == [
+        {
+            "name": "get_weather_tool",
+            "args": {"location": "paris, france"},
+            "id": "call_123",
+            "type": "tool_call",
+        }
+    ]
+    # Earlier chunks should not have tool_calls
+    for chunk in chunks[:-1]:
+        assert chunk.tool_calls == []
 
 

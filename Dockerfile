@@ -24,6 +24,8 @@ RUN cd /app/libs/chatlas-agents && \
 RUN useradd -m -u 1000 chatlas && chown -R chatlas:chatlas /app
 USER chatlas
 
+WORKDIR /app/libs/chatlas-agents
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV CHATLAS_AGENT_NAME=chatlas-agent
@@ -32,5 +34,6 @@ ENV CHATLAS_AGENT_NAME=chatlas-agent
 EXPOSE 8000
 
 # Entry point
-ENTRYPOINT ["uv", "run", "chatlas"]
-CMD ["--help"]
+ENTRYPOINT ["bash", "-c"]
+CMD ["uv", "run", "chatlas", "--help"]
+# CMD ["--help"]

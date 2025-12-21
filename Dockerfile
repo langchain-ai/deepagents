@@ -4,10 +4,11 @@ FROM python:3.13-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including CA certificates for SSL
 RUN apt-get update && apt-get install -y \
     git \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -31,6 +32,11 @@ WORKDIR /app/libs/chatlas-agents
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV CHATLAS_AGENT_NAME=chatlas-agent
+
+# Unset host SSL cert variables that Apptainer might inherit
+# The container will use its own /etc/ssl/certs certificates
+ENV SSL_CERT_FILE=
+ENV SSL_CERT_DIR=
 
 # Expose port if needed (for future API server)
 EXPOSE 8000

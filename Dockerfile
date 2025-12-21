@@ -16,13 +16,13 @@ RUN pip install uv
 # Copy application code
 COPY . /app/
 
-# Install the package
+# Install the package globally (not editable)
 RUN cd /app/libs/chatlas-agents && \
-    uv sync 
+    uv sync
 
-# Create a non-root user for security
-RUN useradd -m -u 1000 chatlas && chown -R chatlas:chatlas /app
-USER chatlas
+# Make directories writable for Apptainer compatibility
+# Apptainer runs with host user, so we need write permissions
+RUN chmod -R 777 /app
 
 WORKDIR /app/libs/chatlas-agents
 

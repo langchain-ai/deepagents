@@ -11,7 +11,7 @@ def test_agent_initialization():
         name="test-agent",
         llm=LLMConfig(
             provider=LLMProvider.OPENAI, 
-            model="gpt-4",
+            model="gpt-5-mini",
             api_key="test-key"
         ),
         mcp=MCPServerConfig(url="https://chatlas-mcp.app.cern.ch/mcp"),

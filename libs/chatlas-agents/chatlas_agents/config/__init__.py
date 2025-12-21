@@ -18,7 +18,7 @@ class LLMConfig(BaseModel):
     """Configuration for LLM backend."""
 
     provider: LLMProvider = Field(default=LLMProvider.OPENAI, description="LLM provider to use")
-    model: str = Field(default="gpt-4", description="Model name/identifier")
+    model: str = Field(default="gpt-5-mini ", description="Model name/identifier")
     api_key: Optional[str] = Field(default=None, description="API key for the provider")
     base_url: Optional[str] = Field(default=None, description="Custom base URL for API")
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
@@ -84,7 +84,7 @@ class Settings(BaseSettings):
 
     # LLM settings
     llm_provider: str = Field(default="openai")
-    llm_model: str = Field(default="gpt-4")
+    llm_model: str = Field(default="gpt-5-mini")
     llm_api_key: Optional[str] = Field(default=None, description="API key for LLM provider")
     llm_base_url: Optional[str] = Field(default=None, description="Custom base URL for LLM API")
     llm_temperature: float = Field(default=0.7)

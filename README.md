@@ -80,7 +80,7 @@ CHATLAS_MCP_URL=https://chatlas-mcp.app.cern.ch/mcp
 CHATLAS_MCP_TIMEOUT=120
 
 CHATLAS_LLM_PROVIDER=openai
-CHATLAS_LLM_MODEL=gpt-4
+CHATLAS_LLM_MODEL=gpt-5-mini
 
 OPENAI_API_KEY=your-api-key-here
 ```
@@ -111,7 +111,7 @@ chatlas --mcp-url https://custom-mcp.example.com/mcp
 
 **Use a different model:**
 ```bash
-chatlas --model gpt-4o
+chatlas --model gpt-5-mini
 ```
 
 **Enable Docker sandbox for isolated code execution:**
@@ -264,7 +264,7 @@ By default, `deepagents` uses `"claude-sonnet-4-5-20250929"`. You can customize 
 from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
 
-model = init_chat_model("openai:gpt-4o")
+model = init_chat_model("openai:gpt-5-mini")
 agent = create_deep_agent(
     model=model,
 )
@@ -359,7 +359,7 @@ research_subagent = {
     "description": "Used to research in-depth questions",
     "prompt": "You are an expert researcher",
     "tools": [internet_search],
-    "model": "openai:gpt-4o",  # Optional, defaults to main agent model
+    "model": "openai:gpt-5-mini",  # Optional, defaults to main agent model
 }
 
 agent = create_deep_agent(subagents=[research_subagent])

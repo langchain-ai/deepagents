@@ -15,7 +15,7 @@ def test_llm_config_default():
     """Test default LLM configuration."""
     config = LLMConfig()
     assert config.provider == LLMProvider.OPENAI
-    assert config.model == "gpt-4"
+    assert config.model == "gpt-5-mini"
     assert config.temperature == 0.7
     assert config.streaming is False
 

@@ -20,7 +20,7 @@ A clear and concise description of the issue.
 - **Shell**: (e.g., bash, zsh)
 - **Key Environment Variables**: 
   ```
-  CHATLAS_LLM_MODEL=gpt-4-turbo
+  CHATLAS_LLM_MODEL=gpt-5-mini-turbo
   CHATLAS_MCP_URL=https://chatlas-mcp.app.cern.ch/mcp
   ```
 

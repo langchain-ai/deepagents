@@ -76,7 +76,7 @@ async def main():
         description="ChATLAS agent with Apptainer sandbox for secure code execution",
         llm=LLMConfig(
             provider=LLMProvider.OPENAI,
-            model="gpt-4",
+            model="gpt-5-mini",
             temperature=0.7,
             api_key=api_key,  # Set via CHATLAS_LLM_API_KEY environment variable
         ),
@@ -125,7 +125,7 @@ async def code_execution_example():
         description="Agent for safe code execution in isolated Apptainer environment",
         llm=LLMConfig(
             provider=LLMProvider.OPENAI,
-            model="gpt-4",
+            model="gpt-5-mini",
             api_key=api_key,
         ),
     )
@@ -168,7 +168,7 @@ async def data_analysis_example():
         description="Agent for data analysis with secure Apptainer execution environment",
         llm=LLMConfig(
             provider=LLMProvider.OPENAI,
-            model="gpt-4",
+            model="gpt-5-mini",
             api_key=api_key,
         ),
     )

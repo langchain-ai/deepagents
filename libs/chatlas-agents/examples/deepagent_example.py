@@ -17,7 +17,7 @@ async def main():
         description="ChATLAS agent with DeepAgents framework capabilities",
         llm=LLMConfig(
             provider=LLMProvider.OPENAI,
-            model="gpt-4",
+            model="gpt-5-mini",
             temperature=0.7,
             api_key=api_key,  # Set via CHATLAS_LLM_API_KEY environment variable
         ),
@@ -66,7 +66,7 @@ async def streaming_example():
         description="DeepAgent with streaming capabilities",
         llm=LLMConfig(
             provider=LLMProvider.OPENAI,
-            model="gpt-4",
+            model="gpt-5-mini",
             api_key=api_key,  # Set via CHATLAS_LLM_API_KEY environment variable
             streaming=True,
         ),
@@ -102,7 +102,7 @@ async def complex_task_example():
         description="DeepAgent for complex multi-step tasks with planning",
         llm=LLMConfig(
             provider=LLMProvider.OPENAI,
-            model="gpt-4",
+            model="gpt-5-mini",
             api_key=api_key,
         ),
     )

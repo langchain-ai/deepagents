@@ -170,7 +170,7 @@ from chatlas_agents.sandbox import SandboxBackendType
 
 config = AgentConfig(
     name="my-agent",
-    llm=LLMConfig(provider="openai", model="gpt-4"),
+    llm=LLMConfig(provider="openai", model="gpt-5-mini"),
 )
 
 agent = await create_chatlas_deep_agent(

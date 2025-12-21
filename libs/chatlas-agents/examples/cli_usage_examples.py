@@ -41,7 +41,7 @@ Creates a .env file with:
 - CHATLAS_MCP_URL (default: https://chatlas-mcp.app.cern.ch/mcp)
 - CHATLAS_MCP_TIMEOUT (default: 120 seconds)
 - CHATLAS_LLM_PROVIDER (default: openai)
-- CHATLAS_LLM_MODEL (default: gpt-4)
+- CHATLAS_LLM_MODEL (default: gpt-5-mini)
 - OPENAI_API_KEY (required)
 - ANTHROPIC_API_KEY (optional)
 - TAVILY_API_KEY (optional, for web search)
@@ -61,7 +61,7 @@ Built on DeepAgents framework with MCP integration
 
 # 5. Use a specific LLM model
 """
-$ chatlas --model gpt-4o
+$ chatlas --model gpt-5-mini
 
 Override the default model (useful for testing different models)
 """
@@ -144,7 +144,7 @@ description: "AI assistant for ATLAS physics analysis"
 
 llm:
   provider: "openai"
-  model: "gpt-4"
+  model: "gpt-5-mini"
   temperature: 0.7
 
 mcp:
@@ -161,7 +161,7 @@ verbose: true
 export CHATLAS_MCP_URL=https://chatlas-mcp.app.cern.ch/mcp
 export CHATLAS_MCP_TIMEOUT=120
 export CHATLAS_LLM_PROVIDER=openai
-export CHATLAS_LLM_MODEL=gpt-4
+export CHATLAS_LLM_MODEL=gpt-5-mini
 export OPENAI_API_KEY=sk-...
 
 # Then just run

@@ -342,7 +342,7 @@ result = await agent.run("Search for ChATLAS documentation")
 ```yaml
 llm:
   provider: openai
-  model: gpt-4
+  model: gpt-5-mini
   api_key: sk-...
   temperature: 0.7
 ```
@@ -556,7 +556,7 @@ The ChATLAS agents framework is built on:
    - Resource access
 
 3. **LLM Factory**: Creates LLM instances for different providers:
-   - OpenAI (GPT-4, GPT-3.5, etc.)
+   - OpenAI (GPT-5-mini, etc.)
    - Anthropic (Claude 3.5 Sonnet, etc.)
    - Groq (Llama 3.1, Mixtral, etc.)
 

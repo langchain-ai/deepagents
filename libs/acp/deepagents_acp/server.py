@@ -35,6 +35,7 @@ from acp.schema import (
     SetSessionModelRequest,
     AgentPlanUpdate,
     PlanEntry,
+    PlanEntryStatus,
 )
 from deepagents.graph import create_deep_agent
 from langchain_core.language_models import BaseChatModel
@@ -293,6 +294,51 @@ class DeepagentsACP(Agent):
             )
         )
 
+    async def _handle_todo_update(
+        self,
+        params: PromptRequest,
+        todos: list[dict[str, Any]],
+    ) -> None:
+        """Handle todo list updates from the tools node.
+
+        Args:
+            params: The prompt request parameters
+            todos: List of todo dictionaries with 'content' and 'status' fields
+
+        Note:
+            Todos come from the deepagents graph's write_todos tool and have the structure:
+            [{'content': 'Task description', 'status': 'pending'|'in_progress'|'completed'}, ...]
+        """
+        # Convert todos to PlanEntry objects
+        entries = []
+        for todo in todos:
+            # Extract fields from todo dict
+            content = todo.get("content", "")
+            status = todo.get("status", "pending")
+
+            # Validate and cast status to PlanEntryStatus
+            if status not in ("pending", "in_progress", "completed"):
+                status = "pending"
+
+            # Create PlanEntry with default priority of "medium"
+            entry = PlanEntry(
+                content=content,
+                status=status,  # type: ignore
+                priority="medium",
+            )
+            entries.append(entry)
+
+        # Send plan update notification
+        await self._connection.sessionUpdate(
+            SessionNotification(
+                update=AgentPlanUpdate(
+                    sessionUpdate="plan",
+                    entries=entries,
+                ),
+                sessionId=params.sessionId,
+            )
+        )
+
     async def prompt(
         self,
         params: PromptRequest,
@@ -328,6 +374,12 @@ class DeepagentsACP(Agent):
                     # Only process model and tools nodes
                     if node_name not in ("model", "tools"):
                         continue
+
+                    # Handle todos from tools node
+                    if node_name == "tools" and "todos" in update:
+                        todos = update.get("todos", [])
+                        if todos:
+                            await self._handle_todo_update(params, todos)
 
                     # Get messages from the update
                     messages = update.get("messages", [])

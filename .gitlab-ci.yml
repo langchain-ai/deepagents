@@ -16,13 +16,13 @@ variables:
 .docker-build-and-push: &docker-build-and-push
   - docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
   - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
-  - docker build --pull -t ${TO} -f ${CONTEXT_DIR}/Dockerfile ${CONTEXT_DIR} 
+  - docker build --pull -t ${TO} -f Dockerfile .
   - docker push ${TO}
 
-build_gpu_basic_test:
+build_chatlas_deepagents:
   stage: "docker-build"
   variables:
-    CONTEXT_DIR: .
+    CONTEXT_DIR: chatlas_deepagents
   # only:
   #   changes:
   #     - libs/*

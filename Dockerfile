@@ -16,13 +16,19 @@ RUN pip install uv
 # Copy application code
 COPY . /app/
 
-# Install the package globally (not editable)
-RUN cd /app/libs/chatlas-agents && \
-    uv sync
+# Install dependencies and build all packages in order (non-editable)
+# This ensures the package is fully built during image creation
+RUN cd /app/libs/deepagents && \
+    uv venv /opt/venv && \
+    uv pip install --no-cache . && \
+    cd /app/libs/deepagents-cli && \
+    uv pip install --no-cache . && \
+    cd /app/libs/chatlas-agents && \
+    uv pip install --no-cache .
 
-# Make directories writable for Apptainer compatibility
-# Apptainer runs with host user, so we need write permissions
-RUN chmod -R 777 /app
+# Add virtual environment to PATH
+ENV PATH="/opt/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/venv"
 
 WORKDIR /app/libs/chatlas-agents
 
@@ -33,7 +39,7 @@ ENV CHATLAS_AGENT_NAME=chatlas-agent
 # Expose port if needed (for future API server)
 EXPOSE 8000
 
-# Entry point
-ENTRYPOINT ["bash", "-c"]
-CMD ["uv", "run", "chatlas", "--help"]
+# Entry point - use the installed package directly
+ENTRYPOINT ["chatlas"]
+CMD ["--help"]
 # CMD ["--help"]

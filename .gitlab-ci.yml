@@ -20,7 +20,7 @@ variables:
   - docker push ${TO}
 
 build_gpu_basic_test:
-  stage: "base-images"
+  stage: "docker-build"
   variables:
     CONTEXT_DIR: .
   only:

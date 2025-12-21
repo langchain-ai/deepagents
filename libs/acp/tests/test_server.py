@@ -40,6 +40,20 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
         return self
 
 
+@tool(description="Get the current weather for a location")
+def get_weather_tool(location: str) -> str:
+    """Get the current weather for a location.
+
+    Args:
+        location: The city and state, e.g. "San Francisco, CA"
+
+    Returns:
+        A string describing the current weather
+    """
+    # Return fake weather data for testing
+    return f"The weather in {location} is sunny and 72°F"
+
+
 @asynccontextmanager
 async def deepagents_acp_test_context(
     messages: list[BaseMessage],
@@ -116,205 +130,74 @@ class TestDeepAgentsACP:
                 },
             }
 
+    async def test_tool_call_and_response(self) -> None:
+        """Test that DeepagentsACP handles tool calls correctly.
 
-@tool(description="Sample tool")
-def sample_tool(sample_input: str) -> str:
-    """A sample tool that returns the input string."""
-    return sample_input
+        This test verifies that when an AI message contains tool_calls, the agent:
+        1. Streams the AI message content as chunks
+        2. Detects and executes the tool call
+        3. Sends tool call progress notifications
+        4. Continues with a response based on the tool result
 
+        Note: The FakeChat model streams messages but the agent graph must actually
+        execute the tools for the flow to complete.
+        """
+        prompt_request = PromptRequest(
+            sessionId="",  # Will be set by context manager
+            prompt=[TextContentBlock(text="What's the weather in Paris?", type="text")],
+        )
 
-#
-# class TestDeepAgentEndToEnd:
-#     """Test suite for end-to-end deepagent functionality with fake LLM."""
-#
-#     def test_deep_agent_with_fake_llm_basic(self) -> None:
-#         """Test basic deepagent functionality with a fake LLM model.
-#
-#         This test verifies that a deepagent can be created and invoked with
-#         a fake LLM model that returns predefined responses.
-#         """
-#         # Create a fake model that returns predefined messages
-#         model = FixedGenericFakeChatModel(
-#             messages=iter(
-#                 [
-#                     AIMessage(
-#                         content="I'll use the sample_tool to process your request.",
-#                         tool_calls=[
-#                             {
-#                                 "name": "write_todos",
-#                                 "args": {"todos": []},
-#                                 "id": "call_1",
-#                                 "type": "tool_call",
-#                             }
-#                         ],
-#                     ),
-#                     AIMessage(
-#                         content="Task completed successfully!",
-#                     ),
-#                 ]
-#             )
-#         )
-#
-#         # Create a deep agent with the fake model
-#         agent = create_deep_agent(model=model)
-#
-#         # Invoke the agent with a simple message
-#         result = agent.invoke({"messages": [HumanMessage(content="Hello, agent!")]})
-#
-#         # Verify the agent executed correctly
-#         assert "messages" in result
-#         assert len(result["messages"]) > 0
-#
-#         # Verify we got AI responses
-#         ai_messages = [msg for msg in result["messages"] if msg.type == "ai"]
-#         assert len(ai_messages) > 0
-#
-#         # Verify the final AI message contains our expected content
-#         final_ai_message = ai_messages[-1]
-#         assert "Task completed successfully!" in final_ai_message.content
-#
-#     def test_deep_agent_with_fake_llm_with_tools(self) -> None:
-#         """Test deepagent with tools using a fake LLM model.
-#
-#         This test verifies that a deepagent can handle tool calls correctly
-#         when using a fake LLM model.
-#         """
-#         # Create a fake model that calls sample_tool
-#         model = FixedGenericFakeChatModel(
-#             messages=iter(
-#                 [
-#                     AIMessage(
-#                         content="",
-#                         tool_calls=[
-#                             {
-#                                 "name": "sample_tool",
-#                                 "args": {"sample_input": "test input"},
-#                                 "id": "call_1",
-#                                 "type": "tool_call",
-#                             }
-#                         ],
-#                     ),
-#                     AIMessage(
-#                         content="I called the sample_tool with 'test input'.",
-#                     ),
-#                 ]
-#             )
-#         )
-#
-#         # Create a deep agent with the fake model and sample_tool
-#         agent = create_deep_agent(model=model, tools=[sample_tool])
-#
-#         # Invoke the agent
-#         result = agent.invoke(
-#             {"messages": [HumanMessage(content="Use the sample tool")]}
-#         )
-#
-#         # Verify the agent executed correctly
-#         assert "messages" in result
-#
-#         # Verify tool was called
-#         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-#         assert len(tool_messages) > 0
-#
-#         # Verify the tool message contains our expected input
-#         assert any("test input" in msg.content for msg in tool_messages)
-#
-#     def test_deep_agent_with_fake_llm_filesystem_tool(self) -> None:
-#         """Test deepagent with filesystem tools using a fake LLM model.
-#
-#         This test verifies that a deepagent can use the built-in filesystem
-#         tools (ls, read_file, etc.) with a fake LLM model.
-#         """
-#         # Create a fake model that uses filesystem tools
-#         model = FixedGenericFakeChatModel(
-#             messages=iter(
-#                 [
-#                     AIMessage(
-#                         content="",
-#                         tool_calls=[
-#                             {
-#                                 "name": "ls",
-#                                 "args": {"path": "."},
-#                                 "id": "call_1",
-#                                 "type": "tool_call",
-#                             }
-#                         ],
-#                     ),
-#                     AIMessage(
-#                         content="I've listed the files in the current directory.",
-#                     ),
-#                 ]
-#             )
-#         )
-#
-#         # Create a deep agent with the fake model
-#         agent = create_deep_agent(model=model)
-#
-#         # Invoke the agent
-#         result = agent.invoke({"messages": [HumanMessage(content="List files")]})
-#
-#         # Verify the agent executed correctly
-#         assert "messages" in result
-#
-#         # Verify ls tool was called
-#         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-#         assert len(tool_messages) > 0
-#
-#     def test_deep_agent_with_fake_llm_multiple_tool_calls(self) -> None:
-#         """Test deepagent with multiple tool calls using a fake LLM model.
-#
-#         This test verifies that a deepagent can handle multiple sequential
-#         tool calls with a fake LLM model.
-#         """
-#         # Create a fake model that makes multiple tool calls
-#         model = FixedGenericFakeChatModel(
-#             messages=iter(
-#                 [
-#                     AIMessage(
-#                         content="",
-#                         tool_calls=[
-#                             {
-#                                 "name": "sample_tool",
-#                                 "args": {"sample_input": "first call"},
-#                                 "id": "call_1",
-#                                 "type": "tool_call",
-#                             }
-#                         ],
-#                     ),
-#                     AIMessage(
-#                         content="",
-#                         tool_calls=[
-#                             {
-#                                 "name": "sample_tool",
-#                                 "args": {"sample_input": "second call"},
-#                                 "id": "call_2",
-#                                 "type": "tool_call",
-#                             }
-#                         ],
-#                     ),
-#                     AIMessage(
-#                         content="I completed both tool calls successfully.",
-#                     ),
-#                 ]
-#             )
-#         )
-#
-#         # Create a deep agent with the fake model and sample_tool
-#         agent = create_deep_agent(model=model, tools=[sample_tool])
-#
-#         # Invoke the agent
-#         result = agent.invoke(
-#             {"messages": [HumanMessage(content="Use sample tool twice")]}
-#         )
-#
-#         # Verify the agent executed correctly
-#         assert "messages" in result
-#
-#         # Verify multiple tool calls occurred
-#         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-#         assert len(tool_messages) >= 2
-#
-#         # Verify both inputs were used
-#         tool_contents = [msg.content for msg in tool_messages]
-#         assert any("first call" in content for content in tool_contents)
-#         assert any("second call" in content for content in tool_contents)
+        # The fake model will be called multiple times by the agent graph:
+        # 1. First call: AI decides to use the tool (with tool_calls)
+        # 2. After tool execution: AI responds with the result
+        async with deepagents_acp_test_context(
+            messages=[
+                AIMessage(
+                    content="I'll check the weather for you.",
+                    tool_calls=[
+                        {
+                            "name": "get_weather_tool",
+                            "args": {"location": "Paris, France"},
+                            "id": "call_123",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="The weather in Paris is sunny and 72°F today!"),
+            ],
+            prompt_request=prompt_request,
+            tools=[get_weather_tool],
+        ) as connection:
+            # The fake chat model streams on whitespace tokens, creating multiple chunks
+            # Filter to find different types of updates
+            message_chunks = [c for c in connection.calls if c.update.sessionUpdate == "agent_message_chunk"]
+            tool_call_updates = [c for c in connection.calls if c.update.sessionUpdate == "tool_call_update"]
+
+            # Verify we got message chunks (from streaming)
+            assert len(message_chunks) > 0, "Should have message chunks from streaming"
+
+            # Reconstruct messages from chunks
+            all_text = "".join(c.update.content.text for c in message_chunks)
+
+            # Should contain text from the first AI message
+            assert "I'll check the weather for you." in all_text
+
+            # If tool calls were executed, verify the details
+            first_tool_update = tool_call_updates[0].model_dump()
+            assert first_tool_update == {
+                "field_meta": None,
+                "sessionId": IsUUID,
+                "update": {
+                    "field_meta": None,
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "call_123",
+                    "title": "get_weather_tool",
+                    "rawInput": {"location": "Paris, France"},
+                    "content": None,
+                    "rawOutput": None,
+                    "status": "running",
+                },
+            }
+
+            # And the second message should also appear
+            assert "The weather in Paris is sunny and 72°F today!" in all_text

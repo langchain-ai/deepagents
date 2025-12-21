@@ -215,20 +215,21 @@ class MCPMiddleware(AgentMiddleware):
         return self._tools
 
     def before_agent(self, state: MCPState, runtime: Runtime) -> MCPStateUpdate | None:
-        """Store MCP tools in state before agent execution.
-
-        This runs once at the start of agent execution to make tools
-        available in the agent state.
+        """Hook that runs before agent execution.
+        
+        Note: Tools are provided via the `tools` property and don't need to be stored in state.
+        Storing tools in state causes serialization issues with msgpack.
 
         Args:
             state: Current agent state
             runtime: Runtime context
 
         Returns:
-            State update with MCP tools
+            None - no state updates needed
         """
-        # Store tools in state for potential use by other middleware
-        return MCPStateUpdate(mcp_tools=self._tools)
+        # Tools are automatically discovered via the `tools` property
+        # No need to store them in state (causes serialization issues)
+        return None
 
     def _format_tools_description(self) -> str:
         """Format MCP tools for system prompt.

@@ -11,7 +11,7 @@ from deepagents.backends.sandbox import SandboxBackendProtocol
 from langchain.agents.middleware import (
     InterruptOnConfig,
 )
-from langchain.agents.middleware.types import AgentState
+from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain.messages import ToolCall
 from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
@@ -335,7 +335,7 @@ def create_cli_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
-    additional_middleware: list | None = None,
+    additional_middleware: list[AgentMiddleware] | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 

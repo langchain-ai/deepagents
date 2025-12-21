@@ -335,6 +335,7 @@ def create_cli_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
+    additional_middleware: list | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -356,6 +357,9 @@ def create_cli_agent(
         enable_memory: Enable AgentMemoryMiddleware for persistent memory
         enable_skills: Enable SkillsMiddleware for custom agent skills
         enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
+        additional_middleware: Optional list of additional middleware to add to the agent.
+                              These will be inserted after CLI middleware but before interrupt middleware.
+                              Example: [MCPMiddleware, CustomLoggingMiddleware]
 
     Returns:
         2-tuple of (agent_graph, composite_backend)
@@ -440,6 +444,11 @@ def create_cli_agent(
 
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
+
+    # Add any additional custom middleware (e.g., MCPMiddleware)
+    # These are added after CLI middleware to allow them to wrap CLI functionality
+    if additional_middleware:
+        agent_middleware.extend(additional_middleware)
 
     # Get or use custom system prompt
     if system_prompt is None:

@@ -17,7 +17,6 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
-from langchain.agents.middleware import HumanInTheLoopMiddleware
 from acp.schema import (
     AgentMessageChunk,
     InitializeRequest,
@@ -43,7 +42,6 @@ from acp.schema import (
     PlanEntry,
     PermissionOption,
     RequestPermissionRequest,
-    RequestPermissionResponse,
     AllowedOutcome,
     DeniedOutcome,
     ToolCall as ACPToolCall,
@@ -156,7 +154,6 @@ class DeepagentsACP(Agent):
                         sessionId=params.sessionId,
                     )
                 )
-
 
     async def _handle_completed_tool_calls(
         self,
@@ -344,10 +341,11 @@ class DeepagentsACP(Agent):
         for action_request in action_requests:
             tool_name = action_request.get("name")
             tool_args = action_request.get("args", {})
-            description = action_request.get("description", "")
 
             # Get allowed decisions for this action
-            allowed_decisions = allowed_decisions_map.get(tool_name, ["approve", "reject"])
+            allowed_decisions = allowed_decisions_map.get(
+                tool_name, ["approve", "reject"]
+            )
 
             # Build permission options based on allowed decisions
             options = []
@@ -410,10 +408,12 @@ class DeepagentsACP(Agent):
                     # TODO: Implement actual edit functionality to collect edited args
                     decisions.append({"type": "approve"})
             elif isinstance(outcome, DeniedOutcome):
-                decisions.append({
-                    "type": "reject",
-                    "message": "Action rejected by user",
-                })
+                decisions.append(
+                    {
+                        "type": "reject",
+                        "message": "Action rejected by user",
+                    }
+                )
 
         return decisions
 
@@ -478,14 +478,18 @@ class DeepagentsACP(Agent):
                     if node_name == "model" and isinstance(last_message, AIMessage):
                         # Check if this AIMessage has tool calls
                         if last_message.tool_calls:
-                            await self._handle_completed_tool_calls(params, last_message)
+                            await self._handle_completed_tool_calls(
+                                params, last_message
+                            )
 
                     # Handle tool execution results from tools node
                     elif node_name == "tools" and isinstance(last_message, ToolMessage):
                         # Look up the original tool call by ID
                         tool_call = self._tool_calls.get(last_message.tool_call_id)
                         if tool_call:
-                            await self._handle_tool_message(params, tool_call, last_message)
+                            await self._handle_tool_message(
+                                params, tool_call, last_message
+                            )
 
         return interrupts
 
@@ -582,6 +586,7 @@ class DeepagentsACP(Agent):
 
 async def main() -> None:
     """Main entry point for running the ACP server."""
+
     # Define default tools
     @tool()
     def get_weather(location: str) -> str:
@@ -602,11 +607,7 @@ async def main() -> None:
 
     # Start the ACP server
     reader, writer = await stdio_streams()
-    AgentSideConnection(
-        lambda conn: DeepagentsACP(conn, agent_graph),
-        writer,
-        reader
-    )
+    AgentSideConnection(lambda conn: DeepagentsACP(conn, agent_graph), writer, reader)
     await asyncio.Event().wait()
 
 

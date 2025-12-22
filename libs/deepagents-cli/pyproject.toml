@@ -1,6 +1,6 @@
 [project]
 name = "deepagents-cli"
-version = "0.0.11"
+version = "0.0.12"
 description = "Deepagents CLI"
 readme = "README.md"
 license = { text = "MIT" }

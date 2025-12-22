@@ -192,11 +192,11 @@ chatlas --sandbox apptainer --sandbox-image docker://python:3.13-slim
 
 ChATLAS includes specialized skills for working with ATLAS experiment software tools on LXPlus:
 
-- **[AMI Query](libs/chatlas-agents/examples/skills/ami-query/SKILL.md)** - Query ATLAS Metadata Interface for dataset information and metadata
-- **[Rucio Management](libs/chatlas-agents/examples/skills/rucio-management/SKILL.md)** - Download and manage ATLAS grid data using Rucio DDM
-- **[ATLAS Run Query](libs/chatlas-agents/examples/skills/atlas-runquery/SKILL.md)** - Query run information, data quality, and luminosity records
+- **[AMI Query](libs/chatlas-agents/skills/ami-query/SKILL.md)** - Query ATLAS Metadata Interface for dataset information and metadata
+- **[Rucio Management](libs/chatlas-agents/skills/rucio-management/SKILL.md)** - Download and manage ATLAS grid data using Rucio DDM
+- **[ATLAS Run Query](libs/chatlas-agents/skills/atlas-runquery/SKILL.md)** - Query run information, data quality, and luminosity records
 
-**Overview:** See [ATLAS_SKILLS.md](libs/chatlas-agents/examples/skills/ATLAS_SKILLS.md) for detailed documentation on using these skills.
+**Overview:** See [ATLAS_SKILLS.md](libs/chatlas-agents/skills/ATLAS_SKILLS.md) for detailed documentation on using these skills.
 
 These skills provide guidance for:
 - Finding and downloading ATLAS datasets from the grid

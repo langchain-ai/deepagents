@@ -38,6 +38,7 @@ from acp.schema import (
     PlanEntryStatus,
 )
 from deepagents.graph import create_deep_agent
+from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.messages.content import ToolCall
@@ -123,6 +124,7 @@ class DeepagentsACP(Agent):
         agent = create_deep_agent(
             model=self._model,
             tools=self._tools,
+            checkpointer=InMemorySaver(),
         )
 
         session_id = str(uuid.uuid4())

@@ -188,6 +188,23 @@ chatlas --sandbox apptainer --sandbox-image docker://python:3.13-slim
 - **[libs/chatlas-agents/README.md](libs/chatlas-agents/README.md)** - ChATLAS agents module documentation
 - **[libs/chatlas-agents/SETUP.md](libs/chatlas-agents/SETUP.md)** - Detailed setup instructions 
 
+### ATLAS Software Tools Skills
+
+ChATLAS includes specialized skills for working with ATLAS experiment software tools on LXPlus:
+
+- **[AMI Query](libs/deepagents-cli/examples/skills/ami-query/SKILL.md)** - Query ATLAS Metadata Interface for dataset information and metadata
+- **[Rucio Management](libs/deepagents-cli/examples/skills/rucio-management/SKILL.md)** - Download and manage ATLAS grid data using Rucio DDM
+- **[ATLAS Run Query](libs/deepagents-cli/examples/skills/atlas-runquery/SKILL.md)** - Query run information, data quality, and luminosity records
+
+**Overview:** See [ATLAS_SKILLS.md](libs/deepagents-cli/examples/skills/ATLAS_SKILLS.md) for detailed documentation on using these skills.
+
+These skills provide guidance for:
+- Finding and downloading ATLAS datasets from the grid
+- Querying dataset metadata and production information
+- Managing data quality and run selection for physics analysis
+- Working with distributed data management (Rucio)
+
+The skills are designed to work on the CERN LXPlus cluster with the full ATLAS software stack available via CVMFS.
 
 ## TODO list for ChatLAS Agents
 ### v0.3
@@ -201,7 +218,7 @@ chatlas --sandbox apptainer --sandbox-image docker://python:3.13-slim
   - [ ] Set up and test HTCondor submission.
   - [x] Alternative container solution: set up registry with chatlas-deepagents packages pre-installed, mount workdir into sandbox & tell agent to copy files there. -> Docker container has been set up on gitlab (`gitlab-registry.cern.ch/asopio/chatlas-deepagents/chatlas_deepagents`). Can be run with either docker (`docker runn -it`) or apptainer (`apptainer shell --docker-login`).
 - [ ] Interface with ATLAS software stack. Create local MCP, tools for ATLAS data sources: AMI, Rucio, Upcoming indico meetings
-  - [ ] Simple, preliminary solution: use deepagents skills to wrap command line tools that access ATLAS data sources.
+  - [x] Simple, preliminary solution: use deepagents skills to wrap command line tools that access ATLAS data sources.
   - [ ] Longer term: create proper MCP server with tools for ATLAS data sources (can interface this with other agent providers eg. Copilot).
 
 ### v0.4+

@@ -34,6 +34,15 @@ This skill assumes you are running on the CERN LXPlus cluster with:
 
 **Important**: The user must set up the ATLAS environment, pyAMI tools, and VOMS proxy **before** starting the agent session. If these are not set up, AMI commands will fail with authentication or command-not-found errors.
 
+### Verifying LXPlus Environment
+
+To verify you are running on an LXPlus machine, check the hostname:
+```bash
+echo $HOSTNAME
+```
+
+LXPlus hostnames typically follow the pattern `lxplus*.cern.ch` (e.g., `lxplus7.cern.ch`, `lxplus8.cern.ch`). If the hostname does not contain "lxplus" and "cern.ch", you may not be on an LXPlus machine, and ATLAS tools may not be available.
+
 ## How to Use
 
 ### Step 1: List Datasets by Pattern

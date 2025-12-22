@@ -190,6 +190,15 @@ All ATLAS skills assume:
 
 The agent cannot run `setupATLAS`, `lsetup`, `localSetupRucioClients`, or `voms-proxy-init` - these must be set up by the user in their shell before launching the agent session.
 
+### Verifying LXPlus Environment
+
+These skills are designed for LXPlus. To verify you are on an LXPlus machine, the agent can check the hostname:
+```bash
+echo $HOSTNAME
+```
+
+LXPlus hostnames follow the pattern `lxplus*.cern.ch` (e.g., `lxplus7.cern.ch`, `lxplus8.cern.ch`). If not on LXPlus, ATLAS tools may not be available.
+
 ## Skill Development
 
 ### Anatomy of a Skill

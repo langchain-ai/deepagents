@@ -36,6 +36,15 @@ This skill assumes you are running on the CERN LXPlus cluster with:
 
 **Important**: The user must set up the ATLAS environment and VOMS proxy **before** starting the agent session. If AMI is used for run queries, pyAMI must also be set up. If these are not set up, queries will fail with authentication errors.
 
+### Verifying LXPlus Environment
+
+To verify you are running on an LXPlus machine, check the hostname:
+```bash
+echo $HOSTNAME
+```
+
+LXPlus hostnames typically follow the pattern `lxplus*.cern.ch` (e.g., `lxplus7.cern.ch`, `lxplus8.cern.ch`). If the hostname does not contain "lxplus" and "cern.ch", you may not be on an LXPlus machine, and ATLAS tools may not be available.
+
 ## Available Tools for Run Queries
 
 ATLAS provides several tools for querying run information:

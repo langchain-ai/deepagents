@@ -214,7 +214,7 @@ voms-proxy-init -voms atlas
 
 **Note:** Not all commands are needed for all skills. See individual skill prerequisites for details.
 
-The skills are designed to work on the CERN LXPlus cluster with the full ATLAS software stack available via CVMFS.
+The skills are designed to work on the CERN LXPlus cluster with the full ATLAS software stack available via CVMFS. The agent can verify it's on LXPlus by checking `echo $HOSTNAME` (should match `lxplus*.cern.ch`).
 
 ## TODO list for ChatLAS Agents
 ### v0.3

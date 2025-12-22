@@ -176,7 +176,7 @@ rucio add-rule <dataset_name> 1 <RSE>
 Created comprehensive documentation:
 
 #### ATLAS_SKILLS.md
-**File**: `libs/deepagents-cli/examples/skills/ATLAS_SKILLS.md`
+**File**: `libs/chatlas-agents/skills/ATLAS_SKILLS.md`
 
 **Content**:
 - Overview of all three ATLAS skills

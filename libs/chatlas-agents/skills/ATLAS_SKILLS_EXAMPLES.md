@@ -250,12 +250,8 @@ cp -r libs/chatlas-agents/examples/skills/ami-query .deepagents/skills/
 cp -r libs/chatlas-agents/examples/skills/rucio-management .deepagents/skills/
 cp -r libs/chatlas-agents/examples/skills/atlas-runquery .deepagents/skills/
 ```
-cp -r libs/deepagents-cli/examples/skills/rucio-management .deepagents/skills/
-cp -r libs/deepagents-cli/examples/skills/atlas-runquery .deepagents/skills/
-```
 
 ## Verification
-
 Check skills are available:
 ```bash
 deepagents skills list

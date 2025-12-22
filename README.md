@@ -194,7 +194,7 @@ chatlas --sandbox apptainer --sandbox-image docker://python:3.13-slim
 - [x] Fix timeout issues with MCP server -- increased timeout client side and provided more pods on the server. Should be able to handle many concurrent requests now and return answers more quickly.
 - [ ] Fix known bugs:
   - [ ] Agent seems to get stuck sometimes when using MCP tools in interactive mode. Needs investigation.
-  - [ ] Not all tools seem to be available / configured properly with the chatlas agent. Web search tool seems to be missing, for example.
+  - [x] Not all tools seem to be available / configured properly with the chatlas agent. Web search tool seems to be missing, for example. Fixed by modifying MCPMiddleware and adding web search tools to CLI.
 - [ ] Properly set up docker and apptainer sandbox. 
   - [x] Sandboxes set up with new CLI and MCP middleware.
   - [ ] Need to understand how to handle file transfers between host and sandbox. Implement this. 

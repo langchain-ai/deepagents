@@ -29,33 +29,27 @@ This skill assumes you are running on the CERN LXPlus cluster with:
 - Valid ATLAS computing account
 - Access to ATLAS software stack via CVMFS
 - **ATLAS environment already initialized** (user must run `setupATLAS` before launching the agent)
+- **Rucio clients already set up** (user must run `localSetupRucioClients` before launching the agent)
 - **Active VOMS proxy** (user must run `voms-proxy-init -voms atlas` before launching the agent)
 - Storage quota on appropriate disk areas
 - No additional software installation needed
 
-**Important**: The user must set up the ATLAS environment and VOMS proxy **before** starting the agent session. If these are not set up, Rucio commands will fail with authentication or command-not-found errors.
+**Important**: The user must set up the ATLAS environment, Rucio clients, and VOMS proxy **before** starting the agent session. If these are not set up, Rucio commands will fail with authentication or command-not-found errors.
+
+**Note:** On some non-LXPlus clusters, you may also need to run `lsetup emi` before starting the agent.
 
 ## How to Use
 
-### Step 1: Setup Rucio Clients
-
-Set up Rucio client tools:
-
-```bash
-# Setup Rucio clients
-localSetupRucioClients
-```
-
-**Note:** On some non-LXPlus clusters, you may need to set up EMI first: `lsetup emi`
+### Step 1: Find Dataset Names
 
 **Common Errors if Prerequisites Not Met:**
 
 If you see errors like:
-- `bash: rucio: command not found` → Rucio clients not set up. Run `localSetupRucioClients`
+- `bash: rucio: command not found` → Rucio clients not set up. User must run `localSetupRucioClients` in their shell before starting the agent.
 - `ERROR: No valid proxy found` or `Authentication failed` → VOMS proxy expired or not initialized. User must run `voms-proxy-init -voms atlas` in their shell before starting the agent.
 - `setupATLAS: command not found` → Not on LXPlus or ATLAS environment not sourced. User must run `setupATLAS` in their shell before starting the agent.
 
-### Step 2: Find Dataset Names
+### Finding Dataset Names
 
 Before downloading, you need the full dataset/container name. This typically comes from:
 - AMI queries (use the ami-query skill)
@@ -73,7 +67,7 @@ user.jsmith:user.jsmith.myanalysis.output.h5
 mc20_13TeV:mc20_13TeV.602074.PhPy8EG.DAOD_PHYS.e8530_s3797_r13167_p6490
 ```
 
-### Step 3: List Dataset Contents
+### Step 2: List Dataset Contents
 
 Check what files are in a dataset or container:
 
@@ -88,7 +82,7 @@ rucio list-files --csv <dataset_name>
 rucio list-files user.jsmith:user.jsmith.myanalysis.output_h5
 ```
 
-### Step 4: Download Datasets
+### Step 3: Download Datasets
 
 Download dataset files to your local directory:
 
@@ -110,7 +104,7 @@ rucio download --dir $HOME/data user.jsmith:user.jsmith.myanalysis.output_h5
 - Skips already-downloaded files
 - Shows progress and transfer rates
 
-### Step 5: Check Data Locations
+### Step 4: Check Data Locations
 
 Find where dataset replicas are stored on the grid:
 
@@ -125,7 +119,7 @@ rucio list-file-replicas <dataset_name>
 rucio list-dataset-replicas mc20_13TeV:mc20_13TeV.602074.DAOD_PHYS.p6490
 ```
 
-### Step 6: Create Replication Rules (Preserve Data)
+### Step 5: Create Replication Rules (Preserve Data)
 
 Grid files on scratch disks are typically deleted after ~2 weeks. To preserve important data, create a replication rule:
 
@@ -190,8 +184,7 @@ After submitting jobs via PanDA, retrieve outputs using Rucio:
 5. Use Rucio to download:
 
 ```bash
-# Setup Rucio if not already done
-localSetupRucioClients
+# Note: User must have already run setupATLAS, localSetupRucioClients, and voms-proxy-init
 rucio -v download <container_name_from_panda>
 ```
 
@@ -200,19 +193,18 @@ rucio -v download <container_name_from_panda>
 ### Workflow 1: Download Grid Job Output
 
 ```bash
-# 1. Setup Rucio clients if not already done
-localSetupRucioClients
+# Note: User must have already run setupATLAS, localSetupRucioClients, and voms-proxy-init
 
-# 2. Get container name from PanDA webpage
+# 1. Get container name from PanDA webpage
 # Example: user.jsmith:user.jsmith.12345678._000001.output_h5
 
-# 3. Check dataset info
+# 2. Check dataset info
 rucio list-files user.jsmith:user.jsmith.12345678._000001.output_h5
 
-# 4. Download dataset
+# 3. Download dataset
 rucio -v download user.jsmith:user.jsmith.12345678._000001.output_h5
 
-# 5. Create preservation rule (if needed)
+# 4. Create preservation rule (if needed)
 rucio add-rule user.jsmith:user.jsmith.12345678._000001.output_h5 1 CERN-PROD_USERDISK
 ```
 
@@ -220,17 +212,13 @@ rucio add-rule user.jsmith:user.jsmith.12345678._000001.output_h5 1 CERN-PROD_US
 
 ```bash
 # 1. Find dataset using AMI (see ami-query skill)
-# Note: User must have already initialized ATLAS environment and VOMS proxy
-lsetup pyami
+# Note: User must have already run setupATLAS, lsetup pyami, localSetupRucioClients, and voms-proxy-init
 ami list datasets mc20_13TeV.602074.%.DAOD_PHYS.%
 
-# 2. Setup Rucio
-localSetupRucioClients
-
-# 3. Check dataset size and location
+# 2. Check dataset size and location
 rucio list-dataset-replicas mc20_13TeV:mc20_13TeV.602074.DAOD_PHYS.p6490
 
-# 4. Download to analysis area
+# 3. Download to analysis area
 rucio download --dir $HOME/analysis/data mc20_13TeV:mc20_13TeV.602074.DAOD_PHYS.p6490
 ```
 
@@ -238,20 +226,18 @@ rucio download --dir $HOME/analysis/data mc20_13TeV:mc20_13TeV.602074.DAOD_PHYS.
 
 ```bash
 # After generating important results on grid:
+# Note: User must have already run setupATLAS, localSetupRucioClients, and voms-proxy-init
 
-# 1. Setup Rucio clients if not already done
-localSetupRucioClients
-
-# 2. Identify container from PanDA
+# 1. Identify container from PanDA
 # Container: user.jsmith:user.jsmith.myanalysis.results_root
 
-# 3. Create replication rule to permanent storage
+# 2. Create replication rule to permanent storage
 rucio add-rule user.jsmith:user.jsmith.myanalysis.results_root 1 CERN-PROD_USERDISK
 
-# 4. Verify rule creation
+# 3. Verify rule creation
 rucio list-rules user.jsmith:user.jsmith.myanalysis.results_root
 
-# 5. Download when ready
+# 4. Download when ready
 rucio -v download user.jsmith:user.jsmith.myanalysis.results_root
 ```
 

@@ -28,32 +28,24 @@ This skill assumes you are running on the CERN LXPlus cluster with:
 - Valid ATLAS computing account
 - Access to ATLAS software stack via CVMFS
 - **ATLAS environment already initialized** (user must run `setupATLAS` before launching the agent)
+- **pyAMI tools already set up** (user must run `lsetup pyami` before launching the agent)
 - **Active VOMS proxy** (user must run `voms-proxy-init -voms atlas` before launching the agent)
 - No additional software installation needed
 
-**Important**: The user must set up the ATLAS environment and VOMS proxy **before** starting the agent session. If these are not set up, AMI commands will fail with authentication or command-not-found errors.
+**Important**: The user must set up the ATLAS environment, pyAMI tools, and VOMS proxy **before** starting the agent session. If these are not set up, AMI commands will fail with authentication or command-not-found errors.
 
 ## How to Use
 
-### Step 1: Setup AMI Tools
-
-Set up the pyAMI command-line tool:
-
-```bash
-# Setup pyAMI command-line tool
-lsetup pyami
-```
-
-**Note:** The `lsetup` command is available on LXPlus and other ATLAS computing clusters via CVMFS.
+### Step 1: List Datasets by Pattern
 
 **Common Errors if Prerequisites Not Met:**
 
 If you see errors like:
-- `bash: ami: command not found` → pyAMI is not set up. Run `lsetup pyami`
+- `bash: ami: command not found` → pyAMI is not set up. User must run `lsetup pyami` in their shell before starting the agent.
 - `ERROR: No credentials found` or `VOMS credentials not found` → VOMS proxy expired or not initialized. User must run `voms-proxy-init -voms atlas` in their shell before starting the agent.
 - `setupATLAS: command not found` → Not on LXPlus or ATLAS environment not sourced. User must run `setupATLAS` in their shell before starting the agent.
 
-### Step 2: List Datasets by Pattern
+### Querying Datasets
 
 To find datasets matching a specific pattern:
 
@@ -154,16 +146,15 @@ ami show dataset info <dataset_name> | grep -i status
 Before submitting jobs to the grid, verify datasets exist and check their properties:
 
 ```bash
-# 1. Setup pyAMI if not already set up
-lsetup pyami
+# Note: User must have already run setupATLAS, lsetup pyami, and voms-proxy-init before starting agent
 
-# 2. List datasets of interest
+# 1. List datasets of interest
 ami list datasets mc20_13TeV.602074%
 
-# 3. Get full info on selected dataset
+# 2. Get full info on selected dataset
 ami show dataset info mc20_13TeV.602074.PhPy8EG_PDF4LHC21_gg1200NW_ZZ_4lep.deriv.DAOD_PHYS.e8530_s3797_r13167_p6490
 
-# 4. Proceed with grid job submission once verified
+# 3. Proceed with grid job submission once verified
 ```
 
 ### Scripting AMI Queries
@@ -172,8 +163,7 @@ For batch queries, AMI commands can be incorporated into shell scripts:
 
 ```bash
 #!/bin/bash
-# Note: User must have already run setupATLAS and voms-proxy-init before running this script
-lsetup pyami
+# Note: User must have already run setupATLAS, lsetup pyami, and voms-proxy-init before running this script
 
 datasets=(
   "mc20_13TeV.602074%"
@@ -222,12 +212,11 @@ voms-proxy-info
 
 ### Command Not Found
 If `ami` command is not found:
-```bash
-# Ensure pyAMI is set up in current shell
-lsetup pyami
 ```
 
-If `lsetup` or `setupATLAS` commands are not found, the user is not on LXPlus or hasn't sourced the ATLAS environment. The user must run `setupATLAS` in their shell before starting the agent.
+**Note**: The agent cannot run `lsetup pyami` - this must be done by the user in their shell before starting the agent.
+
+If `setupATLAS` command is not found, the user is not on LXPlus or hasn't sourced the ATLAS environment. The user must run `setupATLAS` in their shell before starting the agent.
 
 ### No Results for Query
 - Verify pattern syntax (use `%` for wildcards)
@@ -236,7 +225,7 @@ If `lsetup` or `setupATLAS` commands are not found, the user is not on LXPlus or
 
 ## Notes
 
-- AMI queries require valid VOMS proxy (user must initialize before starting agent)
+- AMI queries require valid VOMS proxy and pyAMI setup (user must initialize before starting agent)
 - Dataset metadata updates periodically; production tags may change
 - Use specific p-tags when reproducibility is critical
 - Newer p-tags generally supersede older ones (check with derivation team)

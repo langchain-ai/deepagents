@@ -22,15 +22,14 @@ This document demonstrates how agents would use the ATLAS skills in practice.
 3. **Execution** (following skills):
    ```bash
    # From ami-query skill instructions
-   # Note: User must have already run setupATLAS and voms-proxy-init before starting agent
-   lsetup pyami
+   # Note: User must have already run setupATLAS, lsetup pyami, and voms-proxy-init before starting agent
    ami list datasets mc20_13TeV.%.Higgs*ZZ%.DAOD_PHYS.%
    
    # User selects specific dataset
    ami show dataset info mc20_13TeV.602074.PhPy8EG_PDF4LHC21_gg1200NW_ZZ_4lep.deriv.DAOD_PHYS.e8530_s3797_r13167_p6490
    
    # From rucio-management skill instructions
-   localSetupRucioClients
+   # Note: User must have already run localSetupRucioClients
    rucio list-dataset-replicas mc20_13TeV:mc20_13TeV.602074.PhPy8EG.DAOD_PHYS.p6490
    rucio -v download mc20_13TeV:mc20_13TeV.602074.PhPy8EG.DAOD_PHYS.p6490
    ```
@@ -65,8 +64,7 @@ This document demonstrates how agents would use the ATLAS skills in practice.
 
 4. **Execution** (following rucio-management skill):
    ```bash
-   # Setup Rucio clients (user must have already run setupATLAS and voms-proxy-init)
-   localSetupRucioClients
+   # User must have already run setupATLAS, localSetupRucioClients, and voms-proxy-init
    
    # Check what's in the output
    rucio list-files user.jsmith:user.jsmith.12345678._000001.output_h5
@@ -147,8 +145,7 @@ This document demonstrates how agents would use the ATLAS skills in practice.
    
    **Step 1 - Find datasets (ami-query)**:
    ```bash
-   # User must have already run setupATLAS and voms-proxy-init before starting agent
-   lsetup pyami
+   # User must have already run setupATLAS, lsetup pyami, and voms-proxy-init before starting agent
    ami list datasets data23_13p6TeV.%.Zee%.DAOD_PHYS.%
    ```
 
@@ -161,7 +158,7 @@ This document demonstrates how agents would use the ATLAS skills in practice.
 
    **Step 3 - Download datasets (rucio-management)**:
    ```bash
-   localSetupRucioClients
+   # User must have already run localSetupRucioClients
    
    # Check size first
    rucio list-dataset-replicas data23_13p6TeV:<selected_dataset>
@@ -232,8 +229,12 @@ Users can install these skills in two ways:
 **Important:** Before starting the agent, users must initialize their ATLAS environment:
 ```bash
 setupATLAS
+lsetup pyami              # For AMI queries
+localSetupRucioClients    # For Rucio data management
 voms-proxy-init -voms atlas
 ```
+
+**Note:** Not all commands are needed for all skills. See individual skill prerequisites for details.
 
 ### Option 1: User Skills (per-agent)
 ```bash
@@ -249,8 +250,6 @@ cp -r libs/chatlas-agents/examples/skills/ami-query .deepagents/skills/
 cp -r libs/chatlas-agents/examples/skills/rucio-management .deepagents/skills/
 cp -r libs/chatlas-agents/examples/skills/atlas-runquery .deepagents/skills/
 ```
-mkdir -p .deepagents/skills
-cp -r libs/deepagents-cli/examples/skills/ami-query .deepagents/skills/
 cp -r libs/deepagents-cli/examples/skills/rucio-management .deepagents/skills/
 cp -r libs/deepagents-cli/examples/skills/atlas-runquery .deepagents/skills/
 ```

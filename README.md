@@ -204,7 +204,15 @@ These skills provide guidance for:
 - Managing data quality and run selection for physics analysis
 - Working with distributed data management (Rucio)
 
-**Prerequisites:** Users must run `setupATLAS` and `voms-proxy-init -voms atlas` in their shell **before** starting the agent to ensure ATLAS tools and authentication are available.
+**Prerequisites:** Users must initialize their ATLAS environment in their shell **before** starting the agent:
+```bash
+setupATLAS
+lsetup pyami              # For AMI queries
+localSetupRucioClients    # For Rucio data management
+voms-proxy-init -voms atlas
+```
+
+**Note:** Not all commands are needed for all skills. See individual skill prerequisites for details.
 
 The skills are designed to work on the CERN LXPlus cluster with the full ATLAS software stack available via CVMFS.
 

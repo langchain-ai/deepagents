@@ -17,12 +17,11 @@ This directory contains specialized skills for working with ATLAS experiment sof
 
 **Key Commands:**
 ```bash
-lsetup pyami
 ami list datasets <pattern>
 ami show dataset info <dataset_name>
 ```
 
-**Prerequisites:** User must run `setupATLAS` and `voms-proxy-init -voms atlas` before starting the agent.
+**Prerequisites:** User must run `setupATLAS`, `lsetup pyami`, and `voms-proxy-init -voms atlas` before starting the agent.
 
 **Learn more:** [ami-query/SKILL.md](./ami-query/SKILL.md)
 
@@ -41,12 +40,11 @@ ami show dataset info <dataset_name>
 
 **Key Commands:**
 ```bash
-localSetupRucioClients
 rucio -v download <dataset_name>
 rucio add-rule <dataset_name> 1 <RSE>
 ```
 
-**Prerequisites:** User must run `setupATLAS` and `voms-proxy-init -voms atlas` before starting the agent.
+**Prerequisites:** User must run `setupATLAS`, `localSetupRucioClients`, and `voms-proxy-init -voms atlas` before starting the agent.
 
 **Learn more:** [rucio-management/SKILL.md](./rucio-management/SKILL.md)
 
@@ -80,8 +78,12 @@ These skills are available in the `libs/chatlas-agents/examples/skills` director
 **Important:** Before starting the agent, users must initialize their ATLAS environment:
 ```bash
 setupATLAS
+lsetup pyami              # For AMI queries
+localSetupRucioClients    # For Rucio data management
 voms-proxy-init -voms atlas
 ```
+
+**Note:** Not all commands are needed for all skills. See individual skill prerequisites for details.
 
 ### Option 1: Copy to User Skills Directory
 
@@ -181,9 +183,12 @@ All ATLAS skills assume:
 - **Environment:** CERN LXPlus cluster or ATLAS computing node
 - **Account:** Valid ATLAS computing account
 - **Setup Required:** User must run `setupATLAS` and `voms-proxy-init -voms atlas` **before starting the agent**
+- **Tool-specific setup:**
+  - For AMI queries: `lsetup pyami`
+  - For Rucio: `localSetupRucioClients`
 - **Software:** ATLAS software stack via CVMFS (no installation needed)
 
-The agent cannot initialize the ATLAS environment or VOMS proxy - these must be set up by the user in their shell before launching the agent session.
+The agent cannot run `setupATLAS`, `lsetup`, `localSetupRucioClients`, or `voms-proxy-init` - these must be set up by the user in their shell before launching the agent session.
 
 ## Skill Development
 

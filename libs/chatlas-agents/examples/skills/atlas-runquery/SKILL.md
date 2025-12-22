@@ -31,7 +31,6 @@ This skill assumes you are running on the CERN LXPlus cluster with:
 - **ATLAS environment already initialized** (user must run `setupATLAS` before launching the agent)
 - **pyAMI tools already set up** (user must run `lsetup pyami` before launching the agent if using AMI for run queries)
 - **Active VOMS proxy** (user must run `voms-proxy-init -voms atlas` before launching the agent)
-- Access to ATLAS Twiki pages and databases
 - No additional software installation needed
 
 **Important**: The user must set up the ATLAS environment and VOMS proxy **before** starting the agent session. If AMI is used for run queries, pyAMI must also be set up. If these are not set up, queries will fail with authentication errors.
@@ -45,24 +44,26 @@ echo $HOSTNAME
 
 LXPlus hostnames typically follow the pattern `lxplus*.cern.ch` (e.g., `lxplus7.cern.ch`, `lxplus8.cern.ch`). If the hostname does not contain "lxplus" and "cern.ch", you may not be on an LXPlus machine, and ATLAS tools may not be available.
 
+## Important Note About Web-Based Tools
+
+**The agent operates in a command-line environment only.** While ATLAS provides web interfaces for Run Query (atlas-runquery.cern.ch) and documentation (Twiki pages), these are **not accessible** to the agent.
+
+**Agent Limitations:**
+- Cannot access ATLAS internal websites (Run Query web, Twiki, etc.)
+- Cannot use web browsers or make HTTP requests to ATLAS-internal URLs
+- Cannot download GRL XML files from web URLs
+- Must rely on command-line tools (AMI) or user-provided files
+
+**For run queries, the agent can:**
+- Use AMI command-line tool to query run information: `ami show run <run_number>`
+- Work with GRL XML files that the user has already downloaded to the local filesystem
+- Users must obtain GRLs from official sources and provide file paths to the agent
+
 ## Available Tools for Run Queries
 
-ATLAS provides several tools for querying run information:
+### AMI (ATLAS Metadata Interface)
 
-### 1. ATLAS Run Query Web Interface
-
-**Primary Tool**: ATLAS Run Query Page
-- **URL**: https://atlas-runquery.cern.ch/
-- **Use for**: Interactive browsing and filtering of runs
-- **Features**: 
-  - Multi-criteria search (run number, period, stream, trigger)
-  - Data quality flag filtering
-  - Luminosity calculations
-  - Export results as XML, JSON, or text
-
-### 2. AMI (ATLAS Metadata Interface)
-
-AMI also contains run-level information:
+AMI provides run-level information via command line:
 ```bash
 # Query runs in AMI (user must have already run lsetup pyami before starting agent)
 ami show run <run_number>
@@ -70,103 +71,56 @@ ami show run <run_number>
 
 **Note**: If you see authentication errors, the user's VOMS proxy may have expired. The user must run `voms-proxy-init -voms atlas` in their shell before restarting the agent.
 
-### 3. Good Runs Lists (GRL)
+### Good Runs Lists (GRL)
 
 GRLs are pre-computed lists of runs passing data quality requirements:
 - Published by ATLAS Data Preparation group
 - Available in XML format
 - Used in analysis frameworks (AnalysisTop, AthAnalysis)
+- **Users must download GRL files** and provide local file paths to the agent
 
 ## How to Use
 
-### Step 1: Access Run Query Web Interface
+### Step 1: Query Run Information via AMI
 
-The primary method for run queries is the web interface:
+Use AMI command-line tool to query specific runs:
 
-1. Navigate to: https://atlas-runquery.cern.ch/
-2. Authenticate with your CERN account
-3. Use the search interface to filter runs
-
-### Step 2: Filter Runs by Criteria
-
-**Common search criteria:**
-
-**By Run Number or Range:**
-```
-Run number: 450000-460000
-```
-
-**By Data Period:**
-```
-Period: period A, period B
-Year: 2023, 2024
-```
-
-**By Stream:**
-```
-Stream: physics_Main, physics_ZeroBias, express_express
-```
-
-**By Data Quality:**
-```
-Data quality: PHYS_StandardGRL_All_Good
-```
-
-### Step 3: Query Specific Run Information
-
-For detailed information about a specific run:
-
-**Via Web Interface:**
-1. Go to https://atlas-runquery.cern.ch/
-2. Enter run number in search box
-3. View detailed run information:
-   - Detector status (subsystems on/off)
-   - Trigger configuration
-   - Luminosity delivered/recorded
-   - Data streams available
-   - Data quality assessments
-
-**Via AMI:**
 ```bash
 # Get run information (user must have already run setupATLAS, lsetup pyami, and voms-proxy-init)
 ami show run <run_number>
 ```
 
-### Step 4: Generate Good Runs Lists
+This provides information about:
+- Detector status (subsystems on/off)
+- Trigger configuration
+- Luminosity blocks recorded
+- Data streams available
 
-For physics analysis, you need runs with good data quality:
+### Step 2: Working with Good Runs Lists
+
+For physics analysis, you need runs with good data quality through GRL XML files.
 
 **Using Official GRLs:**
 
-Official GRLs are published at:
-- **Twiki**: https://twiki.cern.ch/twiki/bin/view/AtlasProtected/GoodRunLists
+Users must obtain official GRL files from ATLAS Data Preparation group (agent cannot access web):
+1. User downloads appropriate GRL XML file for their analysis from official ATLAS sources
+2. User provides the local file path to the agent
+3. Agent can read and use the GRL file in analysis workflows
 
-Download appropriate GRL XML file for your analysis:
+**Example usage with local GRL file:**
 ```bash
-# Example for Run 3 data
-wget https://atlas-runquery.cern.ch/GRL/.../<GRL_file>.xml
+# User has downloaded GRL file to local path
+# Use in analysis framework
+GRL_FILE="/path/to/data23_13p6TeV_GRL.xml"
 ```
 
-**Creating Custom GRLs:**
+**Note:** The agent cannot download GRL files from web URLs. Users must provide local file paths.
 
-Use the Run Query interface to create custom GRLs:
-1. Apply desired filters (period, triggers, DQ flags)
-2. Select matching runs
-3. Export as XML format
-4. Use in your analysis framework
+### Step 3: Check Luminosity Information
 
-### Step 5: Check Luminosity Information
-
-Query integrated luminosity for run selections:
-
-**Via Run Query Interface:**
-1. Select runs using filters
-2. View "Luminosity" column in results
-3. Sum luminosity for selected runs
-
-**For Analysis:**
+For luminosity calculations in analysis:
 - Use iLumiCalc tool for precise luminosity calculations
-- Apply GRL XML files to luminosity calculations
+- Apply GRL XML files (provided by user) to luminosity calculations
 - Account for prescales and trigger efficiency
 
 ## Best Practices
@@ -189,17 +143,17 @@ Query integrated luminosity for run selections:
 **Typical workflow:**
 1. Identify data-taking period (year, period letters)
 2. Select appropriate stream (usually `physics_Main`)
-3. Apply standard GRL for physics
+3. Obtain and apply standard GRL for physics (user must provide GRL file)
 4. Apply additional triggers if needed
 5. Calculate luminosity for selected runs
 
 ### Trigger Queries
 
-For analyses requiring specific triggers:
-1. Search by trigger name in Run Query
-2. Verify trigger was active and unprescaled
-3. Check trigger rates and efficiency
-4. Account for prescales in luminosity calculation
+For analyses requiring specific triggers, query via AMI:
+```bash
+# Query run information including trigger details
+ami show run <run_number>
+```
 
 ## Common Workflows
 
@@ -212,15 +166,12 @@ For analyses requiring specific triggers:
 # 2. Go to ATLAS Run Query web interface
 # https://atlas-runquery.cern.ch/
 
-# 3. Apply filters:
-#    - Year: 2023
-#    - Period: A, B, C, D
-#    - Stream: physics_Main
-#    - DQ: PHYS_StandardGRL_All_Good
+# 2. User obtains official GRL file from ATLAS Data Preparation
+# (agent cannot access Run Query web interface)
 
-# 4. Download official GRL or export custom list
+# 3. User provides GRL file path to agent
 
-# 5. Use GRL in your analysis framework
+# 4. Use GRL in your analysis framework
 # Example in AnalysisTop config:
 # GRLDir: GoodRunsLists/
 # GRLFile: data23_13p6TeV/20230725/data23_13p6TeV.periodAllYear_DetStatus-v109-pro28-04_MERGED_PHYS_StandardGRL_All_Good.xml
@@ -231,12 +182,7 @@ For analyses requiring specific triggers:
 ```bash
 # To investigate a specific run (e.g., run 450123)
 
-# Option 1: Web interface
-# https://atlas-runquery.cern.ch/
-# Search: run 450123
-# Review: detector status, triggers, luminosity
-
-# Option 2: AMI
+# Use AMI to query run information
 # Note: User must have already run setupATLAS, lsetup pyami, and voms-proxy-init
 ami show run 450123
 
@@ -247,29 +193,27 @@ ami show run 450123
 # - Any known issues or special conditions
 ```
 
-### Workflow 3: Create GRL for Specific Trigger
+### Workflow 3: Use GRL for Specific Trigger
 
 ```bash
 # For analysis requiring specific trigger (e.g., HLT_mu26_ivarmedium)
 
-# 1. Go to ATLAS Run Query
-# 2. Search criteria:
-#    - Year: 2023
-#    - Trigger: HLT_mu26_ivarmedium
-#    - DQ: PHYS_StandardGRL_All_Good
-# 3. Verify trigger was unprescaled (prescale = 1)
-# 4. Export matching runs as XML
-# 5. Use custom GRL in analysis
+# 1. User obtains GRL file filtered for specific trigger from ATLAS sources
+#    (agent cannot access Run Query web interface to create custom GRLs)
+
+# 2. User provides local GRL file path
+
+# 3. Use custom GRL in analysis
 ```
 
 ## Integration with Other ATLAS Tools
 
-### Run Query + AMI
-- Use Run Query for data quality and run selection
-- Use AMI for detailed dataset metadata (see ami-query skill)
-- Cross-reference runs between tools
+### AMI for Run Queries
+- Use AMI command-line tool for run information: `ami show run <run_number>`
+- Query dataset metadata (see ami-query skill)
+- Cross-reference runs between AMI queries
 
-### Run Query + Analysis Frameworks
+### GRL Files + Analysis Frameworks
 
 **AnalysisTop:**
 ```bash
@@ -300,52 +244,44 @@ iLumiCalc.exe \
 
 ## Additional Resources
 
-- **ATLAS Run Query**: https://atlas-runquery.cern.ch/
-- **Good Runs Lists**: https://twiki.cern.ch/twiki/bin/view/AtlasProtected/GoodRunLists
-- **Data Preparation Twiki**: https://twiki.cern.ch/twiki/bin/view/AtlasProtected/DataPreparation
-- **Data Quality Flags**: https://twiki.cern.ch/twiki/bin/view/AtlasProtected/DataQuality
-- **Trigger Information**: https://twiki.cern.ch/twiki/bin/view/Atlas/TriggerMenu
-- **Luminosity Public Results**: https://twiki.cern.ch/twiki/bin/view/AtlasPublic/LuminosityPublicResults
+**Note:** The following resources are for human reference only. The agent cannot access these URLs:
+- ATLAS Run Query documentation
+- Good Runs Lists documentation
+- Data Preparation documentation
+- Data Quality Flags documentation
+- Trigger Information
+- Luminosity Public Results
 
 ## Common Issues
-
-### Cannot Access Run Query Web Interface
-
-If you cannot access the run query page:
-- Verify you're logged in with CERN credentials
-- Check you have ATLAS computing account
-- Ensure you're on CERN network or using VPN
-- Try alternative: use AMI for run queries
 
 ### GRL File Not Found
 
 If GRL XML files are missing:
-- Check official GRL repository: https://twiki.cern.ch/twiki/bin/view/AtlasProtected/GoodRunLists
+- Check if file exists in CVMFS: `/cvmfs/atlas.cern.ch/repo/sw/database/GroupData/GoodRunsLists/`
 - Verify the GRL is for correct data-taking period
-- Ensure you have correct CVMFS access: `/cvmfs/atlas.cern.ch/repo/sw/database/GroupData/GoodRunsLists/`
+- User must provide the correct local file path
 
 ### Conflicting Run Information
 
 If different tools show conflicting info:
-- Official GRLs are authoritative for data quality
-- Run Query web interface is most up-to-date
+- Official GRLs (user-provided files) are authoritative for data quality
 - AMI may have cached/older information
-- Consult Data Preparation group for clarifications
+- Consult with user for latest official sources
 
 ### Luminosity Calculation Issues
 
 If luminosity numbers don't match:
-- Verify correct GRL is applied
+- Verify correct GRL file is applied
 - Check if trigger prescales are accounted for
 - Use official iLumiCalc tool for precision
-- Compare with published luminosity results
+- Compare with user-provided published luminosity results
 
 ## Notes
 
-- Data quality flags are updated periodically; use latest GRLs
+- Data quality flags are updated periodically; users should provide latest GRLs
 - Different physics analyses may need different DQ requirements
-- Trigger prescales change during data-taking; verify for your runs
-- Some runs may have partial detector coverage (check detector status)
+- Trigger prescales change during data-taking; verify via AMI queries
+- Some runs may have partial detector coverage (check via `ami show run`)
 - Luminosity uncertainty is typically 1-2% for ATLAS
-- Always use official GRLs for publication-quality results
-- Check ATLAS Physics Plenary for latest GRL recommendations
+- Always use official GRLs (user-provided) for publication-quality results
+- Agent can only work with command-line tools and local files, not web interfaces

@@ -62,8 +62,10 @@ If you see errors like:
 
 Before downloading, you need the full dataset/container name. This typically comes from:
 - AMI queries (use the ami-query skill)
-- Grid job output (check PanDA BigPanDA webpage)
+- Grid job output container names (user must provide these - agent cannot access PanDA web interface)
 - Analysis documentation or colleagues
+
+**Important:** The agent cannot access ATLAS internal websites like BigPanDA. Users must provide dataset/container names from their grid job outputs.
 
 Dataset names follow the pattern:
 ```
@@ -185,12 +187,12 @@ rucio list-account-usage <your_username> <RSE>
 
 After submitting jobs via PanDA, retrieve outputs using Rucio:
 
+**Important:** The agent cannot access the BigPanDA web interface. The user must provide the output container name.
+
 **Step-by-step:**
-1. Go to BigPanDA: https://bigpanda.cern.ch/
-2. Navigate to "My BigPanDA" → find your task
-3. Click task name → scroll to "Containers" section
-4. Copy the output container name (ending in `_output.h5` or similar)
-5. Use Rucio to download:
+1. User obtains output container name from their PanDA job submission (typically ends in `_output.h5` or similar)
+2. User provides the container name to the agent
+3. Use Rucio to download:
 
 ```bash
 # Note: User must have already run setupATLAS, localSetupRucioClients, and voms-proxy-init
@@ -204,7 +206,7 @@ rucio -v download <container_name_from_panda>
 ```bash
 # Note: User must have already run setupATLAS, localSetupRucioClients, and voms-proxy-init
 
-# 1. Get container name from PanDA webpage
+# 1. User provides container name from their PanDA job
 # Example: user.jsmith:user.jsmith.12345678._000001.output_h5
 
 # 2. Check dataset info
@@ -250,18 +252,15 @@ rucio list-rules user.jsmith:user.jsmith.myanalysis.results_root
 rucio -v download user.jsmith:user.jsmith.myanalysis.results_root
 ```
 
-## Rucio Web Interface
+## Important Note About Web-Based Tools
 
-For interactive data management, use the Rucio web UI:
+**The agent operates in a command-line environment only.** While ATLAS provides web interfaces for Rucio (rucio-ui.cern.ch) and PanDA (bigpanda.cern.ch), these are **not accessible** to the agent. All Rucio operations must be performed through command-line tools (`rucio` commands).
 
-**Rucio WebUI**: https://rucio-ui.cern.ch/
-
-Features:
-- Browse datasets and containers
-- Create replication rules with GUI
-- Monitor data transfers
-- Check quota usage
-- View rule status and history
+**Agent Limitations:**
+- Cannot access ATLAS internal websites (Rucio WebUI, BigPanDA, Twiki pages, etc.)
+- Cannot use web browsers or make HTTP requests to ATLAS-internal URLs
+- Must rely exclusively on command-line tools available on LXPlus
+- Users must provide dataset/container names from their own web access
 
 ## Integration with Other ATLAS Tools
 
@@ -270,10 +269,10 @@ Features:
 2. Use Rucio to download found datasets
 
 ### Rucio + PanDA
-1. Submit jobs via PanDA
-2. Monitor on BigPanDA: https://bigpanda.cern.ch/
-3. Get output container names from PanDA
-4. Download outputs with Rucio
+1. User submits jobs via PanDA (outside agent scope)
+2. User obtains output container names from PanDA (agent cannot access BigPanDA)
+3. User provides container names to agent
+4. Agent downloads outputs with Rucio command-line tools
 
 ### Rucio + Analysis Frameworks
 ```bash
@@ -283,10 +282,10 @@ rucio download --dir $TestArea/data mc20_13TeV:<dataset>
 
 ## Additional Resources
 
-- **Rucio Documentation**: https://rucio.cern.ch/documentation/
-- **ATLAS DDM Twiki**: https://twiki.cern.ch/twiki/bin/view/AtlasComputing/DataManagement
-- **Rucio Commands Reference**: https://rucio.cern.ch/documentation/cli_examples
-- **BigPanDA**: https://bigpanda.cern.ch/
+**Note:** The following resources are for human reference only. The agent cannot access these URLs:
+- Rucio command-line documentation
+- ATLAS DDM documentation
+- Rucio commands reference
 
 ## Common Issues
 

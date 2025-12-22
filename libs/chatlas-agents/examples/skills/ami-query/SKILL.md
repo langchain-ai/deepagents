@@ -185,25 +185,23 @@ for pattern in "${datasets[@]}"; do
 done
 ```
 
-## AMI Web Interface
+## Important Note About Web-Based Tools
 
-While this skill focuses on command-line usage, AMI also provides web interfaces:
+**The agent operates in a command-line environment only.** While ATLAS provides web interfaces for AMI (atlas-ami.cern.ch), these are **not accessible** to the agent. All AMI operations must be performed through command-line tools (`ami` commands).
 
-- **Simple Search**: https://atlas-ami.cern.ch/?subapp=simpleSearch
-- **Advanced Search**: https://atlas-ami.cern.ch/?subapp=search
-- **AMI Home**: https://atlas-ami.cern.ch/
+**Agent Limitations:**
+- Cannot access ATLAS internal websites (atlas-ami.cern.ch, Twiki pages, etc.)
+- Cannot use web browsers or make HTTP requests to ATLAS-internal URLs
+- Must rely exclusively on command-line tools available on LXPlus
 
-The web interface is useful for:
-- Interactive browsing of datasets
-- Multi-criteria searches with filters
-- Visualizing dataset relationships
+For dataset queries and metadata retrieval, use the `ami` command-line tool as documented in this skill.
 
 ## Additional Resources
 
-- **AMI Documentation**: https://ami.in2p3.fr/docs/pyAMI/
-- **AMI Ecosystem Home**: https://ami-ecosystem.in2p3.fr/
-- **ATLAS Production Group**: https://twiki.cern.ch/twiki/bin/view/AtlasProtected/AtlasProductionGroup
-- **Dataset Naming Conventions**: CERN Document Server (CDS) record 2860920
+**Note:** The following resources are for human reference only. The agent cannot access these URLs:
+- AMI Documentation (command-line reference)
+- ATLAS Production Group documentation
+- Dataset naming conventions documentation
 
 ## Common Issues
 

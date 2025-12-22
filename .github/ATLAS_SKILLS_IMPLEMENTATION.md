@@ -78,7 +78,7 @@ Researched the skills feature in deepagents using `langchain_docs-SearchDocsByLa
 
 ### Created ATLAS Skills
 
-Implemented three comprehensive skills in `libs/deepagents-cli/examples/skills/`:
+Implemented three comprehensive skills in `libs/chatlas-agents/skills/`:
 
 #### 1. AMI Query (`ami-query/`)
 **File**: `ami-query/SKILL.md`
@@ -321,7 +321,7 @@ The skills provide agents with structured, discoverable guidance for working wit
 ## Files Created
 
 ```
-libs/deepagents-cli/examples/skills/
+libs/chatlas-agents/skills/
 ├── ATLAS_SKILLS.md                           # Overview documentation
 ├── ami-query/
 │   └── SKILL.md                               # AMI query skill

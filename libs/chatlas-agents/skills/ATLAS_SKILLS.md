@@ -73,7 +73,7 @@ rucio add-rule <dataset_name> 1 <RSE>
 
 ### Installation
 
-These skills are available in the `libs/chatlas-agents/examples/skills` directory. You can copy them to your user skills directory or use them from the project directory.
+These skills are available in the `libs/chatlas-agents/skills` directory. You can copy them to your user skills directory or use them from the project directory.
 
 **Important:** Before starting the agent, users must initialize their ATLAS environment:
 ```bash
@@ -92,9 +92,9 @@ voms-proxy-init -voms atlas
 mkdir -p ~/.deepagents/agent/skills
 
 # Copy ATLAS skills
-cp -r libs/chatlas-agents/examples/skills/ami-query ~/.deepagents/agent/skills/
-cp -r libs/chatlas-agents/examples/skills/rucio-management ~/.deepagents/agent/skills/
-cp -r libs/chatlas-agents/examples/skills/atlas-runquery ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/skills/ami-query ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/skills/rucio-management ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/skills/atlas-runquery ~/.deepagents/agent/skills/
 
 # Verify skills are available
 deepagents skills list
@@ -107,9 +107,9 @@ deepagents skills list
 mkdir -p .deepagents/skills
 
 # Copy ATLAS skills to project
-cp -r libs/chatlas-agents/examples/skills/ami-query .deepagents/skills/
-cp -r libs/chatlas-agents/examples/skills/rucio-management .deepagents/skills/
-cp -r libs/chatlas-agents/examples/skills/atlas-runquery .deepagents/skills/
+cp -r libs/chatlas-agents/skills/ami-query .deepagents/skills/
+cp -r libs/chatlas-agents/skills/rucio-management .deepagents/skills/
+cp -r libs/chatlas-agents/skills/atlas-runquery .deepagents/skills/
 
 # Skills will be automatically available when running deepagents in this project
 ```

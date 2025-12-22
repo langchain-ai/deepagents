@@ -90,7 +90,7 @@ Successfully implemented ATLAS software tools (AMI, Rucio, RunQuery) as DeepAgen
 ```
 Files Created:
 .github/ATLAS_SKILLS_IMPLEMENTATION.md          (11.2 KB)
-libs/deepagents-cli/examples/skills/
+libs/chatlas-agents/skills/
   ├── ATLAS_SKILLS.md                           (7.1 KB)
   ├── ATLAS_SKILLS_EXAMPLES.md                  (8.4 KB)
   ├── ami-query/SKILL.md                        (6.6 KB)

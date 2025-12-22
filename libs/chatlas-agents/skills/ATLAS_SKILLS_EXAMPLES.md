@@ -246,9 +246,9 @@ cp -r libs/chatlas-agents/examples/skills/atlas-runquery ~/.deepagents/agent/ski
 ### Option 2: Project Skills (per-project)
 ```bash
 mkdir -p .deepagents/skills
-cp -r libs/chatlas-agents/examples/skills/ami-query .deepagents/skills/
-cp -r libs/chatlas-agents/examples/skills/rucio-management .deepagents/skills/
-cp -r libs/chatlas-agents/examples/skills/atlas-runquery .deepagents/skills/
+cp -r libs/chatlas-agents/skills/ami-query .deepagents/skills/
+cp -r libs/chatlas-agents/skills/rucio-management .deepagents/skills/
+cp -r libs/chatlas-agents/skills/atlas-runquery .deepagents/skills/
 ```
 
 ## Verification

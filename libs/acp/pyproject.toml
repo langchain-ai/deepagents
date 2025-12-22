@@ -46,9 +46,9 @@ test = [
 
 
 [project.urls]
-Homepage = "https://github.com/deepagents/deepagents"
-Repository = "https://github.com/deepagents/deepagents"
-Issues = "https://github.com/deepagents/deepagents/issues"
+Homepage = "https://github.com/langchain-ai/deepagents"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
 
 [project.scripts]
 deepacp = "deepagents_acp.server:cli_main"

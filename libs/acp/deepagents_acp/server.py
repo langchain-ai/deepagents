@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from typing import Any, Literal
 
@@ -12,10 +13,6 @@ from acp import (
     PROTOCOL_VERSION,
     stdio_streams,
 )
-from deepagents.graph import create_deep_agent
-from langchain_anthropic import ChatAnthropic
-from langchain_core.tools import tool
-from langgraph.checkpoint.memory import InMemorySaver
 
 from acp.schema import (
     AgentMessageChunk,
@@ -586,23 +583,31 @@ class DeepagentsACP(Agent):
 
 async def main() -> None:
     """Main entry point for running the ACP server."""
+    from deepagents_cli.agent import create_cli_agent
+    from deepagents_cli.config import create_model
+    from deepagents_cli.tools import fetch_url, http_request, web_search
 
-    # Define default tools
-    @tool()
-    def get_weather(location: str) -> str:
-        """Get the weather for a given location."""
-        return f"The weather in {location} is sunny with a high of 75°F."
+    # Create model using CLI configuration
+    model = create_model()
 
-    # Create the agent graph with default configuration
-    model = ChatAnthropic(
-        model_name="claude-sonnet-4-5-20250929",
-        max_tokens=20000,
-    )
+    # Setup tools - conditionally include web_search if Tavily is available
+    tools = [http_request, fetch_url]
+    if os.environ.get("TAVILY_API_KEY"):
+        tools.append(web_search)
 
-    agent_graph = create_deep_agent(
+    # Create CLI agent with shell access and other CLI features
+    # Using default assistant_id "agent" for ACP server
+    agent_graph, composite_backend = create_cli_agent(
         model=model,
-        tools=[get_weather],
-        checkpointer=InMemorySaver(),
+        assistant_id="agent",
+        tools=tools,
+        sandbox=None,  # Local mode
+        sandbox_type=None,
+        system_prompt=None,  # Use default CLI system prompt
+        auto_approve=False,  # Require user approval for destructive operations
+        enable_memory=True,  # Enable persistent memory
+        enable_skills=True,  # Enable custom skills
+        enable_shell=True,  # Enable shell access
     )
 
     # Start the ACP server

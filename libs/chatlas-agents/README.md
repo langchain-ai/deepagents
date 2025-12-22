@@ -19,7 +19,7 @@ AI agent framework for the ChATLAS AI RAG system using DeepAgents and LangChain.
 - [x] Fix timeout issues with MCP server -- increased timeout client side and provided more pods on the server. Should be able to handle many concurrent requests now and return answers more quickly.
 - [ ] Fix known bugs:
   - [ ] Agent seems to get stuck sometimes when using MCP tools in interactive mode. Needs investigation.
-  - [ ] Not all tools seem to be available / configured properly with the chatlas agent. Web search tool seems to be missing, for example.
+  - [x] Not all tools seem to be available / configured properly with the chatlas agent. Web search tool seems to be missing, for example. Fixed by modifying MCPMiddleware and adding web search tools to CLI.
 - [ ] Properly set up docker and apptainer sandbox. 
   - [x] Sandboxes set up with new CLI and MCP middleware.
   - [ ] Need to understand how to handle file transfers between host and sandbox. Implement this. 
@@ -31,6 +31,7 @@ AI agent framework for the ChATLAS AI RAG system using DeepAgents and LangChain.
 
 ### v0.4+
 - [ ] Add GitLab remote. Set up CI/CD. Would be cool to have agents running in GitLab runners, eg. to produce automated reviews of paper latex sources.
+- [ ] Extend the deepagents-cli with an auto-summarise history function so that we stay within context window limits for long conversations. 
 
 ## Quick Start
 

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from acp.schema import NewSessionRequest, PromptRequest
-from acp.schema import TextContentBlock
+from acp.schema import TextContentBlock, RequestPermissionRequest, RequestPermissionResponse, AllowedOutcome
 from dirty_equals import IsUUID
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage
@@ -20,10 +20,25 @@ class FakeAgentSideConnection:
     def __init__(self) -> None:
         """Initialize the fake connection with an empty calls list."""
         self.calls: list[dict[str, Any]] = []
+        self.permission_requests: list[RequestPermissionRequest] = []
+        self.permission_response: RequestPermissionResponse | None = None
 
     async def sessionUpdate(self, notification: Any) -> None:
         """Track sessionUpdate calls."""
         self.calls.append(notification)
+
+    async def requestPermission(self, request: RequestPermissionRequest) -> RequestPermissionResponse:
+        """Track permission requests and return a mocked response."""
+        self.permission_requests.append(request)
+        if self.permission_response:
+            return self.permission_response
+        # Default: approve the action
+        return RequestPermissionResponse(
+            outcome=AllowedOutcome(
+                outcome="selected",
+                optionId="allow-once",
+            )
+        )
 
 
 class FixedGenericFakeChatModel(GenericFakeChatModel):
@@ -371,3 +386,117 @@ async def test_fake_chat_model_streaming() -> None:
     # Earlier chunks should not have tool_calls
     for chunk in chunks[:-1]:
         assert chunk.tool_calls == []
+
+
+async def test_human_in_the_loop_approval() -> None:
+    """Test that DeepagentsACP handles HITL interrupts and permission requests correctly."""
+    from langchain.agents.middleware import HumanInTheLoopMiddleware
+    from unittest.mock import patch
+
+    prompt_request = PromptRequest(
+        sessionId="",  # Will be set below
+        prompt=[TextContentBlock(text="What's the weather in Tokyo?", type="text")],
+    )
+
+    # Create connection with permission response configured
+    connection = FakeAgentSideConnection()
+    # Set up the connection to approve the tool call
+    connection.permission_response = RequestPermissionResponse(
+        outcome=AllowedOutcome(
+            outcome="selected",
+            optionId="allow-once",
+        )
+    )
+
+    model = FixedGenericFakeChatModel(
+        messages=iter([
+            # First message: AI decides to call the tool
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_weather_tool",
+                        "args": {"location": "Tokyo, Japan"},
+                        "id": "call_tokyo_123",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            # Second message: AI responds with the weather result after tool execution
+            AIMessage(content="The weather in Tokyo is sunny and 72°F!"),
+        ]),
+        stream_delimiter=r"(\s)",
+    )
+
+    # Patch create_deep_agent to add HITL middleware
+    from deepagents.graph import create_deep_agent as original_create_deep_agent
+
+    def create_deep_agent_with_hitl(*args, **kwargs):
+        # Add HITL middleware to the kwargs
+        middleware = kwargs.get("middleware", [])
+        middleware.append(
+            HumanInTheLoopMiddleware(
+                interrupt_on={"get_weather_tool": True}
+            )
+        )
+        kwargs["middleware"] = middleware
+        return original_create_deep_agent(*args, **kwargs)
+
+    with patch("deepagents_acp.server.create_deep_agent", side_effect=create_deep_agent_with_hitl):
+        deepagents_acp = DeepagentsACP(
+            connection=connection,
+            model=model,
+            tools=[get_weather_tool],
+        )
+
+        # Create a new session
+        session_response = await deepagents_acp.newSession(
+            NewSessionRequest(cwd="/tmp", mcpServers=[])
+        )
+        session_id = session_response.sessionId
+        prompt_request.sessionId = session_id
+
+        # Call prompt - this should trigger HITL
+        await deepagents_acp.prompt(prompt_request)
+
+    # Verify that a permission request was made
+    assert len(connection.permission_requests) == 1
+
+    perm_request = connection.permission_requests[0]
+    assert perm_request.sessionId == session_id
+    assert perm_request.toolCall.title == "get_weather_tool"
+    assert perm_request.toolCall.rawInput == {"location": "Tokyo, Japan"}
+    assert perm_request.toolCall.status == "pending"
+
+    # Verify the permission options
+    assert len(perm_request.options) == 2
+    option_ids = [opt.optionId for opt in perm_request.options]
+    assert "allow-once" in option_ids
+    assert "reject-once" in option_ids
+
+    # Verify that tool execution happened after approval
+    tool_call_updates = [
+        call for call in connection.calls
+        if call.model_dump()["update"]["sessionUpdate"] == "tool_call_update"
+    ]
+
+    # Should have pending and completed updates
+    assert len(tool_call_updates) == 2
+
+    # Check pending status
+    pending_update = tool_call_updates[0].model_dump()
+    assert pending_update["update"]["status"] == "pending"
+    assert pending_update["update"]["title"] == "get_weather_tool"
+
+    # Check completed status
+    completed_update = tool_call_updates[1].model_dump()
+    assert completed_update["update"]["status"] == "completed"
+    assert completed_update["update"]["title"] == "get_weather_tool"
+    assert "Tokyo, Japan" in completed_update["update"]["rawOutput"]
+
+    # Verify final AI message was streamed
+    message_chunks = [
+        call for call in connection.calls
+        if call.model_dump()["update"]["sessionUpdate"] == "agent_message_chunk"
+    ]
+    assert len(message_chunks) > 0

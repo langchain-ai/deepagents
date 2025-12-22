@@ -12,6 +12,7 @@ from acp import (
     PROTOCOL_VERSION,
     stdio_streams,
 )
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from acp.schema import (
     AgentMessageChunk,
     InitializeRequest,
@@ -35,14 +36,20 @@ from acp.schema import (
     SetSessionModelRequest,
     AgentPlanUpdate,
     PlanEntry,
-    PlanEntryStatus,
+    PermissionOption,
+    RequestPermissionRequest,
+    RequestPermissionResponse,
+    AllowedOutcome,
+    DeniedOutcome,
+    ToolCall as ACPToolCall,
 )
 from deepagents.graph import create_deep_agent
-from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.messages.content import ToolCall
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command, Interrupt
 
 
 @tool()
@@ -125,6 +132,11 @@ class DeepagentsACP(Agent):
             model=self._model,
             tools=self._tools,
             checkpointer=InMemorySaver(),
+            middleware=[
+                HumanInTheLoopMiddleware(interrupt_on={
+                    "get_weather": True
+                })
+            ]
         )
 
         session_id = str(uuid.uuid4())
@@ -341,28 +353,138 @@ class DeepagentsACP(Agent):
             )
         )
 
-    async def prompt(
+    async def _handle_interrupt(
         self,
         params: PromptRequest,
-    ) -> PromptResponse:
-        """Handle a user prompt and stream responses."""
-        session_id = params.sessionId
-        session = self._sessions.get(session_id)
+        interrupt: Interrupt,
+    ) -> list[dict[str, Any]]:
+        """Handle a LangGraph interrupt and request permission from the client.
 
-        # Extract text from prompt content blocks
-        prompt_text = ""
-        for block in params.prompt:
-            if hasattr(block, "text"):
-                prompt_text += block.text
-            elif isinstance(block, dict) and "text" in block:
-                prompt_text += block["text"]
-        # # Stream the agent's response
-        agent = session["agent"]
-        thread_id = session["thread_id"]
+        Args:
+            params: The prompt request parameters
+            interrupt: The interrupt from LangGraph containing action_requests and review_configs
+
+        Returns:
+            List of decisions to pass to Command(resume={...})
+
+        Note:
+            The interrupt.value contains:
+            - action_requests: [{'name': str, 'args': dict, 'description': str}, ...]
+            - review_configs: [{'action_name': str, 'allowed_decisions': list[str]}, ...]
+        """
+        interrupt_data = interrupt.value
+        action_requests = interrupt_data.get("action_requests", [])
+        review_configs = interrupt_data.get("review_configs", [])
+
+        # Create a mapping of action names to their allowed decisions
+        allowed_decisions_map = {}
+        for review_config in review_configs:
+            action_name = review_config.get("action_name")
+            allowed_decisions = review_config.get("allowed_decisions", [])
+            allowed_decisions_map[action_name] = allowed_decisions
+
+        # Collect decisions for all action requests
+        decisions = []
+
+        for action_request in action_requests:
+            tool_name = action_request.get("name")
+            tool_args = action_request.get("arguments", {})
+            description = action_request.get("description", "")
+
+            # Get allowed decisions for this action
+            allowed_decisions = allowed_decisions_map.get(tool_name, ["approve", "reject"])
+
+            # Build permission options based on allowed decisions
+            options = []
+            if "approve" in allowed_decisions:
+                options.append(
+                    PermissionOption(
+                        optionId="allow-once",
+                        name="Allow once",
+                        kind="allow_once",
+                    )
+                )
+            if "reject" in allowed_decisions:
+                options.append(
+                    PermissionOption(
+                        optionId="reject-once",
+                        name="Reject",
+                        kind="reject_once",
+                    )
+                )
+            # Generate a tool call ID for this permission request
+            # We need to find the corresponding tool call from the stored calls
+            # For now, use a generated ID
+            tool_call_id = f"perm_{uuid.uuid4().hex[:8]}"
+
+            # Create ACP ToolCall object for the permission request
+            acp_tool_call = ACPToolCall(
+                toolCallId=tool_call_id,
+                title=tool_name,
+                rawInput=tool_args,
+                status="pending",
+            )
+
+            # Send permission request to client
+            response = await self._connection.requestPermission(
+                RequestPermissionRequest(
+                    sessionId=params.sessionId,
+                    toolCall=acp_tool_call,
+                    options=options,
+                )
+            )
+
+            # Convert ACP response to LangGraph decision
+            outcome = response.outcome
+
+            if isinstance(outcome, AllowedOutcome):
+                option_id = outcome.optionId
+                if option_id == "allow-once":
+                    # Check if this was actually an edit option
+                    selected_option = next(
+                        (opt for opt in options if opt.optionId == option_id), None
+                    )
+                    if selected_option and selected_option.field_meta:
+                        # This is an edit - for now, just approve
+                        # TODO: Implement actual edit functionality
+                        decisions.append({"type": "approve"})
+                    else:
+                        decisions.append({"type": "approve"})
+                elif option_id == "edit":
+                    # Edit option - for now, just approve
+                    # TODO: Implement actual edit functionality to collect edited args
+                    decisions.append({"type": "approve"})
+            elif isinstance(outcome, DeniedOutcome):
+                decisions.append({
+                    "type": "reject",
+                    "message": "Action rejected by user",
+                })
+
+        return decisions
+
+    async def _stream_and_handle_updates(
+        self,
+        params: PromptRequest,
+        agent: Any,
+        stream_input: dict[str, Any] | Command,
+        config: dict[str, Any],
+    ) -> list[Interrupt]:
+        """Stream agent execution and handle updates, returning any interrupts.
+
+        Args:
+            params: The prompt request parameters
+            agent: The agent to stream from
+            stream_input: Input to pass to agent.astream (initial message or Command)
+            config: Configuration with thread_id
+
+        Returns:
+            List of interrupts that occurred during streaming
+        """
+        interrupts = []
 
         async for stream_mode, data in agent.astream(
-            {"messages": [{"role": "user", "content": prompt_text}]},
-            config={"configurable": {"thread_id": thread_id}},
+            stream_input,
+            config=config,
             stream_mode=["messages", "updates"],
         ):
             if stream_mode == "messages":
@@ -373,6 +495,12 @@ class DeepagentsACP(Agent):
             elif stream_mode == "updates":
                 # Handle completed node updates
                 for node_name, update in data.items():
+                    # Check for interrupts
+                    if node_name == "__interrupt__":
+                        # Extract interrupts from the update
+                        interrupts.extend(update)
+                        continue
+
                     # Only process model and tools nodes
                     if node_name not in ("model", "tools"):
                         continue
@@ -403,6 +531,54 @@ class DeepagentsACP(Agent):
                         tool_call = self._tool_calls.get(last_message.tool_call_id)
                         if tool_call:
                             await self._handle_tool_message(params, tool_call, last_message)
+
+        return interrupts
+
+    async def prompt(
+        self,
+        params: PromptRequest,
+    ) -> PromptResponse:
+        """Handle a user prompt and stream responses."""
+        session_id = params.sessionId
+        session = self._sessions.get(session_id)
+
+        # Extract text from prompt content blocks
+        prompt_text = ""
+        for block in params.prompt:
+            if hasattr(block, "text"):
+                prompt_text += block.text
+            elif isinstance(block, dict) and "text" in block:
+                prompt_text += block["text"]
+
+        # Stream the agent's response
+        agent = session["agent"]
+        thread_id = session["thread_id"]
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Start with the initial user message
+        stream_input: dict[str, Any] | Command = {
+            "messages": [{"role": "user", "content": prompt_text}]
+        }
+
+        # Loop until there are no more interrupts
+        while True:
+            # Stream and collect any interrupts
+            interrupts = await self._stream_and_handle_updates(
+                params, agent, stream_input, config
+            )
+
+            # If no interrupts, we're done
+            if not interrupts:
+                break
+
+            # Process each interrupt and collect decisions
+            all_decisions = []
+            for interrupt in interrupts:
+                decisions = await self._handle_interrupt(params, interrupt)
+                all_decisions.extend(decisions)
+
+            # Prepare to resume with the collected decisions
+            stream_input = Command(resume={"decisions": all_decisions})
 
         return PromptResponse(stopReason="end_turn")
 

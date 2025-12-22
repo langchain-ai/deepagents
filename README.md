@@ -8,6 +8,12 @@ This repository is a fork of the LangChain `deepagents` library, modified to int
 
 ChATLAS-specific features can be found in `libs/chatlas-agents`. 
 
+## Proof of Concept feature plan (v0.3.0)
+- Provide a suite of skills, MCP tools to let agent users query ATLAS data sources (AMI, Rucio, Indico)
+- Create benchmarks to evaluate agent performance  
+  - Information retrieval w/ mutli-dimensional LLM as judge scoring (relevance, accuracy, completeness, conciseness) -- use ChATLAS RAG bench dataset (already available) -- compare score to basic RAG approach + commercial agent Copilot CLI
+  - More "real-world" agent task: generate review comments on previous ATLAS paper drafts -- use LLM judge multi-dimensional scoring again -- compare to Copilot CLI + human comments scraped from CDS -- Also use LLM judge to test AI comment coverage vs. human comments
+
 ## MCP Server Integration
 
 DeepAgents v0.3.0 does not provide native MCP server support. We've extended it with a **middleware-based approach** that:

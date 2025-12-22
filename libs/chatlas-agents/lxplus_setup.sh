@@ -24,7 +24,7 @@ else
 fi
 
 # Initialize VOMS proxy if either setup option is enabled
-if [ "${OPT_SETUP_AMI}" = "true" ] || [ "{$OPT_SETUP_RUCIO}" = "true" ]; then
+if [ "${OPT_SETUP_AMI}" = "true" ] || [ "${OPT_SETUP_RUCIO}" = "true" ]; then
     echo "Initializing VOMS proxy for ATLAS..."
     voms-proxy-init --voms atlas
     if [ "${OPT_SETUP_AMI}" = "true" ]; then

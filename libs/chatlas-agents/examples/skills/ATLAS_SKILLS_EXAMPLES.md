@@ -22,8 +22,7 @@ This document demonstrates how agents would use the ATLAS skills in practice.
 3. **Execution** (following skills):
    ```bash
    # From ami-query skill instructions
-   setupATLAS
-   voms-proxy-init -voms atlas
+   # Note: User must have already run setupATLAS and voms-proxy-init before starting agent
    lsetup pyami
    ami list datasets mc20_13TeV.%.Higgs*ZZ%.DAOD_PHYS.%
    
@@ -66,10 +65,8 @@ This document demonstrates how agents would use the ATLAS skills in practice.
 
 4. **Execution** (following rucio-management skill):
    ```bash
-   # Setup
-   setupATLAS
+   # Setup Rucio clients (user must have already run setupATLAS and voms-proxy-init)
    localSetupRucioClients
-   voms-proxy-init -voms atlas
    
    # Check what's in the output
    rucio list-files user.jsmith:user.jsmith.12345678._000001.output_h5
@@ -150,8 +147,7 @@ This document demonstrates how agents would use the ATLAS skills in practice.
    
    **Step 1 - Find datasets (ami-query)**:
    ```bash
-   setupATLAS
-   voms-proxy-init -voms atlas
+   # User must have already run setupATLAS and voms-proxy-init before starting agent
    lsetup pyami
    ami list datasets data23_13p6TeV.%.Zee%.DAOD_PHYS.%
    ```
@@ -233,15 +229,26 @@ User Skills:
 
 Users can install these skills in two ways:
 
+**Important:** Before starting the agent, users must initialize their ATLAS environment:
+```bash
+setupATLAS
+voms-proxy-init -voms atlas
+```
+
 ### Option 1: User Skills (per-agent)
 ```bash
-cp -r libs/deepagents-cli/examples/skills/ami-query ~/.deepagents/agent/skills/
-cp -r libs/deepagents-cli/examples/skills/rucio-management ~/.deepagents/agent/skills/
-cp -r libs/deepagents-cli/examples/skills/atlas-runquery ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/examples/skills/ami-query ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/examples/skills/rucio-management ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/examples/skills/atlas-runquery ~/.deepagents/agent/skills/
 ```
 
 ### Option 2: Project Skills (per-project)
 ```bash
+mkdir -p .deepagents/skills
+cp -r libs/chatlas-agents/examples/skills/ami-query .deepagents/skills/
+cp -r libs/chatlas-agents/examples/skills/rucio-management .deepagents/skills/
+cp -r libs/chatlas-agents/examples/skills/atlas-runquery .deepagents/skills/
+```
 mkdir -p .deepagents/skills
 cp -r libs/deepagents-cli/examples/skills/ami-query .deepagents/skills/
 cp -r libs/deepagents-cli/examples/skills/rucio-management .deepagents/skills/

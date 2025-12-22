@@ -28,33 +28,32 @@ Use this skill when you need to:
 This skill assumes you are running on the CERN LXPlus cluster with:
 - Valid ATLAS computing account
 - Access to ATLAS software stack via CVMFS
-- Active VOMS proxy for ATLAS
+- **ATLAS environment already initialized** (user must run `setupATLAS` before launching the agent)
+- **Active VOMS proxy** (user must run `voms-proxy-init -voms atlas` before launching the agent)
 - Storage quota on appropriate disk areas
 - No additional software installation needed
 
+**Important**: The user must set up the ATLAS environment and VOMS proxy **before** starting the agent session. If these are not set up, Rucio commands will fail with authentication or command-not-found errors.
+
 ## How to Use
 
-### Step 1: Setup Rucio Environment
+### Step 1: Setup Rucio Clients
 
-Before using Rucio, set up your ATLAS environment and Rucio clients:
+Set up Rucio client tools:
 
 ```bash
-# Setup ATLAS environment
-setupATLAS
-
 # Setup Rucio clients
 localSetupRucioClients
-
-# Initialize VOMS proxy for authentication
-voms-proxy-init -voms atlas
 ```
 
-**Note:** On some clusters, you may need additional steps:
-```bash
-# If needed on non-lxplus clusters
-lsetup emi
-voms-proxy-init -voms atlas
-```
+**Note:** On some non-LXPlus clusters, you may need to set up EMI first: `lsetup emi`
+
+**Common Errors if Prerequisites Not Met:**
+
+If you see errors like:
+- `bash: rucio: command not found` → Rucio clients not set up. Run `localSetupRucioClients`
+- `ERROR: No valid proxy found` or `Authentication failed` → VOMS proxy expired or not initialized. User must run `voms-proxy-init -voms atlas` in their shell before starting the agent.
+- `setupATLAS: command not found` → Not on LXPlus or ATLAS environment not sourced. User must run `setupATLAS` in their shell before starting the agent.
 
 ### Step 2: Find Dataset Names
 
@@ -191,9 +190,8 @@ After submitting jobs via PanDA, retrieve outputs using Rucio:
 5. Use Rucio to download:
 
 ```bash
-setupATLAS
+# Setup Rucio if not already done
 localSetupRucioClients
-voms-proxy-init -voms atlas
 rucio -v download <container_name_from_panda>
 ```
 
@@ -202,10 +200,8 @@ rucio -v download <container_name_from_panda>
 ### Workflow 1: Download Grid Job Output
 
 ```bash
-# 1. Setup environment
-setupATLAS
+# 1. Setup Rucio clients if not already done
 localSetupRucioClients
-voms-proxy-init -voms atlas
 
 # 2. Get container name from PanDA webpage
 # Example: user.jsmith:user.jsmith.12345678._000001.output_h5
@@ -224,8 +220,7 @@ rucio add-rule user.jsmith:user.jsmith.12345678._000001.output_h5 1 CERN-PROD_US
 
 ```bash
 # 1. Find dataset using AMI (see ami-query skill)
-setupATLAS
-voms-proxy-init -voms atlas
+# Note: User must have already initialized ATLAS environment and VOMS proxy
 lsetup pyami
 ami list datasets mc20_13TeV.602074.%.DAOD_PHYS.%
 
@@ -244,10 +239,8 @@ rucio download --dir $HOME/analysis/data mc20_13TeV:mc20_13TeV.602074.DAOD_PHYS.
 ```bash
 # After generating important results on grid:
 
-# 1. Setup environment
-setupATLAS
+# 1. Setup Rucio clients if not already done
 localSetupRucioClients
-voms-proxy-init -voms atlas
 
 # 2. Identify container from PanDA
 # Container: user.jsmith:user.jsmith.myanalysis.results_root
@@ -306,10 +299,14 @@ rucio download --dir $TestArea/data mc20_13TeV:<dataset>
 
 If you get authentication errors:
 ```bash
-# Renew VOMS proxy
-voms-proxy-destroy
-voms-proxy-init -voms atlas -valid 96:00
+# Check VOMS proxy status
+voms-proxy-info
+
+# If expired, user must renew proxy in their shell (before restarting agent):
+# voms-proxy-init -voms atlas -valid 96:00
 ```
+
+**Note**: The agent cannot run `voms-proxy-init` - this must be done by the user in their shell before starting the agent session.
 
 ### Download Stalls or Fails
 

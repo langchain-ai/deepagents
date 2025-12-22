@@ -27,27 +27,31 @@ Use this skill when you need to:
 This skill assumes you are running on the CERN LXPlus cluster with:
 - Valid ATLAS computing account
 - Access to ATLAS software stack via CVMFS
-- Active VOMS proxy for ATLAS
+- **ATLAS environment already initialized** (user must run `setupATLAS` before launching the agent)
+- **Active VOMS proxy** (user must run `voms-proxy-init -voms atlas` before launching the agent)
 - No additional software installation needed
+
+**Important**: The user must set up the ATLAS environment and VOMS proxy **before** starting the agent session. If these are not set up, AMI commands will fail with authentication or command-not-found errors.
 
 ## How to Use
 
-### Step 1: Setup AMI Environment
+### Step 1: Setup AMI Tools
 
-Before querying AMI, you need to set up your ATLAS environment and AMI tools:
+Set up the pyAMI command-line tool:
 
 ```bash
-# Setup ATLAS environment
-setupATLAS
-
-# Initialize VOMS proxy for authentication
-voms-proxy-init -voms atlas
-
 # Setup pyAMI command-line tool
 lsetup pyami
 ```
 
-**Note:** The `setupATLAS` and `lsetup` commands are available on LXPlus and other ATLAS computing clusters via CVMFS.
+**Note:** The `lsetup` command is available on LXPlus and other ATLAS computing clusters via CVMFS.
+
+**Common Errors if Prerequisites Not Met:**
+
+If you see errors like:
+- `bash: ami: command not found` → pyAMI is not set up. Run `lsetup pyami`
+- `ERROR: No credentials found` or `VOMS credentials not found` → VOMS proxy expired or not initialized. User must run `voms-proxy-init -voms atlas` in their shell before starting the agent.
+- `setupATLAS: command not found` → Not on LXPlus or ATLAS environment not sourced. User must run `setupATLAS` in their shell before starting the agent.
 
 ### Step 2: List Datasets by Pattern
 
@@ -150,9 +154,7 @@ ami show dataset info <dataset_name> | grep -i status
 Before submitting jobs to the grid, verify datasets exist and check their properties:
 
 ```bash
-# 1. Setup environment
-setupATLAS
-voms-proxy-init -voms atlas
+# 1. Setup pyAMI if not already set up
 lsetup pyami
 
 # 2. List datasets of interest
@@ -170,8 +172,7 @@ For batch queries, AMI commands can be incorporated into shell scripts:
 
 ```bash
 #!/bin/bash
-setupATLAS
-voms-proxy-init -voms atlas -valid 96:00
+# Note: User must have already run setupATLAS and voms-proxy-init before running this script
 lsetup pyami
 
 datasets=(
@@ -210,10 +211,14 @@ The web interface is useful for:
 ### Authentication Errors
 If you encounter authentication issues:
 ```bash
-# Renew your VOMS proxy
-voms-proxy-destroy
-voms-proxy-init -voms atlas -valid 96:00
+# Check VOMS proxy status
+voms-proxy-info
+
+# If expired, user must renew proxy in their shell (before restarting agent):
+# voms-proxy-init -voms atlas -valid 96:00
 ```
+
+**Note**: The agent cannot run `voms-proxy-init` - this must be done by the user in their shell before starting the agent session.
 
 ### Command Not Found
 If `ami` command is not found:
@@ -222,6 +227,8 @@ If `ami` command is not found:
 lsetup pyami
 ```
 
+If `lsetup` or `setupATLAS` commands are not found, the user is not on LXPlus or hasn't sourced the ATLAS environment. The user must run `setupATLAS` in their shell before starting the agent.
+
 ### No Results for Query
 - Verify pattern syntax (use `%` for wildcards)
 - Check dataset name spelling and campaign identifier
@@ -229,7 +236,7 @@ lsetup pyami
 
 ## Notes
 
-- AMI queries require valid VOMS proxy (use `voms-proxy-init -voms atlas`)
+- AMI queries require valid VOMS proxy (user must initialize before starting agent)
 - Dataset metadata updates periodically; production tags may change
 - Use specific p-tags when reproducibility is critical
 - Newer p-tags generally supersede older ones (check with derivation team)

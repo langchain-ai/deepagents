@@ -17,12 +17,12 @@ This directory contains specialized skills for working with ATLAS experiment sof
 
 **Key Commands:**
 ```bash
-setupATLAS
-voms-proxy-init -voms atlas
 lsetup pyami
 ami list datasets <pattern>
 ami show dataset info <dataset_name>
 ```
+
+**Prerequisites:** User must run `setupATLAS` and `voms-proxy-init -voms atlas` before starting the agent.
 
 **Learn more:** [ami-query/SKILL.md](./ami-query/SKILL.md)
 
@@ -41,12 +41,12 @@ ami show dataset info <dataset_name>
 
 **Key Commands:**
 ```bash
-setupATLAS
 localSetupRucioClients
-voms-proxy-init -voms atlas
 rucio -v download <dataset_name>
 rucio add-rule <dataset_name> 1 <RSE>
 ```
+
+**Prerequisites:** User must run `setupATLAS` and `voms-proxy-init -voms atlas` before starting the agent.
 
 **Learn more:** [rucio-management/SKILL.md](./rucio-management/SKILL.md)
 
@@ -75,7 +75,13 @@ rucio add-rule <dataset_name> 1 <RSE>
 
 ### Installation
 
-These skills are available in the `examples/skills` directory of the deepagents-cli package. You can copy them to your user skills directory or use them from the project directory.
+These skills are available in the `libs/chatlas-agents/examples/skills` directory. You can copy them to your user skills directory or use them from the project directory.
+
+**Important:** Before starting the agent, users must initialize their ATLAS environment:
+```bash
+setupATLAS
+voms-proxy-init -voms atlas
+```
 
 ### Option 1: Copy to User Skills Directory
 
@@ -84,9 +90,9 @@ These skills are available in the `examples/skills` directory of the deepagents-
 mkdir -p ~/.deepagents/agent/skills
 
 # Copy ATLAS skills
-cp -r libs/deepagents-cli/examples/skills/ami-query ~/.deepagents/agent/skills/
-cp -r libs/deepagents-cli/examples/skills/rucio-management ~/.deepagents/agent/skills/
-cp -r libs/deepagents-cli/examples/skills/atlas-runquery ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/examples/skills/ami-query ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/examples/skills/rucio-management ~/.deepagents/agent/skills/
+cp -r libs/chatlas-agents/examples/skills/atlas-runquery ~/.deepagents/agent/skills/
 
 # Verify skills are available
 deepagents skills list
@@ -99,9 +105,9 @@ deepagents skills list
 mkdir -p .deepagents/skills
 
 # Copy ATLAS skills to project
-cp -r libs/deepagents-cli/examples/skills/ami-query .deepagents/skills/
-cp -r libs/deepagents-cli/examples/skills/rucio-management .deepagents/skills/
-cp -r libs/deepagents-cli/examples/skills/atlas-runquery .deepagents/skills/
+cp -r libs/chatlas-agents/examples/skills/ami-query .deepagents/skills/
+cp -r libs/chatlas-agents/examples/skills/rucio-management .deepagents/skills/
+cp -r libs/chatlas-agents/examples/skills/atlas-runquery .deepagents/skills/
 
 # Skills will be automatically available when running deepagents in this project
 ```
@@ -174,8 +180,10 @@ Agent: [Recognizes ami-query skill applies]
 All ATLAS skills assume:
 - **Environment:** CERN LXPlus cluster or ATLAS computing node
 - **Account:** Valid ATLAS computing account
-- **Authentication:** Active VOMS proxy (`voms-proxy-init -voms atlas`)
+- **Setup Required:** User must run `setupATLAS` and `voms-proxy-init -voms atlas` **before starting the agent**
 - **Software:** ATLAS software stack via CVMFS (no installation needed)
+
+The agent cannot initialize the ATLAS environment or VOMS proxy - these must be set up by the user in their shell before launching the agent session.
 
 ## Skill Development
 

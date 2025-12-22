@@ -28,9 +28,12 @@ Use this skill when you need to:
 This skill assumes you are running on the CERN LXPlus cluster with:
 - Valid ATLAS computing account
 - Access to ATLAS software stack via CVMFS
-- Active VOMS proxy for ATLAS
+- **ATLAS environment already initialized** (user must run `setupATLAS` before launching the agent)
+- **Active VOMS proxy** (user must run `voms-proxy-init -voms atlas` before launching the agent)
 - Access to ATLAS Twiki pages and databases
 - No additional software installation needed
+
+**Important**: The user must set up the ATLAS environment and VOMS proxy **before** starting the agent session. If these are not set up, AMI queries will fail with authentication errors.
 
 ## Available Tools for Run Queries
 
@@ -51,13 +54,14 @@ ATLAS provides several tools for querying run information:
 
 AMI also contains run-level information:
 ```bash
-setupATLAS
+# Setup pyAMI if not already done
 lsetup pyami
-voms-proxy-init -voms atlas
 
 # Query runs in AMI
 ami show run <run_number>
 ```
+
+**Note**: If you see authentication errors, the user's VOMS proxy may have expired. The user must run `voms-proxy-init -voms atlas` in their shell before restarting the agent.
 
 ### 3. Good Runs Lists (GRL)
 
@@ -230,8 +234,7 @@ For analyses requiring specific triggers:
 # Review: detector status, triggers, luminosity
 
 # Option 2: AMI
-setupATLAS
-voms-proxy-init -voms atlas
+# Note: User must have already initialized ATLAS environment and VOMS proxy
 lsetup pyami
 ami show run 450123
 

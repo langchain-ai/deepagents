@@ -192,17 +192,19 @@ chatlas --sandbox apptainer --sandbox-image docker://python:3.13-slim
 
 ChATLAS includes specialized skills for working with ATLAS experiment software tools on LXPlus:
 
-- **[AMI Query](libs/deepagents-cli/examples/skills/ami-query/SKILL.md)** - Query ATLAS Metadata Interface for dataset information and metadata
-- **[Rucio Management](libs/deepagents-cli/examples/skills/rucio-management/SKILL.md)** - Download and manage ATLAS grid data using Rucio DDM
-- **[ATLAS Run Query](libs/deepagents-cli/examples/skills/atlas-runquery/SKILL.md)** - Query run information, data quality, and luminosity records
+- **[AMI Query](libs/chatlas-agents/examples/skills/ami-query/SKILL.md)** - Query ATLAS Metadata Interface for dataset information and metadata
+- **[Rucio Management](libs/chatlas-agents/examples/skills/rucio-management/SKILL.md)** - Download and manage ATLAS grid data using Rucio DDM
+- **[ATLAS Run Query](libs/chatlas-agents/examples/skills/atlas-runquery/SKILL.md)** - Query run information, data quality, and luminosity records
 
-**Overview:** See [ATLAS_SKILLS.md](libs/deepagents-cli/examples/skills/ATLAS_SKILLS.md) for detailed documentation on using these skills.
+**Overview:** See [ATLAS_SKILLS.md](libs/chatlas-agents/examples/skills/ATLAS_SKILLS.md) for detailed documentation on using these skills.
 
 These skills provide guidance for:
 - Finding and downloading ATLAS datasets from the grid
 - Querying dataset metadata and production information
 - Managing data quality and run selection for physics analysis
 - Working with distributed data management (Rucio)
+
+**Prerequisites:** Users must run `setupATLAS` and `voms-proxy-init -voms atlas` in their shell **before** starting the agent to ensure ATLAS tools and authentication are available.
 
 The skills are designed to work on the CERN LXPlus cluster with the full ATLAS software stack available via CVMFS.
 

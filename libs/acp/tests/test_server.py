@@ -229,6 +229,8 @@ class TestDeepAgentsACP:
                 "rawInput": {"location": "Paris, France"},
                 "content": None,
                 "rawOutput": None,
+                "kind": None,
+                "locations": None,
                 "field_meta": None,
             }
 
@@ -238,7 +240,7 @@ class TestDeepAgentsACP:
                 "status": "completed",
                 "toolCallId": "call_123",
                 "title": "get_weather_tool",
-                "rawInput": {"location": "Paris, France"},
+                "rawInput": None,  # rawInput not included in completed status
                 "content": [
                     {
                         "type": "content",
@@ -248,10 +250,11 @@ class TestDeepAgentsACP:
                             "annotations": None,
                             "field_meta": None,
                         },
-                        "field_meta": None,
                     }
                 ],
                 "rawOutput": "The weather in Paris, France is sunny and 72°F",
+                "kind": None,
+                "locations": None,
                 "field_meta": None,
             }
 
@@ -537,6 +540,8 @@ async def test_human_in_the_loop_approval() -> None:
         "rawInput": {"location": "Tokyo, Japan"},
         "content": None,
         "rawOutput": None,
+        "kind": None,
+        "locations": None,
         "field_meta": None,
     }
 

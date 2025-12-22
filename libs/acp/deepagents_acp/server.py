@@ -343,7 +343,7 @@ class DeepagentsACP(Agent):
 
         for action_request in action_requests:
             tool_name = action_request.get("name")
-            tool_args = action_request.get("arguments", {})
+            tool_args = action_request.get("args", {})
             description = action_request.get("description", "")
 
             # Get allowed decisions for this action

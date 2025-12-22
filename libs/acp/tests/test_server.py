@@ -3,14 +3,20 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from acp.schema import NewSessionRequest, PromptRequest
-from acp.schema import TextContentBlock, RequestPermissionRequest, RequestPermissionResponse, AllowedOutcome
+from acp.schema import (
+    TextContentBlock,
+    RequestPermissionRequest,
+    RequestPermissionResponse,
+    AllowedOutcome,
+)
 from dirty_equals import IsUUID
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langgraph.checkpoint.memory import InMemorySaver
 
-from deepagents_acp.server import DeepagentsACP, get_weather
+from deepagents_acp.server import DeepagentsACP
 from tests.chat_model import GenericFakeChatModel
 
 
@@ -27,7 +33,9 @@ class FakeAgentSideConnection:
         """Track sessionUpdate calls."""
         self.calls.append(notification)
 
-    async def requestPermission(self, request: RequestPermissionRequest) -> RequestPermissionResponse:
+    async def requestPermission(
+        self, request: RequestPermissionRequest
+    ) -> RequestPermissionResponse:
         """Track permission requests and return a mocked response."""
         self.permission_requests.append(request)
         if self.permission_response:
@@ -75,6 +83,7 @@ async def deepagents_acp_test_context(
     prompt_request: PromptRequest,
     tools: list[Any] | None = None,
     stream_delimiter: str | None = r"(\s)",
+    middleware: list[Any] | None = None,
 ):
     """Context manager for testing DeepagentsACP.
 
@@ -83,10 +92,13 @@ async def deepagents_acp_test_context(
         prompt_request: The prompt request to send to the agent
         tools: List of tools to provide to the agent (defaults to [])
         stream_delimiter: How to chunk content when streaming (default: r"(\\s)" for whitespace)
+        middleware: Optional middleware to add to the agent graph
 
     Yields:
         FakeAgentSideConnection: The connection object that tracks sessionUpdate calls
     """
+    from deepagents.graph import create_deep_agent
+
     connection = FakeAgentSideConnection()
     model = FixedGenericFakeChatModel(
         messages=iter(messages),
@@ -94,10 +106,17 @@ async def deepagents_acp_test_context(
     )
     tools = tools if tools is not None else []
 
-    deepagents_acp = DeepagentsACP(
-        connection=connection,
+    # Create the agent graph
+    agent_graph = create_deep_agent(
         model=model,
         tools=tools,
+        checkpointer=InMemorySaver(),
+        middleware=middleware or [],
+    )
+
+    deepagents_acp = DeepagentsACP(
+        connection=connection,
+        agent_graph=agent_graph,
     )
 
     # Create a new session
@@ -131,7 +150,7 @@ class TestDeepAgentsACP:
         async with deepagents_acp_test_context(
             messages=[AIMessage(content="Hello!")],
             prompt_request=prompt_request,
-            tools=[get_weather],
+            tools=[get_weather_tool],
         ) as connection:
             assert len(connection.calls) == 1
             first_call = connection.calls[0].model_dump()
@@ -233,7 +252,7 @@ class TestDeepAgentsACP:
 
 async def test_todo_list_handling() -> None:
     """Test that DeepagentsACP handles todo list updates correctly."""
-    from unittest.mock import AsyncMock, MagicMock
+    from deepagents.graph import create_deep_agent
 
     prompt_request = PromptRequest(
         sessionId="",  # Will be set by context manager
@@ -247,10 +266,16 @@ async def test_todo_list_handling() -> None:
         stream_delimiter=r"(\s)",
     )
 
-    deepagents_acp = DeepagentsACP(
-        connection=connection,
+    # Create agent graph
+    agent_graph = create_deep_agent(
         model=model,
         tools=[get_weather_tool],
+        checkpointer=InMemorySaver(),
+    )
+
+    deepagents_acp = DeepagentsACP(
+        connection=connection,
+        agent_graph=agent_graph,
     )
 
     # Create a new session
@@ -391,7 +416,7 @@ async def test_fake_chat_model_streaming() -> None:
 async def test_human_in_the_loop_approval() -> None:
     """Test that DeepagentsACP handles HITL interrupts and permission requests correctly."""
     from langchain.agents.middleware import HumanInTheLoopMiddleware
-    from unittest.mock import patch
+    from deepagents.graph import create_deep_agent
 
     prompt_request = PromptRequest(
         sessionId="",  # Will be set below
@@ -409,55 +434,49 @@ async def test_human_in_the_loop_approval() -> None:
     )
 
     model = FixedGenericFakeChatModel(
-        messages=iter([
-            # First message: AI decides to call the tool
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "get_weather_tool",
-                        "args": {"location": "Tokyo, Japan"},
-                        "id": "call_tokyo_123",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            # Second message: AI responds with the weather result after tool execution
-            AIMessage(content="The weather in Tokyo is sunny and 72°F!"),
-        ]),
+        messages=iter(
+            [
+                # First message: AI decides to call the tool
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "get_weather_tool",
+                            "args": {"location": "Tokyo, Japan"},
+                            "id": "call_tokyo_123",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                # Second message: AI responds with the weather result after tool execution
+                AIMessage(content="The weather in Tokyo is sunny and 72°F!"),
+            ]
+        ),
         stream_delimiter=r"(\s)",
     )
 
-    # Patch create_deep_agent to add HITL middleware
-    from deepagents.graph import create_deep_agent as original_create_deep_agent
+    # Create agent graph with HITL middleware
+    agent_graph = create_deep_agent(
+        model=model,
+        tools=[get_weather_tool],
+        checkpointer=InMemorySaver(),
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"get_weather_tool": True})],
+    )
 
-    def create_deep_agent_with_hitl(*args, **kwargs):
-        # Add HITL middleware to the kwargs
-        middleware = kwargs.get("middleware", [])
-        middleware.append(
-            HumanInTheLoopMiddleware(
-                interrupt_on={"get_weather_tool": True}
-            )
-        )
-        kwargs["middleware"] = middleware
-        return original_create_deep_agent(*args, **kwargs)
+    deepagents_acp = DeepagentsACP(
+        connection=connection,
+        agent_graph=agent_graph,
+    )
 
-    with patch("deepagents_acp.server.create_deep_agent", side_effect=create_deep_agent_with_hitl):
-        deepagents_acp = DeepagentsACP(
-            connection=connection,
-            model=model,
-            tools=[get_weather_tool],
-        )
+    # Create a new session
+    session_response = await deepagents_acp.newSession(
+        NewSessionRequest(cwd="/tmp", mcpServers=[])
+    )
+    session_id = session_response.sessionId
+    prompt_request.sessionId = session_id
 
-        # Create a new session
-        session_response = await deepagents_acp.newSession(
-            NewSessionRequest(cwd="/tmp", mcpServers=[])
-        )
-        session_id = session_response.sessionId
-        prompt_request.sessionId = session_id
-
-        # Call prompt - this should trigger HITL
-        await deepagents_acp.prompt(prompt_request)
+    # Call prompt - this should trigger HITL
+    await deepagents_acp.prompt(prompt_request)
 
     # Verify that a permission request was made
     assert len(connection.permission_requests) == 1
@@ -476,7 +495,8 @@ async def test_human_in_the_loop_approval() -> None:
 
     # Verify that tool execution happened after approval
     tool_call_updates = [
-        call for call in connection.calls
+        call
+        for call in connection.calls
         if call.model_dump()["update"]["sessionUpdate"] == "tool_call_update"
     ]
 
@@ -496,7 +516,8 @@ async def test_human_in_the_loop_approval() -> None:
 
     # Verify final AI message was streamed
     message_chunks = [
-        call for call in connection.calls
+        call
+        for call in connection.calls
         if call.model_dump()["update"]["sessionUpdate"] == "agent_message_chunk"
     ]
     assert len(message_chunks) > 0

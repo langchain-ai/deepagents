@@ -12,6 +12,11 @@ from acp import (
     PROTOCOL_VERSION,
     stdio_streams,
 )
+from deepagents.graph import create_deep_agent
+from langchain_anthropic import ChatAnthropic
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from acp.schema import (
     AgentMessageChunk,
@@ -43,20 +48,10 @@ from acp.schema import (
     DeniedOutcome,
     ToolCall as ACPToolCall,
 )
-from deepagents.graph import create_deep_agent
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.messages.content import ToolCall
-from langchain_core.tools import tool
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, Interrupt
-
-
-@tool()
-def get_weather(location: str) -> str:
-    """Get the weather for a given location."""
-    # Dummy implementation for example purposes
-    return f"The weather in {location} is sunny with a high of 75°F."
 
 
 class DeepagentsACP(Agent):
@@ -65,48 +60,20 @@ class DeepagentsACP(Agent):
     def __init__(
         self,
         connection: AgentSideConnection,
-        model: str | BaseChatModel | None = None,
-        tools: list[Any] | None = None,
+        agent_graph: CompiledStateGraph,
     ) -> None:
         """Initialize the DeepAgents agent.
 
         Args:
             connection: The ACP connection for communicating with the client
-            model: The model to use (string or BaseChatModel instance)
-            tools: List of tools to provide to the agent
+            agent_graph: A compiled LangGraph StateGraph (output of create_deep_agent)
         """
         self._connection = connection
-        self._tools = tools or [get_weather]
+        self._agent_graph = agent_graph
         self._sessions: dict[str, dict[str, Any]] = {}
         # Track tool calls by ID for matching with ToolMessages
         # Maps tool_call_id -> ToolCall TypedDict
         self._tool_calls: dict[str, ToolCall] = {}
-
-        # Handle model parameter
-        if model is None:
-            # Use default Claude Sonnet
-            from langchain_anthropic import ChatAnthropic
-
-            self._model = ChatAnthropic(
-                model_name="claude-sonnet-4-5-20250929",
-                max_tokens=20000,
-            )
-        elif isinstance(model, str):
-            # Try to create ChatAnthropic from string
-            # Support common model name formats
-            from langchain_anthropic import ChatAnthropic
-
-            model_name = model
-            if "/" in model_name:
-                # Strip provider prefix if present (e.g., "anthropic/claude-...")
-                model_name = model_name.split("/", 1)[1]
-            self._model = ChatAnthropic(
-                model_name=model_name,
-                max_tokens=20000,
-            )
-        else:
-            # Use provided BaseChatModel instance
-            self._model = model
 
     async def initialize(
         self,
@@ -127,22 +94,10 @@ class DeepagentsACP(Agent):
         params: NewSessionRequest,
     ) -> NewSessionResponse:
         """Create a new session with a deepagents instance."""
-        # Create deepagents instance
-        agent = create_deep_agent(
-            model=self._model,
-            tools=self._tools,
-            checkpointer=InMemorySaver(),
-            middleware=[
-                HumanInTheLoopMiddleware(interrupt_on={
-                    "get_weather": True
-                })
-            ]
-        )
-
         session_id = str(uuid.uuid4())
-        # Store session state
+        # Store session state with the shared agent graph
         self._sessions[session_id] = {
-            "agent": agent,
+            "agent": self._agent_graph,
             "thread_id": str(uuid.uuid4()),
         }
 
@@ -597,8 +552,8 @@ class DeepagentsACP(Agent):
 
     async def cancel(self, params: CancelNotification) -> None:
         """Cancel a running session."""
-        session_id = params.sessionId
-        self._cancelled_sessions.add(session_id)
+        # TODO: Implement cancellation logic
+        pass
 
     async def loadSession(
         self,
@@ -621,22 +576,37 @@ class DeepagentsACP(Agent):
         params: SetSessionModelRequest,
     ) -> SetSessionModelResponse | None:
         """Set session model (optional)."""
-        session_id = params.sessionId
-        session = self._sessions.get(session_id)
-
-        if session and params.model:
-            # Would need to recreate the agent with new model
-            # For now, just store it but don't recreate
-            session["model"] = params.model
-            return SetSessionModelResponse()
-
+        # Not supported - model is configured at agent graph creation time
         return None
 
 
 async def main() -> None:
     """Main entry point for running the ACP server."""
+    # Define default tools
+    @tool()
+    def get_weather(location: str) -> str:
+        """Get the weather for a given location."""
+        return f"The weather in {location} is sunny with a high of 75°F."
+
+    # Create the agent graph with default configuration
+    model = ChatAnthropic(
+        model_name="claude-sonnet-4-5-20250929",
+        max_tokens=20000,
+    )
+
+    agent_graph = create_deep_agent(
+        model=model,
+        tools=[get_weather],
+        checkpointer=InMemorySaver(),
+    )
+
+    # Start the ACP server
     reader, writer = await stdio_streams()
-    AgentSideConnection(lambda conn: DeepagentsACP(conn), writer, reader)
+    AgentSideConnection(
+        lambda conn: DeepagentsACP(conn, agent_graph),
+        writer,
+        reader
+    )
     await asyncio.Event().wait()
 
 

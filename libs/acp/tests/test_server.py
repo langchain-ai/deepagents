@@ -211,43 +211,60 @@ class TestDeepAgentsACP:
             # Call 1: Tool call progress (status="completed")
             # Calls 2+: Message chunks for "The weather in Paris is sunny and 72°F today!"
 
-            # Find tool call indices
-            tool_call_indices = []
-            for i, call in enumerate(connection.calls):
-                call_dict = call.model_dump()
-                if call_dict["update"]["sessionUpdate"] == "tool_call_update":
-                    tool_call_indices.append(i)
+            tool_call_updates = [
+                call.model_dump()
+                for call in connection.calls
+                if call.model_dump()["update"]["sessionUpdate"] == "tool_call_update"
+            ]
 
             # Verify we have exactly 2 tool call updates
-            assert len(tool_call_indices) == 2
+            assert len(tool_call_updates) == 2
 
-            # Verify tool call pending
-            pending_idx = tool_call_indices[0]
-            pending_call = connection.calls[pending_idx].model_dump()
-            assert pending_call["update"]["sessionUpdate"] == "tool_call_update"
-            assert pending_call["update"]["status"] == "pending"
-            assert pending_call["update"]["toolCallId"] == "call_123"
-            assert pending_call["update"]["title"] == "get_weather_tool"
-            assert pending_call["update"]["rawInput"] == {"location": "Paris, France"}
+            # Verify tool call pending with full structure
+            assert tool_call_updates[0]["update"] == {
+                "sessionUpdate": "tool_call_update",
+                "status": "pending",
+                "toolCallId": "call_123",
+                "title": "get_weather_tool",
+                "rawInput": {"location": "Paris, France"},
+                "content": None,
+                "rawOutput": None,
+                "field_meta": None,
+            }
 
-            # Verify tool call completed
-            completed_idx = tool_call_indices[1]
-            completed_call = connection.calls[completed_idx].model_dump()
-            assert completed_call["update"]["sessionUpdate"] == "tool_call_update"
-            assert completed_call["update"]["status"] == "completed"
-            assert completed_call["update"]["toolCallId"] == "call_123"
-            assert completed_call["update"]["title"] == "get_weather_tool"
-            assert (
-                completed_call["update"]["rawOutput"]
-                == "The weather in Paris, France is sunny and 72°F"
-            )
+            # Verify tool call completed with full structure
+            assert tool_call_updates[1]["update"] == {
+                "sessionUpdate": "tool_call_update",
+                "status": "completed",
+                "toolCallId": "call_123",
+                "title": "get_weather_tool",
+                "rawInput": {"location": "Paris, France"},
+                "content": [
+                    {
+                        "type": "content",
+                        "content": {
+                            "type": "text",
+                            "text": "The weather in Paris, France is sunny and 72°F",
+                            "annotations": None,
+                            "field_meta": None,
+                        },
+                        "field_meta": None,
+                    }
+                ],
+                "rawOutput": "The weather in Paris, France is sunny and 72°F",
+                "field_meta": None,
+            }
 
             # Verify all non-tool-call updates are message chunks
-            for i, call in enumerate(connection.calls):
-                if i not in tool_call_indices:
-                    call_dict = call.model_dump()
-                    assert call_dict["update"]["sessionUpdate"] == "agent_message_chunk"
-                    assert call_dict["update"]["content"]["type"] == "text"
+            message_chunks = [
+                call.model_dump()
+                for call in connection.calls
+                if call.model_dump()["update"]["sessionUpdate"] == "agent_message_chunk"
+            ]
+            assert len(message_chunks) > 0
+            for chunk in message_chunks:
+                assert chunk["update"]["sessionUpdate"] == "agent_message_chunk"
+                assert chunk["update"]["content"]["type"] == "text"
 
 
 async def test_todo_list_handling() -> None:
@@ -317,33 +334,37 @@ async def test_todo_list_handling() -> None:
 
     # Find the plan update in the calls
     plan_updates = [
-        call
+        call.model_dump()
         for call in connection.calls
         if call.model_dump()["update"]["sessionUpdate"] == "plan"
     ]
 
-    # Verify we got exactly one plan update
+    # Verify we got exactly one plan update with correct structure
     assert len(plan_updates) == 1
-
-    # Verify the plan update contains the correct entries
-    plan_update = plan_updates[0].model_dump()
-    entries = plan_update["update"]["entries"]
-    assert len(entries) == 3
-
-    # Check first entry
-    assert entries[0]["content"] == "Buy fresh bananas"
-    assert entries[0]["status"] == "pending"
-    assert entries[0]["priority"] == "medium"
-
-    # Check second entry
-    assert entries[1]["content"] == "Buy whole grain bread"
-    assert entries[1]["status"] == "in_progress"
-    assert entries[1]["priority"] == "medium"
-
-    # Check third entry
-    assert entries[2]["content"] == "Buy organic eggs"
-    assert entries[2]["status"] == "completed"
-    assert entries[2]["priority"] == "medium"
+    assert plan_updates[0]["update"] == {
+        "sessionUpdate": "plan",
+        "entries": [
+            {
+                "content": "Buy fresh bananas",
+                "status": "pending",
+                "priority": "medium",
+                "field_meta": None,
+            },
+            {
+                "content": "Buy whole grain bread",
+                "status": "in_progress",
+                "priority": "medium",
+                "field_meta": None,
+            },
+            {
+                "content": "Buy organic eggs",
+                "status": "completed",
+                "priority": "medium",
+                "field_meta": None,
+            },
+        ],
+        "field_meta": None,
+    }
 
 
 async def test_fake_chat_model_streaming() -> None:
@@ -478,41 +499,53 @@ async def test_human_in_the_loop_approval() -> None:
     # Call prompt - this should trigger HITL
     await deepagents_acp.prompt(prompt_request)
 
-    # Verify that a permission request was made
+    # Verify that a permission request was made with correct structure
     assert len(connection.permission_requests) == 1
-
     perm_request = connection.permission_requests[0]
-    assert perm_request.sessionId == session_id
-    assert perm_request.toolCall.title == "get_weather_tool"
-    assert perm_request.toolCall.rawInput == {"location": "Tokyo, Japan"}
-    assert perm_request.toolCall.status == "pending"
 
-    # Verify the permission options
-    assert len(perm_request.options) == 2
-    option_ids = [opt.optionId for opt in perm_request.options]
-    assert "allow-once" in option_ids
-    assert "reject-once" in option_ids
+    assert {
+        "sessionId": perm_request.sessionId,
+        "toolCall": {
+            "title": perm_request.toolCall.title,
+            "rawInput": perm_request.toolCall.rawInput,
+            "status": perm_request.toolCall.status,
+        },
+        "option_ids": [opt.optionId for opt in perm_request.options],
+    } == {
+        "sessionId": session_id,
+        "toolCall": {
+            "title": "get_weather_tool",
+            "rawInput": {"location": "Tokyo, Japan"},
+            "status": "pending",
+        },
+        "option_ids": ["allow-once", "reject-once"],
+    }
 
     # Verify that tool execution happened after approval
     tool_call_updates = [
-        call
+        call.model_dump()
         for call in connection.calls
         if call.model_dump()["update"]["sessionUpdate"] == "tool_call_update"
     ]
 
-    # Should have pending and completed updates
     assert len(tool_call_updates) == 2
-
-    # Check pending status
-    pending_update = tool_call_updates[0].model_dump()
-    assert pending_update["update"]["status"] == "pending"
-    assert pending_update["update"]["title"] == "get_weather_tool"
+    assert tool_call_updates[0]["update"] == {
+        "sessionUpdate": "tool_call_update",
+        "status": "pending",
+        "title": "get_weather_tool",
+        "toolCallId": "call_tokyo_123",
+        "rawInput": {"location": "Tokyo, Japan"},
+        "content": None,
+        "rawOutput": None,
+        "field_meta": None,
+    }
 
     # Check completed status
-    completed_update = tool_call_updates[1].model_dump()
-    assert completed_update["update"]["status"] == "completed"
-    assert completed_update["update"]["title"] == "get_weather_tool"
-    assert "Tokyo, Japan" in completed_update["update"]["rawOutput"]
+    completed_update = tool_call_updates[1]["update"]
+    assert completed_update["sessionUpdate"] == "tool_call_update"
+    assert completed_update["status"] == "completed"
+    assert completed_update["title"] == "get_weather_tool"
+    assert "Tokyo, Japan" in completed_update["rawOutput"]
 
     # Verify final AI message was streamed
     message_chunks = [

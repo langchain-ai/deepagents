@@ -5,61 +5,27 @@ description: Query ATLAS Metadata Interface (AMI) for dataset information, produ
 
 # AMI Query Skill
 
-This skill provides guidance for querying the ATLAS Metadata Interface (AMI) to find dataset information, production parameters, and metadata for ATLAS data analysis.
-
-## Description
-
-AMI (ATLAS Metadata Interface) is the central metadata catalog for the ATLAS experiment at CERN. It stores comprehensive metadata for all ATLAS datasets including production status, event numbers, file locations, processing history, and software configurations ("AMI tags"). This skill helps you query AMI effectively from the LXPlus command line.
-
-## When to Use This Skill
-
-Use this skill when you need to:
-- Find and list ATLAS datasets by name pattern
-- Retrieve detailed metadata about specific datasets
-- Look up AMI tags (software configuration bookkeeping)
-- Check dataset production status and parameters
-- Find file locations and processing history
-- Query software container images
-- Integrate AMI queries into analysis workflows
+Query the ATLAS Metadata Interface (AMI) for dataset metadata, production parameters, and AMI tags from LXPlus command line.
 
 ## Prerequisites
 
-This skill assumes you are running on the CERN LXPlus cluster with:
-- Valid ATLAS computing account
-- Access to ATLAS software stack via CVMFS
-- **ATLAS environment already initialized** (user must run `setupATLAS` before launching the agent)
-- **pyAMI tools already set up** (user must run `lsetup pyami` before launching the agent)
-- **Active VOMS proxy** (user must run `voms-proxy-init -voms atlas` before launching the agent)
-- No additional software installation needed
+**User must complete before starting agent:**
+- Run `setupATLAS`, `lsetup pyami`, `voms-proxy-init -voms atlas`
+- On LXPlus cluster (verify: `echo $HOSTNAME` should show `lxplus*.cern.ch`)
 
-**Important**: The user must set up the ATLAS environment, pyAMI tools, and VOMS proxy **before** starting the agent session. If these are not set up, AMI commands will fail with authentication or command-not-found errors.
+**Common errors if not set up:**
+- `bash: ami: command not found` → User must run `lsetup pyami`
+- `ERROR: No credentials found` → User must run `voms-proxy-init -voms atlas`
 
-### Verifying LXPlus Environment
+**Agent limitations:**
+- Command-line only (no web access to atlas-ami.cern.ch or Twiki)
+- Cannot access ATLAS internal websites
 
-To verify you are running on an LXPlus machine, check the hostname:
+## Core Commands
+
+### List Datasets
 ```bash
-echo $HOSTNAME
-```
-
-LXPlus hostnames typically follow the pattern `lxplus*.cern.ch` (e.g., `lxplus7.cern.ch`, `lxplus8.cern.ch`). If the hostname does not contain "lxplus" and "cern.ch", you may not be on an LXPlus machine, and ATLAS tools may not be available.
-
-## How to Use
-
-### Step 1: List Datasets by Pattern
-
-**Common Errors if Prerequisites Not Met:**
-
-If you see errors like:
-- `bash: ami: command not found` → pyAMI is not set up. User must run `lsetup pyami` in their shell before starting the agent.
-- `ERROR: No credentials found` or `VOMS credentials not found` → VOMS proxy expired or not initialized. User must run `voms-proxy-init -voms atlas` in their shell before starting the agent.
-- `setupATLAS: command not found` → Not on LXPlus or ATLAS environment not sourced. User must run `setupATLAS` in their shell before starting the agent.
-
-### Querying Datasets
-
-To find datasets matching a specific pattern:
-
-```bash
-# List all datasets matching a pattern (% is wildcard)
+# Find datasets matching pattern (% is wildcard)
 ami list datasets <pattern>
 
 # Examples:
@@ -67,173 +33,88 @@ ami list datasets mc20_13TeV.602074%
 ami list datasets data23_13p6TeV.%PHYS%
 ```
 
-**Pattern syntax:**
-- `%` acts as a wildcard (matches any characters)
-- Use specific run numbers, campaign names, or data types to narrow searches
-- ATLAS dataset naming follows: `<datatype>_<energy>.<run_number>.<sample_name>.<format>.<tags>`
-
-### Step 3: Get Detailed Dataset Information
-
-Once you've identified a dataset, retrieve its full metadata:
-
+### Dataset Details
 ```bash
-# Show detailed information about a specific dataset
+# Get comprehensive dataset information
 ami show dataset info <dataset_name>
 
 # Example:
-ami show dataset info mc20_13TeV.602074.PhPy8EG_PDF4LHC21_gg1200NW_ZZ_4lep.deriv.DAOD_PHYS.e8530_s3797_r13167_p6490
+ami show dataset info mc20_13TeV.602074.DAOD_PHYS.p6490
 ```
 
-This returns:
-- Dataset name and scope
-- Number of events
-- File sizes and locations
-- Production tags (e, s, r, p tags)
-- Parent datasets
-- Processing campaign information
-
-### Step 4: Query AMI Tags
-
-AMI tags identify software configurations used in production:
-
+### Query by AMI Tag
 ```bash
-# Get information about a specific AMI tag
-ami show tag info <tag_name>
+# List datasets with specific p-tag
+ami list datasets %p6490
 
-# Examples:
-ami show tag info e8530
-ami show tag info r13167
+# Show tag details
+ami show tag info p6490
 ```
 
-Tag types:
-- **e-tags**: Event generation parameters
-- **s-tags**: Simulation configuration
-- **r-tags**: Reconstruction settings
-- **p-tags**: Derivation production details
-
-## Best Practices
-
-### Efficient Pattern Matching
-- Start with specific patterns to avoid overwhelming results
-- Use campaign identifiers (mc20, data23, etc.) to filter by data-taking period
-- Combine multiple criteria: `mc20_13TeV.%.<campaign>%.DAOD_PHYS.%`
-
-### Dataset Naming Convention
-ATLAS datasets follow this structure:
-```
-<project>_<energy>.<run_number>.<physics_short>.<format>.<tags>
-```
-
-Example breakdown:
-- `mc20_13TeV`: MC production campaign, 13 TeV
-- `602074`: Dataset ID number
-- `PhPy8EG_PDF4LHC21_gg1200NW_ZZ_4lep`: Physics process description
-- `deriv.DAOD_PHYS`: Derived format (DAOD_PHYS)
-- `e8530_s3797_r13167_p6490`: Production tags
-
-### Common Queries
-
-**Find all DAOD_PHYS datasets for a specific physics sample:**
+### File Locations
 ```bash
-ami list datasets mc20_13TeV.%.ttbar%.DAOD_PHYS.%
+# List files in dataset
+ami list files <dataset_name>
 ```
 
-**Find data from 2023 runs:**
+## Common Workflows
+
+### Find Monte Carlo Dataset
 ```bash
-ami list datasets data23_13p6TeV.%
+# 1. Search by physics process
+ami list datasets mc20_13TeV.%.Higgs*ZZ%.DAOD_PHYS.%
+
+# 2. Get details of selected dataset
+ami show dataset info <selected_dataset>
+
+# 3. Check file count and size
+ami list files <selected_dataset>
 ```
 
-**Check derivation production status:**
+### Find Data Derivation
 ```bash
-ami show dataset info <dataset_name> | grep -i status
+# List derivations for specific p-tag
+ami list datasets data23_13p6TeV.%.DAOD_PHYS.p6490
+
+# Get provenance info
+ami show dataset prov <dataset_name>
 ```
 
-## Integration with Analysis Workflows
-
-### Using AMI Before Grid Submission
-
-Before submitting jobs to the grid, verify datasets exist and check their properties:
-
+### Check Production Status
 ```bash
-# Note: User must have already run setupATLAS, lsetup pyami, and voms-proxy-init before starting agent
-
-# 1. List datasets of interest
-ami list datasets mc20_13TeV.602074%
-
-# 2. Get full info on selected dataset
-ami show dataset info mc20_13TeV.602074.PhPy8EG_PDF4LHC21_gg1200NW_ZZ_4lep.deriv.DAOD_PHYS.e8530_s3797_r13167_p6490
-
-# 3. Proceed with grid job submission once verified
+# Show dataset details including status
+ami show dataset info <dataset_name>
+# Look for: nEvents, totalEvents, status fields
 ```
 
-### Scripting AMI Queries
+## Integration with Rucio
 
-For batch queries, AMI commands can be incorporated into shell scripts:
-
+After finding datasets with AMI, download with Rucio:
 ```bash
-#!/bin/bash
-# Note: User must have already run setupATLAS, lsetup pyami, and voms-proxy-init before running this script
+# 1. Find dataset
+ami list datasets mc20_13TeV.%.signal%.DAOD_PHYS.%
 
-datasets=(
-  "mc20_13TeV.602074%"
-  "mc20_13TeV.602075%"
-)
-
-for pattern in "${datasets[@]}"; do
-  echo "Querying: $pattern"
-  ami list datasets "$pattern"
-done
+# 2. Download with Rucio (see rucio-management skill)
+rucio -v download mc20_13TeV:<dataset_name>
 ```
 
-## Important Note About Web-Based Tools
+## Troubleshooting
 
-**The agent operates in a command-line environment only.** While ATLAS provides web interfaces for AMI (atlas-ami.cern.ch), these are **not accessible** to the agent. All AMI operations must be performed through command-line tools (`ami` commands).
+**Authentication Errors:**
+- Check VOMS proxy: `voms-proxy-info`
+- If expired, user must renew before restarting agent
 
-**Agent Limitations:**
-- Cannot access ATLAS internal websites (atlas-ami.cern.ch, Twiki pages, etc.)
-- Cannot use web browsers or make HTTP requests to ATLAS-internal URLs
-- Must rely exclusively on command-line tools available on LXPlus
-
-For dataset queries and metadata retrieval, use the `ami` command-line tool as documented in this skill.
-
-## Additional Resources
-
-**Note:** The following resources are for human reference only. The agent cannot access these URLs:
-- AMI Documentation (command-line reference)
-- ATLAS Production Group documentation
-- Dataset naming conventions documentation
-
-## Common Issues
-
-### Authentication Errors
-If you encounter authentication issues:
-```bash
-# Check VOMS proxy status
-voms-proxy-info
-
-# If expired, user must renew proxy in their shell (before restarting agent):
-# voms-proxy-init -voms atlas -valid 96:00
-```
-
-**Note**: The agent cannot run `voms-proxy-init` - this must be done by the user in their shell before starting the agent session.
-
-### Command Not Found
-If `ami` command is not found:
-```
-
-**Note**: The agent cannot run `lsetup pyami` - this must be done by the user in their shell before starting the agent.
-
-If `setupATLAS` command is not found, the user is not on LXPlus or hasn't sourced the ATLAS environment. The user must run `setupATLAS` in their shell before starting the agent.
-
-### No Results for Query
+**No Results:**
 - Verify pattern syntax (use `%` for wildcards)
-- Check dataset name spelling and campaign identifier
-- Try broader patterns initially, then narrow down
+- Try broader patterns, then narrow down
+- Check dataset name spelling
+
+**Command Not Found:**
+- Agent cannot run `lsetup pyami` - user must do this before starting
 
 ## Notes
 
-- AMI queries require valid VOMS proxy and pyAMI setup (user must initialize before starting agent)
-- Dataset metadata updates periodically; production tags may change
-- Use specific p-tags when reproducibility is critical
-- Newer p-tags generally supersede older ones (check with derivation team)
-- AMI integrates with Rucio (DDM) and PanDA (production system)
+- Dataset metadata updates periodically
+- Use specific p-tags for reproducibility
+- Newer p-tags generally supersede older ones
+- AMI integrates with Rucio for data downloads

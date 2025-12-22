@@ -1,287 +1,162 @@
 ---
 name: atlas-runquery
-description: Query ATLAS run and data quality information for understanding detector conditions, data-taking periods, and luminosity on LXPlus
+description: Query ATLAS run information, data quality flags, and work with Good Runs Lists (GRL) for physics analysis on LXPlus
 ---
 
 # ATLAS Run Query Skill
 
-This skill provides guidance for querying ATLAS run information, data quality, and luminosity records to understand detector conditions and select appropriate data for physics analysis.
-
-## Description
-
-Run queries in ATLAS help you find information about data-taking runs, including detector status, data quality flags, luminosity, and trigger configurations. This is essential for selecting good runs for physics analysis and understanding detector conditions during data collection.
-
-## When to Use This Skill
-
-Use this skill when you need to:
-- Find runs from specific data-taking periods
-- Check data quality flags for analysis
-- Query luminosity information for runs
-- Identify runs with specific trigger configurations
-- Check detector subsystem status during runs
-- Create Good Runs Lists (GRLs) for analysis
-- Understand beam conditions and pile-up
-- Investigate run-level issues or anomalies
+Query run information, data quality, and work with Good Runs Lists (GRL) for ATLAS physics analysis using command-line tools on LXPlus.
 
 ## Prerequisites
 
-This skill assumes you are running on the CERN LXPlus cluster with:
-- Valid ATLAS computing account
-- Access to ATLAS software stack via CVMFS
-- **ATLAS environment already initialized** (user must run `setupATLAS` before launching the agent)
-- **pyAMI tools already set up** (user must run `lsetup pyami` before launching the agent if using AMI for run queries)
-- **Active VOMS proxy** (user must run `voms-proxy-init -voms atlas` before launching the agent)
-- No additional software installation needed
+**User must complete before starting agent:**
+- Run `setupATLAS`, `lsetup pyami` (if using AMI), `voms-proxy-init -voms atlas`
+- On LXPlus cluster (verify: `echo $HOSTNAME` should show `lxplus*.cern.ch`)
 
-**Important**: The user must set up the ATLAS environment and VOMS proxy **before** starting the agent session. If AMI is used for run queries, pyAMI must also be set up. If these are not set up, queries will fail with authentication errors.
+**Agent limitations:**
+- Command-line only (no web access to atlas-runquery.cern.ch or Twiki)
+- Cannot download GRL files from URLs - users must provide local file paths
+- Uses AMI for run queries, not web interface
 
-### Verifying LXPlus Environment
+## Core Commands
 
-To verify you are running on an LXPlus machine, check the hostname:
+### Query Run Information (AMI)
 ```bash
-echo $HOSTNAME
-```
-
-LXPlus hostnames typically follow the pattern `lxplus*.cern.ch` (e.g., `lxplus7.cern.ch`, `lxplus8.cern.ch`). If the hostname does not contain "lxplus" and "cern.ch", you may not be on an LXPlus machine, and ATLAS tools may not be available.
-
-## Important Note About Web-Based Tools
-
-**The agent operates in a command-line environment only.** While ATLAS provides web interfaces for Run Query (atlas-runquery.cern.ch) and documentation (Twiki pages), these are **not accessible** to the agent.
-
-**Agent Limitations:**
-- Cannot access ATLAS internal websites (Run Query web, Twiki, etc.)
-- Cannot use web browsers or make HTTP requests to ATLAS-internal URLs
-- Cannot download GRL XML files from web URLs
-- Must rely on command-line tools (AMI) or user-provided files
-
-**For run queries, the agent can:**
-- Use AMI command-line tool to query run information: `ami show run <run_number>`
-- Work with GRL XML files that the user has already downloaded to the local filesystem
-- Users must obtain GRLs from official sources and provide file paths to the agent
-
-## Available Tools for Run Queries
-
-### AMI (ATLAS Metadata Interface)
-
-AMI provides run-level information via command line:
-```bash
-# Query runs in AMI (user must have already run lsetup pyami before starting agent)
+# Get run details
 ami show run <run_number>
+
+# Example:
+ami show run 450123
+# Shows: detector status, triggers, luminosity blocks, data streams
 ```
 
-**Note**: If you see authentication errors, the user's VOMS proxy may have expired. The user must run `voms-proxy-init -voms atlas` in their shell before restarting the agent.
+### Work with GRL Files
 
-### Good Runs Lists (GRL)
-
-GRLs are pre-computed lists of runs passing data quality requirements:
-- Published by ATLAS Data Preparation group
-- Available in XML format
-- Used in analysis frameworks (AnalysisTop, AthAnalysis)
-- **Users must download GRL files** and provide local file paths to the agent
-
-## How to Use
-
-### Step 1: Query Run Information via AMI
-
-Use AMI command-line tool to query specific runs:
+**Important:** Agent cannot download GRL files. Users must:
+1. Download GRL XML from ATLAS official sources
+2. Provide local file path to agent
 
 ```bash
-# Get run information (user must have already run setupATLAS, lsetup pyami, and voms-proxy-init)
-ami show run <run_number>
-```
-
-This provides information about:
-- Detector status (subsystems on/off)
-- Trigger configuration
-- Luminosity blocks recorded
-- Data streams available
-
-### Step 2: Working with Good Runs Lists
-
-For physics analysis, you need runs with good data quality through GRL XML files.
-
-**Using Official GRLs:**
-
-Users must obtain official GRL files from ATLAS Data Preparation group (agent cannot access web):
-1. User downloads appropriate GRL XML file for their analysis from official ATLAS sources
-2. User provides the local file path to the agent
-3. Agent can read and use the GRL file in analysis workflows
-
-**Example usage with local GRL file:**
-```bash
-# User has downloaded GRL file to local path
-# Use in analysis framework
+# Example GRL usage in analysis
 GRL_FILE="/path/to/data23_13p6TeV_GRL.xml"
-```
 
-**Note:** The agent cannot download GRL files from web URLs. Users must provide local file paths.
-
-### Step 3: Check Luminosity Information
-
-For luminosity calculations in analysis:
-- Use iLumiCalc tool for precise luminosity calculations
-- Apply GRL XML files (provided by user) to luminosity calculations
-- Account for prescales and trigger efficiency
-
-## Best Practices
-
-### Data Quality Flags
-
-**Understanding DQ Flags:**
-- **Green flags**: Detector operating normally
-- **Yellow flags**: Minor issues, may be usable
-- **Red flags**: Serious problems, exclude from analysis
-- **Black flags**: Detector off or no data
-
-**Common DQ Tags:**
-- `PHYS_StandardGRL_All_Good`: Standard good runs for physics
-- `PHYS_StandardGRL_All_Good_25ns`: Good runs with 25ns bunch spacing
-- Use specific subsystem flags if your analysis is sensitive to particular detectors
-
-### Run Selection for Analysis
-
-**Typical workflow:**
-1. Identify data-taking period (year, period letters)
-2. Select appropriate stream (usually `physics_Main`)
-3. Obtain and apply standard GRL for physics (user must provide GRL file)
-4. Apply additional triggers if needed
-5. Calculate luminosity for selected runs
-
-### Trigger Queries
-
-For analyses requiring specific triggers, query via AMI:
-```bash
-# Query run information including trigger details
-ami show run <run_number>
+# GRL files typically in:
+/cvmfs/atlas.cern.ch/repo/sw/database/GroupData/GoodRunsLists/
 ```
 
 ## Common Workflows
 
-### Workflow 1: Find Good Runs for Analysis
-
+### Query Specific Run
 ```bash
-# 1. Identify your data period
-# Example: 2023 data, periods A-D
-
-# 2. Go to ATLAS Run Query web interface
-# https://atlas-runquery.cern.ch/
-
-# 2. User obtains official GRL file from ATLAS Data Preparation
-# (agent cannot access Run Query web interface)
-
-# 3. User provides GRL file path to agent
-
-# 4. Use GRL in your analysis framework
-# Example in AnalysisTop config:
-# GRLDir: GoodRunsLists/
-# GRLFile: data23_13p6TeV/20230725/data23_13p6TeV.periodAllYear_DetStatus-v109-pro28-04_MERGED_PHYS_StandardGRL_All_Good.xml
-```
-
-### Workflow 2: Check Specific Run Details
-
-```bash
-# To investigate a specific run (e.g., run 450123)
-
-# Use AMI to query run information
-# Note: User must have already run setupATLAS, lsetup pyami, and voms-proxy-init
+# Get run information
 ami show run 450123
 
 # Check:
 # - Which detectors were active
 # - Trigger menu used
 # - Luminosity blocks recorded
-# - Any known issues or special conditions
+# - Data quality status
 ```
 
-### Workflow 3: Use GRL for Specific Trigger
+### Use GRL in Analysis
 
+**AnalysisTop Example:**
 ```bash
-# For analysis requiring specific trigger (e.g., HLT_mu26_ivarmedium)
-
-# 1. User obtains GRL file filtered for specific trigger from ATLAS sources
-#    (agent cannot access Run Query web interface to create custom GRLs)
-
-# 2. User provides local GRL file path
-
-# 3. Use custom GRL in analysis
+# In TopConfig file:
+# GRLDir: GoodRunsLists/
+# GRLFile: data23_13p6TeV/GRL.xml
 ```
 
-## Integration with Other ATLAS Tools
-
-### AMI for Run Queries
-- Use AMI command-line tool for run information: `ami show run <run_number>`
-- Query dataset metadata (see ami-query skill)
-- Cross-reference runs between AMI queries
-
-### GRL Files + Analysis Frameworks
-
-**AnalysisTop:**
-```bash
-# Use GRL in TopConfig file
-GRLDir: GoodRunsLists/
-GRLFile: <your_grl>.xml
-```
-
-**AthAnalysis:**
+**AthAnalysis Example:**
 ```python
-# Apply GRL in job options
-from GoodRunsLists.GoodRunsListsConf import GoodRunsListSelectorTool
-GRLTool = GoodRunsListSelectorTool()
-GRLTool.GoodRunsListVec = ['data23_grl.xml']
+# In job options:
+from GoodRunsLists.GoodRunsListsConf import *
+ToolSvc += GoodRunsListSelectorTool(
+    "GRLTool",
+    GoodRunsListVec = ["/path/to/GRL.xml"]
+)
 ```
 
-### Run Query + Luminosity Calculation
+### Find Datasets for Good Runs
 
-Use GRLs with iLumiCalc:
 ```bash
-# Calculate luminosity for GRL
-iLumiCalc.exe \
-  --xml=<your_grl>.xml \
-  --begin-run=<first_run> \
-  --end-run=<last_run> \
-  --trigger=<trigger_name>
+# User provides GRL file
+# Use file to determine run numbers/periods
+
+# Find corresponding datasets with AMI
+ami list datasets data23_13p6TeV.%.DAOD_PHYS.%
 ```
 
-## Additional Resources
+## Data Quality Flags
 
-**Note:** The following resources are for human reference only. The agent cannot access these URLs:
-- ATLAS Run Query documentation
-- Good Runs Lists documentation
-- Data Preparation documentation
-- Data Quality Flags documentation
-- Trigger Information
-- Luminosity Public Results
+**Common DQ Tags:**
+- `PHYS_StandardGRL_All_Good`: Standard physics GRL
+- `PHYS_StandardGRL_All_Good_25ns`: Good runs with 25ns bunch spacing
 
-## Common Issues
+**DQ Flag Colors:**
+- **Green**: Detector operating normally
+- **Yellow**: Minor issues, may be usable
+- **Red**: Serious problems, exclude from analysis
+- **Black**: Detector off or no data
 
-### GRL File Not Found
+## Typical Analysis Workflow
 
-If GRL XML files are missing:
-- Check if file exists in CVMFS: `/cvmfs/atlas.cern.ch/repo/sw/database/GroupData/GoodRunsLists/`
-- Verify the GRL is for correct data-taking period
-- User must provide the correct local file path
+1. User obtains official GRL file from ATLAS Data Preparation
+2. User provides GRL file path to agent
+3. Agent helps configure analysis framework with GRL
+4. Use AMI to find datasets matching run periods in GRL
+5. Download datasets with Rucio (see rucio-management skill)
 
-### Conflicting Run Information
+## Integration with AMI
 
-If different tools show conflicting info:
-- Official GRLs (user-provided files) are authoritative for data quality
-- AMI may have cached/older information
-- Consult with user for latest official sources
+```bash
+# Query runs for dataset context
+ami show run <run_number>
 
-### Luminosity Calculation Issues
+# Find datasets for specific period
+ami list datasets data23_13p6TeV.period<X>.%
+```
 
-If luminosity numbers don't match:
-- Verify correct GRL file is applied
-- Check if trigger prescales are accounted for
-- Use official iLumiCalc tool for precision
-- Compare with user-provided published luminosity results
+## Luminosity Calculations
+
+For analysis:
+- Use iLumiCalc tool with GRL files
+- Apply GRL XML to luminosity calculations
+- Account for prescales and trigger efficiency
+
+```bash
+# Typical usage (exact command varies by release)
+iLumiCalc --xml=<GRL.xml> --lumitag=<tag>
+```
+
+## Trigger Information
+
+Query trigger details via AMI:
+```bash
+# Run information includes trigger menu
+ami show run <run_number>
+```
+
+## Troubleshooting
+
+**GRL File Not Found:**
+- Check file path is correct
+- Verify file exists in CVMFS if using official GRL
+- User must provide valid local path
+
+**Authentication Errors:**
+- Check proxy: `voms-proxy-info`
+- If expired, user must renew before restarting agent
+
+**AMI Query Fails:**
+- Verify `lsetup pyami` was run by user
+- Check VOMS proxy is active
 
 ## Notes
 
-- Data quality flags are updated periodically; users should provide latest GRLs
-- Different physics analyses may need different DQ requirements
-- Trigger prescales change during data-taking; verify via AMI queries
-- Some runs may have partial detector coverage (check via `ami show run`)
-- Luminosity uncertainty is typically 1-2% for ATLAS
-- Always use official GRLs (user-provided) for publication-quality results
-- Agent can only work with command-line tools and local files, not web interfaces
+- Official GRLs are authoritative for data quality
+- Different analyses may need different DQ requirements
+- Trigger prescales change during data-taking
+- Luminosity uncertainty typically 1-2% for ATLAS
+- Always use official GRLs for publication results
+- Agent works with local GRL files and AMI queries only

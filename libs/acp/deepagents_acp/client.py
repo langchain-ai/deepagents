@@ -138,7 +138,6 @@ async def main(argv: list[str]) -> int:
 
     spawn_args = [sys.executable, "-m", "deepagents_acp.server"]
 
-
     proc = await asyncio.create_subprocess_exec(
         *spawn_args,
         stdin=aio_subprocess.PIPE,
@@ -156,7 +155,9 @@ async def main(argv: list[str]) -> int:
         InitializeRequest(
             protocolVersion=PROTOCOL_VERSION,
             clientCapabilities=ClientCapabilities(),
-            clientInfo=Implementation(name="example-client", title="Example Client", version="0.1.0"),
+            clientInfo=Implementation(
+                name="example-client", title="Example Client", version="0.1.0"
+            ),
         )
     )
     print(response)

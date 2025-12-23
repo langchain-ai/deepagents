@@ -98,7 +98,7 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
 
 from collections.abc import Awaitable, Callable
-from typing import NotRequired, TypedDict, cast
+from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -507,6 +507,31 @@ class SkillsMiddleware(AgentMiddleware):
 
         return "\n".join(lines).rstrip()
 
+    def modify_request(self, request: ModelRequest) -> ModelRequest:
+        """Inject skills documentation into a model request's system prompt.
+
+        Args:
+            request: Model request to modify
+
+        Returns:
+            New model request with skills documentation injected into system prompt
+        """
+        skills_metadata = request.state.get("skills_metadata", [])
+        skills_locations = self._format_skills_locations()
+        skills_list = self._format_skills_list(skills_metadata)
+
+        skills_section = self.system_prompt_template.format(
+            skills_locations=skills_locations,
+            skills_list=skills_list,
+        )
+
+        if request.system_prompt:
+            system_prompt = request.system_prompt + "\n\n" + skills_section
+        else:
+            system_prompt = skills_section
+
+        return request.override(system_prompt=system_prompt)
+
     def before_agent(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution.
 
@@ -553,21 +578,8 @@ class SkillsMiddleware(AgentMiddleware):
         Returns:
             Model response from handler
         """
-        skills_metadata = request.state.get("skills_metadata", [])
-        skills_locations = self._format_skills_locations()
-        skills_list = self._format_skills_list(skills_metadata)
-
-        skills_section = self.system_prompt_template.format(
-            skills_locations=skills_locations,
-            skills_list=skills_list,
-        )
-
-        if request.system_prompt:
-            system_prompt = request.system_prompt + "\n\n" + skills_section
-        else:
-            system_prompt = skills_section
-
-        return handler(request.override(system_prompt=system_prompt))
+        modified_request = self.modify_request(request)
+        return handler(modified_request)
 
     async def awrap_model_call(
         self,
@@ -583,22 +595,8 @@ class SkillsMiddleware(AgentMiddleware):
         Returns:
             Model response from handler
         """
-        state = cast("SkillsState", request.state)
-        skills_metadata = state.get("skills_metadata", [])
-        skills_locations = self._format_skills_locations()
-        skills_list = self._format_skills_list(skills_metadata)
-
-        skills_section = self.system_prompt_template.format(
-            skills_locations=skills_locations,
-            skills_list=skills_list,
-        )
-
-        if request.system_prompt:
-            system_prompt = request.system_prompt + "\n\n" + skills_section
-        else:
-            system_prompt = skills_section
-
-        return await handler(request.override(system_prompt=system_prompt))
+        modified_request = self.modify_request(request)
+        return await handler(modified_request)
 
 
 __all__ = ["SkillMetadata", "SkillRegistry", "SkillsMiddleware"]

@@ -6,8 +6,10 @@ and child agents.
 """
 
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import BaseModel, Field
 
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.subagents import CompiledSubAgent
@@ -218,3 +220,73 @@ class TestSubAgentInvocation:
         assert multiplication_tool_message.content == "The product of 4 and 6 is 24.", (
             f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
         )
+
+
+class TestStructuredOutput:
+    """Tests for agents with structured output using ToolStrategy."""
+
+    def test_agent_with_structured_output_tool_strategy(self) -> None:
+        """Test that an agent with ToolStrategy properly generates structured output.
+
+        This test verifies the structured output setup:
+        1. Define a Pydantic model as the response schema
+        2. Configure agent with ToolStrategy for structured output
+        3. Fake model calls the structured output tool
+        4. Agent validates and returns the structured response
+        5. The structured_response key contains the validated Pydantic instance
+
+        This validates our understanding of how to set up structured output
+        correctly using the fake model for testing.
+        """
+
+        # Define the Pydantic model for structured output
+        class WeatherReport(BaseModel):
+            """Structured weather information."""
+
+            location: str = Field(description="The city or location for the weather report")
+            temperature: float = Field(description="Temperature in Celsius")
+            condition: str = Field(description="Weather condition (e.g., sunny, rainy)")
+
+        # Create a fake model that calls the structured output tool
+        # The tool name will be the schema class name: "WeatherReport"
+        fake_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "WeatherReport",
+                                "args": {
+                                    "location": "San Francisco",
+                                    "temperature": 18.5,
+                                    "condition": "sunny",
+                                },
+                                "id": "call_weather_report",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with ToolStrategy for structured output
+        agent = create_agent(
+            model=fake_model,
+            response_format=ToolStrategy(schema=WeatherReport),
+        )
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content="What's the weather in San Francisco?")]})
+
+        # Verify the structured_response key exists in the result
+        assert "structured_response" in result, "Result should contain structured_response key"
+
+        # Verify the structured response is the correct type
+        structured_response = result["structured_response"]
+        assert isinstance(structured_response, WeatherReport), f"Expected WeatherReport instance, got {type(structured_response)}"
+
+        # Verify the structured response has the correct values
+        expected_response = WeatherReport(location="San Francisco", temperature=18.5, condition="sunny")
+        assert structured_response == expected_response, f"Expected {expected_response}, got {structured_response}"

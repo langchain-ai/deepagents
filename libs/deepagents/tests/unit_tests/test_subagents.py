@@ -6,8 +6,6 @@ and child agents.
 """
 
 from langchain.agents import create_agent
-
-# Create properly configured subagents with TodoListMiddleware (already included via create_agent)
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage, HumanMessage

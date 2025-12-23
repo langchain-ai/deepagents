@@ -1,8 +1,8 @@
 """Fake chat models for testing purposes."""
 
 import re
-from collections.abc import Iterator
-from typing import Any, cast, Sequence, Callable
+from collections.abc import Callable, Iterator, Sequence
+from typing import Any, cast
 
 from langchain_core.callbacks import (
     CallbackManagerForLLMRun,

@@ -1,4 +1,3 @@
-from collections.abc import Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -10,10 +9,8 @@ from acp.schema import (
     AllowedOutcome,
 )
 from dirty_equals import IsUUID
-from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.runnables import Runnable
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_acp.server import DeepagentsACP
@@ -47,20 +44,6 @@ class FakeAgentSideConnection:
                 optionId="allow-once",
             )
         )
-
-
-class FixedGenericFakeChatModel(GenericFakeChatModel):
-    """Fixed version of GenericFakeChatModel that properly handles bind_tools."""
-
-    def bind_tools(
-        self,
-        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
-        *,
-        tool_choice: str | None = None,
-        **kwargs: Any,
-    ) -> Runnable[LanguageModelInput, AIMessage]:
-        """Override bind_tools to return self."""
-        return self
 
 
 @tool(description="Get the current weather for a location")
@@ -100,7 +83,7 @@ async def deepagents_acp_test_context(
     from deepagents.graph import create_deep_agent
 
     connection = FakeAgentSideConnection()
-    model = FixedGenericFakeChatModel(
+    model = GenericFakeChatModel(
         messages=iter(messages),
         stream_delimiter=stream_delimiter,
     )
@@ -281,7 +264,7 @@ async def test_todo_list_handling() -> None:
 
     # Create a mock connection to track calls
     connection = FakeAgentSideConnection()
-    model = FixedGenericFakeChatModel(
+    model = GenericFakeChatModel(
         messages=iter([AIMessage(content="I'll create that shopping list for you.")]),
         stream_delimiter=r"(\s)",
     )
@@ -376,7 +359,7 @@ async def test_fake_chat_model_streaming() -> None:
     This test demonstrates the different streaming modes available via stream_delimiter.
     """
     # Test 1: No streaming (stream_delimiter=None) - single chunk
-    model_no_stream = FixedGenericFakeChatModel(
+    model_no_stream = GenericFakeChatModel(
         messages=iter([AIMessage(content="Hello world")]),
         stream_delimiter=None,
     )
@@ -387,7 +370,7 @@ async def test_fake_chat_model_streaming() -> None:
     assert chunks[0].content == "Hello world"
 
     # Test 2: Stream on whitespace using regex (default behavior)
-    model_whitespace = FixedGenericFakeChatModel(
+    model_whitespace = GenericFakeChatModel(
         messages=iter([AIMessage(content="Hello world")]),
         stream_delimiter=r"(\s)",
     )
@@ -401,7 +384,7 @@ async def test_fake_chat_model_streaming() -> None:
     assert chunks[2].content == "world"
 
     # Test 3: Stream with tool_calls
-    model_with_tools = FixedGenericFakeChatModel(
+    model_with_tools = GenericFakeChatModel(
         messages=iter(
             [
                 AIMessage(
@@ -457,7 +440,7 @@ async def test_human_in_the_loop_approval() -> None:
         )
     )
 
-    model = FixedGenericFakeChatModel(
+    model = GenericFakeChatModel(
         messages=iter(
             [
                 # First message: AI decides to call the tool

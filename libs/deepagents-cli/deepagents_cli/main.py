@@ -6,6 +6,15 @@ import os
 import sys
 from pathlib import Path
 
+# Prefer local monorepo deepagents library when available
+try:
+    _libs_dir = Path(__file__).resolve().parents[2]
+    _local_deepagents = _libs_dir / "deepagents"
+    if _local_deepagents.exists():
+        sys.path.insert(0, str(_local_deepagents))
+except Exception:
+    pass
+
 from deepagents.backends.protocol import SandboxBackendProtocol
 
 # Now safe to import agent (which imports LangChain modules)

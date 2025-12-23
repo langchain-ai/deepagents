@@ -10,6 +10,8 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import (
     MAX_SKILL_DESCRIPTION_LENGTH,
     MAX_SKILL_FILE_SIZE,
+    SkillMetadata,
+    SkillsMiddleware,
     _list_skills_from_backend,
     _parse_skill_metadata,
     _validate_skill_name,
@@ -437,8 +439,6 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
 
 def test_format_skills_locations_single_registry() -> None:
     """Test _format_skills_locations with a single registry."""
-    from deepagents.middleware.skills import SkillsMiddleware
-
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
         registries=[{"path": "/skills/user/", "name": "user"}],
@@ -452,8 +452,6 @@ def test_format_skills_locations_single_registry() -> None:
 
 def test_format_skills_locations_multiple_registries() -> None:
     """Test _format_skills_locations with multiple registries."""
-    from deepagents.middleware.skills import SkillsMiddleware
-
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
         registries=[
@@ -473,8 +471,6 @@ def test_format_skills_locations_multiple_registries() -> None:
 
 def test_format_skills_list_empty() -> None:
     """Test _format_skills_list with no skills."""
-    from deepagents.middleware.skills import SkillsMiddleware
-
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
         registries=[
@@ -491,8 +487,6 @@ def test_format_skills_list_empty() -> None:
 
 def test_format_skills_list_single_skill() -> None:
     """Test _format_skills_list with a single skill."""
-    from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
-
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
         registries=[{"path": "/skills/user/", "name": "user"}],
@@ -520,8 +514,6 @@ def test_format_skills_list_single_skill() -> None:
 
 def test_format_skills_list_multiple_skills_multiple_registries() -> None:
     """Test _format_skills_list with skills from multiple registries."""
-    from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
-
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
         registries=[
@@ -582,8 +574,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
 
 def test_before_agent_loads_skills(tmp_path: Path) -> None:
     """Test that before_agent loads skills from backend."""
-    from deepagents.middleware.skills import SkillsMiddleware
-
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create some skills
@@ -619,8 +609,6 @@ def test_before_agent_loads_skills(tmp_path: Path) -> None:
 
 def test_before_agent_skill_override(tmp_path: Path) -> None:
     """Test that skills from later registries override earlier ones."""
-    from deepagents.middleware.skills import SkillsMiddleware
-
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create same skill name in two registries
@@ -663,8 +651,6 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
 
 def test_before_agent_empty_registries(tmp_path: Path) -> None:
     """Test before_agent with empty registries."""
-    from deepagents.middleware.skills import SkillsMiddleware
-
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create empty directories

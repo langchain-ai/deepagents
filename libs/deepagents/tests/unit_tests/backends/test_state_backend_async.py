@@ -1,6 +1,5 @@
 """Async tests for StateBackend."""
 
-import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 

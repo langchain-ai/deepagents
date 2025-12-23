@@ -6,6 +6,9 @@ and child agents.
 """
 
 from langchain.agents import create_agent
+
+# Create properly configured subagents with TodoListMiddleware (already included via create_agent)
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -290,6 +293,219 @@ class TestStructuredOutput:
         # Verify the structured response has the correct values
         expected_response = WeatherReport(location="San Francisco", temperature=18.5, condition="sunny")
         assert structured_response == expected_response, f"Expected {expected_response}, got {structured_response}"
+
+
+class TestSubAgentTodoList:
+    """Tests for subagents that manage their own todo lists."""
+
+    def test_parallel_subagents_with_todo_lists(self) -> None:
+        """Test that multiple subagents can manage their own isolated todo lists.
+
+        This test verifies that:
+        1. Multiple subagents can be invoked in parallel
+        2. Each subagent can use write_todos to manage its own todo list
+        3. Todo lists are properly isolated to each subagent (not merged into parent)
+        4. Parent receives clean ToolMessages from each subagent
+        5. The 'todos' key is excluded from parent state per _EXCLUDED_STATE_KEYS
+
+        This validates that todo list state isolation works correctly in parallel execution.
+        """
+        # Create parent agent's chat model that calls two subagents in parallel
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    # First response: invoke TWO subagents in parallel
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Research the history of Python programming language",
+                                    "subagent_type": "python-researcher",
+                                },
+                                "id": "call_research_python",
+                                "type": "tool_call",
+                            },
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Research the history of JavaScript programming language",
+                                    "subagent_type": "javascript-researcher",
+                                },
+                                "id": "call_research_javascript",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    # Second response: acknowledge both results
+                    AIMessage(content="Both research tasks completed successfully."),
+                ]
+            )
+        )
+
+        # Create first subagent that uses write_todos and returns a result
+        python_subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    # First: write some todos
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_todos",
+                                "args": {
+                                    "todos": [
+                                        {
+                                            "content": "Search for Python history",
+                                            "status": "in_progress",
+                                            "activeForm": "Searching for Python history",
+                                        },
+                                        {"content": "Summarize findings", "status": "pending", "activeForm": "Summarizing findings"},
+                                    ]
+                                },
+                                "id": "call_write_todos_python_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    # Second: update todos and return final message
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_todos",
+                                "args": {
+                                    "todos": [
+                                        {"content": "Search for Python history", "status": "completed", "activeForm": "Searching for Python history"},
+                                        {"content": "Summarize findings", "status": "completed", "activeForm": "Summarizing findings"},
+                                    ]
+                                },
+                                "id": "call_write_todos_python_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    # Final result message
+                    AIMessage(content="Python was created by Guido van Rossum and released in 1991."),
+                ]
+            )
+        )
+
+        # Create second subagent that uses write_todos and returns a result
+        javascript_subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    # First: write some todos
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_todos",
+                                "args": {
+                                    "todos": [
+                                        {
+                                            "content": "Search for JavaScript history",
+                                            "status": "in_progress",
+                                            "activeForm": "Searching for JavaScript history",
+                                        },
+                                        {"content": "Compile summary", "status": "pending", "activeForm": "Compiling summary"},
+                                    ]
+                                },
+                                "id": "call_write_todos_js_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    # Second: update todos and return final message
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_todos",
+                                "args": {
+                                    "todos": [
+                                        {
+                                            "content": "Search for JavaScript history",
+                                            "status": "completed",
+                                            "activeForm": "Searching for JavaScript history",
+                                        },
+                                        {"content": "Compile summary", "status": "completed", "activeForm": "Compiling summary"},
+                                    ]
+                                },
+                                "id": "call_write_todos_js_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    # Final result message
+                    AIMessage(content="JavaScript was created by Brendan Eich at Netscape in 1995."),
+                ]
+            )
+        )
+
+        python_research_agent = create_agent(
+            model=python_subagent_model,
+            middleware=[TodoListMiddleware()],
+        )
+
+        javascript_research_agent = create_agent(
+            model=javascript_subagent_model,
+            middleware=[TodoListMiddleware()],
+        )
+
+        # Create parent agent with both specialized subagents
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="python-researcher",
+                    description="Agent specialized in Python research.",
+                    runnable=python_research_agent,
+                ),
+                CompiledSubAgent(
+                    name="javascript-researcher",
+                    description="Agent specialized in JavaScript research.",
+                    runnable=javascript_research_agent,
+                ),
+            ],
+        )
+
+        # Invoke the parent agent
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Research Python and JavaScript history")]},
+            config={"configurable": {"thread_id": "test_thread_todos"}},
+        )
+
+        # Verify the result contains messages
+        assert "messages" in result, "Result should contain messages key"
+
+        # Find all ToolMessages from the subagents
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2, f"Should have exactly 2 ToolMessages, got {len(tool_messages)}"
+
+        # Create lookup map by tool_call_id
+        tool_messages_by_id = {msg.tool_call_id: msg for msg in tool_messages}
+
+        # Verify both expected tool call IDs are present
+        assert "call_research_python" in tool_messages_by_id, "Should have response from Python researcher"
+        assert "call_research_javascript" in tool_messages_by_id, "Should have response from JavaScript researcher"
+
+        # Verify that todos are NOT in the parent agent's final state
+        # (they should be excluded per _EXCLUDED_STATE_KEYS)
+        assert "todos" not in result, "Parent agent state should not contain todos key (it should be excluded per _EXCLUDED_STATE_KEYS)"
+
+        # Verify the final messages contain the research results
+        python_tool_message = tool_messages_by_id["call_research_python"]
+        assert "Python was created by Guido van Rossum" in python_tool_message.content, (
+            f"Expected Python research result in message, got: {python_tool_message.content}"
+        )
+
+        javascript_tool_message = tool_messages_by_id["call_research_javascript"]
+        assert "JavaScript was created by Brendan Eich" in javascript_tool_message.content, (
+            f"Expected JavaScript research result in message, got: {javascript_tool_message.content}"
+        )
 
 
 class TestSubAgentsWithStructuredOutput:

@@ -455,8 +455,7 @@ class TestSubAgentsWithStructuredOutput:
         # Verify that structured_response is NOT in the parent agent's final state
         # (it should be excluded per _EXCLUDED_STATE_KEYS)
         assert "structured_response" not in result, (
-            "Parent agent state should not contain structured_response key "
-            "(it should be excluded per _EXCLUDED_STATE_KEYS)"
+            "Parent agent state should not contain structured_response key (it should be excluded per _EXCLUDED_STATE_KEYS)"
         )
 
         # Verify the exact content of the ToolMessages
@@ -465,13 +464,11 @@ class TestSubAgentsWithStructuredOutput:
         weather_tool_message = tool_messages_by_id["call_weather"]
         expected_weather_content = "Returning structured response: city='Tokyo' temperature_celsius=22.5 humidity_percent=65"
         assert weather_tool_message.content == expected_weather_content, (
-            f"Expected weather ToolMessage content:\n{expected_weather_content}\n"
-            f"Got:\n{weather_tool_message.content}"
+            f"Expected weather ToolMessage content:\n{expected_weather_content}\nGot:\n{weather_tool_message.content}"
         )
 
         population_tool_message = tool_messages_by_id["call_population"]
         expected_population_content = "Returning structured response: city='Tokyo' population=14000000 metro_area_population=37400000"
         assert population_tool_message.content == expected_population_content, (
-            f"Expected population ToolMessage content:\n{expected_population_content}\n"
-            f"Got:\n{population_tool_message.content}"
+            f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
         )

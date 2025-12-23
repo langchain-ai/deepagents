@@ -290,3 +290,188 @@ class TestStructuredOutput:
         # Verify the structured response has the correct values
         expected_response = WeatherReport(location="San Francisco", temperature=18.5, condition="sunny")
         assert structured_response == expected_response, f"Expected {expected_response}, got {structured_response}"
+
+
+class TestSubAgentsWithStructuredOutput:
+    """Tests for subagents that return structured responses."""
+
+    def test_parallel_subagents_with_different_structured_outputs(self) -> None:
+        """Test that multiple subagents with different structured outputs work correctly.
+
+        This test verifies that:
+        1. Two different subagents can be invoked in parallel
+        2. Each subagent has its own structured output schema
+        3. Structured responses are properly excluded from parent state (per _EXCLUDED_STATE_KEYS)
+        4. Parent receives clean ToolMessages from each subagent
+        5. Each subagent's structured_response stays isolated to that subagent
+
+        This validates that structured_response exclusion prevents schema conflicts
+        between parent and subagent agents.
+        """
+
+        # Define structured output schemas for the two specialized subagents
+        class CityWeather(BaseModel):
+            """Weather information for a city."""
+
+            city: str = Field(description="Name of the city")
+            temperature_celsius: float = Field(description="Temperature in Celsius")
+            humidity_percent: int = Field(description="Humidity percentage")
+
+        class CityPopulation(BaseModel):
+            """Population statistics for a city."""
+
+            city: str = Field(description="Name of the city")
+            population: int = Field(description="Total population")
+            metro_area_population: int = Field(description="Metropolitan area population")
+
+        # Create parent agent's chat model that calls both subagents in parallel
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    # First response: invoke TWO different subagents in parallel
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Get weather information for Tokyo",
+                                    "subagent_type": "weather-analyzer",
+                                },
+                                "id": "call_weather",
+                                "type": "tool_call",
+                            },
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Get population statistics for Tokyo",
+                                    "subagent_type": "population-analyzer",
+                                },
+                                "id": "call_population",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    # Second response: acknowledge both results
+                    AIMessage(content="I've gathered weather and population data for Tokyo."),
+                ]
+            )
+        )
+
+        # Create weather subagent with structured output
+        weather_subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "CityWeather",
+                                "args": {
+                                    "city": "Tokyo",
+                                    "temperature_celsius": 22.5,
+                                    "humidity_percent": 65,
+                                },
+                                "id": "call_weather_struct",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                ]
+            )
+        )
+
+        weather_subagent = create_agent(
+            model=weather_subagent_model,
+            response_format=ToolStrategy(schema=CityWeather),
+        )
+
+        # Create population subagent with structured output
+        population_subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "CityPopulation",
+                                "args": {
+                                    "city": "Tokyo",
+                                    "population": 14000000,
+                                    "metro_area_population": 37400000,
+                                },
+                                "id": "call_population_struct",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                ]
+            )
+        )
+
+        population_subagent = create_agent(
+            model=population_subagent_model,
+            response_format=ToolStrategy(schema=CityPopulation),
+        )
+
+        # Create parent agent with both specialized subagents
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="weather-analyzer",
+                    description="Specialized agent for weather analysis.",
+                    runnable=weather_subagent,
+                ),
+                CompiledSubAgent(
+                    name="population-analyzer",
+                    description="Specialized agent for population analysis.",
+                    runnable=population_subagent,
+                ),
+            ],
+        )
+
+        # Invoke the parent agent
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Tell me about Tokyo's weather and population")]},
+            config={"configurable": {"thread_id": "test_thread_structured"}},
+        )
+
+        # Verify the result contains messages
+        assert "messages" in result, "Result should contain messages key"
+
+        # Find all ToolMessages from the subagents
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2, f"Should have exactly 2 ToolMessages, got {len(tool_messages)}"
+
+        # Create lookup map by tool_call_id
+        tool_messages_by_id = {msg.tool_call_id: msg for msg in tool_messages}
+
+        # Verify both expected tool call IDs are present
+        assert "call_weather" in tool_messages_by_id, "Should have response from weather subagent"
+        assert "call_population" in tool_messages_by_id, "Should have response from population subagent"
+
+        # Verify that structured_response is NOT in the parent agent's final state
+        # (it should be excluded per _EXCLUDED_STATE_KEYS)
+        assert "structured_response" not in result, (
+            "Parent agent state should not contain structured_response key "
+            "(it should be excluded per _EXCLUDED_STATE_KEYS)"
+        )
+
+        # Verify the exact content of the ToolMessages
+        # When a subagent uses ToolStrategy for structured output, the default tool message
+        # content shows the structured response using the Pydantic model's string representation
+        weather_tool_message = tool_messages_by_id["call_weather"]
+        expected_weather_content = "Returning structured response: city='Tokyo' temperature_celsius=22.5 humidity_percent=65"
+        assert weather_tool_message.content == expected_weather_content, (
+            f"Expected weather ToolMessage content:\n{expected_weather_content}\n"
+            f"Got:\n{weather_tool_message.content}"
+        )
+
+        population_tool_message = tool_messages_by_id["call_population"]
+        expected_population_content = "Returning structured response: city='Tokyo' population=14000000 metro_area_population=37400000"
+        assert population_tool_message.content == expected_population_content, (
+            f"Expected population ToolMessage content:\n{expected_population_content}\n"
+            f"Got:\n{population_tool_message.content}"
+        )

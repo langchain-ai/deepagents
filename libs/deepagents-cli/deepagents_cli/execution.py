@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 import sys
 import termios
 import tty
@@ -21,7 +20,6 @@ from pydantic import TypeAdapter, ValidationError
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.text import Text
 
 from deepagents_cli.config import COLORS, console
 from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
@@ -37,30 +35,6 @@ from deepagents_cli.ui import (
 )
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
-
-
-def _display_user_message_with_images(text: str) -> None:
-    """Display user message with image placeholders colored in magenta.
-
-    Args:
-        text: User message text potentially containing [image] or [image N] placeholders
-    """
-    # Pattern to match [image] or [image N]
-    pattern = r"(\[image(?:\s+\d+)?\])"
-
-    # Split text by pattern and build Rich Text object
-    parts = re.split(pattern, text)
-    rich_text = Text()
-
-    for part in parts:
-        if re.match(pattern, part):
-            # This is an image placeholder - render in magenta
-            rich_text.append(part, style="#ff00ff")
-        else:
-            # Regular text - render in user color
-            rich_text.append(part, style=COLORS["user"])
-
-    console.print(rich_text)
 
 
 def prompt_for_tool_approval(
@@ -296,9 +270,6 @@ async def execute_task(
         markdown = Markdown(pending_text.rstrip())
         console.print(markdown, style=COLORS["agent"])
         pending_text = ""
-
-    # Display user input with colored image placeholders
-    _display_user_message_with_images(final_input)
 
     # Clear images from tracker after creating the message
     # (they've been encoded into the message content)

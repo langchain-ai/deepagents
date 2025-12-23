@@ -2,14 +2,17 @@
 
 import re
 from collections.abc import Iterator
-from typing import Any, cast
+from typing import Any, cast, Sequence, Callable
 
 from langchain_core.callbacks import (
     CallbackManagerForLLMRun,
 )
+from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.runnables import Runnable
+from langchain_core.tools import BaseTool
 from typing_extensions import override
 
 
@@ -44,7 +47,7 @@ class GenericFakeChatModel(BaseChatModel):
         # Stream on whitespace (regex) - more flexible
         model = GenericFakeChatModel(
             messages=iter([AIMessage(content="Hello world")]),
-            stream_delimiter=r"(\s)"
+            stream_delimiter=r"(\\s)"
         )
         # Yields: "Hello", " ", "world"
     """
@@ -67,6 +70,16 @@ class GenericFakeChatModel(BaseChatModel):
     - Regex pattern: Use re.split() with the pattern (use capture groups to preserve delimiters)
     """
 
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Override bind_tools to return self."""
+        return self
+
     @override
     def _generate(
         self,
@@ -87,23 +100,15 @@ class GenericFakeChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        chat_result = self._generate(
-            messages, stop=stop, run_manager=run_manager, **kwargs
-        )
+        chat_result = self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         if not isinstance(chat_result, ChatResult):
-            msg = (
-                f"Expected generate to return a ChatResult, "
-                f"but got {type(chat_result)} instead."
-            )
+            msg = f"Expected generate to return a ChatResult, but got {type(chat_result)} instead."
             raise ValueError(msg)  # noqa: TRY004
 
         message = chat_result.generations[0].message
 
         if not isinstance(message, AIMessage):
-            msg = (
-                f"Expected invoke to return an AIMessage, "
-                f"but got {type(message)} instead."
-            )
+            msg = f"Expected invoke to return an AIMessage, but got {type(message)} instead."
             raise ValueError(msg)  # noqa: TRY004
 
         content = message.content
@@ -121,9 +126,7 @@ class GenericFakeChatModel(BaseChatModel):
             else:
                 # Split content using the delimiter
                 # Use re.split to support both string and regex patterns
-                content_chunks = cast(
-                    "list[str]", re.split(self.stream_delimiter, content)
-                )
+                content_chunks = cast("list[str]", re.split(self.stream_delimiter, content))
                 # Remove empty strings that can result from splitting
                 content_chunks = [chunk for chunk in content_chunks if chunk]
 
@@ -139,11 +142,7 @@ class GenericFakeChatModel(BaseChatModel):
                         tool_calls=chunk_tool_calls,
                     )
                 )
-                if (
-                    is_last
-                    and isinstance(chunk.message, AIMessageChunk)
-                    and not message.additional_kwargs
-                ):
+                if is_last and isinstance(chunk.message, AIMessageChunk) and not message.additional_kwargs:
                     chunk.message.chunk_position = "last"
                 if run_manager:
                     run_manager.on_llm_new_token(token, chunk=chunk)
@@ -176,9 +175,7 @@ class GenericFakeChatModel(BaseChatModel):
                                     message=AIMessageChunk(
                                         id=message.id,
                                         content="",
-                                        additional_kwargs={
-                                            "function_call": {fkey: fvalue_chunk}
-                                        },
+                                        additional_kwargs={"function_call": {fkey: fvalue_chunk}},
                                     )
                                 )
                                 if run_manager:
@@ -202,11 +199,7 @@ class GenericFakeChatModel(BaseChatModel):
                                 )
                             yield chunk
                 else:
-                    chunk = ChatGenerationChunk(
-                        message=AIMessageChunk(
-                            id=message.id, content="", additional_kwargs={key: value}
-                        )
-                    )
+                    chunk = ChatGenerationChunk(message=AIMessageChunk(id=message.id, content="", additional_kwargs={key: value}))
                     if run_manager:
                         run_manager.on_llm_new_token(
                             "",

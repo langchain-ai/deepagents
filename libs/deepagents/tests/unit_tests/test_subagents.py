@@ -101,25 +101,25 @@ class TestSubAgentInvocation:
         assert "The sum of 2 and 3 is 5." in subagent_tool_message.content, "ToolMessage should contain subagent's final message content"
 
     def test_multiple_subagents_invoked_in_parallel(self) -> None:
-        """Test that multiple subagents can be launched in parallel.
+        """Test that multiple different subagents can be launched in parallel.
 
-        This test verifies parallel subagent execution:
+        This test verifies parallel execution with distinct subagent types:
         1. Parent agent makes a single AIMessage with multiple tool_calls
-        2. Both subagents are invoked concurrently (one for addition, one for multiplication)
-        3. Each subagent completes its task independently
+        2. Two different subagents are invoked concurrently (math-adder and math-multiplier)
+        3. Each specialized subagent completes its task independently
         4. Both subagent results are returned as separate ToolMessages
         5. Parent agent receives both results and can synthesize them
 
         The parallel execution pattern is important for:
         - Reducing latency when tasks are independent
         - Efficient resource utilization
-        - Handling multi-part user requests
+        - Handling multi-part user requests with specialized agents
         """
         # Create the parent agent's chat model that will call both subagents in parallel
         parent_chat_model = GenericFakeChatModel(
             messages=iter(
                 [
-                    # First response: invoke TWO task tools in parallel
+                    # First response: invoke TWO different task tools in parallel
                     AIMessage(
                         content="",
                         tool_calls=[
@@ -127,7 +127,7 @@ class TestSubAgentInvocation:
                                 "name": "task",
                                 "args": {
                                     "description": "Calculate the sum of 5 and 7",
-                                    "subagent_type": "general-purpose",
+                                    "subagent_type": "math-adder",
                                 },
                                 "id": "call_addition",
                                 "type": "tool_call",
@@ -136,7 +136,7 @@ class TestSubAgentInvocation:
                                 "name": "task",
                                 "args": {
                                     "description": "Calculate the product of 4 and 6",
-                                    "subagent_type": "general-purpose",
+                                    "subagent_type": "math-multiplier",
                                 },
                                 "id": "call_multiplication",
                                 "type": "tool_call",
@@ -149,9 +149,7 @@ class TestSubAgentInvocation:
             )
         )
 
-        # Create subagent models - each will handle one calculation
-        # Note: In a real scenario, the same subagent would be reused,
-        # but for testing we simulate responses with separate model instances
+        # Create specialized subagent models - each handles a specific math operation
         addition_subagent_model = GenericFakeChatModel(
             messages=iter(
                 [
@@ -168,36 +166,25 @@ class TestSubAgentInvocation:
             )
         )
 
-        # Create two separate compiled subagents for this test
-        # In practice, the same subagent definition handles multiple invocations
+        # Compile the two different specialized subagents
         addition_subagent = create_agent(model=addition_subagent_model)
         multiplication_subagent = create_agent(model=multiplication_subagent_model)
 
-        # For this test, we'll use a single general-purpose subagent
-        # The key is that it gets invoked twice in parallel
-        # We'll use the addition model for the shared subagent
-        # (In reality, the subagent would handle both, but for testing we simplify)
-        general_purpose_subagent = create_agent(
-            model=GenericFakeChatModel(
-                messages=iter(
-                    [
-                        AIMessage(content="The sum of 5 and 7 is 12."),
-                        AIMessage(content="The product of 4 and 6 is 24."),
-                    ]
-                )
-            )
-        )
-
-        # Create the parent agent with subagent support
+        # Create the parent agent with BOTH specialized subagents
         parent_agent = create_deep_agent(
             model=parent_chat_model,
             checkpointer=InMemorySaver(),
             subagents=[
                 CompiledSubAgent(
-                    name="general-purpose",
-                    description="A general-purpose agent for various tasks.",
-                    runnable=general_purpose_subagent,
-                )
+                    name="math-adder",
+                    description="Specialized agent for addition operations.",
+                    runnable=addition_subagent,
+                ),
+                CompiledSubAgent(
+                    name="math-multiplier",
+                    description="Specialized agent for multiplication operations.",
+                    runnable=multiplication_subagent,
+                ),
             ],
         )
 
@@ -214,16 +201,20 @@ class TestSubAgentInvocation:
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 2, f"Should have exactly 2 ToolMessages (one per subagent), but got {len(tool_messages)}"
 
-        # Verify each ToolMessage has a unique tool_call_id corresponding to the parallel calls
-        tool_call_ids = {msg.tool_call_id for msg in tool_messages}
-        assert len(tool_call_ids) == 2, "Each ToolMessage should have a unique tool_call_id"
-        assert "call_addition" in tool_call_ids, "Should have response from addition subagent"
-        assert "call_multiplication" in tool_call_ids, "Should have response from multiplication subagent"
+        # Create a lookup map from tool_call_id to ToolMessage for precise verification
+        tool_messages_by_id = {msg.tool_call_id: msg for msg in tool_messages}
 
-        # Verify the content of both responses
-        tool_message_contents = [msg.content for msg in tool_messages]
-        addition_result_found = any("12" in content for content in tool_message_contents)
-        multiplication_result_found = any("24" in content for content in tool_message_contents)
+        # Verify we have both expected tool call IDs
+        assert "call_addition" in tool_messages_by_id, "Should have response from addition subagent"
+        assert "call_multiplication" in tool_messages_by_id, "Should have response from multiplication subagent"
 
-        assert addition_result_found, "Should have addition result (12) in one of the ToolMessages"
-        assert multiplication_result_found, "Should have multiplication result (24) in one of the ToolMessages"
+        # Verify the exact content of each response by looking up the specific tool message
+        addition_tool_message = tool_messages_by_id["call_addition"]
+        assert addition_tool_message.content == "The sum of 5 and 7 is 12.", (
+            f"Addition subagent should return exact message, got: {addition_tool_message.content}"
+        )
+
+        multiplication_tool_message = tool_messages_by_id["call_multiplication"]
+        assert multiplication_tool_message.content == "The product of 4 and 6 is 24.", (
+            f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
+        )

@@ -11,6 +11,7 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.graph.state import CompiledStateGraph
@@ -41,7 +42,7 @@ def create_deep_agent(
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
-    system_prompt: str | None = None,
+    system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     response_format: ResponseFormat | None = None,
@@ -146,9 +147,15 @@ def create_deep_agent(
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
+    # Convert system_prompt to SystemMessage if needed
+    system_message: SystemMessage = SystemMessage(content=BASE_AGENT_PROMPT)
+    if system_prompt is not None:
+        content = system_prompt.content if isinstance(system_prompt, SystemMessage) else system_prompt
+        system_message = SystemMessage(content=content + "\n\n" + BASE_AGENT_PROMPT)
+
     return create_agent(
         model,
-        system_prompt=system_prompt + "\n\n" + BASE_AGENT_PROMPT if system_prompt else BASE_AGENT_PROMPT,
+        system_prompt=system_message,
         tools=tools,
         middleware=deepagent_middleware,
         response_format=response_format,

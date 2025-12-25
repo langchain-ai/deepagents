@@ -496,12 +496,18 @@ SkillsMiddleware(
 )
 ```
 
-Skills are defined with YAML frontmatter:
+Skills are defined with YAML frontmatter following the [Agent Skills open standard](https://agentskills.io/specification):
 
 ```markdown
 ---
 name: web-research
 description: Conduct comprehensive web research with planning and synthesis
+license: MIT                    # Optional
+compatibility: Requires git     # Optional
+metadata:                       # Optional
+  author: my-org
+  version: "1.0"
+allowed-tools: Bash(git:*) Read # Optional (experimental)
 ---
 
 # Web Research Skill
@@ -510,6 +516,16 @@ description: Conduct comprehensive web research with planning and synthesis
 - Research complex topics requiring multiple sources
 ...
 ```
+
+**Required fields:**
+- `name`: 1-64 chars, lowercase alphanumeric + hyphens, must match directory name
+- `description`: 1-1024 chars, what the skill does and when to use it
+
+**Optional fields:**
+- `license`: License name or file reference
+- `compatibility`: Environment requirements (1-500 chars)
+- `metadata`: Arbitrary key-value pairs (author, version, etc.)
+- `allowed-tools`: Pre-approved tools (experimental)
 
 ## Sync vs Async
 

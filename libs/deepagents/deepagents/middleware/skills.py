@@ -17,19 +17,32 @@ from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 
 class SkillMetadata(TypedDict):
-    """Metadata for a skill."""
+    """Metadata for a skill per Agent Skills spec (https://agentskills.io/specification)."""
 
     name: str
-    """Name of the skill."""
+    """Name of the skill (max 64 chars, lowercase alphanumeric and hyphens)."""
 
     description: str
-    """Description of what the skill does."""
+    """Description of what the skill does (max 1024 chars)."""
 
     path: str
     """Path to the SKILL.md file within the backend."""
 
     label: NotRequired[str | None]
     """Label for grouping in display (e.g., 'User Skills', 'Project Skills')."""
+
+    # Optional fields per Agent Skills spec
+    license: NotRequired[str | None]
+    """License name or reference to bundled license file."""
+
+    compatibility: NotRequired[str | None]
+    """Environment requirements (max 500 chars)."""
+
+    skill_metadata: NotRequired[dict[str, str] | None]
+    """Arbitrary key-value mapping for additional metadata."""
+
+    allowed_tools: NotRequired[str | None]
+    """Space-delimited list of pre-approved tools (experimental)."""
 
 
 SKILLS_SYSTEM_PROMPT = """
@@ -79,7 +92,52 @@ Remember: Skills are tools to make you more capable and consistent. When in doub
 """
 
 
+# Match YAML frontmatter block: ---\n<yaml>\n---
 _FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
+
+# Agent Skills spec constraints (https://agentskills.io/specification)
+MAX_SKILL_NAME_LENGTH = 64
+MAX_SKILL_DESCRIPTION_LENGTH = 1024
+MAX_SKILL_COMPATIBILITY_LENGTH = 500
+
+# Name validation: lowercase alphanumeric + hyphens, no start/end hyphen, no --
+_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
+def _validate_skill_name(name: str, parent_dir: str | None = None) -> list[str]:
+    """Validate skill name per agentskills.io spec. Returns list of warnings."""
+    warnings_list: list[str] = []
+
+    if len(name) > MAX_SKILL_NAME_LENGTH:
+        warnings_list.append(f"name exceeds {MAX_SKILL_NAME_LENGTH} chars: {len(name)}")
+
+    if not _NAME_PATTERN.match(name):
+        warnings_list.append(
+            f"name must be lowercase alphanumeric with hyphens: '{name}'"
+        )
+
+    if parent_dir and name != parent_dir:
+        warnings_list.append(f"name '{name}' doesn't match directory '{parent_dir}'")
+
+    return warnings_list
+
+
+def _validate_skill_description(desc: str) -> list[str]:
+    """Validate description per spec. Returns list of warnings."""
+    if not desc:
+        return ["description must not be empty"]
+    if len(desc) > MAX_SKILL_DESCRIPTION_LENGTH:
+        return [f"description exceeds {MAX_SKILL_DESCRIPTION_LENGTH} chars: {len(desc)}"]
+    return []
+
+
+def _validate_skill_compatibility(compat: str) -> list[str]:
+    """Validate compatibility per spec. Returns list of warnings."""
+    if not compat:
+        return ["compatibility must not be empty if provided"]
+    if len(compat) > MAX_SKILL_COMPATIBILITY_LENGTH:
+        return [f"compatibility exceeds {MAX_SKILL_COMPATIBILITY_LENGTH} chars: {len(compat)}"]
+    return []
 
 
 def _strip_line_numbers(content: str) -> str:
@@ -90,8 +148,21 @@ def _strip_line_numbers(content: str) -> str:
     )
 
 
-def _parse_skill_metadata(content: str) -> dict[str, str] | None:
-    """Parse YAML frontmatter from SKILL.md content. Returns None if invalid."""
+def _parse_skill_metadata(
+    content: str, parent_dir: str | None = None
+) -> dict[str, Any] | None:
+    """Parse YAML frontmatter from SKILL.md content per Agent Skills spec.
+
+    Returns None if invalid (missing required fields or malformed YAML).
+    Emits warnings for spec violations but still returns metadata (lenient mode).
+
+    Args:
+        content: The SKILL.md file content.
+        parent_dir: Parent directory name for name validation.
+
+    Returns:
+        Dictionary with skill metadata or None if invalid.
+    """
     match = _FRONTMATTER_PATTERN.match(content)
     if not match:
         return None
@@ -106,10 +177,40 @@ def _parse_skill_metadata(content: str) -> dict[str, str] | None:
     if "name" not in metadata or "description" not in metadata:
         return None
 
-    return {
-        "name": str(metadata["name"]),
-        "description": str(metadata["description"]),
+    name = str(metadata["name"])
+    description = str(metadata["description"])
+
+    # Build result with required fields
+    result: dict[str, Any] = {
+        "name": name,
+        "description": description,
     }
+
+    # Parse optional fields per Agent Skills spec
+    if "license" in metadata:
+        result["license"] = str(metadata["license"])
+
+    if "compatibility" in metadata:
+        compat = str(metadata["compatibility"])
+        result["compatibility"] = compat
+        for w in _validate_skill_compatibility(compat):
+            warnings.warn(w, UserWarning, stacklevel=3)
+
+    if "metadata" in metadata and isinstance(metadata["metadata"], dict):
+        result["skill_metadata"] = {
+            str(k): str(v) for k, v in metadata["metadata"].items()
+        }
+
+    if "allowed-tools" in metadata:
+        result["allowed_tools"] = str(metadata["allowed-tools"])
+
+    # Validation (lenient - warnings only, still load the skill)
+    for w in _validate_skill_name(name, parent_dir):
+        warnings.warn(w, UserWarning, stacklevel=3)
+    for w in _validate_skill_description(description):
+        warnings.warn(w, UserWarning, stacklevel=3)
+
+    return result
 
 
 def _list_skills_from_backend(
@@ -133,6 +234,7 @@ def _list_skills_from_backend(
         if not item_path:
             continue
 
+        # ls_info returns absolute or relative paths depending on backend
         base = item_path.rstrip("/") if item_path.startswith("/") else f"{normalized_path}/{item_path.rstrip('/')}"
         skill_md_path = f"{base}/SKILL.md"
 
@@ -141,17 +243,23 @@ def _list_skills_from_backend(
             continue
 
         content = _strip_line_numbers(content)
-        metadata = _parse_skill_metadata(content)
+        # Extract directory name for spec validation
+        parent_dir = base.rstrip("/").split("/")[-1]
+        metadata = _parse_skill_metadata(content, parent_dir=parent_dir)
         if metadata is None:
             continue
 
-        skills.append(
-            SkillMetadata(
-                name=metadata["name"],
-                description=metadata["description"],
-                path=skill_md_path,
-            )
+        # Build SkillMetadata with required and optional fields
+        skill = SkillMetadata(
+            name=metadata["name"],
+            description=metadata["description"],
+            path=skill_md_path,
         )
+        for key in ("license", "compatibility", "skill_metadata", "allowed_tools"):
+            if key in metadata:
+                skill[key] = metadata[key]  # type: ignore[literal-required]
+
+        skills.append(skill)
 
     return skills
 
@@ -276,6 +384,7 @@ class SkillsMiddleware(AgentMiddleware):
         fs_backend = None
         for tool in tools:
             if getattr(tool, "name", None) == "read_file":
+                # Inspect closure to find FilesystemMiddleware's backend instance
                 for cell in getattr(getattr(tool, "func", None), "__closure__", None) or []:
                     try:
                         content = cell.cell_contents

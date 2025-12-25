@@ -128,7 +128,7 @@ class TestStateBackend:
 
     def test_skip_invalid_skills(self):
         runtime = make_runtime({
-            "/skills/valid/SKILL.md": CODE_REVIEW_SKILL,
+            "/skills/code-review/SKILL.md": CODE_REVIEW_SKILL,
             "/skills/broken/SKILL.md": INVALID_SKILL,
         })
         skills = _list_skills_from_backend(StateBackend(runtime), "/skills")
@@ -136,7 +136,7 @@ class TestStateBackend:
         assert skills[0]["name"] == "code-review"
 
     def test_multiline_description(self):
-        runtime = make_runtime({"/skills/research/SKILL.md": WEB_RESEARCH_SKILL})
+        runtime = make_runtime({"/skills/web-research/SKILL.md": WEB_RESEARCH_SKILL})
         skills = _list_skills_from_backend(StateBackend(runtime), "/skills")
         assert len(skills) == 1
         assert "comprehensive research" in skills[0]["description"]
@@ -237,7 +237,7 @@ class TestCompositeBackend:
     def test_load_skills_from_composite(self):
         """Load skills from composite backend with StateBackend default."""
         runtime = make_runtime({
-            "/skills/state-skill/SKILL.md": CODE_REVIEW_SKILL,
+            "/skills/code-review/SKILL.md": CODE_REVIEW_SKILL,
         })
         backend = CompositeBackend(default=StateBackend(runtime), routes={})
 
@@ -248,8 +248,8 @@ class TestCompositeBackend:
     def test_composite_with_filesystem_route(self):
         """Composite backend routing StateBackend + different path."""
         runtime = make_runtime({
-            "/default/state-skill/SKILL.md": CODE_REVIEW_SKILL,
-            "/override/other-skill/SKILL.md": WEB_RESEARCH_SKILL,
+            "/default/code-review/SKILL.md": CODE_REVIEW_SKILL,
+            "/override/web-research/SKILL.md": WEB_RESEARCH_SKILL,
         })
 
         backend = CompositeBackend(
@@ -313,6 +313,70 @@ class TestSkillsFormat:
         assert "Available Skills" in prompt
         assert "Progressive Disclosure" in prompt
         assert "web-research" in prompt
+
+    def test_skill_with_all_optional_fields(self):
+        """Skills with all optional fields per agentskills.io spec are loaded correctly."""
+        skill_with_all_fields = FileData(
+            content=[
+                "---",
+                "name: full-skill",
+                "description: A skill demonstrating all optional fields",
+                "license: Apache-2.0",
+                "compatibility: Requires Python 3.10+ and git",
+                "metadata:",
+                "  author: test-org",
+                "  version: '2.0'",
+                "allowed-tools: Bash(git:*) Read Write",
+                "---",
+                "",
+                "# Full Skill",
+                "",
+                "This skill has all optional fields defined.",
+            ],
+            created_at="2024-01-01",
+            modified_at="2024-01-01",
+        )
+        runtime = make_runtime({"/skills/full-skill/SKILL.md": skill_with_all_fields})
+        skills = _list_skills_from_backend(StateBackend(runtime), "/skills")
+
+        assert len(skills) == 1
+        skill = skills[0]
+        assert skill["name"] == "full-skill"
+        assert skill["description"] == "A skill demonstrating all optional fields"
+        assert skill.get("license") == "Apache-2.0"
+        assert skill.get("compatibility") == "Requires Python 3.10+ and git"
+        assert skill.get("skill_metadata") == {"author": "test-org", "version": "2.0"}
+        assert skill.get("allowed_tools") == "Bash(git:*) Read Write"
+
+    def test_skill_name_validation_warning(self):
+        """Invalid skill names emit warnings but still load (lenient mode)."""
+        import warnings as warnings_module
+
+        # Skill with uppercase name (spec violation)
+        invalid_skill = FileData(
+            content=[
+                "---",
+                "name: Invalid-Skill-Name",
+                "description: This skill has an invalid name per spec",
+                "---",
+                "",
+                "# Invalid Skill",
+            ],
+            created_at="2024-01-01",
+            modified_at="2024-01-01",
+        )
+        runtime = make_runtime({"/skills/invalid-skill/SKILL.md": invalid_skill})
+
+        with warnings_module.catch_warnings(record=True) as w:
+            warnings_module.simplefilter("always")
+            skills = _list_skills_from_backend(StateBackend(runtime), "/skills")
+
+            # Should still load (lenient mode)
+            assert len(skills) == 1
+            assert skills[0]["name"] == "Invalid-Skill-Name"
+            # Should have emitted warnings
+            warning_messages = [str(warning.message) for warning in w]
+            assert any("lowercase" in msg for msg in warning_messages)
 
 
 @pytest.mark.requires("langchain_anthropic")

@@ -1781,3 +1781,235 @@ class TestSkillsMiddleware:
         skills = middleware._load_skills(runtime)
         assert len(skills) == 1
         assert skills[0]["label"] == "Custom Tools"
+
+    # ========== Agent Skills Spec Validation Tests ==========
+
+    def test_parse_skill_metadata_optional_fields(self):
+        """Optional fields are parsed correctly per agentskills.io spec."""
+        from deepagents.middleware.skills import _parse_skill_metadata
+        content = """---
+name: test-skill
+description: Test description
+license: MIT
+compatibility: Requires Python 3.10+
+metadata:
+  author: test-org
+  version: "1.0"
+allowed-tools: Bash(git:*) Read
+---
+# Content
+"""
+        result = _parse_skill_metadata(content)
+        assert result is not None
+        assert result["name"] == "test-skill"
+        assert result["description"] == "Test description"
+        assert result["license"] == "MIT"
+        assert result["compatibility"] == "Requires Python 3.10+"
+        assert result["skill_metadata"] == {"author": "test-org", "version": "1.0"}
+        assert result["allowed_tools"] == "Bash(git:*) Read"
+
+    def test_parse_skill_metadata_only_required_fields(self):
+        """Skills with only required fields still work."""
+        from deepagents.middleware.skills import _parse_skill_metadata
+        content = "---\nname: minimal\ndescription: Minimal skill\n---\n"
+        result = _parse_skill_metadata(content)
+        assert result is not None
+        assert result["name"] == "minimal"
+        assert "license" not in result
+        assert "compatibility" not in result
+
+    def test_validate_name_valid(self):
+        """Valid names return no warnings."""
+        from deepagents.middleware.skills import _validate_skill_name
+        assert _validate_skill_name("pdf-processing") == []
+        assert _validate_skill_name("code-review") == []
+        assert _validate_skill_name("a") == []
+        assert _validate_skill_name("a1b2c3") == []
+
+    def test_validate_name_uppercase_warning(self):
+        """Uppercase names emit warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("PDF-Processing")
+        assert len(warnings_list) == 1
+        assert "lowercase" in warnings_list[0]
+
+    def test_validate_name_consecutive_hyphens(self):
+        """Consecutive hyphens emit warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("pdf--processing")
+        assert len(warnings_list) == 1
+        assert "lowercase alphanumeric" in warnings_list[0]
+
+    def test_validate_name_starts_with_hyphen(self):
+        """Starting with hyphen emits warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("-pdf")
+        assert len(warnings_list) == 1
+
+    def test_validate_name_too_long(self):
+        """Names exceeding 64 chars emit warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        long_name = "a" * 65
+        warnings_list = _validate_skill_name(long_name)
+        assert len(warnings_list) >= 1
+        assert any("64" in w for w in warnings_list)
+
+    def test_validate_name_directory_mismatch(self):
+        """Name not matching directory emits warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("skill-name", parent_dir="different-name")
+        assert len(warnings_list) == 1
+        assert "doesn't match" in warnings_list[0]
+
+    def test_validate_name_directory_match(self):
+        """Name matching directory returns no warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("my-skill", parent_dir="my-skill")
+        assert warnings_list == []
+
+    def test_validate_description_valid(self):
+        """Valid description returns no warnings."""
+        from deepagents.middleware.skills import _validate_skill_description
+        assert _validate_skill_description("Short description") == []
+        assert _validate_skill_description("x" * 1024) == []
+
+    def test_validate_description_too_long(self):
+        """Description exceeding 1024 chars emits warning."""
+        from deepagents.middleware.skills import _validate_skill_description
+        long_desc = "x" * 1025
+        warnings_list = _validate_skill_description(long_desc)
+        assert len(warnings_list) == 1
+        assert "1024" in warnings_list[0]
+
+    def test_validate_compatibility_valid(self):
+        """Valid compatibility returns no warnings."""
+        from deepagents.middleware.skills import _validate_skill_compatibility
+        assert _validate_skill_compatibility("Requires git") == []
+        assert _validate_skill_compatibility("x" * 500) == []
+
+    def test_validate_compatibility_too_long(self):
+        """Compatibility exceeding 500 chars emits warning."""
+        from deepagents.middleware.skills import _validate_skill_compatibility
+        long_compat = "x" * 501
+        warnings_list = _validate_skill_compatibility(long_compat)
+        assert len(warnings_list) == 1
+        assert "500" in warnings_list[0]
+
+    def test_parse_with_parent_dir_validation(self):
+        """_parse_skill_metadata validates name against parent dir."""
+        import warnings as warnings_module
+        from deepagents.middleware.skills import _parse_skill_metadata
+
+        content = "---\nname: wrong-name\ndescription: Test\n---\n"
+        with warnings_module.catch_warnings(record=True) as w:
+            warnings_module.simplefilter("always")
+            result = _parse_skill_metadata(content, parent_dir="correct-name")
+            # Should still return result (lenient mode)
+            assert result is not None
+            assert result["name"] == "wrong-name"
+            # Should emit warning about mismatch
+            assert any("doesn't match" in str(warning.message) for warning in w)
+
+    def test_list_skills_with_optional_fields(self):
+        """_list_skills_from_backend includes optional fields."""
+        from deepagents.middleware.skills import _list_skills_from_backend
+        runtime = self._make_runtime({
+            "/skills/full-skill/SKILL.md": FileData(
+                content=[
+                    "---",
+                    "name: full-skill",
+                    "description: Full skill with all fields",
+                    "license: Apache-2.0",
+                    "compatibility: Python 3.10+",
+                    "metadata:",
+                    "  author: test",
+                    "allowed-tools: Read Write",
+                    "---",
+                ],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        })
+        skills = _list_skills_from_backend(StateBackend(runtime), "/skills")
+        assert len(skills) == 1
+        assert skills[0]["name"] == "full-skill"
+        assert skills[0].get("license") == "Apache-2.0"
+        assert skills[0].get("compatibility") == "Python 3.10+"
+        assert skills[0].get("skill_metadata") == {"author": "test"}
+        assert skills[0].get("allowed_tools") == "Read Write"
+
+    # ========== Additional Validation Edge Cases ==========
+
+    def test_validate_name_ends_with_hyphen(self):
+        """Name ending with hyphen emits warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("pdf-")
+        assert len(warnings_list) == 1
+        assert "lowercase alphanumeric" in warnings_list[0]
+
+    def test_validate_name_underscore(self):
+        """Name with underscore emits warning (not allowed per spec)."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("pdf_processing")
+        assert len(warnings_list) == 1
+        assert "lowercase alphanumeric" in warnings_list[0]
+
+    def test_validate_name_special_chars(self):
+        """Name with special chars emits warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("pdf@processing")
+        assert len(warnings_list) == 1
+        assert "lowercase alphanumeric" in warnings_list[0]
+
+    def test_validate_name_empty(self):
+        """Empty name emits warning."""
+        from deepagents.middleware.skills import _validate_skill_name
+        warnings_list = _validate_skill_name("")
+        assert len(warnings_list) >= 1
+        assert any("lowercase" in w for w in warnings_list)
+
+    def test_validate_name_numbers_only(self):
+        """Numbers-only name is valid."""
+        from deepagents.middleware.skills import _validate_skill_name
+        assert _validate_skill_name("123") == []
+        assert _validate_skill_name("1a2b3c") == []
+
+    def test_validate_description_empty(self):
+        """Empty description returns warning per spec."""
+        from deepagents.middleware.skills import _validate_skill_description
+        result = _validate_skill_description("")
+        assert len(result) == 1
+        assert "empty" in result[0]
+
+    def test_validate_compatibility_empty(self):
+        """Empty compatibility returns warning per spec."""
+        from deepagents.middleware.skills import _validate_skill_compatibility
+        result = _validate_skill_compatibility("")
+        assert len(result) == 1
+        assert "empty" in result[0]
+
+    # ========== _StateProxy Tests ==========
+
+    def test_state_proxy_basic(self):
+        """_StateProxy correctly exposes state and store."""
+        from deepagents.middleware.skills import _StateProxy
+        state = {"files": {"/test.txt": "content"}}
+        store = object()
+        proxy = _StateProxy(state=state, store=store)
+        assert proxy.state is state
+        assert proxy.store is store
+
+    def test_state_proxy_none_store(self):
+        """_StateProxy works with None store."""
+        from deepagents.middleware.skills import _StateProxy
+        proxy = _StateProxy(state={}, store=None)
+        assert proxy.state == {}
+        assert proxy.store is None
+
+    def test_state_proxy_modifiable(self):
+        """State in _StateProxy is modifiable."""
+        from deepagents.middleware.skills import _StateProxy
+        state = {"key": "value"}
+        proxy = _StateProxy(state=state, store=None)
+        proxy.state["key"] = "new_value"
+        assert state["key"] == "new_value"

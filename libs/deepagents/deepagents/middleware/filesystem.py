@@ -348,6 +348,7 @@ def _ls_tool_generator(
         description=tool_description,
         func=sync_ls,
         coroutine=async_ls,
+        filter_args=["runtime"],
     )
 
 
@@ -393,6 +394,7 @@ def _read_file_tool_generator(
         description=tool_description,
         func=sync_read_file,
         coroutine=async_read_file,
+        filter_args=["runtime"],
     )
 
 
@@ -468,6 +470,7 @@ def _write_file_tool_generator(
         description=tool_description,
         func=sync_write_file,
         coroutine=async_write_file,
+        filter_args=["runtime"],
     )
 
 
@@ -547,6 +550,7 @@ def _edit_file_tool_generator(
         description=tool_description,
         func=sync_edit_file,
         coroutine=async_edit_file,
+        filter_args=["runtime"],
     )
 
 
@@ -586,6 +590,7 @@ def _glob_tool_generator(
         description=tool_description,
         func=sync_glob,
         coroutine=async_glob,
+        filter_args=["runtime"],
     )
 
 
@@ -639,6 +644,7 @@ def _grep_tool_generator(
         description=tool_description,
         func=sync_grep,
         coroutine=async_grep,
+        filter_args=["runtime"],
     )
 
 
@@ -751,6 +757,7 @@ def _execute_tool_generator(
         description=tool_description,
         func=sync_execute,
         coroutine=async_execute,
+        filter_args=["runtime"],
     )
 
 

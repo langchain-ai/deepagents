@@ -378,6 +378,7 @@ def _create_task_tool(
         func=task,
         coroutine=atask,
         description=task_description,
+        filter_args=["runtime"],
     )
 
 

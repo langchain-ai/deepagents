@@ -14,15 +14,26 @@ ChATLAS-specific features can be found in `libs/chatlas-agents`.
   - Information retrieval w/ mutli-dimensional LLM as judge scoring (relevance, accuracy, completeness, conciseness) -- use ChATLAS RAG bench dataset (already available) -- compare score to basic RAG approach + commercial agent Copilot CLI
   - More "real-world" agent task: generate review comments on previous ATLAS paper drafts -- use LLM judge multi-dimensional scoring again -- compare to Copilot CLI + human comments scraped from CDS -- Also use LLM judge to test AI comment coverage vs. human comments
 
-## MCP Server Integration
+## TODO list for ChatLAS Agents
+### v0.3
+- [x] Fix timeout issues with MCP server -- increased timeout client side and provided more pods on the server. Should be able to handle many concurrent requests now and return answers more quickly.
+- [ ] Fix known bugs:
+  - [ ] Agent seems to get stuck sometimes when using MCP tools in interactive mode. Needs investigation.
+  - [x] Not all tools seem to be available / configured properly with the chatlas agent. Web search tool seems to be missing, for example. Fixed by modifying MCPMiddleware and adding web search tools to CLI.
+- [ ] Properly set up docker and apptainer sandbox. 
+  - [x] Sandboxes set up with new CLI and MCP middleware.
+  - [ ] Need to understand how to handle file transfers between host and sandbox. Implement this. 
+  - [ ] Set up and test HTCondor submission.
+  - [x] Alternative container solution: set up registry with chatlas-deepagents packages pre-installed, mount workdir into sandbox & tell agent to copy files there. -> Docker container has been set up on gitlab (`gitlab-registry.cern.ch/asopio/chatlas-deepagents/chatlas_deepagents`). Can be run with either docker (`docker runn -it`) or apptainer (`apptainer shell --docker-login`).
+- [ ] Interface with ATLAS software stack. Create local MCP, tools for ATLAS data sources: AMI, Rucio, Upcoming indico meetings
+  - [x] Simple, preliminary solution: use deepagents skills to wrap command line tools that access ATLAS data sources.
+  - [ ] Longer term: create proper MCP server with tools for ATLAS data sources (can interface this with other agent providers eg. Copilot).
 
-DeepAgents v0.3.0 does not provide native MCP server support. We've extended it with a **middleware-based approach** that:
-- ✅ Requires **zero changes** to upstream packages (deepagents, deepagents-cli)
-- ✅ Provides **full lifecycle integration** with tool loading, system prompt injection, and state management
-- ✅ Is **composable** with other middleware (Skills, Memory, Shell)
-- ✅ Maintains **forward compatibility** with future deepagents versions
+### v0.4+
+- [ ] Add GitLab remote. Set up CI/CD. Would be cool to have agents running in GitLab runners, eg. to produce automated reviews of paper latex sources.
+  - Example: [Qwen-code GitHub actions](https://github.com/QwenLM/qwen-code-action) provides automated workflow for delegating tasks to agents, triggered thorugh local CLI commands or issue requests, and automatically places pull request on completion. Could be adapted to equivalent gitlab feaures through [GitLab MCP tools](https://docs.gitlab.com/user/gitlab_duo/model_context_protocol/mcp_server_tools/).     
 
-### Quick Start
+## Quick Start
 
 ```python
 from chatlas_agents.middleware import MCPMiddleware
@@ -221,25 +232,6 @@ voms-proxy-init -voms atlas
 **Note:** Not all commands are needed for all skills. See individual skill prerequisites for details.
 
 The skills are designed to work on the CERN LXPlus cluster with the full ATLAS software stack available via CVMFS. The agent can verify it's on LXPlus by checking `echo $HOSTNAME` (should match `lxplus*.cern.ch`).
-
-## TODO list for ChatLAS Agents
-### v0.3
-- [x] Fix timeout issues with MCP server -- increased timeout client side and provided more pods on the server. Should be able to handle many concurrent requests now and return answers more quickly.
-- [ ] Fix known bugs:
-  - [ ] Agent seems to get stuck sometimes when using MCP tools in interactive mode. Needs investigation.
-  - [x] Not all tools seem to be available / configured properly with the chatlas agent. Web search tool seems to be missing, for example. Fixed by modifying MCPMiddleware and adding web search tools to CLI.
-- [ ] Properly set up docker and apptainer sandbox. 
-  - [x] Sandboxes set up with new CLI and MCP middleware.
-  - [ ] Need to understand how to handle file transfers between host and sandbox. Implement this. 
-  - [ ] Set up and test HTCondor submission.
-  - [x] Alternative container solution: set up registry with chatlas-deepagents packages pre-installed, mount workdir into sandbox & tell agent to copy files there. -> Docker container has been set up on gitlab (`gitlab-registry.cern.ch/asopio/chatlas-deepagents/chatlas_deepagents`). Can be run with either docker (`docker runn -it`) or apptainer (`apptainer shell --docker-login`).
-- [ ] Interface with ATLAS software stack. Create local MCP, tools for ATLAS data sources: AMI, Rucio, Upcoming indico meetings
-  - [x] Simple, preliminary solution: use deepagents skills to wrap command line tools that access ATLAS data sources.
-  - [ ] Longer term: create proper MCP server with tools for ATLAS data sources (can interface this with other agent providers eg. Copilot).
-
-### v0.4+
-- [ ] Add GitLab remote. Set up CI/CD. Would be cool to have agents running in GitLab runners, eg. to produce automated reviews of paper latex sources.
-
 
 --- 
 

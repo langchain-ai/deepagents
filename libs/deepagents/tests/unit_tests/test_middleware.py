@@ -1337,3 +1337,101 @@ class TestTruncation:
         # Should end with truncation message
         assert "results truncated" in result
         assert "try being more specific" in result
+
+
+class TestReadFileTruncation:
+    """Test character-based truncation in read_file to prevent context overflow."""
+
+    def test_format_lines_with_truncation_no_truncation(self):
+        """Test that small results pass through without truncation."""
+        from deepagents.backends.utils import format_lines_with_truncation
+
+        lines = ["line 1", "line 2", "line 3"]
+        result = format_lines_with_truncation(lines, offset=0, limit=10)
+
+        # Should contain all lines with line numbers
+        assert "     1\tline 1" in result
+        assert "     2\tline 2" in result
+        assert "     3\tline 3" in result
+        # No truncation message
+        assert "Result truncated" not in result
+
+    def test_format_lines_with_truncation_with_truncation(self):
+        """Test that large results are truncated at character limit."""
+        from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, format_lines_with_truncation
+
+        # Create lines that exceed TOOL_RESULT_TOKEN_LIMIT * 4 (80K chars)
+        # Each line is 2000 chars, so 50 lines = 100K chars
+        large_lines = ["x" * 2000 for _ in range(50)]
+        result = format_lines_with_truncation(large_lines, offset=0, limit=100)
+
+        # Should be truncated
+        assert "Result truncated" in result
+        # Should show counts
+        assert "lines" in result
+        assert "chars" in result
+        # Should suggest pagination
+        assert "smaller limit or offset" in result
+
+        # Verify character limit is respected (approximately)
+        # Result should be close to 80K chars (plus line numbers and truncation message)
+        max_expected = TOOL_RESULT_TOKEN_LIMIT * 4 + 5000  # 5K buffer for line numbers/message
+        assert len(result) < max_expected
+
+    def test_format_lines_with_truncation_offset_beyond_length(self):
+        """Test error when offset exceeds file length."""
+        from deepagents.backends.utils import format_lines_with_truncation
+
+        lines = ["line 1", "line 2"]
+        result = format_lines_with_truncation(lines, offset=10, limit=5)
+
+        # Should return error message
+        assert "Error: Line offset 10 exceeds file length (2 lines)" in result
+
+    def test_format_lines_with_truncation_with_offset(self):
+        """Test truncation with offset parameter."""
+        from deepagents.backends.utils import format_lines_with_truncation
+
+        # Create 100 lines
+        lines = [f"line {i}" for i in range(100)]
+        result = format_lines_with_truncation(lines, offset=50, limit=40)
+
+        # Should start from line 51 (offset=50, 1-indexed display)
+        assert "    51\tline 50" in result
+        # Should not contain earlier lines
+        assert "line 0" not in result
+        assert "line 49" not in result
+
+    def test_read_file_truncation_many_long_lines(self):
+        """Test read_file truncates files with many long lines (minified JS scenario)."""
+        from deepagents.backends.utils import create_file_data, format_read_response
+
+        # Simulate minified JS: 500 lines of 1900 chars each = 950K chars
+        long_lines = ["x" * 1900 for _ in range(500)]
+        content = "\n".join(long_lines)
+        file_data = create_file_data(content)
+
+        result = format_read_response(file_data, offset=0, limit=2000)
+
+        # Should be truncated
+        assert "Result truncated" in result
+        # Should provide clear guidance
+        assert "smaller limit or offset" in result
+        # Should show actual vs requested line count
+        assert "/500 lines" in result or "/2000 lines" in result
+
+    def test_read_file_no_truncation_normal_file(self):
+        """Test read_file does not truncate normal files."""
+        from deepagents.backends.utils import create_file_data, format_read_response
+
+        # Normal file with reasonable line lengths
+        normal_content = "\n".join([f"This is line {i} with normal content" for i in range(100)])
+        file_data = create_file_data(normal_content)
+
+        result = format_read_response(file_data, offset=0, limit=200)
+
+        # Should not be truncated
+        assert "Result truncated" not in result
+        # Should contain all lines
+        assert "This is line 0" in result
+        assert "This is line 99" in result

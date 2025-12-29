@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from typing import Any
+from unittest.mock import patch
 
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -222,3 +223,35 @@ class TestDeepAgentEndToEnd:
         tool_contents = [msg.content for msg in tool_messages]
         assert any("first call" in content for content in tool_contents)
         assert any("second call" in content for content in tool_contents)
+
+    def test_deep_agent_with_string_model_name(self) -> None:
+        """Test that create_deep_agent handles string model names correctly.
+
+        This test verifies that when a model name is passed as a string,
+        it is properly initialized using init_chat_model instead of
+        causing an AttributeError when accessing the profile attribute.
+        """
+        # Mock init_chat_model to return a fake model
+        fake_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="Response from string-initialized model.",
+                    )
+                ]
+            )
+        )
+
+        with patch("deepagents.graph.init_chat_model", return_value=fake_model):
+            # This should not raise AttributeError: 'str' object has no attribute 'profile'
+            agent = create_deep_agent(model="claude-sonnet-4-5-20250929", tools=[sample_tool])
+
+            # Verify agent was created successfully
+            assert agent is not None
+
+            # Invoke the agent to ensure it works
+            result = agent.invoke({"messages": [HumanMessage(content="Test message")]})
+
+            # Verify the agent executed correctly
+            assert "messages" in result
+            assert len(result["messages"]) > 0

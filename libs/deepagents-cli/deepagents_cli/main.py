@@ -107,7 +107,15 @@ def parse_args():
     )
     parser.add_argument(
         "--model",
-        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5-mini, gemini-3-pro-preview). Provider is auto-detected from model name.",
+        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5-mini, gemini-3-pro-preview). Provider is auto-detected from model name.",    )
+    parser.add_argument(
+        "--provider",
+        choices=["openai", "anthropic", "google"],
+        help="Explicitly specify the model provider. Use when model name cannot be auto-detected.",
+    )
+    parser.add_argument(
+        "--base-url",
+        help="Custom API base URL for third-party compatible services (e.g., https://api.deepseek.com/v1).",
     )
     parser.add_argument(
         "--auto-approve",
@@ -190,10 +198,21 @@ async def simple_cli(
             "anthropic": "Anthropic",
             "google": "Google",
         }.get(settings.model_provider, settings.model_provider)
-        console.print(
-            f"[green]✓ Model:[/green] {provider_display} → '{settings.model_name}'",
-            style=COLORS["dim"],
-        )
+
+        # Show custom endpoint if configured
+        if settings.model_base_url:
+            console.print(
+                f"[green]✓ Model:[/green] {provider_display} (custom) → '{settings.model_name}'",
+                style=COLORS["dim"],
+            )
+            console.print(
+                f"  [dim]Endpoint: {settings.model_base_url}[/dim]",
+            )
+        else:
+            console.print(
+                f"[green]✓ Model:[/green] {provider_display} → '{settings.model_name}'",
+                style=COLORS["dim"],
+            )
         console.print()
 
     if not settings.has_tavily:
@@ -365,6 +384,8 @@ async def main(
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
     model_name: str | None = None,
+    provider: str | None = None,
+    base_url: str | None = None,
 ) -> None:
     """Main entry point with conditional sandbox support.
 
@@ -375,8 +396,10 @@ async def main(
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run in sandbox
         model_name: Optional model name to use instead of environment variable
+        provider: Optional provider override (openai, anthropic, google)
+        base_url: Optional custom API base URL
     """
-    model = create_model(model_name)
+    model = create_model(model_name, provider, base_url)
 
     # Branch 1: User wants a sandbox
     if sandbox_type != "none":
@@ -462,6 +485,8 @@ def cli_main() -> None:
                     args.sandbox_id,
                     args.sandbox_setup,
                     getattr(args, "model", None),
+                    getattr(args, "provider", None),
+                    getattr(args, "base_url", None),
                 )
             )
     except KeyboardInterrupt:

@@ -134,6 +134,7 @@ class Settings:
 
     This class is initialized once at startup and provides access to:
     - Available models and API keys
+    - Custom API base URLs for third-party compatible services
     - Current project information
     - Tool availability (e.g., Tavily)
     - File system paths
@@ -143,7 +144,13 @@ class Settings:
 
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
+        google_api_key: Google API key if available
         tavily_api_key: Tavily API key if available
+
+        openai_base_url: Custom base URL for OpenAI-compatible APIs
+        anthropic_base_url: Custom base URL for Anthropic-compatible APIs
+        google_base_url: Custom base URL for Google-compatible APIs
+
         deepagents_langchain_project: LangSmith project name for deepagents agent tracing
         user_langchain_project: Original LANGSMITH_PROJECT from environment (for user code)
     """
@@ -154,6 +161,11 @@ class Settings:
     google_api_key: str | None
     tavily_api_key: str | None
 
+    # Custom API base URLs (for third-party compatible services)
+    openai_base_url: str | None
+    anthropic_base_url: str | None
+    google_base_url: str | None
+
     # LangSmith configuration
     deepagents_langchain_project: str | None  # For deepagents agent tracing
     user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
@@ -161,6 +173,7 @@ class Settings:
     # Model configuration
     model_name: str | None = None  # Currently active model name
     model_provider: str | None = None  # Provider (openai, anthropic, google)
+    model_base_url: str | None = None  # Active base URL (if custom)
 
     # Project information
     project_root: Path | None = None
@@ -181,6 +194,11 @@ class Settings:
         google_key = os.environ.get("GOOGLE_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
 
+        # Detect custom API base URLs
+        openai_base_url = os.environ.get("OPENAI_BASE_URL")
+        anthropic_base_url = os.environ.get("ANTHROPIC_BASE_URL")
+        google_base_url = os.environ.get("GOOGLE_BASE_URL")
+
         # Detect LangSmith configuration
         # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
         # user_langchain_project: User's ORIGINAL LANGSMITH_PROJECT (before override)
@@ -197,6 +215,9 @@ class Settings:
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
             tavily_api_key=tavily_key,
+            openai_base_url=openai_base_url,
+            anthropic_base_url=anthropic_base_url,
+            google_base_url=google_base_url,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
@@ -221,6 +242,21 @@ class Settings:
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
         return self.tavily_api_key is not None
+
+    @property
+    def has_custom_openai_base_url(self) -> bool:
+        """Check if custom OpenAI base URL is configured."""
+        return self.openai_base_url is not None
+
+    @property
+    def has_custom_anthropic_base_url(self) -> bool:
+        """Check if custom Anthropic base URL is configured."""
+        return self.anthropic_base_url is not None
+
+    @property
+    def has_custom_google_base_url(self) -> bool:
+        """Check if custom Google base URL is configured."""
+        return self.google_base_url is not None
 
     @property
     def has_deepagents_langchain_project(self) -> bool:
@@ -419,13 +455,22 @@ def _detect_provider(model_name: str) -> str | None:
     return None
 
 
-def create_model(model_name_override: str | None = None) -> BaseChatModel:
-    """Create the appropriate model based on available API keys.
+def create_model(
+    model_name_override: str | None = None,
+    provider_override: str | None = None,
+    base_url_override: str | None = None,
+) -> BaseChatModel:
+    """Create the appropriate model based on available API keys and configuration.
 
     Uses the global settings instance to determine which model to create.
+    Supports custom API endpoints for third-party OpenAI/Anthropic compatible services.
 
     Args:
         model_name_override: Optional model name to use instead of environment variable
+        provider_override: Optional provider to use (openai, anthropic, google).
+                          Overrides auto-detection from model name.
+        base_url_override: Optional base URL to use instead of environment variable.
+                          Overrides OPENAI_BASE_URL/ANTHROPIC_BASE_URL/GOOGLE_BASE_URL.
 
     Returns:
         ChatModel instance (OpenAI, Anthropic, or Google)
@@ -433,80 +478,139 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     Raises:
         SystemExit if no API key is configured or model provider can't be determined
     """
-    # Determine provider and model
-    if model_name_override:
-        # Use provided model, auto-detect provider
+    provider: str | None = None
+    model_name: str | None = None
+    base_url: str | None = None
+
+    # Step 1: Determine provider
+    if provider_override:
+        # Explicit provider specified via CLI
+        provider = provider_override.lower()
+        if provider not in ("openai", "anthropic", "google"):
+            console.print(
+                f"[bold red]Error:[/bold red] Invalid provider: {provider_override}"
+            )
+            console.print("\nSupported providers: openai, anthropic, google")
+            sys.exit(1)
+    elif model_name_override:
+        # Try to detect provider from model name
         provider = _detect_provider(model_name_override)
+        # If can't detect, try to infer from available config
         if not provider:
-            console.print(
-                f"[bold red]Error:[/bold red] Could not detect provider from model name: {model_name_override}"
-            )
-            console.print("\nSupported model name patterns:")
-            console.print("  - OpenAI: gpt-*, o1-*, o3-*")
-            console.print("  - Anthropic: claude-*")
-            console.print("  - Google: gemini-*")
-            sys.exit(1)
-
-        # Check if API key for detected provider is available
-        if provider == "openai" and not settings.has_openai:
-            console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires OPENAI_API_KEY"
-            )
-            sys.exit(1)
-        elif provider == "anthropic" and not settings.has_anthropic:
-            console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires ANTHROPIC_API_KEY"
-            )
-            sys.exit(1)
-        elif provider == "google" and not settings.has_google:
-            console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY"
-            )
-            sys.exit(1)
-
-        model_name = model_name_override
-    # Use environment variable defaults, detect provider by API key priority
-    elif settings.has_openai:
-        provider = "openai"
-        model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-    elif settings.has_anthropic:
-        provider = "anthropic"
-        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-    elif settings.has_google:
-        provider = "google"
-        model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
+            provider = _infer_provider_from_config()
+            if not provider:
+                console.print(
+                    f"[bold red]Error:[/bold red] Could not detect provider from model name: {model_name_override}"
+                )
+                console.print("\nSupported model name patterns:")
+                console.print("  - OpenAI: gpt-*, o1-*, o3-*")
+                console.print("  - Anthropic: claude-*")
+                console.print("  - Google: gemini-*")
+                console.print("\nFor custom models, use --provider to specify the provider:")
+                console.print(f"  deepagents --model {model_name_override} --provider openai")
+                sys.exit(1)
     else:
-        console.print("[bold red]Error:[/bold red] No API key configured.")
-        console.print("\nPlease set one of the following environment variables:")
-        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
-        console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-        console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
-        console.print("\nExample:")
-        console.print("  export OPENAI_API_KEY=your_api_key_here")
-        console.print("\nOr add it to your .env file.")
+        # No model specified, use defaults based on available API keys
+        provider = _infer_provider_from_config()
+        if not provider:
+            console.print("[bold red]Error:[/bold red] No API key configured.")
+            console.print("\nPlease set one of the following environment variables:")
+            console.print("  - OPENAI_API_KEY     (for OpenAI-compatible models)")
+            console.print("  - ANTHROPIC_API_KEY  (for Anthropic-compatible models)")
+            console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
+            console.print("\nFor third-party compatible APIs, also set:")
+            console.print("  - OPENAI_BASE_URL    (e.g., https://api.deepseek.com/v1)")
+            console.print("  - ANTHROPIC_BASE_URL (e.g., https://open.bigmodel.cn/api/anthropic)")
+            console.print("\nExample:")
+            console.print("  export OPENAI_API_KEY=your_api_key_here")
+            console.print("\nOr add it to your .env file.")
+            sys.exit(1)
+
+    # Step 2: Determine model name
+    if model_name_override:
+        model_name = model_name_override
+    elif provider == "openai":
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    elif provider == "anthropic":
+        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+    elif provider == "google":
+        model_name = os.environ.get("GOOGLE_MODEL", "gemini-2.0-flash")
+
+    # Step 3: Determine base URL (CLI override > environment variable > None)
+    if base_url_override:
+        base_url = base_url_override
+    elif provider == "openai":
+        base_url = settings.openai_base_url
+    elif provider == "anthropic":
+        base_url = settings.anthropic_base_url
+    elif provider == "google":
+        base_url = settings.google_base_url
+
+    # Step 4: Validate API key is available
+    if provider == "openai" and not settings.has_openai:
+        console.print(
+            f"[bold red]Error:[/bold red] Model '{model_name}' requires OPENAI_API_KEY"
+        )
+        sys.exit(1)
+    elif provider == "anthropic" and not settings.has_anthropic:
+        console.print(
+            f"[bold red]Error:[/bold red] Model '{model_name}' requires ANTHROPIC_API_KEY"
+        )
+        sys.exit(1)
+    elif provider == "google" and not settings.has_google:
+        console.print(
+            f"[bold red]Error:[/bold red] Model '{model_name}' requires GOOGLE_API_KEY"
+        )
         sys.exit(1)
 
     # Store model info in settings for display
     settings.model_name = model_name
     settings.model_provider = provider
+    settings.model_base_url = base_url
 
     # Create and return the model
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model_name)
+        return ChatOpenAI(model=model_name, base_url=base_url)
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
             model_name=model_name,
             max_tokens=20_000,  # type: ignore[arg-type]
+            base_url=base_url,
         )
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        # Note: langchain-google-genai may not support base_url
+        # If needed, this can be extended later
         return ChatGoogleGenerativeAI(
             model=model_name,
             temperature=0,
             max_tokens=None,
         )
+
+    # Should not reach here, but just in case
+    msg = f"Unknown provider: {provider}"
+    raise ValueError(msg)
+
+
+def _infer_provider_from_config() -> str | None:
+    """Infer provider from available API keys and configuration.
+
+    Priority:
+    1. If only one provider is configured, use that
+    2. If multiple providers are configured, use priority: openai > anthropic > google
+
+    Returns:
+        Provider name or None if no provider is configured
+    """
+    if settings.has_openai:
+        return "openai"
+    if settings.has_anthropic:
+        return "anthropic"
+    if settings.has_google:
+        return "google"
+    return None

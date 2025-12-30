@@ -1,8 +1,16 @@
 """Tests for config module including project discovery utilities."""
 
+import os
 from pathlib import Path
+from unittest import mock
 
-from deepagents_cli.config import _find_project_agent_md, _find_project_root
+from deepagents_cli.config import (
+    Settings,
+    _detect_provider,
+    _find_project_agent_md,
+    _find_project_root,
+    _infer_provider_from_config,
+)
 
 
 class TestProjectRootDetection:
@@ -107,3 +115,143 @@ class TestProjectAgentMdFinding:
 
         result = _find_project_agent_md(project_root)
         assert result == []
+
+
+class TestDetectProvider:
+    """Test provider detection from model names."""
+
+    def test_detect_openai_gpt(self) -> None:
+        """Test detection of OpenAI GPT models."""
+        assert _detect_provider("gpt-4o") == "openai"
+        assert _detect_provider("gpt-4o-mini") == "openai"
+        assert _detect_provider("GPT-4") == "openai"
+
+    def test_detect_openai_o_series(self) -> None:
+        """Test detection of OpenAI o1/o3 models."""
+        assert _detect_provider("o1-preview") == "openai"
+        assert _detect_provider("o3-mini") == "openai"
+
+    def test_detect_anthropic_claude(self) -> None:
+        """Test detection of Anthropic Claude models."""
+        assert _detect_provider("claude-sonnet-4-5-20250929") == "anthropic"
+        assert _detect_provider("claude-3-opus-20240229") == "anthropic"
+        assert _detect_provider("CLAUDE-3-haiku") == "anthropic"
+
+    def test_detect_google_gemini(self) -> None:
+        """Test detection of Google Gemini models."""
+        assert _detect_provider("gemini-2.0-flash") == "google"
+        assert _detect_provider("gemini-1.5-pro") == "google"
+        assert _detect_provider("GEMINI-pro") == "google"
+
+    def test_detect_unknown(self) -> None:
+        """Test that unknown models return None."""
+        assert _detect_provider("deepseek-chat") is None
+        assert _detect_provider("llama-3.1-70b") is None
+        assert _detect_provider("qwen-72b") is None
+        assert _detect_provider("glm-4") is None
+        assert _detect_provider("custom-model") is None
+
+
+class TestSettingsBaseUrl:
+    """Test Settings class base_url configuration."""
+
+    def test_settings_reads_base_url_env_vars(self, tmp_path: Path) -> None:
+        """Test that Settings reads base URL environment variables."""
+        env = {
+            "OPENAI_API_KEY": "sk-test",
+            "OPENAI_BASE_URL": "https://api.deepseek.com/v1",
+            "ANTHROPIC_API_KEY": "test-key",
+            "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            settings = Settings.from_environment(start_path=tmp_path)
+
+            assert settings.openai_base_url == "https://api.deepseek.com/v1"
+            assert settings.anthropic_base_url == "https://open.bigmodel.cn/api/anthropic"
+            assert settings.google_base_url is None
+
+    def test_settings_has_custom_base_url_properties(self, tmp_path: Path) -> None:
+        """Test has_custom_*_base_url properties."""
+        # Create a Settings instance directly with controlled values
+        settings = Settings(
+            openai_api_key="sk-test",
+            anthropic_api_key=None,
+            google_api_key=None,
+            tavily_api_key=None,
+            openai_base_url="https://custom.api.com/v1",
+            anthropic_base_url=None,
+            google_base_url=None,
+            deepagents_langchain_project=None,
+            user_langchain_project=None,
+            project_root=tmp_path,
+        )
+
+        assert settings.has_custom_openai_base_url is True
+        assert settings.has_custom_anthropic_base_url is False
+        assert settings.has_custom_google_base_url is False
+
+    def test_settings_no_base_url_configured(self, tmp_path: Path) -> None:
+        """Test Settings when no base URL is configured."""
+        env = {
+            "OPENAI_API_KEY": "sk-test",
+        }
+        # Clear any existing base URL env vars
+        clear_env = {
+            "OPENAI_BASE_URL": "",
+            "ANTHROPIC_BASE_URL": "",
+            "GOOGLE_BASE_URL": "",
+        }
+        with mock.patch.dict(os.environ, {**env, **clear_env}, clear=False):
+            # Manually remove the empty strings to simulate unset
+            for key in clear_env:
+                os.environ.pop(key, None)
+
+            settings = Settings.from_environment(start_path=tmp_path)
+
+            assert settings.openai_base_url is None
+            assert settings.anthropic_base_url is None
+            assert settings.google_base_url is None
+
+
+class TestInferProviderFromConfig:
+    """Test provider inference from available configuration."""
+
+    def test_infer_openai_when_only_openai_configured(self) -> None:
+        """Test that OpenAI is inferred when only OpenAI key is available."""
+        with mock.patch("deepagents_cli.config.settings") as mock_settings:
+            mock_settings.has_openai = True
+            mock_settings.has_anthropic = False
+            mock_settings.has_google = False
+            assert _infer_provider_from_config() == "openai"
+
+    def test_infer_anthropic_when_only_anthropic_configured(self) -> None:
+        """Test that Anthropic is inferred when only Anthropic key is available."""
+        with mock.patch("deepagents_cli.config.settings") as mock_settings:
+            mock_settings.has_openai = False
+            mock_settings.has_anthropic = True
+            mock_settings.has_google = False
+            assert _infer_provider_from_config() == "anthropic"
+
+    def test_infer_google_when_only_google_configured(self) -> None:
+        """Test that Google is inferred when only Google key is available."""
+        with mock.patch("deepagents_cli.config.settings") as mock_settings:
+            mock_settings.has_openai = False
+            mock_settings.has_anthropic = False
+            mock_settings.has_google = True
+            assert _infer_provider_from_config() == "google"
+
+    def test_infer_openai_priority_when_multiple_configured(self) -> None:
+        """Test that OpenAI has highest priority when multiple keys available."""
+        with mock.patch("deepagents_cli.config.settings") as mock_settings:
+            mock_settings.has_openai = True
+            mock_settings.has_anthropic = True
+            mock_settings.has_google = True
+            assert _infer_provider_from_config() == "openai"
+
+    def test_infer_none_when_no_provider_configured(self) -> None:
+        """Test that None is returned when no provider is configured."""
+        with mock.patch("deepagents_cli.config.settings") as mock_settings:
+            mock_settings.has_openai = False
+            mock_settings.has_anthropic = False
+            mock_settings.has_google = False
+            assert _infer_provider_from_config() is None

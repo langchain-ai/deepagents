@@ -59,6 +59,9 @@ lint = [
 requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+include = ["deepagents_cli", "deepagents_cli.*"]
+
 [tool.setuptools.package-data]
 deepagents_cli = ["default_agent_prompt.md"]
 

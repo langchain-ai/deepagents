@@ -1,24 +1,50 @@
 """Command handlers for slash commands and bash execution."""
 
+from __future__ import annotations
+
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from langgraph.checkpoint.memory import InMemorySaver
-
-from .config import COLORS, DEEP_AGENTS_ASCII, console
+from .config import COLORS, DEEP_AGENTS_ASCII, console, settings
 from .ui import TokenTracker, show_interactive_help
 
+if TYPE_CHECKING:
+    from .config import SessionState
 
-def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bool:
-    """Handle slash commands. Returns 'exit' to exit, True if handled, False to pass to agent."""
+
+async def handle_command(
+    command: str,
+    token_tracker: TokenTracker,
+    session_state: SessionState | None = None,
+) -> str | bool:
+    """Handle slash commands.
+
+    Args:
+        command: The slash command to handle
+        token_tracker: Token usage tracker
+        session_state: Optional session state for persistent threads
+
+    Returns:
+        'exit' to exit, True if handled, False to pass to agent
+    """
     cmd = command.lower().strip().lstrip("/")
 
     if cmd in ["quit", "exit", "q"]:
         return "exit"
 
     if cmd == "clear":
-        # Reset agent conversation state
-        agent.checkpointer = InMemorySaver()
+        # Create NEW thread in DB (both old and new conversations are resumable)
+        new_thread_id = None
+        if session_state is not None:
+            from deepagents_cli.sessions import ThreadManager
+
+            tm = ThreadManager()
+            new_thread_id = await tm.create_thread(
+                agent_name=session_state.agent_name,
+                project_root=settings.project_root,
+            )
+            session_state.thread_id = new_thread_id
 
         # Reset token tracking to baseline
         token_tracker.reset()
@@ -27,9 +53,9 @@ def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bo
         console.clear()
         console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
         console.print()
-        console.print(
-            "... Fresh start! Screen cleared and conversation reset.", style=COLORS["agent"]
-        )
+        console.print("Conversation cleared. Starting new thread.", style=COLORS["agent"])
+        if new_thread_id:
+            console.print(f"[dim]Thread: {new_thread_id}[/dim]")
         console.print()
         return True
 
@@ -46,8 +72,6 @@ def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bo
     console.print("[dim]Type /help for available commands.[/dim]")
     console.print()
     return True
-
-    return False
 
 
 def execute_bash_command(command: str) -> bool:

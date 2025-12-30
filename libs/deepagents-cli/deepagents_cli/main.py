@@ -99,12 +99,41 @@ def parse_args():
     # Skills command - setup delegated to skills module
     setup_skills_parser(subparsers)
 
+    # Threads command
+    threads_parser = subparsers.add_parser("threads", help="Manage conversation threads")
+    threads_sub = threads_parser.add_subparsers(dest="threads_command")
+
+    # threads list
+    threads_list = threads_sub.add_parser("list", help="List threads")
+    threads_list.add_argument(
+        "--agent", default=None, help="Filter by agent name (default: show all)"
+    )
+    threads_list.add_argument(
+        "--limit", type=int, default=20, help="Max threads (default: 20)"
+    )
+
+    # threads delete
+    threads_delete = threads_sub.add_parser("delete", help="Delete a thread")
+    threads_delete.add_argument("thread_id", help="Thread ID to delete")
+
     # Default interactive mode
     parser.add_argument(
         "--agent",
         default="agent",
         help="Agent identifier for separate memory stores (default: agent).",
     )
+
+    # Thread resume argument
+    parser.add_argument(
+        "-r",
+        "--resume",
+        dest="resume_thread",
+        nargs="?",
+        const="__MOST_RECENT__",
+        default=None,
+        help="Resume thread: -r for most recent, -r <ID> for specific thread",
+    )
+
     parser.add_argument(
         "--auto-approve",
         action="store_true",
@@ -258,7 +287,7 @@ async def simple_cli(
 
         # Check for slash commands first
         if user_input.startswith("/"):
-            result = handle_command(user_input, agent, token_tracker)
+            result = await handle_command(user_input, token_tracker, session_state)
             if result == "exit":
                 console.print("\nGoodbye!", style=COLORS["primary"])
                 break
@@ -294,6 +323,7 @@ async def _run_agent_session(
     sandbox_backend=None,
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
+    checkpointer=None,
 ) -> None:
     """Helper to create agent and run CLI session.
 
@@ -306,6 +336,7 @@ async def _run_agent_session(
         sandbox_backend: Optional sandbox backend for remote execution
         sandbox_type: Type of sandbox being used
         setup_script_path: Path to setup script that was run (if any)
+        checkpointer: Optional checkpointer for persistent sessions
     """
     # Create agent with conditional tools
     tools = [http_request, fetch_url]
@@ -319,6 +350,7 @@ async def _run_agent_session(
         sandbox=sandbox_backend,
         sandbox_type=sandbox_type,
         auto_approve=session_state.auto_approve,
+        checkpointer=checkpointer,
     )
 
     # Calculate baseline token count for accurate token tracking
@@ -343,66 +375,92 @@ async def _run_agent_session(
 
 async def main(
     assistant_id: str,
-    session_state,
+    session_state: SessionState,
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
 ) -> None:
-    """Main entry point with conditional sandbox support.
+    """Main entry point with thread persistence and conditional sandbox support.
 
     Args:
         assistant_id: Agent identifier for memory storage
-        session_state: Session state with auto-approve settings
+        session_state: Session state with auto-approve settings and thread info
         sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run in sandbox
     """
+    from deepagents_cli.sessions import ThreadManager, get_checkpointer
+
     model = create_model()
 
-    # Branch 1: User wants a sandbox
-    if sandbox_type != "none":
-        # Try to create sandbox
-        try:
-            console.print()
-            with create_sandbox(
-                sandbox_type, sandbox_id=sandbox_id, setup_script_path=setup_script_path
-            ) as sandbox_backend:
-                console.print(f"[yellow]⚡ Remote execution enabled ({sandbox_type})[/yellow]")
-                console.print()
+    # Handle thread creation/resume
+    tm = ThreadManager()
+    if session_state.is_resumed:
+        # Update last_used_at and show resume message
+        await tm.touch_thread(session_state.thread_id)
+        console.print(f"[green]Resuming thread:[/green] {session_state.thread_id}")
+    else:
+        # Create new thread
+        thread_id = await tm.create_thread(
+            agent_name=assistant_id,
+            project_root=settings.project_root,
+        )
+        session_state.thread_id = thread_id
+        console.print(f"[dim]Thread: {thread_id}[/dim]")
 
+    # Get persistent checkpointer
+    async with get_checkpointer() as checkpointer:
+        # Branch 1: User wants a sandbox
+        if sandbox_type != "none":
+            try:
+                console.print()
+                with create_sandbox(
+                    sandbox_type, sandbox_id=sandbox_id, setup_script_path=setup_script_path
+                ) as sandbox_backend:
+                    console.print(
+                        f"[yellow]⚡ Remote execution enabled ({sandbox_type})[/yellow]"
+                    )
+                    console.print()
+
+                    await _run_agent_session(
+                        model,
+                        assistant_id,
+                        session_state,
+                        sandbox_backend,
+                        sandbox_type=sandbox_type,
+                        setup_script_path=setup_script_path,
+                        checkpointer=checkpointer,
+                    )
+            except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
+                console.print()
+                console.print("[red]Sandbox creation failed[/red]")
+                console.print(f"[dim]{e}[/dim]")
+                sys.exit(1)
+            except KeyboardInterrupt:
+                console.print("\n\n[yellow]Interrupted[/yellow]")
+                sys.exit(0)
+            except Exception as e:
+                console.print(f"\n[bold red]Error:[/bold red] {e}\n")
+                console.print_exception()
+                sys.exit(1)
+
+        # Branch 2: User wants local mode (none or default)
+        else:
+            try:
                 await _run_agent_session(
                     model,
                     assistant_id,
                     session_state,
-                    sandbox_backend,
-                    sandbox_type=sandbox_type,
-                    setup_script_path=setup_script_path,
+                    sandbox_backend=None,
+                    checkpointer=checkpointer,
                 )
-        except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
-            # Sandbox creation failed - fail hard (no silent fallback)
-            console.print()
-            console.print("[red]❌ Sandbox creation failed[/red]")
-            console.print(f"[dim]{e}[/dim]")
-            sys.exit(1)
-        except KeyboardInterrupt:
-            console.print("\n\n[yellow]Interrupted[/yellow]")
-            sys.exit(0)
-        except Exception as e:
-            console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
-            console.print_exception()
-            sys.exit(1)
-
-    # Branch 2: User wants local mode (none or default)
-    else:
-        try:
-            await _run_agent_session(model, assistant_id, session_state, sandbox_backend=None)
-        except KeyboardInterrupt:
-            console.print("\n\n[yellow]Interrupted[/yellow]")
-            sys.exit(0)
-        except Exception as e:
-            console.print(f"\n[bold red]❌ Error:[/bold red] {e}\n")
-            console.print_exception()
-            sys.exit(1)
+            except KeyboardInterrupt:
+                console.print("\n\n[yellow]Interrupted[/yellow]")
+                sys.exit(0)
+            except Exception as e:
+                console.print(f"\n[bold red]Error:[/bold red] {e}\n")
+                console.print_exception()
+                sys.exit(1)
 
 
 def cli_main() -> None:
@@ -430,9 +488,69 @@ def cli_main() -> None:
             reset_agent(args.agent, args.source_agent)
         elif args.command == "skills":
             execute_skills_command(args)
+        elif args.command == "threads":
+            # Threads management commands
+            from deepagents_cli.sessions import (
+                delete_thread_command,
+                list_threads_command,
+            )
+
+            if args.threads_command == "list":
+                asyncio.run(
+                    list_threads_command(
+                        agent_name=args.agent,  # None = show all
+                        limit=args.limit,
+                    )
+                )
+            elif args.threads_command == "delete":
+                asyncio.run(delete_thread_command(args.thread_id))
+            else:
+                console.print("[yellow]Usage: deepagents threads <list|delete>[/yellow]")
         else:
-            # Create session state from args
-            session_state = SessionState(auto_approve=args.auto_approve, no_splash=args.no_splash)
+            # Interactive mode - handle thread resume
+            thread_id = None
+            is_resumed = False
+
+            if args.resume_thread == "__MOST_RECENT__":
+                # -r (no ID): Get most recent thread
+                # If --agent specified, filter by that agent; otherwise get most recent overall
+                from deepagents_cli.sessions import ThreadManager
+
+                agent_filter = args.agent if args.agent != "agent" else None
+                thread = asyncio.run(ThreadManager().get_most_recent(agent_filter))
+                if thread:
+                    thread_id = thread["id"]
+                    is_resumed = True
+                    # Use the thread's agent
+                    args.agent = thread["agent_name"]
+                else:
+                    msg = f"No previous thread for '{args.agent}'" if agent_filter else "No previous threads"
+                    console.print(f"[yellow]{msg}, starting new.[/yellow]")
+
+            elif args.resume_thread:
+                # -r <ID>: Resume specific thread
+                from deepagents_cli.sessions import ThreadManager
+
+                thread = asyncio.run(ThreadManager().get_thread(args.resume_thread))
+                if thread:
+                    thread_id = thread["id"]
+                    is_resumed = True
+                    # If user didn't specify --agent, use thread's agent
+                    if thread["agent_name"] != args.agent and args.agent == "agent":
+                        args.agent = thread["agent_name"]
+                else:
+                    console.print(f"[red]Thread '{args.resume_thread}' not found.[/red]")
+                    console.print("[dim]Use 'deepagents threads list' to see available threads.[/dim]")
+                    sys.exit(1)
+
+            # Create session state with thread info
+            session_state = SessionState(
+                auto_approve=args.auto_approve,
+                no_splash=args.no_splash,
+                thread_id=thread_id,
+                agent_name=args.agent,
+                is_resumed=is_resumed,
+            )
 
             # API key validation happens in create_model()
             asyncio.run(

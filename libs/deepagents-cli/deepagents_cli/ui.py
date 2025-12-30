@@ -554,11 +554,18 @@ def show_help() -> None:
 
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
     console.print("  --agent NAME                  Agent identifier (default: agent)")
+    console.print("  -r, --resume [ID]             Resume thread (most recent if no ID)")
     console.print("  --auto-approve                Auto-approve tool usage without prompting")
     console.print(
         "  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)"
     )
     console.print("  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)")
+    console.print()
+
+    console.print("[bold]Thread Management:[/bold]", style=COLORS["primary"])
+    console.print("  deepagents threads list                 List all threads")
+    console.print("  deepagents threads list --agent NAME    List threads for specific agent")
+    console.print("  deepagents threads delete ID            Delete a thread")
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -567,6 +574,18 @@ def show_help() -> None:
     )
     console.print(
         "  deepagents --agent mybot                # Start with agent named 'mybot'",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -r                           # Resume most recent thread",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -r abc123                    # Resume specific thread",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --agent mybot -r             # Resume most recent thread for mybot",
         style=COLORS["dim"],
     )
     console.print(

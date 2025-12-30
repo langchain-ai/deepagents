@@ -19,6 +19,8 @@ dependencies = [
   "langchain>=1.0.7",
   "runloop-api-client>=0.69.0",
   "pillow>=10.0.0",
+  "aiosqlite>=0.20.0,<0.22.0",
+  "langgraph-checkpoint-sqlite>=2.0.0",
 ]
 
 [project.scripts]

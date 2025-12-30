@@ -213,3 +213,5 @@ __marimo__/
 .claude
 
 .idea
+
+tmp/

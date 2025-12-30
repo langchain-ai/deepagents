@@ -17,6 +17,7 @@ from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
+from langgraph.types import Checkpointer
 from langgraph.runtime import Runtime
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
@@ -335,6 +336,7 @@ def create_cli_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
+    checkpointer: Checkpointer | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -356,6 +358,8 @@ def create_cli_agent(
         enable_memory: Enable AgentMemoryMiddleware for persistent memory
         enable_skills: Enable SkillsMiddleware for custom agent skills
         enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
+        checkpointer: Optional checkpointer for persistent sessions. If None, uses
+                     InMemorySaver (state lost on exit).
 
     Returns:
         2-tuple of (agent_graph, composite_backend)
@@ -467,6 +471,6 @@ def create_cli_agent(
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
-        checkpointer=InMemorySaver(),
+        checkpointer=checkpointer if checkpointer is not None else InMemorySaver(),
     ).with_config(config)
     return agent, composite_backend

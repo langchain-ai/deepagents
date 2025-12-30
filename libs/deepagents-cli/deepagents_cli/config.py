@@ -3,7 +3,6 @@
 import os
 import re
 import sys
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -367,14 +366,33 @@ settings = Settings.from_environment()
 
 
 class SessionState:
-    """Holds mutable session state (auto-approve mode, etc)."""
+    """Holds mutable session state (auto-approve mode, thread info, etc)."""
 
-    def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
+    def __init__(
+        self,
+        auto_approve: bool = False,
+        no_splash: bool = False,
+        *,
+        thread_id: str | None = None,
+        agent_name: str = "agent",
+        is_resumed: bool = False,
+    ) -> None:
+        """Initialize session state.
+
+        Args:
+            auto_approve: Auto-approve tool usage without prompting
+            no_splash: Disable startup splash screen
+            thread_id: Thread ID (8-char hex), set by main() on startup
+            agent_name: Agent name (for creating new threads on /clear)
+            is_resumed: Whether this is a resumed thread
+        """
         self.auto_approve = auto_approve
         self.no_splash = no_splash
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
-        self.thread_id = str(uuid.uuid4())
+        self.thread_id = thread_id  # Set by main() after creation/resume
+        self.agent_name = agent_name
+        self.is_resumed = is_resumed
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return new state."""

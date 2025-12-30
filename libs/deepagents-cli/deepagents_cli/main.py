@@ -27,6 +27,12 @@ from deepagents_cli.integrations.sandbox_factory import (
     create_sandbox,
     get_default_working_dir,
 )
+from deepagents_cli.sessions import (
+    ThreadManager,
+    delete_thread_command,
+    get_checkpointer,
+    list_threads_command,
+)
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.ui import TokenTracker, show_help
@@ -389,8 +395,6 @@ async def main(
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run in sandbox
     """
-    from deepagents_cli.sessions import ThreadManager, get_checkpointer
-
     model = create_model()
 
     # Handle thread creation/resume
@@ -489,12 +493,6 @@ def cli_main() -> None:
         elif args.command == "skills":
             execute_skills_command(args)
         elif args.command == "threads":
-            # Threads management commands
-            from deepagents_cli.sessions import (
-                delete_thread_command,
-                list_threads_command,
-            )
-
             if args.threads_command == "list":
                 asyncio.run(
                     list_threads_command(
@@ -514,14 +512,11 @@ def cli_main() -> None:
             if args.resume_thread == "__MOST_RECENT__":
                 # -r (no ID): Get most recent thread
                 # If --agent specified, filter by that agent; otherwise get most recent overall
-                from deepagents_cli.sessions import ThreadManager
-
                 agent_filter = args.agent if args.agent != "agent" else None
                 thread = asyncio.run(ThreadManager().get_most_recent(agent_filter))
                 if thread:
                     thread_id = thread["id"]
                     is_resumed = True
-                    # Use the thread's agent
                     args.agent = thread["agent_name"]
                 else:
                     msg = f"No previous thread for '{args.agent}'" if agent_filter else "No previous threads"
@@ -529,14 +524,11 @@ def cli_main() -> None:
 
             elif args.resume_thread:
                 # -r <ID>: Resume specific thread
-                from deepagents_cli.sessions import ThreadManager
-
                 thread = asyncio.run(ThreadManager().get_thread(args.resume_thread))
                 if thread:
                     thread_id = thread["id"]
                     is_resumed = True
-                    # If user didn't specify --agent, use thread's agent
-                    if thread["agent_name"] != args.agent and args.agent == "agent":
+                    if args.agent == "agent":
                         args.agent = thread["agent_name"]
                 else:
                     console.print(f"[red]Thread '{args.resume_thread}' not found.[/red]")

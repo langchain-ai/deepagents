@@ -257,7 +257,6 @@ async def list_threads_command(
         last_used = t["last_used_at"][:16].replace("T", " ")
         project = t.get("project_root") or ""
 
-        # Always show agent name (helps identify which agent)
         console.print(f"  [bold]{thread_id}[/bold] ({agent})", style=COLORS["primary"])
         console.print(f"    Last used: {last_used}", style=COLORS["dim"])
         if project:

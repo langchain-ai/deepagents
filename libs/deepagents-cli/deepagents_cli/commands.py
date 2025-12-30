@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .config import COLORS, DEEP_AGENTS_ASCII, console, settings
+from .sessions import ThreadManager
 from .ui import TokenTracker, show_interactive_help
 
 if TYPE_CHECKING:
@@ -37,8 +38,6 @@ async def handle_command(
         # Create NEW thread in DB (both old and new conversations are resumable)
         new_thread_id = None
         if session_state is not None:
-            from deepagents_cli.sessions import ThreadManager
-
             tm = ThreadManager()
             new_thread_id = await tm.create_thread(
                 agent_name=session_state.agent_name,

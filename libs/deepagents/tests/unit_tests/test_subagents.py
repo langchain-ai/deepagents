@@ -686,3 +686,78 @@ class TestSubAgentsWithStructuredOutput:
         assert population_tool_message.content == expected_population_content, (
             f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
         )
+
+
+class TestSubAgentToolFiltering:
+    """Tests that subagents cannot access orchestrator-only tools (task, write_todos)."""
+
+    def test_subagent_filters_task_and_write_todos_tools(self) -> None:
+        """Test that 'task' and 'write_todos' tools are filtered from subagents.
+
+        This prevents:
+        - Infinite loops where subagents spawn more subagents
+        - Subagents modifying the orchestrator's todo list
+
+        We verify by mocking create_agent and checking what tools it receives.
+        """
+        from unittest.mock import patch
+
+        from langchain_core.tools import StructuredTool
+
+        from deepagents.middleware.subagents import _get_subagents
+
+        # Create orchestrator-only tools that should be filtered
+        def mock_task(description: str) -> str:
+            return "Should not be available"
+
+        task_tool = StructuredTool.from_function(name="task", func=mock_task, description="Task tool")
+
+        def mock_write_todos(todos: list) -> str:
+            return "Should not be available"
+
+        write_todos_tool = StructuredTool.from_function(name="write_todos", func=mock_write_todos, description="Write todos tool")
+
+        # Create regular tools that should pass through
+        def mock_read_file(path: str) -> str:
+            return f"Contents of {path}"
+
+        read_file_tool = StructuredTool.from_function(name="read_file", func=mock_read_file, description="Read file tool")
+
+        def mock_execute(cmd: str) -> str:
+            return f"Executed: {cmd}"
+
+        execute_tool = StructuredTool.from_function(name="execute", func=mock_execute, description="Execute tool")
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Done")]))
+
+        # Track what tools are passed to create_agent
+        captured_tools = []
+
+        original_create_agent = create_agent
+
+        def mock_create_agent(*args, **kwargs):
+            if "tools" in kwargs:
+                captured_tools.append([t.name for t in kwargs["tools"]])
+            return original_create_agent(*args, **kwargs)
+
+        with patch("deepagents.middleware.subagents.create_agent", side_effect=mock_create_agent):
+            _get_subagents(
+                default_model=fake_model,
+                default_tools=[task_tool, write_todos_tool, read_file_tool, execute_tool],
+                default_middleware=None,
+                default_interrupt_on=None,
+                subagents=[],
+                general_purpose_agent=True,
+            )
+
+        # Verify tools were captured and filtered correctly
+        assert len(captured_tools) == 1, "Should have captured tools from one create_agent call"
+        tool_names = captured_tools[0]
+
+        # Orchestrator-only tools should be filtered out
+        assert "task" not in tool_names, "Subagent should not have 'task' tool"
+        assert "write_todos" not in tool_names, "Subagent should not have 'write_todos' tool"
+
+        # Regular tools should be present
+        assert "read_file" in tool_names, "Subagent should have 'read_file' tool"
+        assert "execute" in tool_names, "Subagent should have 'execute' tool"

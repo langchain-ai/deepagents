@@ -249,7 +249,7 @@ def _get_subagents(
         general_purpose_subagent = create_agent(
             default_model,
             system_prompt=DEFAULT_SUBAGENT_PROMPT,
-            tools=default_tools,
+            tools=[t for t in default_tools if getattr(t, 'name', None) not in ('task', 'write_todos')],
             middleware=general_purpose_middleware,
         )
         agents["general-purpose"] = general_purpose_subagent
@@ -275,7 +275,7 @@ def _get_subagents(
         agents[agent_["name"]] = create_agent(
             subagent_model,
             system_prompt=agent_["system_prompt"],
-            tools=_tools,
+            tools=[t for t in _tools if getattr(t, 'name', None) not in ('task', 'write_todos')],
             middleware=_middleware,
         )
     return agents, subagent_descriptions

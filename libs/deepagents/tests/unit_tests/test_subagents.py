@@ -707,12 +707,12 @@ class TestSubAgentToolFiltering:
         from deepagents.middleware.subagents import _get_subagents
 
         # Create orchestrator-only tools that should be filtered
-        def mock_task(description: str) -> str:
+        def mock_task(description: str) -> str:  # noqa: ARG001
             return "Should not be available"
 
         task_tool = StructuredTool.from_function(name="task", func=mock_task, description="Task tool")
 
-        def mock_write_todos(todos: list) -> str:
+        def mock_write_todos(todos: list) -> str:  # noqa: ARG001
             return "Should not be available"
 
         write_todos_tool = StructuredTool.from_function(name="write_todos", func=mock_write_todos, description="Write todos tool")
@@ -735,10 +735,10 @@ class TestSubAgentToolFiltering:
 
         original_create_agent = create_agent
 
-        def mock_create_agent(*args, **kwargs):
+        def mock_create_agent(*args: object, **kwargs: object) -> object:
             if "tools" in kwargs:
-                captured_tools.append([t.name for t in kwargs["tools"]])
-            return original_create_agent(*args, **kwargs)
+                captured_tools.append([t.name for t in kwargs["tools"]])  # type: ignore[union-attr]
+            return original_create_agent(*args, **kwargs)  # type: ignore[arg-type]
 
         with patch("deepagents.middleware.subagents.create_agent", side_effect=mock_create_agent):
             _get_subagents(

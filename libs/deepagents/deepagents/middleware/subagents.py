@@ -11,6 +11,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
+from langgraph.prebuilt.tool_node import ContextT
 from langgraph.types import Command
 
 
@@ -346,7 +347,7 @@ def _create_task_tool(
     def task(
         description: str,
         subagent_type: str,
-        runtime: ToolRuntime,
+        runtime: ToolRuntime[ContextT],
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
@@ -361,7 +362,7 @@ def _create_task_tool(
     async def atask(
         description: str,
         subagent_type: str,
-        runtime: ToolRuntime,
+        runtime: ToolRuntime[ContextT],
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])

@@ -130,16 +130,17 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)
 
-    # Reject Windows absolute paths (e.g., C:\..., D:/...)
-    # This maintains consistency in virtual filesystem paths
+    # Allow Windows absolute paths (e.g., C:\..., D:/...)
+    # Normalize separators but preserve drive-letter semantics
     if re.match(r"^[a-zA-Z]:", path):
-        msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
-        raise ValueError(msg)
+        normalized = os.path.normpath(path)
+        normalized = normalized.replace("\\", "/")
+        return normalized
 
     normalized = os.path.normpath(path)
     normalized = normalized.replace("\\", "/")
 
-    if not normalized.startswith("/"):
+    if not re.match(r"^[a-zA-Z]:", normalized) and not normalized.startswith("/"):
         normalized = f"/{normalized}"
 
     if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):

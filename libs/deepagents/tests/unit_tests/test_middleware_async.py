@@ -811,3 +811,125 @@ class TestFilesystemMiddlewareAsync:
 
         assert "Async Very long output..." in result
         assert "truncated" in result
+
+
+class TestSkillsMiddlewareAsync:
+    """Async tests for SkillsMiddleware."""
+
+    def _make_runtime(self, files: dict | None = None):
+        """Create ToolRuntime with optional files."""
+        from deepagents.middleware.filesystem import FilesystemState
+        state = FilesystemState(messages=[], files=files or {})
+        return ToolRuntime(
+            state=state, context=None, tool_call_id="test",
+            store=None, stream_writer=lambda _: None, config={},
+        )
+
+    def _make_skill_file(self, name: str, description: str):
+        """Create SKILL.md FileData."""
+        return FileData(
+            content=["---", f"name: {name}", f"description: {description}", "---", "", f"# {name}"],
+            modified_at="2021-01-01", created_at="2021-01-01",
+        )
+
+    @pytest.mark.asyncio
+    async def test_awrap_model_call_injects_skills(self):
+        """Test async wrap_model_call injects skills into system prompt."""
+        from unittest.mock import AsyncMock, MagicMock
+        from deepagents.middleware.skills import SkillsMiddleware
+
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        middleware._cached_skills = []
+
+        request = MagicMock()
+        request.system_prompt = "Original prompt"
+        request.tools = []
+        request.runtime = self._make_runtime()
+        request.override = MagicMock(return_value=request)
+
+        handler = AsyncMock(return_value="response")
+        result = await middleware.awrap_model_call(request, handler)
+
+        request.override.assert_called_once()
+        call_kwargs = request.override.call_args[1]
+        assert "Skills System" in call_kwargs["system_prompt"]
+        handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_awrap_model_call_no_existing_prompt(self):
+        """Test async wrap_model_call without existing system prompt."""
+        from unittest.mock import AsyncMock, MagicMock
+        from deepagents.middleware.skills import SkillsMiddleware
+
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        middleware._cached_skills = []
+
+        request = MagicMock()
+        request.system_prompt = None
+        request.tools = []
+        request.runtime = self._make_runtime()
+        request.override = MagicMock(return_value=request)
+
+        handler = AsyncMock(return_value="response")
+        await middleware.awrap_model_call(request, handler)
+
+        call_kwargs = request.override.call_args[1]
+        assert "Skills System" in call_kwargs["system_prompt"]
+        assert "Original prompt" not in call_kwargs["system_prompt"]
+
+    @pytest.mark.asyncio
+    async def test_awrap_model_call_with_skills(self):
+        """Test async wrap_model_call with actual skills."""
+        from unittest.mock import AsyncMock, MagicMock
+        from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
+
+        middleware = SkillsMiddleware(backend=lambda rt: StateBackend(rt))
+        middleware._cached_skills = [
+            SkillMetadata(name="web-research", description="Research the web", path="/skills/web-research/SKILL.md", label="User"),
+            SkillMetadata(name="code-review", description="Review code", path="/skills/code-review/SKILL.md", label="User"),
+        ]
+
+        request = MagicMock()
+        request.system_prompt = "You are an assistant."
+        request.tools = []
+        request.runtime = self._make_runtime()
+        request.override = MagicMock(return_value=request)
+
+        handler = AsyncMock(return_value="response")
+        await middleware.awrap_model_call(request, handler)
+
+        call_kwargs = request.override.call_args[1]
+        system_prompt = call_kwargs["system_prompt"]
+        assert "You are an assistant." in system_prompt
+        assert "web-research" in system_prompt
+        assert "code-review" in system_prompt
+        assert "Research the web" in system_prompt
+
+    @pytest.mark.asyncio
+    async def test_awrap_model_call_caches_skills(self):
+        """Test that async wrap_model_call uses cached skills."""
+        from unittest.mock import AsyncMock, MagicMock
+        from deepagents.middleware.skills import SkillsMiddleware
+
+        call_count = [0]
+        def counting_backend(rt):
+            call_count[0] += 1
+            return StateBackend(rt)
+
+        middleware = SkillsMiddleware(backend=counting_backend)
+
+        request = MagicMock()
+        request.system_prompt = "Test"
+        request.tools = []
+        request.runtime = self._make_runtime()
+        request.override = MagicMock(return_value=request)
+
+        handler = AsyncMock(return_value="response")
+
+        # First call
+        await middleware.awrap_model_call(request, handler)
+        # Second call
+        await middleware.awrap_model_call(request, handler)
+
+        # Backend should only be called once due to caching
+        assert call_count[0] == 1

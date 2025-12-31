@@ -8,6 +8,10 @@ from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
+# Now safe to import agent (which imports LangChain modules)
+from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
+from deepagents_cli.commands import execute_bash_command, handle_command
+
 # CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import (
     COLORS,
@@ -17,10 +21,6 @@ from deepagents_cli.config import (
     create_model,
     settings,
 )
-
-# Now safe to import agent (which imports LangChain modules)
-from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
-from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import ImageTracker, create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
@@ -114,9 +114,7 @@ def parse_args():
     threads_list.add_argument(
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
-    threads_list.add_argument(
-        "--limit", type=int, default=20, help="Max threads (default: 20)"
-    )
+    threads_list.add_argument("--limit", type=int, default=20, help="Max threads (default: 20)")
 
     # threads delete
     threads_delete = threads_sub.add_parser("delete", help="Delete a thread")
@@ -421,9 +419,7 @@ async def main(
                 with create_sandbox(
                     sandbox_type, sandbox_id=sandbox_id, setup_script_path=setup_script_path
                 ) as sandbox_backend:
-                    console.print(
-                        f"[yellow]⚡ Remote execution enabled ({sandbox_type})[/yellow]"
-                    )
+                    console.print(f"[yellow]⚡ Remote execution enabled ({sandbox_type})[/yellow]")
                     console.print()
 
                     await _run_agent_session(
@@ -519,7 +515,11 @@ def cli_main() -> None:
                     is_resumed = True
                     args.agent = thread["agent_name"]
                 else:
-                    msg = f"No previous thread for '{args.agent}'" if agent_filter else "No previous threads"
+                    msg = (
+                        f"No previous thread for '{args.agent}'"
+                        if agent_filter
+                        else "No previous threads"
+                    )
                     console.print(f"[yellow]{msg}, starting new.[/yellow]")
 
             elif args.resume_thread:
@@ -532,7 +532,9 @@ def cli_main() -> None:
                         args.agent = thread["agent_name"]
                 else:
                     console.print(f"[red]Thread '{args.resume_thread}' not found.[/red]")
-                    console.print("[dim]Use 'deepagents threads list' to see available threads.[/dim]")
+                    console.print(
+                        "[dim]Use 'deepagents threads list' to see available threads.[/dim]"
+                    )
                     sys.exit(1)
 
             # Create session state with thread info

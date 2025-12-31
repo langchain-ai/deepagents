@@ -17,8 +17,8 @@ from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
-from langgraph.types import Checkpointer
 from langgraph.runtime import Runtime
+from langgraph.types import Checkpointer
 
 from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings

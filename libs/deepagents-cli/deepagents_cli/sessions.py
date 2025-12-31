@@ -1,10 +1,10 @@
 """Thread management for persistent conversations."""
 
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import AsyncIterator
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -68,7 +68,7 @@ class ThreadManager:
             thread_id (8-char hex string)
         """
         thread_id = uuid.uuid4().hex[:8]
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         conn = await self._get_conn()
         try:
@@ -94,7 +94,7 @@ class ThreadManager:
         Args:
             thread_id: The thread ID to touch
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         conn = await self._get_conn()
         try:
             await conn.execute(
@@ -116,9 +116,7 @@ class ThreadManager:
         """
         conn = await self._get_conn()
         try:
-            async with conn.execute(
-                "SELECT * FROM threads WHERE id = ?", (thread_id,)
-            ) as cursor:
+            async with conn.execute("SELECT * FROM threads WHERE id = ?", (thread_id,)) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
         finally:
@@ -193,18 +191,12 @@ class ThreadManager:
         conn = await self._get_conn()
         try:
             # Delete thread metadata
-            cursor = await conn.execute(
-                "DELETE FROM threads WHERE id = ?", (thread_id,)
-            )
+            cursor = await conn.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
             deleted = cursor.rowcount > 0
 
             # Full cleanup: delete checkpoint data too
-            await conn.execute(
-                "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
-            )
-            await conn.execute(
-                "DELETE FROM writes WHERE thread_id = ?", (thread_id,)
-            )
+            await conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
+            await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
 
             await conn.commit()
             return deleted

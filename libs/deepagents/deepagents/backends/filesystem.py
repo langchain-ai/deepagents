@@ -27,7 +27,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     check_empty_content,
-    format_content_with_line_numbers,
+    format_lines_with_truncation,
     perform_string_replacement,
 )
 
@@ -225,14 +225,7 @@ class FilesystemBackend(BackendProtocol):
                 return empty_msg
 
             lines = content.splitlines()
-            start_idx = offset
-            end_idx = min(start_idx + limit, len(lines))
-
-            if start_idx >= len(lines):
-                return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
-
-            selected_lines = lines[start_idx:end_idx]
-            return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
+            return format_lines_with_truncation(lines, offset, limit)
         except (OSError, UnicodeDecodeError) as e:
             return f"Error reading file '{file_path}': {e}"
 

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
 from rich.table import Table
 
 from deepagents_cli.config import COLORS, console

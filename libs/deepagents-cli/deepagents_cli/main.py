@@ -28,10 +28,13 @@ from deepagents_cli.integrations.sandbox_factory import (
     get_default_working_dir,
 )
 from deepagents_cli.sessions import (
-    ThreadManager,
     delete_thread_command,
+    generate_thread_id,
     get_checkpointer,
+    get_most_recent,
+    get_thread_agent,
     list_threads_command,
+    thread_exists,
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
@@ -395,22 +398,12 @@ async def main(
     """
     model = create_model()
 
-    # Handle thread creation/resume
-    tm = ThreadManager()
     if session_state.is_resumed:
-        # Update last_used_at and show resume message
-        await tm.touch_thread(session_state.thread_id)
         console.print(f"[green]Resuming thread:[/green] {session_state.thread_id}")
     else:
-        # Create new thread
-        thread_id = await tm.create_thread(
-            agent_name=assistant_id,
-            project_root=settings.project_root,
-        )
-        session_state.thread_id = thread_id
-        console.print(f"[dim]Thread: {thread_id}[/dim]")
+        session_state.thread_id = generate_thread_id()
+        console.print(f"[dim]Thread: {session_state.thread_id}[/dim]")
 
-    # Get persistent checkpointer
     async with get_checkpointer() as checkpointer:
         # Branch 1: User wants a sandbox
         if sandbox_type != "none":
@@ -509,11 +502,12 @@ def cli_main() -> None:
                 # -r (no ID): Get most recent thread
                 # If --agent specified, filter by that agent; otherwise get most recent overall
                 agent_filter = args.agent if args.agent != "agent" else None
-                thread = asyncio.run(ThreadManager().get_most_recent(agent_filter))
-                if thread:
-                    thread_id = thread["id"]
+                thread_id = asyncio.run(get_most_recent(agent_filter))
+                if thread_id:
                     is_resumed = True
-                    args.agent = thread["agent_name"]
+                    agent_name = asyncio.run(get_thread_agent(thread_id))
+                    if agent_name:
+                        args.agent = agent_name
                 else:
                     msg = (
                         f"No previous thread for '{args.agent}'"
@@ -524,12 +518,13 @@ def cli_main() -> None:
 
             elif args.resume_thread:
                 # -r <ID>: Resume specific thread
-                thread = asyncio.run(ThreadManager().get_thread(args.resume_thread))
-                if thread:
-                    thread_id = thread["id"]
+                if asyncio.run(thread_exists(args.resume_thread)):
+                    thread_id = args.resume_thread
                     is_resumed = True
                     if args.agent == "agent":
-                        args.agent = thread["agent_name"]
+                        agent_name = asyncio.run(get_thread_agent(thread_id))
+                        if agent_name:
+                            args.agent = agent_name
                 else:
                     console.print(f"[red]Thread '{args.resume_thread}' not found.[/red]")
                     console.print(

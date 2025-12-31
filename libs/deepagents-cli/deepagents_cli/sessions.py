@@ -1,27 +1,28 @@
-"""Thread management for persistent conversations."""
+"""Thread management using LangGraph's built-in checkpoint persistence."""
 
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from rich.table import Table
+
 from deepagents_cli.config import COLORS, console
 
-THREADS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS threads (
-    id TEXT PRIMARY KEY,
-    agent_name TEXT NOT NULL,
-    project_root TEXT,
-    created_at TEXT NOT NULL,
-    last_used_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_threads_agent_used
-    ON threads(agent_name, last_used_at DESC);
-"""
+
+def _format_timestamp(iso_timestamp: str | None) -> str:
+    """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm')."""
+    if not iso_timestamp:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_timestamp).astimezone()
+        return dt.strftime("%b %d, %-I:%M%p").lower().replace("am", "am").replace("pm", "pm")
+    except (ValueError, TypeError):
+        return ""
 
 
 def get_db_path() -> Path:
@@ -31,206 +32,117 @@ def get_db_path() -> Path:
     return db_dir / "sessions.db"
 
 
-class ThreadManager:
-    """Manages thread metadata in SQLite.
+def generate_thread_id() -> str:
+    """Generate a new 8-char hex thread ID."""
+    return uuid.uuid4().hex[:8]
 
-    Each method opens/closes its own connection for simplicity.
-    """
 
-    def __init__(self, db_path: Path | None = None) -> None:
-        """Initialize ThreadManager.
+async def list_threads(
+    agent_name: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """List threads from checkpoints table."""
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        if agent_name:
+            query = """
+                SELECT thread_id,
+                       json_extract(metadata, '$.agent_name') as agent_name,
+                       MAX(json_extract(metadata, '$.updated_at')) as updated_at
+                FROM checkpoints
+                WHERE json_extract(metadata, '$.agent_name') = ?
+                GROUP BY thread_id
+                ORDER BY updated_at DESC
+                LIMIT ?
+            """
+            params: tuple = (agent_name, limit)
+        else:
+            query = """
+                SELECT thread_id,
+                       json_extract(metadata, '$.agent_name') as agent_name,
+                       MAX(json_extract(metadata, '$.updated_at')) as updated_at
+                FROM checkpoints
+                GROUP BY thread_id
+                ORDER BY updated_at DESC
+                LIMIT ?
+            """
+            params = (limit,)
 
-        Args:
-            db_path: Path to database file. Defaults to ~/.deepagents/sessions.db
+        async with conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [{"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]} for r in rows]
+
+
+async def get_most_recent(agent_name: str | None = None) -> str | None:
+    """Get most recent thread_id, optionally filtered by agent."""
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        if agent_name:
+            query = """
+                SELECT thread_id FROM checkpoints
+                WHERE json_extract(metadata, '$.agent_name') = ?
+                ORDER BY checkpoint_id DESC
+                LIMIT 1
+            """
+            params: tuple = (agent_name,)
+        else:
+            query = "SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 1"
+            params = ()
+
+        async with conn.execute(query, params) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def get_thread_agent(thread_id: str) -> str | None:
+    """Get agent_name for a thread."""
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        query = """
+            SELECT json_extract(metadata, '$.agent_name')
+            FROM checkpoints
+            WHERE thread_id = ?
+            LIMIT 1
         """
-        self.db_path = db_path or get_db_path()
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
 
-    async def _get_conn(self) -> aiosqlite.Connection:
-        """Get a new database connection with schema initialized."""
-        conn = await aiosqlite.connect(str(self.db_path), timeout=30.0)
-        conn.row_factory = aiosqlite.Row
-        await conn.executescript(THREADS_SCHEMA)
+
+async def thread_exists(thread_id: str) -> bool:
+    """Check if a thread exists in checkpoints."""
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        query = "SELECT 1 FROM checkpoints WHERE thread_id = ? LIMIT 1"
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row is not None
+
+
+async def delete_thread(thread_id: str) -> bool:
+    """Delete thread checkpoints. Returns True if deleted."""
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        cursor = await conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
+        deleted = cursor.rowcount > 0
+        await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
         await conn.commit()
-        return conn
-
-    async def create_thread(
-        self,
-        agent_name: str,
-        project_root: Path | None = None,
-    ) -> str:
-        """Create new thread.
-
-        Args:
-            agent_name: Name of the agent
-            project_root: Optional project root path
-
-        Returns:
-            thread_id (8-char hex string)
-        """
-        thread_id = uuid.uuid4().hex[:8]
-        now = datetime.now(UTC).isoformat()
-
-        conn = await self._get_conn()
-        try:
-            await conn.execute(
-                """INSERT INTO threads (id, agent_name, project_root, created_at, last_used_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (
-                    thread_id,
-                    agent_name,
-                    str(project_root) if project_root else None,
-                    now,
-                    now,  # last_used_at = created_at initially
-                ),
-            )
-            await conn.commit()
-            return thread_id
-        finally:
-            await conn.close()
-
-    async def touch_thread(self, thread_id: str) -> None:
-        """Update last_used_at to now.
-
-        Args:
-            thread_id: The thread ID to touch
-        """
-        now = datetime.now(UTC).isoformat()
-        conn = await self._get_conn()
-        try:
-            await conn.execute(
-                "UPDATE threads SET last_used_at = ? WHERE id = ?",
-                (now, thread_id),
-            )
-            await conn.commit()
-        finally:
-            await conn.close()
-
-    async def get_thread(self, thread_id: str) -> dict | None:
-        """Get thread by ID.
-
-        Args:
-            thread_id: The thread ID to look up
-
-        Returns:
-            Thread dict or None if not found
-        """
-        conn = await self._get_conn()
-        try:
-            async with conn.execute("SELECT * FROM threads WHERE id = ?", (thread_id,)) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
-        finally:
-            await conn.close()
-
-    async def get_most_recent(self, agent_name: str | None = None) -> dict | None:
-        """Get most recently used thread.
-
-        Args:
-            agent_name: Filter by agent name, or None for most recent overall
-
-        Returns:
-            Most recently used thread dict or None if no threads exist
-        """
-        conn = await self._get_conn()
-        try:
-            if agent_name:
-                query = """SELECT * FROM threads
-                           WHERE agent_name = ?
-                           ORDER BY last_used_at DESC LIMIT 1"""
-                params: tuple = (agent_name,)
-            else:
-                query = "SELECT * FROM threads ORDER BY last_used_at DESC LIMIT 1"
-                params = ()
-
-            async with conn.execute(query, params) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
-        finally:
-            await conn.close()
-
-    async def list_threads(
-        self,
-        agent_name: str | None = None,
-        limit: int = 20,
-    ) -> list[dict]:
-        """List threads ordered by last used.
-
-        Args:
-            agent_name: Filter by agent name, or None for all agents
-            limit: Maximum number of threads to return
-
-        Returns:
-            List of thread dicts, most recently used first
-        """
-        conn = await self._get_conn()
-        try:
-            if agent_name:
-                query = """SELECT * FROM threads
-                           WHERE agent_name = ?
-                           ORDER BY last_used_at DESC LIMIT ?"""
-                params: tuple = (agent_name, limit)
-            else:
-                query = "SELECT * FROM threads ORDER BY last_used_at DESC LIMIT ?"
-                params = (limit,)
-
-            async with conn.execute(query, params) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
-        finally:
-            await conn.close()
-
-    async def delete_thread(self, thread_id: str) -> bool:
-        """Delete thread and its checkpoints.
-
-        Args:
-            thread_id: The thread ID to delete
-
-        Returns:
-            True if deleted, False if not found
-        """
-        conn = await self._get_conn()
-        try:
-            # Delete thread metadata
-            cursor = await conn.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
-            deleted = cursor.rowcount > 0
-
-            # Full cleanup: delete checkpoint data too
-            await conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
-            await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
-
-            await conn.commit()
-            return deleted
-        finally:
-            await conn.close()
+        return deleted
 
 
 @asynccontextmanager
 async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
-    """Get AsyncSqliteSaver for the global database.
-
-    Yields:
-        AsyncSqliteSaver instance configured to use the global database
-    """
-    db_path = str(get_db_path())
-    async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
+    """Get AsyncSqliteSaver for the global database."""
+    async with AsyncSqliteSaver.from_conn_string(str(get_db_path())) as checkpointer:
         yield checkpointer
-
-
-# ============ CLI Command Handlers ============
 
 
 async def list_threads_command(
     agent_name: str | None = None,
     limit: int = 20,
 ) -> None:
-    """Handler for: deepagents threads list.
-
-    Args:
-        agent_name: Filter by agent name, or None for all
-        limit: Maximum number of threads to show
-    """
-    tm = ThreadManager()
-    threads = await tm.list_threads(agent_name, limit=limit)
+    """CLI handler for: deepagents threads list."""
+    threads = await list_threads(agent_name, limit=limit)
 
     if not threads:
         if agent_name:
@@ -241,29 +153,27 @@ async def list_threads_command(
         return
 
     title = f"Threads for '{agent_name}'" if agent_name else "All Threads"
-    console.print(f"\n[bold]{title}:[/bold]\n", style=COLORS["primary"])
+
+    table = Table(title=title, show_header=True, header_style=f"bold {COLORS['primary']}")
+    table.add_column("Thread ID", style="bold")
+    table.add_column("Agent")
+    table.add_column("Last Used", style="dim")
 
     for t in threads:
-        thread_id = t["id"]
-        agent = t["agent_name"]
-        last_used = t["last_used_at"][:16].replace("T", " ")
-        project = t.get("project_root") or ""
+        table.add_row(
+            t["thread_id"],
+            t["agent_name"] or "unknown",
+            _format_timestamp(t.get("updated_at")),
+        )
 
-        console.print(f"  [bold]{thread_id}[/bold] ({agent})", style=COLORS["primary"])
-        console.print(f"    Last used: {last_used}", style=COLORS["dim"])
-        if project:
-            console.print(f"    Project: {project}", style=COLORS["dim"])
-        console.print()
+    console.print()
+    console.print(table)
+    console.print()
 
 
 async def delete_thread_command(thread_id: str) -> None:
-    """Handler for: deepagents threads delete THREAD_ID.
-
-    Args:
-        thread_id: The thread ID to delete
-    """
-    tm = ThreadManager()
-    deleted = await tm.delete_thread(thread_id)
+    """CLI handler for: deepagents threads delete."""
+    deleted = await delete_thread(thread_id)
 
     if deleted:
         console.print(f"[green]Thread '{thread_id}' deleted.[/green]")

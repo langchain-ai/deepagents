@@ -6,8 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .config import COLORS, DEEP_AGENTS_ASCII, console, settings
-from .sessions import ThreadManager
+from .config import COLORS, DEEP_AGENTS_ASCII, console
+from .sessions import generate_thread_id
 from .ui import TokenTracker, show_interactive_help
 
 if TYPE_CHECKING:
@@ -35,20 +35,12 @@ async def handle_command(
         return "exit"
 
     if cmd == "clear":
-        # Create NEW thread in DB (both old and new conversations are resumable)
         new_thread_id = None
         if session_state is not None:
-            tm = ThreadManager()
-            new_thread_id = await tm.create_thread(
-                agent_name=session_state.agent_name,
-                project_root=settings.project_root,
-            )
+            new_thread_id = generate_thread_id()
             session_state.thread_id = new_thread_id
 
-        # Reset token tracking to baseline
         token_tracker.reset()
-
-        # Clear screen and show fresh UI
         console.clear()
         console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
         console.print()

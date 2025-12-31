@@ -244,9 +244,16 @@ async def execute_task(
     else:
         message_content = final_input
 
+    from datetime import UTC, datetime
+
     config = {
         "configurable": {"thread_id": session_state.thread_id},
-        "metadata": {"assistant_id": assistant_id} if assistant_id else {},
+        "metadata": {
+            "agent_name": assistant_id,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        if assistant_id
+        else {},
     }
 
     has_responded = False

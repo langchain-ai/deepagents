@@ -213,3 +213,6 @@ __marimo__/
 .claude
 
 .idea
+
+#vscode
+.vscode/

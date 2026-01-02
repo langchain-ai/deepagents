@@ -383,11 +383,19 @@ class SessionState:
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
         self.thread_id = str(uuid.uuid4())
+        # Tool response tracking
+        self.tool_responses: dict[str, str] = {}  # tool_call_id -> full response content
+        self.show_full_tool_output: bool = False  # Toggle for full vs truncated view
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return new state."""
         self.auto_approve = not self.auto_approve
         return self.auto_approve
+
+    def toggle_tool_output_view(self) -> bool:
+        """Toggle between truncated and full tool output view."""
+        self.show_full_tool_output = not self.show_full_tool_output
+        return self.show_full_tool_output
 
 
 def get_default_coding_instructions() -> str:

@@ -170,6 +170,95 @@ def format_tool_message_content(content: Any) -> str:
     return str(content)
 
 
+def truncate_tool_response(
+    content: str, max_lines: int = 10, max_chars: int = 500
+) -> tuple[str, bool]:
+    """Truncate tool response to a reasonable length for display.
+
+    Args:
+        content: The full tool response content
+        max_lines: Maximum number of lines to show
+        max_chars: Maximum number of characters to show
+
+    Returns:
+        Tuple of (truncated_content, was_truncated)
+    """
+    if not content:
+        return content, False
+
+    lines = content.split("\n")
+    was_truncated = False
+
+    # Check if we need to truncate by lines
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        was_truncated = True
+
+    # Join and check character count
+    result = "\n".join(lines)
+    if len(result) > max_chars:
+        result = result[:max_chars]
+        was_truncated = True
+
+    if was_truncated:
+        result += "\n[dim]...(truncated, press Ctrl+O to toggle full view)[/dim]"
+
+    return result, was_truncated
+
+
+def render_tool_response(tool_name: str, content: str, truncate: bool = True) -> None:
+    """Render a tool response with optional truncation.
+
+    Args:
+        tool_name: Name of the tool that produced the response
+        content: The response content
+        truncate: Whether to truncate the output
+    """
+    if not content or not content.strip():
+        return
+
+    if truncate:
+        display_content, was_truncated = truncate_tool_response(content)
+    else:
+        display_content = content
+        was_truncated = False
+
+    # Create header with tool icon
+    tool_icons = {
+        "read_file": "📖",
+        "write_file": "✏️",
+        "edit_file": "✂️",
+        "ls": "📁",
+        "glob": "🔍",
+        "grep": "🔎",
+        "shell": "⚡",
+        "execute": "🔧",
+        "web_search": "🌐",
+        "http_request": "🌍",
+        "task": "🤖",
+        "fetch_url": "🌐",
+    }
+
+    icon = tool_icons.get(tool_name, "🔧")
+    header = Text()
+    header.append(f"{icon} ", style=COLORS["tool"])
+    header.append(f"{tool_name} response", style=f"bold {COLORS['tool']}")
+    if not truncate and was_truncated:
+        header.append(" [full view]", style="dim")
+
+    console.print()
+    console.print(header)
+    console.print(
+        Panel(
+            display_content,
+            border_style=COLORS["dim"],
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+    )
+    console.print()
+
+
 class TokenTracker:
     """Track token usage across the conversation."""
 
@@ -508,6 +597,7 @@ def show_interactive_help() -> None:
         "  Ctrl+E          Open in external editor (nano by default)", style=COLORS["dim"]
     )
     console.print("  Ctrl+T          Toggle auto-approve mode", style=COLORS["dim"])
+    console.print("  Ctrl+O          Toggle full/truncated tool output view", style=COLORS["dim"])
     console.print("  Arrow keys      Navigate input", style=COLORS["dim"])
     console.print("  Ctrl+C          Cancel input or interrupt agent mid-work", style=COLORS["dim"])
     console.print()
@@ -626,6 +716,7 @@ def show_help() -> None:
     )
     console.print("  Ctrl+J          Insert newline (alternative)", style=COLORS["dim"])
     console.print("  Ctrl+T          Toggle auto-approve mode", style=COLORS["dim"])
+    console.print("  Ctrl+O          Toggle full/truncated tool output view", style=COLORS["dim"])
     console.print("  Arrow keys      Navigate input", style=COLORS["dim"])
     console.print(
         "  @filename       Type @ to auto-complete files and inject content", style=COLORS["dim"]

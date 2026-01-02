@@ -28,7 +28,10 @@ from deepagents_cli.integrations.sandbox_factory import (
     get_default_working_dir,
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
+from deepagents_cli.mcp.commands import execute_mcp_command, setup_mcp_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
+from deepagents_cli.mcp.integration import get_mcp_tools
+from deepagents_cli.mcp.manager import get_mcp_manager
 from deepagents_cli.ui import TokenTracker, show_help
 
 
@@ -99,6 +102,9 @@ def parse_args():
     # Skills command - setup delegated to skills module
     setup_skills_parser(subparsers)
 
+    # MCP command - setup delegated to MCP module
+    setup_mcp_parser(subparsers)
+
     # Default interactive mode
     parser.add_argument(
         "--agent",
@@ -158,6 +164,9 @@ async def simple_cli(
         no_splash: If True, skip displaying the startup splash screen
     """
     console.clear()
+    # Store assistant_id in session state for MCP commands
+    session_state.assistant_id = assistant_id
+
     if not no_splash:
         console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
         console.print()
@@ -275,7 +284,7 @@ async def simple_cli(
 
         # Check for slash commands first
         if user_input.startswith("/"):
-            result = handle_command(user_input, agent, token_tracker)
+            result = handle_command(user_input, agent, token_tracker, session_state)
             if result == "exit":
                 console.print("\nGoodbye!", style=COLORS["primary"])
                 break
@@ -328,6 +337,43 @@ async def _run_agent_session(
     tools = [http_request, fetch_url]
     if settings.has_tavily:
         tools.append(web_search)
+
+    # Add MCP tools if servers are configured
+    if settings.has_mcp_servers:
+        manager = get_mcp_manager()
+        total_mcp_tools = 0
+        for server_name, server_config in settings.mcp_servers.items():
+            # Register configuration with manager
+            manager.register_config(server_name, server_config)
+
+            # Start the server (if not already running)
+            try:
+                process = manager.start_server(server_name)
+                console.print(f"[dim]MCP server '{server_name}' started (PID: {process.pid})[/dim]")
+            except ValueError as e:
+                console.print(f"[yellow]Warning: Could not start MCP server '{server_name}': {e}[/yellow]")
+                continue
+            except RuntimeError as e:
+                console.print(f"[yellow]Warning: MCP server '{server_name}' failed to start: {e}[/yellow]")
+                continue
+            except Exception as e:
+                console.print(f"[yellow]Warning: Failed to start MCP server '{server_name}': {e}[/yellow]")
+                continue
+
+            # Get tools from the server
+            try:
+                server_tools = get_mcp_tools(server_name)
+                if server_tools:
+                    tools.extend(server_tools)
+                    total_mcp_tools += len(server_tools)
+                    console.print(f"[green]✓ Loaded {len(server_tools)} tools from MCP server '{server_name}'[/green]")
+                else:
+                    console.print(f"[yellow]No tools found for MCP server '{server_name}'[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Warning: Failed to get tools from MCP server '{server_name}': {e}[/yellow]")
+
+        if total_mcp_tools > 0:
+            console.print(f"[green]✓ Loaded {total_mcp_tools} MCP tools from {len(settings.mcp_servers)} server(s)[/green]")
 
     agent, composite_backend = create_cli_agent(
         model=model,
@@ -449,6 +495,8 @@ def cli_main() -> None:
             reset_agent(args.agent, args.source_agent)
         elif args.command == "skills":
             execute_skills_command(args)
+        elif args.command == "mcp":
+            execute_mcp_command(args)
         else:
             # Create session state from args
             session_state = SessionState(auto_approve=args.auto_approve, no_splash=args.no_splash)

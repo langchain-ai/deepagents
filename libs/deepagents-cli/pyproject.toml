@@ -6,7 +6,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "deepagents==0.2.8",
+  "deepagents==0.3.1",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",

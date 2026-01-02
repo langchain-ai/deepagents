@@ -32,6 +32,7 @@ from deepagents_cli.ui import (
     render_diff_block,
     render_file_operation,
     render_todo_list,
+    render_tool_response,
 )
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
@@ -365,37 +366,40 @@ async def execute_task(
                         continue
 
                     if isinstance(message, ToolMessage):
-                        # Tool results are sent to the agent, not displayed to users
-                        # Exception: show shell command errors to help with debugging
+                        # Tool results: store them and display to user
                         tool_name = getattr(message, "name", "")
                         tool_status = getattr(message, "status", "success")
                         tool_content = format_tool_message_content(message.content)
+                        tool_call_id = getattr(message, "tool_call_id", None)
                         record = file_op_tracker.complete_with_message(message)
+
+                        # Store the full tool response for toggling
+                        if tool_call_id and tool_content:
+                            session_state.tool_responses[tool_call_id] = tool_content
 
                         # Reset spinner message after tool completes
                         if spinner_active:
                             status.update(f"[bold {COLORS['thinking']}]Agent is thinking...")
 
+                        # Handle special cases and errors first
+                        show_error = False
                         if tool_name == "shell" and tool_status != "success":
-                            flush_text_buffer(final=True)
-                            if tool_content:
-                                if spinner_active:
-                                    status.stop()
-                                    spinner_active = False
-                                console.print()
-                                console.print(tool_content, style="red", markup=False)
-                                console.print()
+                            show_error = True
                         elif tool_content and isinstance(tool_content, str):
                             stripped = tool_content.lstrip()
                             if stripped.lower().startswith("error"):
-                                flush_text_buffer(final=True)
-                                if spinner_active:
-                                    status.stop()
-                                    spinner_active = False
-                                console.print()
-                                console.print(tool_content, style="red", markup=False)
-                                console.print()
+                                show_error = True
 
+                        if show_error:
+                            flush_text_buffer(final=True)
+                            if spinner_active:
+                                status.stop()
+                                spinner_active = False
+                            console.print()
+                            console.print(tool_content, style="red", markup=False)
+                            console.print()
+
+                        # Show file operation records
                         if record:
                             flush_text_buffer(final=True)
                             if spinner_active:
@@ -408,8 +412,28 @@ async def execute_task(
                                 status.start()
                                 spinner_active = True
 
-                        # For all other tools (web_search, http_request, etc.),
-                        # results are hidden from user - agent will process and respond
+                        # Display tool responses (truncated or full based on toggle)
+                        # Skip file operations since they have their own display
+                        if (
+                            tool_content
+                            and tool_name not in {"read_file", "write_file", "edit_file"}
+                            and not show_error
+                        ):
+                            flush_text_buffer(final=True)
+                            if spinner_active:
+                                status.stop()
+                                spinner_active = False
+
+                            render_tool_response(
+                                tool_name,
+                                tool_content,
+                                truncate=not session_state.show_full_tool_output,
+                            )
+
+                            if not spinner_active:
+                                status.start()
+                                spinner_active = True
+
                         continue
 
                     # Check if this is an AIMessageChunk

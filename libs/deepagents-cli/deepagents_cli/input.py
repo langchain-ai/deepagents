@@ -278,6 +278,18 @@ def create_prompt_session(
         # Force UI refresh to update toolbar
         event.app.invalidate()
 
+    # Bind Ctrl+O to toggle tool output view
+    @kb.add("c-o")
+    def _(event) -> None:
+        """Toggle between truncated and full tool output view."""
+        new_state = session_state.toggle_tool_output_view()
+        # Show a brief notification
+        from deepagents_cli.config import console
+
+        mode = "full" if new_state else "truncated"
+        console.print(f"\n[dim]Tool output view: {mode}[/dim]")
+        event.app.invalidate()
+
     # Custom paste handler to detect images
     if image_tracker:
         from prompt_toolkit.keys import Keys

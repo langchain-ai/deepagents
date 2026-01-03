@@ -20,6 +20,7 @@ dependencies = [
   "runloop-api-client>=0.69.0",
   "pillow>=10.0.0",
   "pyyaml>=6.0",
+  "textual>=1.0.0",
 ]
 
 [project.scripts]

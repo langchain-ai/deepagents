@@ -43,6 +43,42 @@ def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bo
         
         # Return signal to switch agent
         return ("switch_agent", agent_name)
+    
+    if cmd == "remember":
+        # Get optional additional text after /remember
+        additional_context = ""
+        if len(cmd_parts) > 1:
+            # Rejoin everything after "remember" (preserve original spacing)
+            additional_context = command.strip()[len("/remember"):].strip()
+        
+        base_message = """Please review our conversation and update your memory files accordingly:
+
+1. **Review what we worked on**: Look at the key decisions, patterns, preferences, and learnings from this conversation.
+
+2. **Update your agent.md**: If there are universal behaviors, preferences, or patterns that should apply across all my projects, update `~/.deepagents/agent/agent.md`.
+
+3. **Update project memory**: If there are project-specific conventions, architecture decisions, or workflows we established, update the project's `.deepagents/agent.md` or create relevant documentation files in `.deepagents/`.
+
+4. **Update or create skills**: If we developed a reusable workflow or process that could be captured as a skill, create or update a skill in `~/.deepagents/agent/skills/`.
+
+Focus on:
+- Coding conventions and patterns I prefer
+- Project architecture and design decisions
+- Common workflows or debugging approaches
+- Tools, libraries, or techniques we used
+- Mistakes to avoid or gotchas we encountered
+- Any feedback I gave about your behavior
+
+Be specific and actionable in your updates. Use `edit_file` to update existing files or `write_file` to create new ones."""
+        
+        # Append user's additional context if provided
+        if additional_context:
+            final_message = f"{base_message}\n\nAdditional context: {additional_context}"
+        else:
+            final_message = base_message
+        
+        # Return signal to prefill prompt with memory reflection message
+        return ("prefill_prompt", final_message)
 
     if cmd == "clear":
         # Reset agent conversation state

@@ -288,7 +288,11 @@ async def simple_cli(
             if isinstance(result, tuple) and result[0] == "switch_agent":
                 # Switch to a different agent profile
                 return result[1]  # Return new agent name to trigger reload
-            if result:
+            if isinstance(result, tuple) and result[0] == "prefill_prompt":
+                # Prefill the prompt with the provided message
+                user_input = result[1]
+                # Continue to execute_task with the prefilled message
+            elif result:
                 # Command was handled, continue to next input
                 continue
 

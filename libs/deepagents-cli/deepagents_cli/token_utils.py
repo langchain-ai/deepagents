@@ -7,7 +7,9 @@ from langchain_core.messages import SystemMessage
 from deepagents_cli.config import console, settings
 
 
-def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assistant_id: str) -> int:
+def calculate_baseline_tokens(
+    model, agent_dir: Path, system_prompt: str, assistant_id: str
+) -> int:
     """Calculate baseline context tokens using the model's official tokenizer.
 
     This uses the model's get_num_tokens_from_messages() method to get
@@ -65,7 +67,13 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
     full_system_prompt = memory_section + "\n\n" + system_prompt + "\n\n" + memory_system_prompt
 
     # Count tokens using the model's official method
-    messages = [SystemMessage(content=full_system_prompt)]
+    # Note: Some providers (like Anthropic) require at least one user message
+    from langchain_core.messages import HumanMessage
+    
+    messages = [
+        SystemMessage(content=full_system_prompt),
+        HumanMessage(content="Hello")  # Dummy message for token counting
+    ]
 
     try:
         # Note: tools parameter is not supported by LangChain's token counting

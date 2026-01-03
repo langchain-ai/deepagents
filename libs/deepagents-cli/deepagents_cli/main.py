@@ -161,8 +161,8 @@ async def simple_cli(
     Returns:
         None if exiting normally, or new agent name if switching agents.
     """
-    console.clear()
     if not no_splash:
+        console.clear()
         console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
         console.print()
 
@@ -178,81 +178,83 @@ async def simple_cli(
         elif isinstance(backend, SandboxBackendProtocol):
             sandbox_id = backend.id
 
-    # Display sandbox info persistently (survives console.clear())
-    if sandbox_type and sandbox_id:
-        console.print(f"[yellow]⚡ {sandbox_type.capitalize()} sandbox: {sandbox_id}[/yellow]")
-        if setup_script_path:
+    # Display startup info (skip when switching agents)
+    if not no_splash:
+        # Display sandbox info persistently (survives console.clear())
+        if sandbox_type and sandbox_id:
+            console.print(f"[yellow]⚡ {sandbox_type.capitalize()} sandbox: {sandbox_id}[/yellow]")
+            if setup_script_path:
+                console.print(
+                    f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]"
+                )
+            console.print()
+
+        # Display model info
+        if settings.model_name and settings.model_provider:
+            provider_display = {
+                "openai": "OpenAI",
+                "anthropic": "Anthropic",
+                "google": "Google",
+            }.get(settings.model_provider, settings.model_provider)
             console.print(
-                f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]"
+                f"[green]✓ Model:[/green] {provider_display} → '{settings.model_name}'",
+                style=COLORS["dim"],
             )
+            console.print()
+
+        if not settings.has_tavily:
+            console.print(
+                "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
+                style=COLORS["dim"],
+            )
+            console.print("  To enable web search, set your Tavily API key:", style=COLORS["dim"])
+            console.print("    export TAVILY_API_KEY=your_api_key_here", style=COLORS["dim"])
+            console.print(
+                "  Or add it to your .env file. Get your key at: https://tavily.com",
+                style=COLORS["dim"],
+            )
+            console.print()
+
+        if settings.has_deepagents_langchain_project:
+            console.print(
+                f"[green]✓ LangSmith tracing enabled:[/green] Deepagents → '{settings.deepagents_langchain_project}'",
+                style=COLORS["dim"],
+            )
+            if settings.user_langchain_project:
+                console.print(f"  [dim]User code (shell) → '{settings.user_langchain_project}'[/dim]")
+            console.print()
+
+        console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
+
+        if sandbox_type:
+            working_dir = get_default_working_dir(sandbox_type)
+            console.print(f"  [dim]Local CLI directory: {Path.cwd()}[/dim]")
+            console.print(f"  [dim]Code execution: Remote sandbox ({working_dir})[/dim]")
+        else:
+            console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
+
         console.print()
 
-    # Display model info
-    if settings.model_name and settings.model_provider:
-        provider_display = {
-            "openai": "OpenAI",
-            "anthropic": "Anthropic",
-            "google": "Google",
-        }.get(settings.model_provider, settings.model_provider)
-        console.print(
-            f"[green]✓ Model:[/green] {provider_display} → '{settings.model_name}'",
-            style=COLORS["dim"],
-        )
+        if session_state.auto_approve:
+            console.print(
+                "  [yellow]⚡ Auto-approve: ON[/yellow] [dim](tools run without confirmation)[/dim]"
+            )
+            console.print()
+
+        # Localize modifier names and show key symbols (macOS vs others)
+        if sys.platform == "darwin":
+            tips = (
+                "  Tips: ⏎ Enter to submit, ⌥ Option + ⏎ Enter for newline (or Esc+Enter), "
+                "⌃E to open editor, ⌃T to toggle auto-approve, ⌃C to interrupt"
+            )
+        else:
+            tips = (
+                "  Tips: Enter to submit, Alt+Enter (or Esc+Enter) for newline, "
+                "Ctrl+E to open editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt"
+            )
+        console.print(tips, style=f"dim {COLORS['dim']}")
+
         console.print()
-
-    if not settings.has_tavily:
-        console.print(
-            "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
-            style=COLORS["dim"],
-        )
-        console.print("  To enable web search, set your Tavily API key:", style=COLORS["dim"])
-        console.print("    export TAVILY_API_KEY=your_api_key_here", style=COLORS["dim"])
-        console.print(
-            "  Or add it to your .env file. Get your key at: https://tavily.com",
-            style=COLORS["dim"],
-        )
-        console.print()
-
-    if settings.has_deepagents_langchain_project:
-        console.print(
-            f"[green]✓ LangSmith tracing enabled:[/green] Deepagents → '{settings.deepagents_langchain_project}'",
-            style=COLORS["dim"],
-        )
-        if settings.user_langchain_project:
-            console.print(f"  [dim]User code (shell) → '{settings.user_langchain_project}'[/dim]")
-        console.print()
-
-    console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
-
-    if sandbox_type:
-        working_dir = get_default_working_dir(sandbox_type)
-        console.print(f"  [dim]Local CLI directory: {Path.cwd()}[/dim]")
-        console.print(f"  [dim]Code execution: Remote sandbox ({working_dir})[/dim]")
-    else:
-        console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
-
-    console.print()
-
-    if session_state.auto_approve:
-        console.print(
-            "  [yellow]⚡ Auto-approve: ON[/yellow] [dim](tools run without confirmation)[/dim]"
-        )
-        console.print()
-
-    # Localize modifier names and show key symbols (macOS vs others)
-    if sys.platform == "darwin":
-        tips = (
-            "  Tips: ⏎ Enter to submit, ⌥ Option + ⏎ Enter for newline (or Esc+Enter), "
-            "⌃E to open editor, ⌃T to toggle auto-approve, ⌃C to interrupt"
-        )
-    else:
-        tips = (
-            "  Tips: Enter to submit, Alt+Enter (or Esc+Enter) for newline, "
-            "Ctrl+E to open editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt"
-        )
-    console.print(tips, style=f"dim {COLORS['dim']}")
-
-    console.print()
 
     # Create prompt session, image tracker, and token tracker
     image_tracker = ImageTracker()
@@ -403,23 +405,14 @@ async def _run_agent_session(
                     channel_values.pop("skills_metadata", None)
                     # Since channel_values is mutable, the changes persist in the checkpoint
             
-            # Show agent switch message
-            console.clear()
-            console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
+            # Show agent switch message (without clearing screen)
             console.print()
             console.print(
-                f"... Switched to agent profile: [bold]{current_assistant_id}[/bold]",
+                f"✓ Switched to agent profile: [bold]{current_assistant_id}[/bold]",
                 style=COLORS["agent"]
             )
-            console.print()
             console.print(
-                f"  [dim]Agent directory: ~/.deepagents/{current_assistant_id}[/dim]"
-            )
-            console.print(
-                f"  [dim]Memory and skills will reload from new profile[/dim]"
-            )
-            console.print(
-                f"  [dim]Conversation history preserved[/dim]"
+                f"  [dim]~/.deepagents/{current_assistant_id}/[/dim]"
             )
             console.print()
             continue

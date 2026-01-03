@@ -11,10 +11,12 @@ earlier ones when skills have the same name (last one wins). This enables layeri
 base -> user -> project -> team skills.
 
 The middleware uses backend APIs exclusively (no direct filesystem access), making it
-portable across persistent storage backends (filesystem, remote storage, etc.).
+portable across different storage backends (filesystem, state, remote storage, etc.).
 
-Note: StateBackend is not recommended for skills as it's ephemeral (per-conversation).
-Skills should typically be stored in persistent backends like FilesystemBackend.
+For StateBackend (ephemeral/in-memory), use a factory function:
+```python
+SkillsMiddleware(backend=lambda rt: StateBackend(rt), ...)
+```
 
 ## Skill Structure
 
@@ -101,6 +103,9 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
 
 from collections.abc import Awaitable, Callable
+
+# Type alias for backend or factory function
+BackendOrFactory = "BackendProtocol | Callable[[Runtime], BackendProtocol]"
 from typing import NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
@@ -456,22 +461,36 @@ class SkillsMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        backend: BackendProtocol,
+        backend: BackendOrFactory,
         registries: list[SkillRegistry] | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
         Args:
-            backend: Backend instance for file operations
+            backend: Backend instance or factory function that takes runtime and returns a backend.
+                     Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
             registries: List of registry configurations (path + name).
                        Defaults to user and project registries.
         """
-        self.backend = backend
+        self._backend = backend
         self.registries = registries or [
             {"path": "/skills/user/", "name": "user"},
             {"path": "/skills/project/", "name": "project"},
         ]
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
+
+    def _get_backend(self, runtime: Runtime) -> "BackendProtocol":
+        """Resolve backend from instance or factory.
+
+        Args:
+            runtime: Runtime context for factory functions
+
+        Returns:
+            Resolved backend instance
+        """
+        if callable(self._backend):
+            return self._backend(runtime)
+        return self._backend
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
@@ -552,13 +571,16 @@ class SkillsMiddleware(AgentMiddleware):
         Returns:
             State update with skills_metadata populated
         """
+        # Resolve backend (supports both direct instances and factory functions)
+        backend = self._get_backend(runtime)
+
         all_skills: dict[str, SkillMetadata] = {}
 
         # Load skills from each registry in order
         # Later registries override earlier ones (last one wins)
         for registry in self.registries:
             registry_skills = _list_skills_from_backend(
-                self.backend,
+                backend,
                 registry["path"],
                 registry=registry["name"],
             )

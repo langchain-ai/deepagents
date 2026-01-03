@@ -1,0 +1,7 @@
+{
+  "dependencies": ["..", "../libs/deepagents"],
+  "graphs": {
+    "deepagent": "./server.py:graph"
+  },
+  "env": ".env"
+}

@@ -11,7 +11,10 @@ earlier ones when skills have the same name (last one wins). This enables layeri
 base -> user -> project -> team skills.
 
 The middleware uses backend APIs exclusively (no direct filesystem access), making it
-portable across different storage backends (state, filesystem, remote, etc.).
+portable across persistent storage backends (filesystem, remote storage, etc.).
+
+Note: StateBackend is not recommended for skills as it's ephemeral (per-conversation).
+Skills should typically be stored in persistent backends like FilesystemBackend.
 
 ## Skill Structure
 
@@ -433,12 +436,13 @@ class SkillsMiddleware(AgentMiddleware):
     Skills are loaded in registry order with later registries overriding earlier ones.
 
     Example:
-        >>> from deepagents.backends.state import StateBackend
+        >>> from deepagents.backends.filesystem import FilesystemBackend
+        >>> backend = FilesystemBackend(root_dir="/path/to/skills")
         >>> middleware = SkillsMiddleware(
-        ...     backend=my_backend,
+        ...     backend=backend,
         ...     registries=[
-        ...         {"path": "/skills/user/", "name": "user"},
-        ...         {"path": "/skills/project/", "name": "project"},
+        ...         {"path": "/path/to/skills/user/", "name": "user"},
+        ...         {"path": "/path/to/skills/project/", "name": "project"},
         ...     ],
         ... )
 

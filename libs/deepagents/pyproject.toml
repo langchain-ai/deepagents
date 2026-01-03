@@ -10,6 +10,7 @@ dependencies = [
     "langchain-google-genai",
     "langchain>=1.1.0,<2.0.0",
     "langchain-core>=1.1.0,<2.0.0",
+    "pyyaml>=6.0",
     "wcmatch",
 ]
 

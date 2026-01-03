@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
@@ -146,9 +147,9 @@ async def simple_cli(
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
     no_splash: bool = False,
-) -> None:
+) -> str | None:
     """Main CLI loop.
-
+    
     Args:
         backend: Backend for file operations (CompositeBackend)
         sandbox_type: Type of sandbox being used (e.g., "modal", "runloop", "daytona").
@@ -156,6 +157,9 @@ async def simple_cli(
         sandbox_id: ID of the active sandbox
         setup_script_path: Path to setup script that was run (if any)
         no_splash: If True, skip displaying the startup splash screen
+    
+    Returns:
+        None if exiting normally, or new agent name if switching agents.
     """
     console.clear()
     if not no_splash:
@@ -279,6 +283,9 @@ async def simple_cli(
             if result == "exit":
                 console.print("\nGoodbye!", style=COLORS["primary"])
                 break
+            if isinstance(result, tuple) and result[0] == "switch_agent":
+                # Switch to a different agent profile
+                return result[1]  # Return new agent name to trigger reload
             if result:
                 # Command was handled, continue to next input
                 continue
@@ -315,6 +322,7 @@ async def _run_agent_session(
     """Helper to create agent and run CLI session.
 
     Extracted to avoid duplication between sandbox and local modes.
+    Handles agent switching by looping when user switches profiles.
 
     Args:
         model: LLM model to use
@@ -324,38 +332,97 @@ async def _run_agent_session(
         sandbox_type: Type of sandbox being used
         setup_script_path: Path to setup script that was run (if any)
     """
-    # Create agent with conditional tools
-    tools = [http_request, fetch_url]
-    if settings.has_tavily:
-        tools.append(web_search)
+    current_assistant_id = assistant_id
+    first_run = True
+    agent = None
+    shared_checkpointer = None
+    
+    while True:
+        # Create agent with conditional tools
+        tools = [http_request, fetch_url]
+        if settings.has_tavily:
+            tools.append(web_search)
 
-    agent, composite_backend = create_cli_agent(
-        model=model,
-        assistant_id=assistant_id,
-        tools=tools,
-        sandbox=sandbox_backend,
-        sandbox_type=sandbox_type,
-        auto_approve=session_state.auto_approve,
-    )
+        agent, composite_backend = create_cli_agent(
+            model=model,
+            assistant_id=current_assistant_id,
+            tools=tools,
+            sandbox=sandbox_backend,
+            sandbox_type=sandbox_type,
+            auto_approve=session_state.auto_approve,
+        )
 
-    # Calculate baseline token count for accurate token tracking
-    from .agent import get_system_prompt
-    from .token_utils import calculate_baseline_tokens
+        # On first run, save the checkpointer; on subsequent runs, reuse it
+        if shared_checkpointer is None:
+            shared_checkpointer = agent.checkpointer
+        else:
+            agent.checkpointer = shared_checkpointer
 
-    agent_dir = settings.get_agent_dir(assistant_id)
-    system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
-    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, assistant_id)
+        # Calculate baseline token count for accurate token tracking
+        from .agent import get_system_prompt
+        from .token_utils import calculate_baseline_tokens
 
-    await simple_cli(
-        agent,
-        assistant_id,
-        session_state,
-        baseline_tokens,
-        backend=composite_backend,
-        sandbox_type=sandbox_type,
-        setup_script_path=setup_script_path,
-        no_splash=session_state.no_splash,
-    )
+        agent_dir = settings.get_agent_dir(current_assistant_id)
+        system_prompt = get_system_prompt(assistant_id=current_assistant_id, sandbox_type=sandbox_type)
+        baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, current_assistant_id)
+
+        # Run the CLI loop
+        result = await simple_cli(
+            agent,
+            current_assistant_id,
+            session_state,
+            baseline_tokens,
+            backend=composite_backend,
+            sandbox_type=sandbox_type,
+            setup_script_path=setup_script_path,
+            no_splash=(not first_run) or session_state.no_splash,
+        )
+        
+        # Check if we should switch agent
+        if result is None:
+            # Normal exit
+            break
+        else:
+            # Switch to new agent profile
+            current_assistant_id = result
+            first_run = False
+            
+            # Clear cached memory and skills from state so they reload from new profile
+            # The middleware checks "if key not in state" before loading, so we clear those keys
+            # to force reload from the new agent profile
+            config_for_state = {"configurable": {"thread_id": session_state.thread_id}}
+            checkpoint = shared_checkpointer.get(config_for_state)
+            if checkpoint:
+                # Checkpoint is a dict with 'channel_values' key containing the state
+                channel_values = checkpoint.get("channel_values", {})
+                if channel_values:
+                    # Clear memory fields (from AgentMemoryMiddleware)
+                    channel_values.pop("user_memory", None)
+                    channel_values.pop("project_memory", None)
+                    # Clear skills fields (from SkillsMiddleware)
+                    channel_values.pop("skills_metadata", None)
+                    # Since channel_values is mutable, the changes persist in the checkpoint
+            
+            # Show agent switch message
+            console.clear()
+            console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
+            console.print()
+            console.print(
+                f"... Switched to agent profile: [bold]{current_assistant_id}[/bold]",
+                style=COLORS["agent"]
+            )
+            console.print()
+            console.print(
+                f"  [dim]Agent directory: ~/.deepagents/{current_assistant_id}[/dim]"
+            )
+            console.print(
+                f"  [dim]Memory and skills will reload from new profile[/dim]"
+            )
+            console.print(
+                f"  [dim]Conversation history preserved[/dim]"
+            )
+            console.print()
+            continue
 
 
 async def main(

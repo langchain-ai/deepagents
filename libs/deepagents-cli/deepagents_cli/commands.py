@@ -9,12 +9,40 @@ from .config import COLORS, DEEP_AGENTS_ASCII, console
 from .ui import TokenTracker, show_interactive_help
 
 
-def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bool:
-    """Handle slash commands. Returns 'exit' to exit, True if handled, False to pass to agent."""
-    cmd = command.lower().strip().lstrip("/")
+def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bool | tuple[str, str]:
+    """Handle slash commands.
+    
+    Returns:
+        - 'exit': Exit the CLI
+        - True: Command handled, continue
+        - False: Pass to agent
+        - tuple[str, str]: ('switch_agent', agent_name) to switch agent profiles
+    """
+    cmd_full = command.strip().lstrip("/")
+    cmd_parts = cmd_full.split(None, 1)  # Split on whitespace, max 2 parts
+    cmd = cmd_parts[0].lower() if cmd_parts else ""
 
     if cmd in ["quit", "exit", "q"]:
         return "exit"
+    
+    if cmd == "agent":
+        # Parse agent name
+        if len(cmd_parts) < 2:
+            console.print()
+            console.print("[yellow]Usage: /agent <agent_name>[/yellow]")
+            console.print("[dim]Example: /agent foo[/dim]")
+            console.print()
+            return True
+        
+        agent_name = cmd_parts[1].strip()
+        if not agent_name:
+            console.print()
+            console.print("[yellow]Please specify an agent name[/yellow]")
+            console.print()
+            return True
+        
+        # Return signal to switch agent
+        return ("switch_agent", agent_name)
 
     if cmd == "clear":
         # Reset agent conversation state

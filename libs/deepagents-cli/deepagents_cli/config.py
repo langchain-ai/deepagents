@@ -57,6 +57,7 @@ DEEP_AGENTS_ASCII = f"""
 
 # Interactive commands
 COMMANDS = {
+    "agent": "Switch to a different agent profile",
     "clear": "Clear screen and reset conversation",
     "help": "Show help information",
     "tokens": "Show token usage for current session",

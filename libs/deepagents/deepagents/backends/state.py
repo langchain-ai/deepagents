@@ -2,7 +2,15 @@
 
 from typing import TYPE_CHECKING
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileInfo, GrepMatch, WriteResult
+from deepagents.backends.protocol import (
+    BackendProtocol,
+    EditResult,
+    FileDownloadResponse,
+    FileInfo,
+    FileUploadResponse,
+    GrepMatch,
+    WriteResult,
+)
 from deepagents.backends.utils import (
     _glob_search_files,
     create_file_data,
@@ -185,3 +193,44 @@ class StateBackend(BackendProtocol):
                 }
             )
         return infos
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to state.
+
+        Args:
+            files: List of (path, content) tuples to upload
+
+        Returns:
+            List of FileUploadResponse objects, one per input file
+        """
+        raise NotImplementedError(
+            "StateBackend does not support upload_files yet. You can upload files "
+            "directly by passing them in invoke if you're storing files in the memory."
+        )
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from state.
+
+        Args:
+            paths: List of file paths to download
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path
+        """
+        state_files = self.runtime.state.get("files", {})
+        responses: list[FileDownloadResponse] = []
+
+        for path in paths:
+            file_data = state_files.get(path)
+
+            if file_data is None:
+                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                continue
+
+            # Convert file data to bytes
+            content_str = file_data_to_string(file_data)
+            content_bytes = content_str.encode("utf-8")
+
+            responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
+
+        return responses

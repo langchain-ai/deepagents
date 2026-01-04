@@ -10,6 +10,8 @@ from pathlib import Path
 import dotenv
 from rich.console import Console
 
+from deepagents_cli._version import __version__
+
 dotenv.load_dotenv()
 
 # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
@@ -35,7 +37,8 @@ COLORS = {
 }
 
 # ASCII art banner
-DEEP_AGENTS_ASCII = """
+
+DEEP_AGENTS_ASCII = f"""
  ██████╗  ███████╗ ███████╗ ██████╗
  ██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
  ██║  ██║ █████╗   █████╗   ██████╔╝
@@ -49,6 +52,7 @@ DEEP_AGENTS_ASCII = """
  ██╔══██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║    ╚════██║
  ██║  ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║    ███████║
  ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
+                                              v{__version__}
 """
 
 # Interactive commands

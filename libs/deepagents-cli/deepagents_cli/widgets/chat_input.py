@@ -129,6 +129,11 @@ class ChatInput(Horizontal):
         if self._input:
             self._input.value = val
 
+    @property
+    def input_widget(self) -> Input | None:
+        """Get the underlying Input widget for autocomplete attachment."""
+        return self._input
+
     def set_disabled(self, disabled: bool) -> None:
         """Enable or disable the input widget.
 

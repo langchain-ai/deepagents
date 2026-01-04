@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from textual.containers import Horizontal
+from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import Static
 
@@ -107,7 +108,7 @@ class StatusBar(Horizontal):
         """Update mode indicator when mode changes."""
         try:
             indicator = self.query_one("#mode-indicator", Static)
-        except LookupError:
+        except NoMatches:
             return
         indicator.remove_class("normal", "bash", "command")
 
@@ -125,7 +126,7 @@ class StatusBar(Horizontal):
         """Update auto-approve indicator when state changes."""
         try:
             indicator = self.query_one("#auto-approve-indicator", Static)
-        except LookupError:
+        except NoMatches:
             return
         indicator.remove_class("on", "off")
 
@@ -140,7 +141,7 @@ class StatusBar(Horizontal):
         """Update cwd display when it changes."""
         try:
             display = self.query_one("#cwd-display", Static)
-        except LookupError:
+        except NoMatches:
             return
         display.update(self._format_cwd(new_value))
 
@@ -148,7 +149,7 @@ class StatusBar(Horizontal):
         """Update status message display."""
         try:
             msg_widget = self.query_one("#status-message", Static)
-        except LookupError:
+        except NoMatches:
             return
 
         msg_widget.remove_class("thinking")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Markdown, Static
 
 from deepagents_cli.ui import format_tool_display
@@ -147,6 +148,10 @@ class ToolCallMessage(Vertical):
     ToolCallMessage .tool-status.error {
         color: $error;
     }
+
+    ToolCallMessage .tool-status.rejected {
+        color: $warning;
+    }
     """
 
     def __init__(
@@ -203,7 +208,7 @@ class ToolCallMessage(Vertical):
             if result:
                 msg += f": {result[:100]}"
             status.update(msg)
-        except LookupError:
+        except NoMatches:
             pass
 
     def set_error(self, error: str) -> None:
@@ -218,7 +223,18 @@ class ToolCallMessage(Vertical):
             status.remove_class("pending", "success")
             status.add_class("error")
             status.update(f"[red]Error:[/red] {error[:100]}")
-        except LookupError:
+        except NoMatches:
+            pass
+
+    def set_rejected(self) -> None:
+        """Mark the tool call as rejected by user."""
+        self._status = "rejected"
+        try:
+            status = self.query_one("#status", Static)
+            status.remove_class("pending", "success", "error")
+            status.add_class("rejected")
+            status.update("[yellow]Rejected[/yellow]")
+        except NoMatches:
             pass
 
     def _filtered_args(self) -> dict[str, Any]:

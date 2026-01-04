@@ -42,7 +42,7 @@ class TextualUIAdapter:
         self,
         mount_message: Callable,
         update_status: Callable[[str], None],
-        request_approval: Callable[[ActionRequest, str | None], asyncio.Future[Decision]],
+        request_approval: Callable,  # async callable returning Future
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
     ) -> None:
@@ -137,7 +137,11 @@ async def execute_task_textual(
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[str | int, dict] = {}
-    pending_text = ""
+
+    # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
+    # when multiple subagents stream in parallel
+    pending_text_by_namespace: dict[tuple, str] = {}
+    assistant_message_by_namespace: dict[tuple, Any] = {}
 
     # Clear images from tracker after creating the message
     if image_tracker:
@@ -162,7 +166,10 @@ async def execute_task_textual(
                 if not isinstance(chunk, tuple) or len(chunk) != 3:
                     continue
 
-                _namespace, current_stream_mode, data = chunk
+                namespace, current_stream_mode, data = chunk
+
+                # Convert namespace to hashable tuple for dict keys
+                ns_key = tuple(namespace) if namespace else ()
 
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
@@ -197,10 +204,13 @@ async def execute_task_textual(
 
                     if isinstance(message, HumanMessage):
                         content = message.text
+                        # Flush pending text for this namespace
+                        pending_text = pending_text_by_namespace.get(ns_key, "")
                         if content and pending_text:
-                            # Flush pending text and show human message
-                            await _flush_assistant_text(adapter, pending_text)
-                            pending_text = ""
+                            await _flush_assistant_text_ns(
+                                adapter, pending_text, ns_key, assistant_message_by_namespace
+                            )
+                            pending_text_by_namespace[ns_key] = ""
                         continue
 
                     if isinstance(message, ToolMessage):
@@ -223,21 +233,25 @@ async def execute_task_textual(
 
                         # Show shell errors
                         if tool_name == "shell" and tool_status != "success":
+                            pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
-                                await _flush_assistant_text(adapter, pending_text)
-                                pending_text = ""
+                                await _flush_assistant_text_ns(
+                                    adapter, pending_text, ns_key, assistant_message_by_namespace
+                                )
+                                pending_text_by_namespace[ns_key] = ""
                             if tool_content:
                                 from deepagents_cli.widgets.messages import ErrorMessage
                                 await adapter._mount_message(ErrorMessage(str(tool_content)))
 
-                        # Show file operation results (summary not yet implemented)
+                        # Show file operation results - always show diffs in chat
                         if record:
+                            pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
-                                await _flush_assistant_text(adapter, pending_text)
-                                pending_text = ""
-                            if record.diff and not (
-                                record.hitl_approved and record.status == "success"
-                            ):
+                                await _flush_assistant_text_ns(
+                                    adapter, pending_text, ns_key, assistant_message_by_namespace
+                                )
+                                pending_text_by_namespace[ns_key] = ""
+                            if record.diff:
                                 from deepagents_cli.widgets.messages import DiffMessage
                                 await adapter._mount_message(
                                     DiffMessage(record.diff, record.display_path)
@@ -265,14 +279,21 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
+                                # Use namespace-specific buffer to prevent interleaving
+                                pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
-                                # Stream text to current assistant message
-                                if adapter._current_assistant_message is None:
+                                pending_text_by_namespace[ns_key] = pending_text
+
+                                # Get or create assistant message for this namespace
+                                current_msg = assistant_message_by_namespace.get(ns_key)
+                                if current_msg is None:
                                     from deepagents_cli.widgets.messages import AssistantMessage
-                                    adapter._current_assistant_message = AssistantMessage()
-                                    await adapter._mount_message(adapter._current_assistant_message)
-                                # Use set_content (replace) since pending_text is accumulated
-                                await adapter._current_assistant_message.set_content(pending_text)
+                                    current_msg = AssistantMessage()
+                                    await adapter._mount_message(current_msg)
+                                    assistant_message_by_namespace[ns_key] = current_msg
+
+                                # Update the message content
+                                await current_msg.set_content(pending_text)
                                 # Scroll to keep latest content visible
                                 if adapter._scroll_to_bottom:
                                     adapter._scroll_to_bottom()
@@ -333,10 +354,13 @@ async def execute_task_textual(
                                 parsed_args = {"value": parsed_args}
 
                             # Flush pending text before tool call
+                            pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
-                                await _flush_assistant_text(adapter, pending_text)
-                                pending_text = ""
-                                adapter._current_assistant_message = None
+                                await _flush_assistant_text_ns(
+                                    adapter, pending_text, ns_key, assistant_message_by_namespace
+                                )
+                                pending_text_by_namespace[ns_key] = ""
+                                assistant_message_by_namespace.pop(ns_key, None)
 
                             if buffer_id is not None and buffer_id not in displayed_tool_ids:
                                 displayed_tool_ids.add(buffer_id)
@@ -355,16 +379,23 @@ async def execute_task_textual(
                             display_str = format_tool_display(buffer_name, parsed_args)
                             adapter._update_status(f"Executing {display_str}...")
 
-                    if getattr(message, "chunk_position", None) == "last" and pending_text:
-                        await _flush_assistant_text(adapter, pending_text)
-                        pending_text = ""
-                        adapter._current_assistant_message = None
+                    if getattr(message, "chunk_position", None) == "last":
+                        pending_text = pending_text_by_namespace.get(ns_key, "")
+                        if pending_text:
+                            await _flush_assistant_text_ns(
+                                adapter, pending_text, ns_key, assistant_message_by_namespace
+                            )
+                            pending_text_by_namespace[ns_key] = ""
+                            assistant_message_by_namespace.pop(ns_key, None)
 
-            # Flush any remaining text
-            if pending_text:
-                await _flush_assistant_text(adapter, pending_text)
-                pending_text = ""
-                adapter._current_assistant_message = None
+            # Flush any remaining text from all namespaces
+            for ns_key, pending_text in list(pending_text_by_namespace.items()):
+                if pending_text:
+                    await _flush_assistant_text_ns(
+                        adapter, pending_text, ns_key, assistant_message_by_namespace
+                    )
+            pending_text_by_namespace.clear()
+            assistant_message_by_namespace.clear()
 
             # Handle HITL after stream completes
             if interrupt_occurred:
@@ -395,7 +426,7 @@ async def execute_task_textual(
                                 file_op_tracker.mark_hitl_approved(tool_name, args)
 
                         for action_request in hitl_request["action_requests"]:
-                            future = adapter._request_approval(action_request, assistant_id)
+                            future = await adapter._request_approval(action_request, assistant_id)
                             decision = await future
 
                             # Check for auto-approve-all
@@ -416,6 +447,11 @@ async def execute_task_textual(
                             decisions.append(decision)
                             if isinstance(decision, dict) and decision.get("type") == "approve":
                                 mark_hitl_approved(action_request)
+                            elif isinstance(decision, dict) and decision.get("type") == "reject":
+                                # Mark the tool message as rejected
+                                tool_call_id = action_request.get("tool_call_id")
+                                if tool_call_id and tool_call_id in adapter._current_tool_messages:
+                                    adapter._current_tool_messages[tool_call_id].set_rejected()
 
                         if any(d.get("type") == "reject" for d in decisions):
                             any_rejected = True
@@ -455,14 +491,21 @@ async def execute_task_textual(
         adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
 
 
-async def _flush_assistant_text(adapter: TextualUIAdapter, text: str) -> None:
-    """Flush accumulated assistant text to the current message widget."""
+async def _flush_assistant_text_ns(
+    adapter: TextualUIAdapter,
+    text: str,
+    ns_key: tuple,
+    assistant_message_by_namespace: dict[tuple, Any],
+) -> None:
+    """Flush accumulated assistant text for a specific namespace."""
     if not text.strip():
         return
 
-    if adapter._current_assistant_message is None:
+    current_msg = assistant_message_by_namespace.get(ns_key)
+    if current_msg is None:
         from deepagents_cli.widgets.messages import AssistantMessage
-        adapter._current_assistant_message = AssistantMessage()
-        await adapter._mount_message(adapter._current_assistant_message)
+        current_msg = AssistantMessage()
+        await adapter._mount_message(current_msg)
+        assistant_message_by_namespace[ns_key] = current_msg
 
-    await adapter._current_assistant_message.set_content(text)
+    await current_msg.set_content(text)

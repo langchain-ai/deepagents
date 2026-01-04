@@ -21,6 +21,7 @@ dependencies = [
   "pillow>=10.0.0",
   "pyyaml>=6.0",
   "textual>=1.0.0",
+  "textual-autocomplete>=3.0.0",
 ]
 
 [project.scripts]

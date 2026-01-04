@@ -10,9 +10,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.app import App
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalScroll
-from textual.widgets import Static
+from textual.containers import Container, VerticalScroll
+from textual.css.query import NoMatches
+from textual.events import MouseUp  # noqa: TC002 - used in type annotation
+from textual.widgets import Static  # noqa: TC002 - used at runtime
 
+from deepagents_cli.clipboard import copy_selection_to_clipboard
+from deepagents_cli.widgets.autocomplete import TriggerAutoComplete
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.messages import (
     AssistantMessage,
@@ -50,7 +54,19 @@ class DeepAgentsApp(App):
         Binding("ctrl+c", "quit_or_clear", "Quit", show=False),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
-        # Note: No escape binding - let child widgets handle it
+        # Approval menu keys (handled at App level for reliability)
+        Binding("up", "approval_up", "Up", show=False),
+        Binding("k", "approval_up", "Up", show=False),
+        Binding("down", "approval_down", "Down", show=False),
+        Binding("j", "approval_down", "Down", show=False),
+        Binding("enter", "approval_select", "Select", show=False),
+        Binding("y", "approval_yes", "Yes", show=False),
+        Binding("1", "approval_yes", "Yes", show=False),
+        Binding("n", "approval_no", "No", show=False),
+        Binding("2", "approval_no", "No", show=False),
+        Binding("a", "approval_auto", "Auto", show=False),
+        Binding("3", "approval_auto", "Auto", show=False),
+        Binding("escape", "approval_escape", "Escape", show=False),
     ]
 
     def __init__(
@@ -81,6 +97,7 @@ class DeepAgentsApp(App):
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
+        self._autocomplete: TriggerAutoComplete | None = None
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
@@ -92,10 +109,12 @@ class DeepAgentsApp(App):
         # Main chat area with scrollable messages
         with VerticalScroll(id="chat"):
             yield WelcomeBanner(id="welcome-banner")
-            yield Static(id="messages")
+            yield Container(id="messages")  # Container can have children mounted
 
-        # Input area
-        yield ChatInput(id="input-area")
+        # Bottom app container - holds either ChatInput OR ApprovalMenu (swapped)
+        # This is OUTSIDE VerticalScroll so arrow keys work in approval
+        with Container(id="bottom-app-container"):
+            yield ChatInput(id="input-area")
 
         # Status bar at bottom
         yield StatusBar(cwd=self._cwd, id="status-bar")
@@ -124,6 +143,14 @@ class DeepAgentsApp(App):
                 scroll_to_bottom=self._scroll_chat_to_bottom,
             )
 
+        # Create autocomplete for @ and / triggers
+        if self._chat_input and self._chat_input.input_widget:
+            self._autocomplete = TriggerAutoComplete(
+                self._chat_input.input_widget,
+                cwd=self._cwd,
+            )
+            await self.mount(self._autocomplete)
+
         # Focus the input
         self._chat_input.focus_input()
 
@@ -137,39 +164,54 @@ class DeepAgentsApp(App):
         try:
             chat = self.query_one("#chat", VerticalScroll)
             chat.scroll_end(animate=False)
-        except LookupError:
+        except NoMatches:
             pass
 
-    def _request_approval(
+    async def _request_approval(
         self, action_request: Any, assistant_id: str | None  # noqa: ANN401
     ) -> asyncio.Future:
-        """Request user approval using a modal screen.
+        """Request user approval inline in the messages area.
 
         Returns a Future that resolves to the user's decision.
-        Uses ModalScreen with a result callback (no worker required).
+        Mounts ApprovalMenu in the messages area (inline with chat).
+        ChatInput stays visible - user can still see it.
+
+        If another approval is already pending, queue this one.
         """
-        from deepagents_cli.widgets.approval import ApprovalScreen
+        import uuid
+
+        from deepagents_cli.widgets.approval import ApprovalMenu
 
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
-        def handle_result(decision: dict[str, str] | None) -> None:
-            if result_future.done():
-                return
-            if decision is None:
-                result_future.set_result({"type": "reject"})
-            else:
-                result_future.set_result(decision)
+        # If there's already a pending approval, wait for it to complete first
+        if self._pending_approval_widget is not None:
+            while self._pending_approval_widget is not None:
+                await asyncio.sleep(0.1)
 
+        # Create menu with unique ID to avoid conflicts
+        unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
+        menu = ApprovalMenu(action_request, assistant_id, id=unique_id)
+        menu.set_future(result_future)
+
+        # Store reference
+        self._pending_approval_widget = menu
+
+        # Update status to show we're waiting for approval
+        self._update_status("Waiting for approval...")
+
+        # Mount approval inline in messages area (not replacing ChatInput)
         try:
-            screen = ApprovalScreen(
-                action_request=action_request,
-                assistant_id=assistant_id,
-            )
-            self.push_screen(screen, callback=handle_result)
-        except Exception as exc:
+            messages = self.query_one("#messages", Container)
+            await messages.mount(menu)
+            self._scroll_chat_to_bottom()
+            # Focus approval menu
+            self.call_after_refresh(menu.focus)
+        except Exception as e:  # noqa: BLE001
+            self._pending_approval_widget = None
             if not result_future.done():
-                result_future.set_exception(exc)
+                result_future.set_exception(e)
 
         return result_future
 
@@ -204,6 +246,19 @@ class DeepAgentsApp(App):
         """Update status bar when input mode changes."""
         if self._status_bar:
             self._status_bar.set_mode(event.mode)
+
+    async def on_approval_menu_decided(
+        self, event: Any  # noqa: ANN401  # ApprovalMenu.Decided
+    ) -> None:
+        """Handle approval menu decision - remove from messages and refocus input."""
+        # Remove ApprovalMenu using stored reference
+        if self._pending_approval_widget:
+            await self._pending_approval_widget.remove()
+            self._pending_approval_widget = None
+
+        # Refocus the chat input
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
 
     async def _handle_bash_command(self, command: str) -> None:
         """Handle a bash command (! prefix).
@@ -279,23 +334,35 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
-            from deepagents_cli.textual_adapter import execute_task_textual
-
-            try:
-                await execute_task_textual(
-                    user_input=message,
-                    agent=self._agent,
-                    assistant_id=self._assistant_id,
-                    session_state=self._session_state,
-                    adapter=self._ui_adapter,
-                    backend=self._backend,
-                )
-            except Exception as e:  # noqa: BLE001
-                await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+            # Use run_worker to avoid blocking the main event loop
+            # This allows the UI to remain responsive during agent execution
+            self.run_worker(
+                self._run_agent_task(message),
+                exclusive=False,
+            )
         else:
             await self._mount_message(
                 SystemMessage("Agent not configured. Run with --agent flag or use standalone mode.")
             )
+
+    async def _run_agent_task(self, message: str) -> None:
+        """Run the agent task in a background worker.
+
+        This runs in a worker thread so the main event loop stays responsive.
+        """
+        from deepagents_cli.textual_adapter import execute_task_textual
+
+        try:
+            await execute_task_textual(
+                user_input=message,
+                agent=self._agent,
+                assistant_id=self._assistant_id,
+                session_state=self._session_state,
+                adapter=self._ui_adapter,
+                backend=self._backend,
+            )
+        except Exception as e:  # noqa: BLE001
+            await self._mount_message(ErrorMessage(f"Agent error: {e}"))
 
     async def _mount_message(self, widget: Static) -> None:
         """Mount a message widget to the messages area.
@@ -304,25 +371,30 @@ class DeepAgentsApp(App):
             widget: The message widget to mount
         """
         try:
-            messages = self.query_one("#messages", Static)
+            messages = self.query_one("#messages", Container)
             await messages.mount(widget)
             # Scroll to bottom
             chat = self.query_one("#chat", VerticalScroll)
             chat.scroll_end(animate=False)
-        except LookupError:
+        except NoMatches:
             pass
 
     async def _clear_messages(self) -> None:
         """Clear the messages area."""
         try:
-            messages = self.query_one("#messages", Static)
+            messages = self.query_one("#messages", Container)
             await messages.remove_children()
-        except LookupError:
+        except NoMatches:
             # Widget not found - can happen during shutdown
             pass
 
     def action_quit_or_clear(self) -> None:
-        """Handle Ctrl+C - clear input or quit on double press."""
+        """Handle Ctrl+C - clear input, reject approval, or quit on double press."""
+        # If approval menu is active, reject it
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
+            return
+
         if self._chat_input and self._chat_input.value:
             # Clear the input
             self._chat_input.value = ""
@@ -346,6 +418,46 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=self._auto_approve)
         if self._session_state:
             self._session_state.auto_approve = self._auto_approve
+
+    # Approval menu action handlers (delegated from App-level bindings)
+    def action_approval_up(self) -> None:
+        """Handle up arrow in approval menu."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_move_up()
+
+    def action_approval_down(self) -> None:
+        """Handle down arrow in approval menu."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_move_down()
+
+    def action_approval_select(self) -> None:
+        """Handle enter in approval menu."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select()
+
+    def action_approval_yes(self) -> None:
+        """Handle yes/1 in approval menu."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_approve()
+
+    def action_approval_no(self) -> None:
+        """Handle no/2 in approval menu."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
+
+    def action_approval_auto(self) -> None:
+        """Handle auto/3 in approval menu."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_auto()
+
+    def action_approval_escape(self) -> None:
+        """Handle escape in approval menu - reject."""
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
+
+    def on_mouse_up(self, event: MouseUp) -> None:
+        """Copy selection to clipboard on mouse release."""
+        copy_selection_to_clipboard(self)
 
 
 def run_textual_app(

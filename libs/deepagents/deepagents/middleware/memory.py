@@ -158,7 +158,7 @@ class MemoryMiddleware(AgentMiddleware):
         self.sources = sources
         self.system_prompt_template = MEMORY_SYSTEM_PROMPT
 
-    def _get_backend(self, runtime: Runtime) -> "BackendProtocol":
+    def _get_backend(self, runtime: Runtime) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:
@@ -196,10 +196,8 @@ class MemoryMiddleware(AgentMiddleware):
         sections = []
         for source in self.sources:
             name = source["name"]
-            if name in contents and contents[name]:
-                sections.append(
-                    f"<{name}_memory>\n{contents[name]}\n</{name}_memory>"
-                )
+            if contents.get(name):
+                sections.append(f"<{name}_memory>\n{contents[name]}\n</{name}_memory>")
 
         if not sections:
             return "(No memory loaded)"
@@ -208,7 +206,7 @@ class MemoryMiddleware(AgentMiddleware):
 
     def _load_memory_from_backend(
         self,
-        backend: "BackendProtocol",
+        backend: BackendProtocol,
         path: str,
     ) -> str | None:
         """Load memory content from a backend path.
@@ -228,16 +226,14 @@ class MemoryMiddleware(AgentMiddleware):
                     # Content may be bytes or string
                     if isinstance(response.content, bytes):
                         return response.content.decode("utf-8")
-                    elif isinstance(response.content, list):
+                    if isinstance(response.content, list):
                         return "\n".join(response.content)
                     return str(response.content)
         except Exception as e:
             logger.debug(f"Could not load memory from {path}: {e}")
         return None
 
-    def before_agent(
-        self, state: MemoryState, runtime: Runtime
-    ) -> MemoryStateUpdate | None:
+    def before_agent(self, state: MemoryState, runtime: Runtime) -> MemoryStateUpdate | None:
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.

@@ -174,7 +174,7 @@ It scans all registries and loads skill metadata into state.
             print(f"  Description: {skill['description']}")
             print(f"  Path: {skill['path']}")
             print(f"  Registry: {skill['registry']}")
-            if skill.get('allowed_tools'):
+            if skill.get("allowed_tools"):
                 print(f"  Allowed Tools: {skill['allowed_tools']}")
             print()
 

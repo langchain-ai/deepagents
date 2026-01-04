@@ -6,16 +6,12 @@ These tests create real agents and verify that:
 3. Multiple middleware can be combined
 """
 
-import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
-from deepagents.graph import create_deep_agent
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 
@@ -222,9 +218,9 @@ description: {skill_marker}
 
         # PROVE: Both markers are in the final prompt
         assert final_prompt is not None
-        assert memory_marker in final_prompt, f"Memory not in combined prompt!"
-        assert skill_marker in final_prompt, f"Skills not in combined prompt!"
-        print(f"\n✓ VERIFIED: Both memory and skills injected into combined prompt")
+        assert memory_marker in final_prompt, "Memory not in combined prompt!"
+        assert skill_marker in final_prompt, "Skills not in combined prompt!"
+        print("\n✓ VERIFIED: Both memory and skills injected into combined prompt")
         print(f"  - Memory marker: {memory_marker}")
         print(f"  - Skill marker: {skill_marker}")
 
@@ -350,9 +346,9 @@ class TestInjectionProof:
         print("\n" + "=" * 60)
         print("INJECTION PROOF")
         print("=" * 60)
-        print(f"\nBEFORE (original prompt):")
+        print("\nBEFORE (original prompt):")
         print(f"  '{mock_request.system_prompt}'")
-        print(f"\nAFTER (with injection):")
+        print("\nAFTER (with injection):")
         print(f"  Length: {len(after_prompt)} chars")
         print(f"  Contains 'INJECTED_CONTENT_HERE': {'INJECTED_CONTENT_HERE' in after_prompt}")
         print(f"  Contains 'ORIGINAL_PROMPT_ONLY': {'ORIGINAL_PROMPT_ONLY' in after_prompt}")

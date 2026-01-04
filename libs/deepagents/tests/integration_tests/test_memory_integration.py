@@ -11,11 +11,8 @@ import pytest
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.memory import (
-    MEMORY_SYSTEM_PROMPT,
     MemoryMiddleware,
-    MemorySource,
     MemoryState,
-    MemoryStateUpdate,
 )
 
 
@@ -57,9 +54,7 @@ class TestMemoryLoadingFlow:
         assert state_update["memory_contents"]["project"] == project_memory_content
 
         # Step 2: Simulate state being updated (as LangGraph would do)
-        updated_state: MemoryState = {
-            "memory_contents": state_update["memory_contents"]
-        }
+        updated_state: MemoryState = {"memory_contents": state_update["memory_contents"]}
 
         # Step 3: wrap_model_call should inject memory into prompt
         mock_request = MagicMock()
@@ -206,9 +201,7 @@ class TestSystemPromptInjection:
         mock_request = MagicMock()
         mock_request.state = {"memory_contents": {"test": "Memory content"}}
         mock_request.system_prompt = "ORIGINAL PROMPT"
-        mock_request.override = lambda **kwargs: type(
-            "MockRequest", (), {"system_prompt": kwargs.get("system_prompt")}
-        )()
+        mock_request.override = lambda **kwargs: type("MockRequest", (), {"system_prompt": kwargs.get("system_prompt")})()
 
         result = middleware.modify_request(mock_request)
 
@@ -232,9 +225,7 @@ class TestSystemPromptInjection:
         mock_request = MagicMock()
         mock_request.state = {"memory_contents": {"test": "Memory content"}}
         mock_request.system_prompt = None  # No existing prompt
-        mock_request.override = lambda **kwargs: type(
-            "MockRequest", (), {"system_prompt": kwargs.get("system_prompt")}
-        )()
+        mock_request.override = lambda **kwargs: type("MockRequest", (), {"system_prompt": kwargs.get("system_prompt")})()
 
         result = middleware.modify_request(mock_request)
 
@@ -252,9 +243,7 @@ class TestSystemPromptInjection:
         mock_request = MagicMock()
         mock_request.state = {"memory_contents": {}}  # Empty - nothing loaded
         mock_request.system_prompt = "Base prompt"
-        mock_request.override = lambda **kwargs: type(
-            "MockRequest", (), {"system_prompt": kwargs.get("system_prompt")}
-        )()
+        mock_request.override = lambda **kwargs: type("MockRequest", (), {"system_prompt": kwargs.get("system_prompt")})()
 
         result = middleware.modify_request(mock_request)
 

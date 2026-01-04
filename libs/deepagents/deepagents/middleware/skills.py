@@ -479,7 +479,7 @@ class SkillsMiddleware(AgentMiddleware):
         ]
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 
-    def _get_backend(self, runtime: Runtime) -> "BackendProtocol":
+    def _get_backend(self, runtime: Runtime) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:

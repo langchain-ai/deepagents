@@ -20,9 +20,9 @@ name: {name}
 description: {description}
 ---
 
-# {name.replace('-', ' ').title()} Skill
+# {name.replace("-", " ").title()} Skill
 
-{instructions or 'Follow the skill instructions.'}
+{instructions or "Follow the skill instructions."}
 """
 
 
@@ -37,9 +37,7 @@ class TestSkillsIntegration:
 
         skill_path = skills_dir / "test-skill"
         skill_path.mkdir()
-        (skill_path / "SKILL.md").write_text(
-            make_skill_content("test-skill", "A test skill for verification")
-        )
+        (skill_path / "SKILL.md").write_text(make_skill_content("test-skill", "A test skill for verification"))
 
         # Create middleware
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -66,11 +64,7 @@ class TestSkillsIntegration:
             captured_request = req
             return MagicMock()
 
-        mock_request.override = lambda **kwargs: type(
-            "MockRequest",
-            (),
-            {**vars(mock_request), **kwargs, "state": mock_request.state}
-        )()
+        mock_request.override = lambda **kwargs: type("MockRequest", (), {**vars(mock_request), **kwargs, "state": mock_request.state})()
 
         # Call wrap_model_call
         middleware.wrap_model_call(mock_request, mock_handler)
@@ -85,6 +79,7 @@ class TestSkillsIntegration:
         """Test that SkillsState has the expected structure."""
         # Verify the state schema includes skills_metadata
         from typing import get_type_hints
+
         hints = get_type_hints(SkillsState, include_extras=True)
         assert "skills_metadata" in hints
 
@@ -100,9 +95,7 @@ class TestSkillsIntegration:
         for dir_path, desc in [(base_dir, "Base version"), (user_dir, "User version")]:
             skill_path = dir_path / "shared-skill"
             skill_path.mkdir()
-            (skill_path / "SKILL.md").write_text(
-                make_skill_content("shared-skill", desc)
-            )
+            (skill_path / "SKILL.md").write_text(make_skill_content("shared-skill", desc))
 
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
         middleware = SkillsMiddleware(
@@ -187,11 +180,7 @@ class TestSkillsWithAgent:
         skill_path = skills_dir / "greeting-skill"
         skill_path.mkdir()
         (skill_path / "SKILL.md").write_text(
-            make_skill_content(
-                "greeting-skill",
-                "Skill for greeting users warmly",
-                "When greeting users, always say 'Hello friend!' first."
-            )
+            make_skill_content("greeting-skill", "Skill for greeting users warmly", "When greeting users, always say 'Hello friend!' first.")
         )
 
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)

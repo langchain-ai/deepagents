@@ -6,12 +6,11 @@ This example shows how to:
 3. Use skills with the deep agent
 """
 
-import asyncio
 import tempfile
 from pathlib import Path
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.skills import SkillsMiddleware, SkillMetadata
+from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
 
 
 def create_sample_skills(base_path: Path) -> None:

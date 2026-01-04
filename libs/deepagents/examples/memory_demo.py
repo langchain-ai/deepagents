@@ -131,9 +131,7 @@ middleware = MemoryMiddleware(
         print("=" * 70)
 
         # Simulate the state after before_agent runs
-        state_with_memory: MemoryState = {
-            "memory_contents": state_update["memory_contents"]
-        }
+        state_with_memory: MemoryState = {"memory_contents": state_update["memory_contents"]}
 
         # Format what would be injected
         locations = middleware._format_memory_locations()

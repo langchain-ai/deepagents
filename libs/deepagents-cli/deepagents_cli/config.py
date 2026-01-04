@@ -1,11 +1,13 @@
 """Configuration, constants, and model creation for the CLI."""
 
+import json
 import os
 import re
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Dict, Any
 
 import dotenv
 from rich.console import Console
@@ -62,6 +64,7 @@ COMMANDS = {
     "tokens": "Show token usage for current session",
     "quit": "Exit the CLI",
     "exit": "Exit the CLI",
+    "mcp": "Manage MCP servers (list, connect, reconnect, tools, stop)",
 }
 
 
@@ -158,12 +161,35 @@ class Settings:
     deepagents_langchain_project: str | None  # For deepagents agent tracing
     user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
 
+    # MCP servers configuration
+    mcp_servers: Dict[str, Any] = field(default_factory=dict)  # MCP servers from ~/.deepagents.json
+
     # Model configuration
     model_name: str | None = None  # Currently active model name
     model_provider: str | None = None  # Provider (openai, anthropic, google)
 
     # Project information
     project_root: Path | None = None
+
+    @staticmethod
+    def _load_mcp_config() -> Dict[str, Any]:
+        """Load MCP server configurations from ~/.deepagents.json.
+
+        Returns:
+            Dictionary of MCP server configurations, or empty dict if file doesn't exist or has no mcpServers key.
+        """
+        config_path = Path.home() / ".deepagents.json"
+        if not config_path.exists():
+            return {}
+
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            # Return mcpServers dict or empty dict if not present
+            return config.get("mcpServers", {})
+        except (json.JSONDecodeError, OSError) as e:
+            console.print(f"[yellow]Warning: Failed to load MCP config from {config_path}: {e}[/yellow]")
+            return {}
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
@@ -192,6 +218,9 @@ class Settings:
         # Detect project
         project_root = _find_project_root(start_path)
 
+        # Load MCP server configurations
+        mcp_servers = cls._load_mcp_config()
+
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -199,6 +228,7 @@ class Settings:
             tavily_api_key=tavily_key,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
+            mcp_servers=mcp_servers,
             project_root=project_root,
         )
 
@@ -231,6 +261,11 @@ class Settings:
     def has_project(self) -> bool:
         """Check if currently in a git project."""
         return self.project_root is not None
+
+    @property
+    def has_mcp_servers(self) -> bool:
+        """Check if any MCP servers are configured."""
+        return bool(self.mcp_servers)
 
     @property
     def user_deepagents_dir(self) -> Path:
@@ -377,9 +412,10 @@ settings = Settings.from_environment()
 class SessionState:
     """Holds mutable session state (auto-approve mode, etc)."""
 
-    def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
+    def __init__(self, auto_approve: bool = False, no_splash: bool = False, assistant_id: str | None = None) -> None:
         self.auto_approve = auto_approve
         self.no_splash = no_splash
+        self.assistant_id = assistant_id
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
         self.thread_id = str(uuid.uuid4())

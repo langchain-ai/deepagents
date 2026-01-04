@@ -488,14 +488,38 @@ def render_diff_block(diff: str, title: str) -> None:
         console.print()
 
 
-def show_interactive_help() -> None:
-    """Show available commands during interactive session."""
+def show_interactive_help(agent_name: str = "agent", project_root=None) -> None:
+    """Show available commands during interactive session.
+
+    Args:
+        agent_name: Current agent name for loading custom commands
+        project_root: Project root path for loading project commands
+    """
     console.print()
-    console.print("[bold]Interactive Commands:[/bold]", style=COLORS["primary"])
+    console.print("[bold]Built-in Commands:[/bold]", style=COLORS["primary"])
     console.print()
 
     for cmd, desc in COMMANDS.items():
         console.print(f"  /{cmd:<12} {desc}", style=COLORS["dim"])
+
+    # Show custom commands if any exist
+    try:
+        from .slash_commands import discover_commands, format_commands_for_help
+
+        custom_commands = discover_commands(agent_name, project_root)
+        if custom_commands:
+            console.print()
+            console.print("[bold]Custom Commands:[/bold]", style=COLORS["primary"])
+            console.print()
+
+            for cmd_name, description, source in format_commands_for_help(custom_commands):
+                # Truncate long descriptions
+                if len(description) > 50:
+                    description = description[:47] + "..."
+                console.print(f"  {cmd_name:<20} {description} [dim]({source})[/dim]")
+    except Exception:
+        # Don't fail help if custom commands can't be loaded
+        pass
 
     console.print()
     console.print("[bold]Editing Features:[/bold]", style=COLORS["primary"])

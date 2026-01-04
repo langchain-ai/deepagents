@@ -281,7 +281,7 @@ async def simple_cli(
 
         # Check for slash commands first
         if user_input.startswith("/"):
-            result = handle_command(user_input, agent, token_tracker)
+            result = handle_command(user_input, agent, token_tracker, agent_name=assistant_id)
             if result == "exit":
                 console.print("\nGoodbye!", style=COLORS["primary"])
                 break
@@ -292,6 +292,12 @@ async def simple_cli(
                 # Prefill the prompt with the provided message
                 user_input = result[1]
                 # Continue to execute_task with the prefilled message
+            elif isinstance(result, tuple) and result[0] == "custom_command":
+                # Custom slash command - use the processed prompt
+                cmd_data = result[1]
+                user_input = cmd_data["prompt"]
+                # TODO: Handle model override and allowed_tools from cmd_data
+                # Continue to execute_task with the custom command prompt
             elif result:
                 # Command was handled, continue to next input
                 continue

@@ -371,6 +371,52 @@ class Settings:
         skills_dir.mkdir(parents=True, exist_ok=True)
         return skills_dir
 
+    def get_user_commands_dir(self, agent_name: str) -> Path:
+        """Get user-level commands directory path for a specific agent.
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Path to ~/.deepagents/{agent_name}/commands/
+        """
+        return self.get_agent_dir(agent_name) / "commands"
+
+    def ensure_user_commands_dir(self, agent_name: str) -> Path:
+        """Ensure user-level commands directory exists and return its path.
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Path to ~/.deepagents/{agent_name}/commands/
+        """
+        commands_dir = self.get_user_commands_dir(agent_name)
+        commands_dir.mkdir(parents=True, exist_ok=True)
+        return commands_dir
+
+    def get_project_commands_dir(self) -> Path | None:
+        """Get project-level commands directory path.
+
+        Returns:
+            Path to {project_root}/.deepagents/commands/, or None if not in a project
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".deepagents" / "commands"
+
+    def ensure_project_commands_dir(self) -> Path | None:
+        """Ensure project-level commands directory exists and return its path.
+
+        Returns:
+            Path to {project_root}/.deepagents/commands/, or None if not in a project
+        """
+        if not self.project_root:
+            return None
+        commands_dir = self.get_project_commands_dir()
+        commands_dir.mkdir(parents=True, exist_ok=True)
+        return commands_dir
+
 
 # Global settings instance (initialized once)
 settings = Settings.from_environment()

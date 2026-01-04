@@ -2,21 +2,36 @@
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
 
-from .config import COLORS, DEEP_AGENTS_ASCII, console
+from .config import COLORS, DEEP_AGENTS_ASCII, console, settings
+from .slash_commands import discover_commands, execute_command
 from .ui import TokenTracker, show_interactive_help
 
 
-def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bool | tuple[str, str]:
+def handle_command(
+    command: str,
+    agent,
+    token_tracker: TokenTracker,
+    agent_name: str = "agent",
+) -> str | bool | tuple[str, Any]:
     """Handle slash commands.
-    
+
+    Args:
+        command: The command string (e.g., "/help" or "/deploy production")
+        agent: The agent instance
+        token_tracker: Token tracking instance
+        agent_name: Current agent name for loading custom commands
+
     Returns:
         - 'exit': Exit the CLI
         - True: Command handled, continue
         - False: Pass to agent
         - tuple[str, str]: ('switch_agent', agent_name) to switch agent profiles
+        - tuple[str, str]: ('prefill_prompt', message) to send message to agent
+        - tuple[str, dict]: ('custom_command', {prompt, model, allowed_tools}) for custom commands
     """
     cmd_full = command.strip().lstrip("/")
     cmd_parts = cmd_full.split(None, 1)  # Split on whitespace, max 2 parts
@@ -98,20 +113,42 @@ Be specific and actionable in your updates. Use `edit_file` to update existing f
         return True
 
     if cmd == "help":
-        show_interactive_help()
+        show_interactive_help(agent_name=agent_name, project_root=settings.project_root)
         return True
 
     if cmd == "tokens":
         token_tracker.display_session()
         return True
 
+    # Check for custom slash commands
+    custom_commands = discover_commands(agent_name, settings.project_root)
+    if cmd in custom_commands:
+        slash_cmd = custom_commands[cmd]
+        args = cmd_parts[1] if len(cmd_parts) > 1 else ""
+
+        # Execute the command (processes template, shell injections, file inclusions)
+        result = execute_command(
+            slash_cmd,
+            args,
+            cwd=Path.cwd(),
+            backend=None,  # Could pass backend if available
+        )
+
+        # Return as custom_command tuple with metadata
+        return (
+            "custom_command",
+            {
+                "prompt": result.prompt,
+                "model": result.model,
+                "allowed_tools": result.allowed_tools,
+            },
+        )
+
     console.print()
     console.print(f"[yellow]Unknown command: /{cmd}[/yellow]")
     console.print("[dim]Type /help for available commands.[/dim]")
     console.print()
     return True
-
-    return False
 
 
 def execute_bash_command(command: str) -> bool:

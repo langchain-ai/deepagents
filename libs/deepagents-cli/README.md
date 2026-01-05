@@ -43,6 +43,10 @@ deepagents help
 # Use a specific agent configuration
 deepagents --agent mybot
 
+# Use a specific model (auto-detects provider)
+deepagents --model claude-sonnet-4-5-20250929
+deepagents --model gpt-4o
+
 # Auto-approve tool usage (skip human-in-the-loop prompts)
 deepagents --auto-approve
 
@@ -51,7 +55,47 @@ deepagents --sandbox modal        # or runloop, daytona
 deepagents --sandbox-id dbx_123   # reuse existing sandbox
 ```
 
-Type naturally as you would in a chat interface. The agent will use its built-in tools, skills, and memory to help you with tasks. 
+Type naturally as you would in a chat interface. The agent will use its built-in tools, skills, and memory to help you with tasks.
+
+## Model Configuration
+
+The CLI supports three LLM providers with automatic provider detection based on model name:
+
+**Supported Providers:**
+- **OpenAI** - Models like `gpt-4o`, `gpt-5-mini`, `o1-preview`, `o3-mini` (default: `gpt-5-mini`)
+- **Anthropic** - Models like `claude-sonnet-4-5-20250929`, `claude-3-opus-20240229` (default: `claude-sonnet-4-5-20250929`)
+- **Google** - Models like `gemini-3-pro-preview`, `gemini-1.5-pro` (default: `gemini-3-pro-preview`)
+
+**Specify model at startup:**
+```bash
+# Auto-detects Anthropic from model name pattern
+deepagents --model claude-sonnet-4-5-20250929
+
+# Auto-detects OpenAI from model name pattern
+deepagents --model gpt-4o
+```
+
+**Or use environment variables:**
+```bash
+# Set provider-specific model defaults
+export ANTHROPIC_MODEL="claude-sonnet-4-5-20250929"
+export OPENAI_MODEL="gpt-4o"
+export GOOGLE_MODEL="gemini-1.5-pro"
+
+# Set API keys (required)
+export ANTHROPIC_API_KEY="your-key"
+export OPENAI_API_KEY="your-key"
+export GOOGLE_API_KEY="your-key"
+```
+
+**Model name conventions:**
+
+Model names follow each provider's official naming convention:
+- **OpenAI**: See [OpenAI Models Documentation](https://platform.openai.com/docs/models)
+- **Anthropic**: See [Anthropic Models Documentation](https://docs.anthropic.com/en/docs/about-claude/models)
+- **Google**: See [Google Gemini Models Documentation](https://ai.google.dev/gemini-api/docs/models/gemini)
+
+The active model is displayed at startup in the CLI interface. 
 
 ## Built-in Tools
 

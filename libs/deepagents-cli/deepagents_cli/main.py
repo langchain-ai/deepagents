@@ -142,6 +142,10 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--model",
+        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5-mini, gemini-3-pro-preview). Provider is auto-detected from model name.",
+    )
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
         help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
@@ -213,6 +217,19 @@ async def simple_cli(
             console.print(
                 f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]"
             )
+        console.print()
+
+    # Display model info
+    if settings.model_name and settings.model_provider:
+        provider_display = {
+            "openai": "OpenAI",
+            "anthropic": "Anthropic",
+            "google": "Google",
+        }.get(settings.model_provider, settings.model_provider)
+        console.print(
+            f"[green]✓ Model:[/green] {provider_display} → '{settings.model_name}'",
+            style=COLORS["dim"],
+        )
         console.print()
 
     if not settings.has_tavily:
@@ -386,6 +403,7 @@ async def main(
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
+    model_name: str | None = None,
 ) -> None:
     """Main entry point with thread persistence and conditional sandbox support.
 
@@ -395,8 +413,9 @@ async def main(
         sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run in sandbox
+        model_name: Optional model name to use instead of environment variable
     """
-    model = create_model()
+    model = create_model(model_name)
 
     if session_state.is_resumed:
         console.print(f"[green]Resuming thread:[/green] {session_state.thread_id}")
@@ -549,6 +568,7 @@ def cli_main() -> None:
                     args.sandbox,
                     args.sandbox_id,
                     args.sandbox_setup,
+                    getattr(args, "model", None),
                 )
             )
     except KeyboardInterrupt:

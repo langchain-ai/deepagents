@@ -8,6 +8,7 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnCon
 from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
+from langchain.chat_models import init_chat_model
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -97,6 +98,8 @@ def create_deep_agent(
     """
     if model is None:
         model = get_default_model()
+    elif isinstance(model, str):
+        model = init_chat_model(model)
 
     if (
         model.profile is not None

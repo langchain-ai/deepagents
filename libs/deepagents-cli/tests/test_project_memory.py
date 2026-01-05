@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from deepagents_cli.agent_memory import AgentMemoryMiddleware
+from deepagents import MemoryMiddleware, SkillsMiddleware
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents_cli.config import Settings
-from deepagents_cli.skills import SkillsMiddleware
 
 
 class TestAgentMemoryMiddleware:
-    """Test dual memory loading in AgentMemoryMiddleware."""
+    """Test dual memory loading in MemoryMiddleware (SDK)."""
 
     def test_load_user_memory_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test loading user agent.md when no project memory exists."""
@@ -36,15 +36,21 @@ class TestAgentMemoryMiddleware:
             # Create settings (no project detected from non_project_dir)
             test_settings = Settings.from_environment(start_path=non_project_dir)
 
-            # Create middleware
-            middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
+            # Create backend and middleware using SDK
+            backend = FilesystemBackend(root_dir="/", virtual_mode=False)
+            middleware = MemoryMiddleware(
+                backend=backend,
+                sources=[
+                    {"path": str(test_settings.get_user_agent_md_path("test_agent")), "name": "user"}
+                ],
+            )
 
             # Simulate before_agent call with no project root
             state = {}
             result = middleware.before_agent(state, None)
 
-            assert result["user_memory"] == "User instructions"
-            assert "project_memory" not in result
+            assert result["memory_contents"]["user"] == "User instructions"
+            assert "project" not in result["memory_contents"]
         finally:
             os.chdir(original_cwd)
 
@@ -74,15 +80,23 @@ class TestAgentMemoryMiddleware:
             # Create settings (project detected from project_root)
             test_settings = Settings.from_environment(start_path=project_root)
 
-            # Create middleware
-            middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
+            # Create backend and middleware using SDK
+            backend = FilesystemBackend(root_dir="/", virtual_mode=False)
+            sources = [
+                {"path": str(test_settings.get_user_agent_md_path("test_agent")), "name": "user"}
+            ]
+            project_path = test_settings.get_project_agent_md_path()
+            if project_path:
+                sources.append({"path": str(project_path), "name": "project"})
+            
+            middleware = MemoryMiddleware(backend=backend, sources=sources)
 
             # Simulate before_agent call
             state = {}
             result = middleware.before_agent(state, None)
 
-            assert result["user_memory"] == "User instructions"
-            assert result["project_memory"] == "Project instructions"
+            assert result["memory_contents"]["user"] == "User instructions"
+            assert result["memory_contents"]["project"] == "Project instructions"
         finally:
             os.chdir(original_cwd)
 
@@ -94,14 +108,21 @@ class TestAgentMemoryMiddleware:
         # Create settings
         test_settings = Settings.from_environment(start_path=tmp_path)
 
-        middleware = AgentMemoryMiddleware(settings=test_settings, assistant_id="test_agent")
+        # Create backend and middleware using SDK
+        backend = FilesystemBackend(root_dir="/", virtual_mode=False)
+        middleware = MemoryMiddleware(
+            backend=backend,
+            sources=[
+                {"path": str(test_settings.get_user_agent_md_path("test_agent")), "name": "user"}
+            ],
+        )
 
         # State already has memory
-        state = {"user_memory": "Existing memory", "project_memory": "Existing project"}
+        state = {"memory_contents": {"user": "Existing memory", "project": "Existing project"}}
         result = middleware.before_agent(state, None)
 
-        # Should return empty dict (no updates)
-        assert result == {}
+        # Should return None (no updates)
+        assert result is None
 
 
 class TestSkillsPathResolution:
@@ -113,27 +134,39 @@ class TestSkillsPathResolution:
         skills_dir = agent_dir / "skills"
         skills_dir.mkdir(parents=True)
 
-        middleware = SkillsMiddleware(skills_dir=skills_dir, assistant_id="test_agent")
+        # Create backend and middleware using SDK
+        backend = FilesystemBackend(root_dir="/", virtual_mode=False)
+        middleware = SkillsMiddleware(
+            backend=backend,
+            registries=[{"path": str(skills_dir), "name": "user"}],
+        )
 
-        # Check paths are correctly set
-        assert middleware.skills_dir == skills_dir
-        assert middleware.user_skills_display == "~/.deepagents/test_agent/skills"
+        # Check that registries are correctly set
+        assert len(middleware.registries) == 1
+        assert middleware.registries[0]["path"] == str(skills_dir)
+        assert middleware.registries[0]["name"] == "user"
 
     def test_skills_dir_per_agent(self, tmp_path: Path) -> None:
         """Test that different agents have separate skills directories."""
-        from deepagents_cli.skills import SkillsMiddleware
-
         # Agent 1
         agent1_skills = tmp_path / ".deepagents" / "agent1" / "skills"
         agent1_skills.mkdir(parents=True)
-        middleware1 = SkillsMiddleware(skills_dir=agent1_skills, assistant_id="agent1")
+        backend1 = FilesystemBackend(root_dir="/", virtual_mode=False)
+        middleware1 = SkillsMiddleware(
+            backend=backend1,
+            registries=[{"path": str(agent1_skills), "name": "user"}],
+        )
 
         # Agent 2
         agent2_skills = tmp_path / ".deepagents" / "agent2" / "skills"
         agent2_skills.mkdir(parents=True)
-        middleware2 = SkillsMiddleware(skills_dir=agent2_skills, assistant_id="agent2")
+        backend2 = FilesystemBackend(root_dir="/", virtual_mode=False)
+        middleware2 = SkillsMiddleware(
+            backend=backend2,
+            registries=[{"path": str(agent2_skills), "name": "user"}],
+        )
 
         # Should have different paths
-        assert middleware1.skills_dir != middleware2.skills_dir
-        assert "agent1" in middleware1.user_skills_display
-        assert "agent2" in middleware2.user_skills_display
+        assert middleware1.registries[0]["path"] != middleware2.registries[0]["path"]
+        assert "agent1" in middleware1.registries[0]["path"]
+        assert "agent2" in middleware2.registries[0]["path"]

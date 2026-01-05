@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 
-from deepagents import create_deep_agent
+from deepagents import MemoryMiddleware, SkillsMiddleware, create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
@@ -19,11 +19,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
-from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.shell import ShellMiddleware
-from deepagents_cli.skills import SkillsMiddleware
 
 
 def list_agents() -> None:
@@ -353,8 +351,8 @@ def create_cli_agent(
                       based on sandbox_type and assistant_id.
         auto_approve: If True, automatically approves all tool calls without human
                      confirmation. Useful for automated workflows.
-        enable_memory: Enable AgentMemoryMiddleware for persistent memory
-        enable_skills: Enable SkillsMiddleware for custom agent skills
+        enable_memory: Enable SDK MemoryMiddleware for persistent memory
+        enable_skills: Enable SDK SkillsMiddleware for custom agent skills
         enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
 
     Returns:
@@ -386,24 +384,62 @@ def create_cli_agent(
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
+        # Create filesystem backend for middleware to use
+        filesystem_backend = FilesystemBackend(root_dir="/", virtual_mode=False)
+        
         composite_backend = CompositeBackend(
             default=FilesystemBackend(),  # Current working directory
             routes={},  # No virtualization - use real paths
         )
 
-        # Add memory middleware
+        # Add memory middleware using SDK MemoryMiddleware
         if enable_memory:
+            memory_sources = []
+            
+            # User memory source
+            user_agent_md = settings.get_user_agent_md_path(assistant_id)
+            memory_sources.append({
+                "path": str(user_agent_md),
+                "name": "user"
+            })
+            
+            # Project memory source (if in a project)
+            project_agent_md = settings.get_project_agent_md_path()
+            if project_agent_md:
+                memory_sources.append({
+                    "path": str(project_agent_md),
+                    "name": "project"
+                })
+            
             agent_middleware.append(
-                AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id)
+                MemoryMiddleware(
+                    backend=filesystem_backend,
+                    sources=memory_sources,
+                )
             )
 
-        # Add skills middleware
+        # Add skills middleware using SDK SkillsMiddleware
         if enable_skills:
+            registries = []
+            
+            # User skills registry
+            if skills_dir:
+                registries.append({
+                    "path": str(skills_dir),
+                    "name": "user"
+                })
+            
+            # Project skills registry
+            if project_skills_dir:
+                registries.append({
+                    "path": str(project_skills_dir),
+                    "name": "project"
+                })
+            
             agent_middleware.append(
                 SkillsMiddleware(
-                    skills_dir=skills_dir,
-                    assistant_id=assistant_id,
-                    project_skills_dir=project_skills_dir,
+                    backend=filesystem_backend,
+                    registries=registries,
                 )
             )
 
@@ -423,24 +459,62 @@ def create_cli_agent(
             )
     else:
         # ========== REMOTE SANDBOX MODE ==========
+        # Create filesystem backend for middleware to use (still needs local access for memory/skills)
+        filesystem_backend = FilesystemBackend(root_dir="/", virtual_mode=False)
+        
         composite_backend = CompositeBackend(
             default=sandbox,  # Remote sandbox (ModalBackend, etc.)
             routes={},  # No virtualization
         )
 
-        # Add memory middleware
+        # Add memory middleware using SDK MemoryMiddleware
         if enable_memory:
+            memory_sources = []
+            
+            # User memory source
+            user_agent_md = settings.get_user_agent_md_path(assistant_id)
+            memory_sources.append({
+                "path": str(user_agent_md),
+                "name": "user"
+            })
+            
+            # Project memory source (if in a project)
+            project_agent_md = settings.get_project_agent_md_path()
+            if project_agent_md:
+                memory_sources.append({
+                    "path": str(project_agent_md),
+                    "name": "project"
+                })
+            
             agent_middleware.append(
-                AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id)
+                MemoryMiddleware(
+                    backend=filesystem_backend,
+                    sources=memory_sources,
+                )
             )
 
-        # Add skills middleware
+        # Add skills middleware using SDK SkillsMiddleware
         if enable_skills:
+            registries = []
+            
+            # User skills registry
+            if skills_dir:
+                registries.append({
+                    "path": str(skills_dir),
+                    "name": "user"
+                })
+            
+            # Project skills registry
+            if project_skills_dir:
+                registries.append({
+                    "path": str(project_skills_dir),
+                    "name": "project"
+                })
+            
             agent_middleware.append(
                 SkillsMiddleware(
-                    skills_dir=skills_dir,
-                    assistant_id=assistant_id,
-                    project_skills_dir=project_skills_dir,
+                    backend=filesystem_backend,
+                    registries=registries,
                 )
             )
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -25,15 +24,6 @@ from deepagents_cli.widgets.history import HistoryManager
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-
-# Minimum lines to trigger paste collapse
-_PASTE_THRESHOLD = 5
-# Pattern to match paste markers: [Pasted text #N +X lines]
-_PASTE_MARKER_PATTERN = re.compile(r"\[Pasted text #(\d+) \+\d+ lines\]")
-
-# Global paste registry shared across instances (simple approach)
-_paste_registry: dict[int, str] = {}
-_paste_counter: int = 0
 
 
 class CompletionPopup(Static):
@@ -104,6 +94,9 @@ class ChatTextArea(TextArea):
             show=False,
             priority=True,
         ),
+        # Mac Cmd+Z/Cmd+Shift+Z for undo/redo (in addition to Ctrl+Z/Y)
+        Binding("cmd+z,super+z", "undo", "Undo", show=False, priority=True),
+        Binding("cmd+shift+z,super+shift+z", "redo", "Redo", show=False, priority=True),
     ]
 
     class Submitted(Message):
@@ -214,33 +207,6 @@ class ChatTextArea(TextArea):
         """Clear the text area."""
         self.text = ""
         self.move_cursor((0, 0))
-
-    def on_paste(self, event: events.Paste) -> None:
-        """Handle paste events - collapse large pastes into markers."""
-        global _paste_counter  # noqa: PLW0603
-
-        text = event.text
-        lines = text.split("\n")
-
-        if len(lines) >= _PASTE_THRESHOLD:
-            # Collapse large paste into marker
-            event.prevent_default()
-            _paste_counter += 1
-            paste_id = _paste_counter
-            _paste_registry[paste_id] = text
-            marker = f"[Pasted text #{paste_id} +{len(lines)} lines]"
-            self.insert(marker)
-        # else: let default paste happen
-
-
-def _expand_paste_markers(text: str) -> str:
-    """Expand paste markers in text to their original content."""
-
-    def replacer(match: re.Match) -> str:
-        paste_id = int(match.group(1))
-        return _paste_registry.get(paste_id, match.group(0))
-
-    return _PASTE_MARKER_PATTERN.sub(replacer, text)
 
 
 class ChatInput(Vertical):
@@ -386,13 +352,8 @@ class ChatInput(Vertical):
             if self._completion_manager:
                 self._completion_manager.reset()
 
-            # Expand any paste markers to their original content
-            expanded_value = _expand_paste_markers(value)
-
-            # Add to history (use original with markers for brevity)
             self._history.add(value)
-
-            self.post_message(self.Submitted(expanded_value, self.mode))
+            self.post_message(self.Submitted(value, self.mode))
             if self._text_area:
                 self._text_area.clear_text()
             self.mode = "normal"
@@ -432,9 +393,8 @@ class ChatInput(Vertical):
                 value = self._text_area.text.strip()
                 if value:
                     self._completion_manager.reset()
-                    expanded_value = _expand_paste_markers(value)
                     self._history.add(value)
-                    self.post_message(self.Submitted(expanded_value, self.mode))
+                    self.post_message(self.Submitted(value, self.mode))
                     self._text_area.clear_text()
                     self.mode = "normal"
 

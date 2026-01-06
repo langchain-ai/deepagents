@@ -202,6 +202,7 @@ class SlashCommandController:
 # Constants for fuzzy file completion
 _MAX_FALLBACK_FILES = 1000
 _MIN_FUZZY_RATIO = 0.4
+_MIN_FUZZY_SCORE = 15  # Minimum score to include in results
 
 
 def _find_project_root(start_path: Path) -> Path:
@@ -287,12 +288,36 @@ def _fuzzy_score(query: str, candidate: str) -> float:  # noqa: PLR0911
     return ratio * 15
 
 
-def _fuzzy_search(query: str, candidates: list[str], limit: int = 10) -> list[str]:
-    """Return top matches sorted by score."""
-    if not query:
-        return candidates[:limit]
+def _is_dotpath(path: str) -> bool:
+    """Check if path contains dotfiles/dotdirs (e.g., .github/...)."""
+    return any(part.startswith(".") for part in path.split("/"))
 
-    scored = [(score, c) for c in candidates if (score := _fuzzy_score(query, c)) > 0]
+
+def _path_depth(path: str) -> int:
+    """Get depth of path (number of / separators)."""
+    return path.count("/")
+
+
+def _fuzzy_search(
+    query: str, candidates: list[str], limit: int = 10, *, include_dotfiles: bool = False
+) -> list[str]:
+    """Return top matches sorted by score.
+
+    Args:
+        query: Search query
+        candidates: List of file paths to search
+        limit: Max results to return
+        include_dotfiles: Whether to include dotfiles (default False)
+    """
+    # Filter dotfiles unless explicitly searching for them
+    filtered = candidates if include_dotfiles else [c for c in candidates if not _is_dotpath(c)]
+
+    if not query:
+        # Empty query: show root-level files first, sorted by depth then name
+        sorted_files = sorted(filtered, key=lambda p: (_path_depth(p), p.lower()))
+        return sorted_files[:limit]
+
+    scored = [(score, c) for c in filtered if (score := _fuzzy_score(query, c)) >= _MIN_FUZZY_SCORE]
     scored.sort(key=lambda x: -x[0])
     return [c for _, c in scored[:limit]]
 
@@ -374,7 +399,9 @@ class FuzzyFileController:
     def _get_fuzzy_suggestions(self, search: str) -> list[tuple[str, str]]:
         """Get fuzzy file suggestions."""
         files = self._get_files()
-        matches = _fuzzy_search(search, files, limit=MAX_SUGGESTIONS)
+        # Include dotfiles only if query starts with "."
+        include_dots = search.startswith(".")
+        matches = _fuzzy_search(search, files, limit=MAX_SUGGESTIONS, include_dotfiles=include_dots)
 
         suggestions: list[tuple[str, str]] = []
         for path in matches:

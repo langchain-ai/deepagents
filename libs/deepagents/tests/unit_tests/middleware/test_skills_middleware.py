@@ -4,16 +4,20 @@ This module tests the skills middleware and helper functions using temporary
 directories and the FilesystemBackend in normal (non-virtual) mode.
 """
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import (
     MAX_SKILL_DESCRIPTION_LENGTH,
     MAX_SKILL_FILE_SIZE,
@@ -1007,3 +1011,110 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
     assert "skills_metadata" in result
     assert len(result["skills_metadata"]) == 1
     assert result["skills_metadata"][0]["name"] == "test-skill"
+
+
+def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) -> None:
+    """Test end-to-end: create_deep_agent with skills parameter and FilesystemBackend."""
+    # Create skill on filesystem
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill for deep agents")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    # Create agent with skills parameter and FilesystemBackend
+    agent = create_deep_agent(
+        backend=backend,
+        skills=[{"path": str(skills_dir), "name": "user"}],
+        model=GenericFakeChatModel(messages=iter([AIMessage(content="I see the test-skill in the system prompt.")])),
+    )
+
+    # Invoke agent
+    result = agent.invoke({"messages": [HumanMessage(content="What skills are available?")]})
+
+    # Verify invocation succeeded
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+
+def test_create_deep_agent_with_skills_empty_directory(tmp_path: Path) -> None:
+    """Test that skills work gracefully when no skills are found (empty directory)."""
+    # Create empty skills directory
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skills_dir.mkdir(parents=True)
+
+    # Create agent with skills parameter but empty directory
+    agent = create_deep_agent(
+        backend=backend,
+        skills=[{"path": str(skills_dir), "name": "user"}],
+        model=GenericFakeChatModel(messages=iter([AIMessage(content="No skills found, but that's okay.")])),
+    )
+
+    # Invoke agent
+    result = agent.invoke({"messages": [HumanMessage(content="What skills are available?")]})
+
+    # Verify invocation succeeded even without skills
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+
+def test_create_deep_agent_with_skills_default_backend() -> None:
+    """Test create_deep_agent with skills parameter using default backend (no backend specified).
+
+    When no backend is specified, StateBackend is used by tools. Since SkillsMiddleware
+    receives None for backend (no explicit backend provided), it logs a warning and
+    returns empty skills. However, if we pass files via invoke(), tools can still
+    access those files via StateBackend.
+    """
+    checkpointer = InMemorySaver()
+    agent = create_deep_agent(
+        skills=[{"path": "/skills/user", "name": "user"}],
+        model=GenericFakeChatModel(messages=iter([AIMessage(content="Working with default backend.")])),
+        checkpointer=checkpointer,
+    )
+
+    # Create skill content with proper
+    skill_content = make_skill_content("test-skill", "A test skill for default backend")
+    timestamp = datetime.now(UTC).isoformat()
+
+    # Prepare files dict with FileData format (for StateBackend tools)
+    # Note: SkillsMiddleware will still get backend=None, so it won't load these
+    # But this demonstrates the proper format for StateBackend
+    skill_files = {
+        "/skills/user/test-skill/SKILL.md": {
+            "content": skill_content.split("\n"),
+            "created_at": timestamp,
+            "modified_at": timestamp,
+        }
+    }
+
+    config: RunnableConfig = {"configurable": {"thread_id": "123"}}
+
+    # Invoke agent with files parameter
+    # Skills won't be loaded (backend=None for SkillsMiddleware), but tools can access files
+    result = agent.invoke(
+        {
+            "messages": [HumanMessage(content="What skills are available?")],
+            "files": skill_files,
+        },
+        config,
+    )
+
+    assert len(result["messages"]) > 0
+
+    checkpoint = agent.checkpointer.get(config)
+    assert "/skills/user/test-skill/SKILL.md" in checkpoint["channel_values"]["files"]
+    assert checkpoint["channel_values"]["skills_metadata"] == [
+        {
+            "allowed_tools": [],
+            "compatibility": None,
+            "description": "A test skill for default backend",
+            "license": None,
+            "metadata": {},
+            "name": "test-skill",
+            "path": "/skills/user/test-skill/SKILL.md",
+            "source": "user",
+        },
+    ]

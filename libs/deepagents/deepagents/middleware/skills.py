@@ -112,6 +112,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -460,7 +461,7 @@ class SkillsMiddleware(AgentMiddleware):
         self.sources = sources
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 
-    def _get_backend(self, runtime: Runtime) -> BackendProtocol:
+    def _get_backend(self, state: SkillsState, runtime: Runtime) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:
@@ -470,7 +471,20 @@ class SkillsMiddleware(AgentMiddleware):
             Resolved backend instance
         """
         if callable(self._backend):
-            return self._backend(runtime)
+            # Construct an artificial tool runtime to resolve backend factory
+            tool_runtime = ToolRuntime(
+                state=state,
+                context=runtime.context,
+                stream_writer=runtime.stream_writer,
+                store=runtime.store,
+                config={},
+                tool_call_id=None,
+            )
+            backend = self._backend(tool_runtime)
+            if backend is None:
+                raise AssertionError("SkillsMiddleware requires a valid backend instance")
+            return backend
+
         return self._backend
 
     def _format_skills_locations(self) -> str:
@@ -557,8 +571,7 @@ class SkillsMiddleware(AgentMiddleware):
             return None
 
         # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(runtime)
-
+        backend = self._get_backend(state, runtime)
         all_skills: dict[str, SkillMetadata] = {}
 
         # Load skills from each source in order

@@ -9,9 +9,11 @@ from .config import COLORS, DEEP_AGENTS_ASCII, console
 from .ui import TokenTracker, show_interactive_help
 
 
-def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bool | tuple[str, str]:
+def handle_command(
+    command: str, agent, token_tracker: TokenTracker
+) -> str | bool | tuple[str, str]:
     """Handle slash commands.
-    
+
     Returns:
         - 'exit': Exit the CLI
         - True: Command handled, continue
@@ -24,7 +26,7 @@ def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bo
 
     if cmd in ["quit", "exit", "q"]:
         return "exit"
-    
+
     if cmd == "agent":
         # Parse agent name
         if len(cmd_parts) < 2:
@@ -33,24 +35,24 @@ def handle_command(command: str, agent, token_tracker: TokenTracker) -> str | bo
             console.print("[dim]Example: /agent foo[/dim]")
             console.print()
             return True
-        
+
         agent_name = cmd_parts[1].strip()
         if not agent_name:
             console.print()
             console.print("[yellow]Please specify an agent name[/yellow]")
             console.print()
             return True
-        
+
         # Return signal to switch agent
         return ("switch_agent", agent_name)
-    
+
     if cmd == "remember":
         # Get optional additional text after /remember
         additional_context = ""
         if len(cmd_parts) > 1:
             # Rejoin everything after "remember" (preserve original spacing)
-            additional_context = command.strip()[len("/remember"):].strip()
-        
+            additional_context = command.strip()[len("/remember") :].strip()
+
         base_message = """Please review our conversation and update your memory files accordingly:
 
 1. **Review what we worked on**: Look at the key decisions, patterns, preferences, and learnings from this conversation.
@@ -70,13 +72,13 @@ Focus on:
 - Any feedback I gave about your behavior
 
 Be specific and actionable in your updates. Use `edit_file` to update existing files or `write_file` to create new ones."""
-        
+
         # Append user's additional context if provided
         if additional_context:
             final_message = f"{base_message}\n\nAdditional context: {additional_context}"
         else:
             final_message = base_message
-        
+
         # Return signal to prefill prompt with memory reflection message
         return ("prefill_prompt", final_message)
 

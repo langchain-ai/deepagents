@@ -149,7 +149,7 @@ async def simple_cli(
     no_splash: bool = False,
 ) -> str | None:
     """Main CLI loop.
-    
+
     Args:
         backend: Backend for file operations (CompositeBackend)
         sandbox_type: Type of sandbox being used (e.g., "modal", "runloop", "daytona").
@@ -157,7 +157,7 @@ async def simple_cli(
         sandbox_id: ID of the active sandbox
         setup_script_path: Path to setup script that was run (if any)
         no_splash: If True, skip displaying the startup splash screen
-    
+
     Returns:
         None if exiting normally, or new agent name if switching agents.
     """
@@ -221,7 +221,9 @@ async def simple_cli(
                 style=COLORS["dim"],
             )
             if settings.user_langchain_project:
-                console.print(f"  [dim]User code (shell) → '{settings.user_langchain_project}'[/dim]")
+                console.print(
+                    f"  [dim]User code (shell) → '{settings.user_langchain_project}'[/dim]"
+                )
             console.print()
 
         console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
@@ -342,7 +344,7 @@ async def _run_agent_session(
     first_run = True
     agent = None
     shared_checkpointer = None
-    
+
     while True:
         # Create agent with conditional tools
         tools = [http_request, fetch_url]
@@ -369,8 +371,12 @@ async def _run_agent_session(
         from .token_utils import calculate_baseline_tokens
 
         agent_dir = settings.get_agent_dir(current_assistant_id)
-        system_prompt = get_system_prompt(assistant_id=current_assistant_id, sandbox_type=sandbox_type)
-        baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, current_assistant_id)
+        system_prompt = get_system_prompt(
+            assistant_id=current_assistant_id, sandbox_type=sandbox_type
+        )
+        baseline_tokens = calculate_baseline_tokens(
+            model, agent_dir, system_prompt, current_assistant_id
+        )
 
         # Run the CLI loop
         result = await simple_cli(
@@ -383,7 +389,7 @@ async def _run_agent_session(
             setup_script_path=setup_script_path,
             no_splash=(not first_run) or session_state.no_splash,
         )
-        
+
         # Check if we should switch agent
         if result is None:
             # Normal exit
@@ -392,7 +398,7 @@ async def _run_agent_session(
             # Switch to new agent profile
             current_assistant_id = result
             first_run = False
-            
+
             # Clear cached memory and skills from state so they reload from new profile
             # The middleware checks "if key not in state" before loading, so we clear those keys
             # to force reload from the new agent profile
@@ -408,16 +414,14 @@ async def _run_agent_session(
                     # Clear skills fields (from SkillsMiddleware)
                     channel_values.pop("skills_metadata", None)
                     # Since channel_values is mutable, the changes persist in the checkpoint
-            
+
             # Show agent switch message (without clearing screen)
             console.print()
             console.print(
                 f"✓ Switched to agent profile: [bold]{current_assistant_id}[/bold]",
-                style=COLORS["agent"]
+                style=COLORS["agent"],
             )
-            console.print(
-                f"  [dim]~/.deepagents/{current_assistant_id}/[/dim]"
-            )
+            console.print(f"  [dim]~/.deepagents/{current_assistant_id}/[/dim]")
             console.print()
             continue
 

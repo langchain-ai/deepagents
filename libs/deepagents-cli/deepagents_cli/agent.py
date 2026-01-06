@@ -5,7 +5,6 @@ import shutil
 from pathlib import Path
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.sandbox import SandboxBackendProtocol

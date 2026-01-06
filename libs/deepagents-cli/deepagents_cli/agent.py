@@ -5,8 +5,8 @@ import shutil
 from pathlib import Path
 
 from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from langchain.agents.middleware import (
     InterruptOnConfig,
@@ -335,7 +335,7 @@ def create_cli_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
-) -> tuple[Pregel, BackendProtocol]:
+) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
     This is the main entry point for creating a deepagents CLI agent, usable both
@@ -360,7 +360,7 @@ def create_cli_agent(
     Returns:
         2-tuple of (agent_graph, backend)
         - agent_graph: Configured LangGraph Pregel instance ready for execution
-        - backend: Backend for file operations (FilesystemBackend or SandboxBackend)
+        - composite_backend: CompositeBackend for file operations
     """
     tools = tools or []
 
@@ -436,14 +436,19 @@ def create_cli_agent(
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()
 
+    composite_backend = CompositeBackend(
+        default=backend,
+        routes={},
+    )
+
     # Create the agent
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
         tools=tools,
-        backend=backend,
+        backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
         checkpointer=InMemorySaver(),
     ).with_config(config)
-    return agent, backend
+    return agent, composite_backend

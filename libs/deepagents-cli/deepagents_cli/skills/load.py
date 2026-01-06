@@ -12,9 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.skills import (
-    SkillMetadata,
-)
+from deepagents.middleware.skills import SkillMetadata, SkillsSource
 from deepagents.middleware.skills import (
     list_skills as list_skills_from_backend,
 )
@@ -47,27 +45,17 @@ def list_skills(
     # Load user skills first (foundation)
     if user_skills_dir and user_skills_dir.exists():
         user_backend = FilesystemBackend(root_dir=str(user_skills_dir))
-        user_source = {"path": str(user_skills_dir), "name": "user"}
+        user_source = SkillsSource(path=".", name="user")
         user_skills = list_skills_from_backend(backend=user_backend, source=user_source)
         for skill in user_skills:
-            skill_dict = dict(skill)
-            virtual_path = skill_dict["path"]
-            real_path = user_skills_dir / virtual_path.lstrip("/")
-            skill_dict["path"] = str(real_path)
-            all_skills[skill_dict["name"]] = skill_dict  # type: ignore
+            all_skills[skill["name"]] = skill
 
     # Load project skills second (override/augment)
     if project_skills_dir and project_skills_dir.exists():
         project_backend = FilesystemBackend(root_dir=str(project_skills_dir))
-        project_source = {"path": str(project_skills_dir), "name": "project"}
+        project_source = SkillsSource(path=".", name="project")
         project_skills = list_skills_from_backend(backend=project_backend, source=project_source)
         for skill in project_skills:
-            # Convert virtual backend path to real filesystem path
-            skill_dict = dict(skill)  # Make a mutable copy
-            virtual_path = skill_dict["path"]
-            real_path = project_skills_dir / virtual_path.lstrip("/")
-            skill_dict["path"] = str(real_path)
-            # Project skills override user skills with the same name
-            all_skills[skill_dict["name"]] = skill_dict  # type: ignore
+            all_skills[skill["name"]] = skill
 
-    return list(all_skills.values())  # type: ignore
+    return list(all_skills.values())

@@ -323,14 +323,7 @@ def _list_skills_from_backend(backend: BackendProtocol, base_path: str, registry
         List of skill metadata from successfully parsed SKILL.md files
     """
     skills: list[SkillMetadata] = []
-
-    # List items in base_path
-    try:
-        items = backend.ls_info(base_path)
-    except Exception as e:
-        logger.warning("Error listing skills from backend at %s: %s", base_path, e)
-        return []
-
+    items = backend.ls_info(base_path)
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
     for item in items:
@@ -349,13 +342,8 @@ def _list_skills_from_backend(backend: BackendProtocol, base_path: str, registry
         skill_md_path = str(skill_dir / "SKILL.md")
         skill_md_paths.append((skill_dir_path, skill_md_path))
 
-    # Batch download all SKILL.md files
     paths_to_download = [skill_md_path for _, skill_md_path in skill_md_paths]
-    try:
-        responses = backend.download_files(paths_to_download)
-    except Exception as e:
-        logger.warning("Error downloading skill files from backend: %s", e)
-        return []
+    responses = backend.download_files(paths_to_download)
 
     # Parse each downloaded SKILL.md
     for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
@@ -367,7 +355,6 @@ def _list_skills_from_backend(backend: BackendProtocol, base_path: str, registry
             logger.warning("Downloaded skill file %s has no content", skill_md_path)
             continue
 
-        # Decode content
         try:
             content = response.content.decode("utf-8")
         except UnicodeDecodeError as e:
@@ -458,25 +445,16 @@ class SkillsMiddleware(AgentMiddleware):
 
     state_schema = SkillsState
 
-    def __init__(
-        self,
-        *,
-        backend: BackendOrFactory,
-        registries: list[SkillRegistry] | None = None,
-    ) -> None:
+    def __init__(self, *, backend: BackendOrFactory, registries: list[SkillRegistry]) -> None:
         """Initialize the skills middleware.
 
         Args:
             backend: Backend instance or factory function that takes runtime and returns a backend.
                      Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
-            registries: List of registry configurations (path + name).
-                       Defaults to user and project registries.
+            registries: List of registry configurations.
         """
         self._backend = backend
-        self.registries = registries or [
-            {"path": "/skills/user/", "name": "user"},
-            {"path": "/skills/project/", "name": "project"},
-        ]
+        self.registries = registries
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 
     def _get_backend(self, runtime: Runtime) -> BackendProtocol:

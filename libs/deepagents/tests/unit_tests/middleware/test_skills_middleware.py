@@ -7,13 +7,18 @@ directories and the FilesystemBackend in normal (non-virtual) mode.
 from pathlib import Path
 
 from langchain.agents import create_agent
+from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.state import StateBackend
+from deepagents.backends.store import StoreBackend
 from deepagents.middleware.skills import (
     MAX_SKILL_DESCRIPTION_LENGTH,
     MAX_SKILL_FILE_SIZE,
     SkillMetadata,
+    SkillRegistry,
     SkillsMiddleware,
     _list_skills_from_backend,
     _parse_skill_metadata,
@@ -41,11 +46,6 @@ description: {description}
 
 Instructions go here.
 """
-
-
-# ============================================================================
-# Tests for _validate_skill_name
-# ============================================================================
 
 
 def test_validate_skill_name_valid() -> None:
@@ -108,11 +108,6 @@ def test_validate_skill_name_invalid() -> None:
     is_valid, error = _validate_skill_name("skill-a", "skill-b")
     assert not is_valid
     assert "must match directory" in error
-
-
-# ============================================================================
-# Tests for _parse_skill_metadata
-# ============================================================================
 
 
 def test_parse_skill_metadata_valid() -> None:
@@ -262,11 +257,6 @@ Content
     assert result is not None
     assert result["license"] is None  # Empty string should become None
     assert result["compatibility"] is None  # Empty string should become None
-
-
-# ============================================================================
-# Tests for _list_skills_from_backend
-# ============================================================================
 
 
 def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
@@ -436,16 +426,12 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     assert skills[0]["name"] == "my-skill"
 
 
-# ============================================================================
-# Tests for SkillsMiddleware
-# ============================================================================
-
-
 def test_format_skills_locations_single_registry() -> None:
     """Test _format_skills_locations with a single registry."""
+    registries: list[SkillRegistry] = [{"path": "/skills/user/", "name": "user"}]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[{"path": "/skills/user/", "name": "user"}],
+        registries=registries,
     )
 
     result = middleware._format_skills_locations()
@@ -456,13 +442,14 @@ def test_format_skills_locations_single_registry() -> None:
 
 def test_format_skills_locations_multiple_registries() -> None:
     """Test _format_skills_locations with multiple registries."""
+    registries: list[SkillRegistry] = [
+        {"path": "/skills/base/", "name": "base"},
+        {"path": "/skills/user/", "name": "user"},
+        {"path": "/skills/project/", "name": "project"},
+    ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[
-            {"path": "/skills/base/", "name": "base"},
-            {"path": "/skills/user/", "name": "user"},
-            {"path": "/skills/project/", "name": "project"},
-        ],
+        registries=registries,
     )
 
     result = middleware._format_skills_locations()
@@ -475,12 +462,13 @@ def test_format_skills_locations_multiple_registries() -> None:
 
 def test_format_skills_list_empty() -> None:
     """Test _format_skills_list with no skills."""
+    registries: list[SkillRegistry] = [
+        {"path": "/skills/user/", "name": "user"},
+        {"path": "/skills/project/", "name": "project"},
+    ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[
-            {"path": "/skills/user/", "name": "user"},
-            {"path": "/skills/project/", "name": "project"},
-        ],
+        registries=registries,
     )
 
     result = middleware._format_skills_list([])
@@ -491,9 +479,10 @@ def test_format_skills_list_empty() -> None:
 
 def test_format_skills_list_single_skill() -> None:
     """Test _format_skills_list with a single skill."""
+    registries: list[SkillRegistry] = [{"path": "/skills/user/", "name": "user"}]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[{"path": "/skills/user/", "name": "user"}],
+        registries=registries,
     )
 
     skills: list[SkillMetadata] = [
@@ -518,12 +507,13 @@ def test_format_skills_list_single_skill() -> None:
 
 def test_format_skills_list_multiple_skills_multiple_registries() -> None:
     """Test _format_skills_list with skills from multiple registries."""
+    registries: list[SkillRegistry] = [
+        {"path": "/skills/user/", "name": "user"},
+        {"path": "/skills/project/", "name": "project"},
+    ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[
-            {"path": "/skills/user/", "name": "user"},
-            {"path": "/skills/project/", "name": "project"},
-        ],
+        registries=registries,
     )
 
     skills: list[SkillMetadata] = [
@@ -595,9 +585,10 @@ def test_before_agent_loads_skills(tmp_path: Path) -> None:
         ]
     )
 
+    registries: list[SkillRegistry] = [{"path": str(skills_dir), "name": "user"}]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=[{"path": str(skills_dir), "name": "user"}],
+        registries=registries,
     )
 
     # Call before_agent
@@ -632,12 +623,13 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
         ]
     )
 
+    registries: list[SkillRegistry] = [
+        {"path": str(base_dir), "name": "base"},
+        {"path": str(user_dir), "name": "user"},
+    ]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=[
-            {"path": str(base_dir), "name": "base"},
-            {"path": str(user_dir), "name": "user"},
-        ],
+        registries=registries,
     )
 
     # Call before_agent
@@ -660,9 +652,10 @@ def test_before_agent_empty_registries(tmp_path: Path) -> None:
     # Create empty directories
     (tmp_path / "skills" / "user").mkdir(parents=True)
 
+    registries: list[SkillRegistry] = [{"path": str(tmp_path / "skills" / "user"), "name": "user"}]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=[{"path": str(tmp_path / "skills" / "user"), "name": "user"}],
+        registries=registries,
     )
 
     result = middleware.before_agent({}, None)  # type: ignore
@@ -691,9 +684,10 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     )
 
     # Create middleware
+    registries: list[SkillRegistry] = [{"path": str(skills_dir), "name": "user"}]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=[{"path": str(skills_dir), "name": "user"}],
+        registries=registries,
     )
 
     # Create agent with middleware
@@ -721,3 +715,188 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     content = system_message.text
     assert "Skills System" in content, "System prompt should contain 'Skills System' section"
     assert "test-skill" in content, "System prompt should mention the skill name"
+
+
+def test_skills_middleware_with_state_backend_factory() -> None:
+    """Test that SkillsMiddleware can be initialized with StateBackend factory."""
+    # Test that the middleware accepts StateBackend as a factory function
+    # This is the recommended pattern for StateBackend since it needs runtime context
+    registries: list[SkillRegistry] = [{"path": "/skills/user", "name": "user"}]
+    middleware = SkillsMiddleware(
+        backend=lambda rt: StateBackend(rt),
+        registries=registries,
+    )
+
+    # Verify the middleware was created successfully
+    assert middleware is not None
+    assert callable(middleware._backend)
+    assert len(middleware.registries) == 1
+    assert middleware.registries[0]["name"] == "user"
+
+    runtime = ToolRuntime(
+        state={"messages": [], "files": {}},
+        context=None,
+        tool_call_id="test",
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+    backend = middleware._get_backend(runtime)
+    assert isinstance(backend, StateBackend)
+    assert backend.runtime == runtime
+
+
+def test_skills_middleware_with_store_backend_factory() -> None:
+    """Test that SkillsMiddleware can be initialized with StoreBackend factory."""
+    # Test that the middleware accepts StoreBackend as a factory function
+    # This is the recommended pattern for StoreBackend since it needs runtime context with store
+    registries: list[SkillRegistry] = [{"path": "/skills/user", "name": "user"}]
+    middleware = SkillsMiddleware(
+        backend=lambda rt: StoreBackend(rt),
+        registries=registries,
+    )
+
+    # Verify the middleware was created successfully
+    assert middleware is not None
+    assert callable(middleware._backend)
+    assert len(middleware.registries) == 1
+    assert middleware.registries[0]["name"] == "user"
+
+    # Test that we can create a runtime with store and get a backend from the factory
+    store = InMemoryStore()
+    runtime = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="test",
+        store=store,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+    backend = middleware._get_backend(runtime)
+    assert isinstance(backend, StoreBackend)
+    assert backend.runtime == runtime
+
+
+async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
+    """Test that skills middleware works with async agent invocation."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "async-skill" / "SKILL.md")
+    skill_content = make_skill_content("async-skill", "A test skill for async testing")
+
+    responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+    assert responses[0].error is None
+
+    # Create a fake chat model
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="I have processed your async request using the async-skill."),
+            ]
+        )
+    )
+
+    # Create middleware
+    registries: list[SkillRegistry] = [{"path": str(skills_dir), "name": "user"}]
+    middleware = SkillsMiddleware(
+        backend=backend,
+        registries=registries,
+    )
+
+    # Create agent with middleware
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    # Invoke the agent asynchronously
+    result = await agent.ainvoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+
+    # Verify the agent was invoked
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+    # Inspect the call history to verify system prompt was injected
+    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+
+    # Get the first call
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+
+    system_message = messages[0]
+    assert system_message.type == "system", "First message should be system prompt"
+    content = system_message.text
+    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert "async-skill" in content, "System prompt should mention the skill name"
+
+
+def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Path) -> None:
+    """Test skills middleware with multiple registries where later registries override earlier ones."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    # Create same-named skill in two registries with different descriptions
+    base_dir = tmp_path / "skills" / "base"
+    user_dir = tmp_path / "skills" / "user"
+
+    base_skill_path = str(base_dir / "shared-skill" / "SKILL.md")
+    user_skill_path = str(user_dir / "shared-skill" / "SKILL.md")
+
+    base_content = make_skill_content("shared-skill", "Base registry description")
+    user_content = make_skill_content("shared-skill", "User registry description - should win")
+
+    responses = backend.upload_files(
+        [
+            (base_skill_path, base_content.encode("utf-8")),
+            (user_skill_path, user_content.encode("utf-8")),
+        ]
+    )
+    assert all(r.error is None for r in responses)
+
+    # Create a fake chat model
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="I have processed your request."),
+            ]
+        )
+    )
+
+    # Create middleware with multiple registries - user should override base
+    registries: list[SkillRegistry] = [
+        {"path": str(base_dir), "name": "base"},
+        {"path": str(user_dir), "name": "user"},
+    ]
+    middleware = SkillsMiddleware(
+        backend=backend,
+        registries=registries,
+    )
+
+    # Create agent with middleware
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    # Invoke the agent
+    result = agent.invoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+
+    # Verify the agent was invoked
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+    # Inspect the call history to verify system prompt was injected with USER version
+    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+
+    # Get the first call
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+
+    system_message = messages[0]
+    assert system_message.type == "system", "First message should be system prompt"
+    content = system_message.text
+    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert "shared-skill" in content, "System prompt should mention the skill name"
+    assert "User registry description - should win" in content, "Should use user registry description"
+    assert "Base registry description" not in content, "Should not contain base registry description"

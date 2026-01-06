@@ -115,6 +115,9 @@ from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
 
+# Type alias for backend parameter: either an instance or a factory function
+BackendOrFactory = "BackendProtocol | Callable[[Runtime], BackendProtocol]"
+
 # Security: Maximum size for SKILL.md files to prevent DoS attacks (10MB)
 MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
 

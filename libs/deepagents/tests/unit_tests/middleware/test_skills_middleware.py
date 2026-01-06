@@ -6,6 +6,9 @@ directories and the FilesystemBackend in normal (non-virtual) mode.
 
 from pathlib import Path
 
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
+
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import (
     MAX_SKILL_DESCRIPTION_LENGTH,
@@ -16,6 +19,7 @@ from deepagents.middleware.skills import (
     _parse_skill_metadata,
     _validate_skill_name,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def make_skill_content(name: str, description: str) -> str:
@@ -665,3 +669,63 @@ def test_before_agent_empty_registries(tmp_path: Path) -> None:
 
     assert result is not None
     assert result["skills_metadata"] == []
+
+
+def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
+    """Test that skills middleware injects skills into the system prompt."""
+    # Create backend and add a skill
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill for demonstration")
+
+    responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+    assert responses[0].error is None
+
+    # Create a fake chat model that we can inspect
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="I have processed your request using the test-skill."),
+            ]
+        )
+    )
+
+    # Create middleware
+    middleware = SkillsMiddleware(
+        backend=backend,
+        registries=[{"path": str(skills_dir), "name": "user"}],
+    )
+
+    # Create agent with middleware
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    # Invoke the agent
+    result = agent.invoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+
+    # Verify the agent was invoked
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+    # Inspect the call history to verify system prompt was injected
+    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+
+    # Get the first call
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+
+    # Find the system message (should be the first message)
+    system_messages = [msg for msg in messages if msg.type == "system"]
+    assert len(system_messages) > 0, "Should have at least one system message"
+
+    system_message = system_messages[0]
+    system_content = system_message.content
+
+    # Verify skills documentation is in the system prompt
+    assert "Skills System" in system_content, "System prompt should contain 'Skills System' section"
+    assert "test-skill" in system_content, "System prompt should mention the test-skill"
+    assert "A test skill for demonstration" in system_content, "System prompt should include skill description"
+    assert skill_path in system_content, "System prompt should include the skill path for reading"

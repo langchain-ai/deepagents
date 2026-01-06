@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
-    Decision,
     HITLRequest,
     HITLResponse,
 )
@@ -98,16 +97,28 @@ async def execute_task_textual(
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
 
+    # Max file size to embed inline (256KB, matching mistral-vibe)
+    # Larger files get a reference instead - use read_file tool to view them
+    max_embed_bytes = 256 * 1024
+
     if mentioned_files:
         context_parts = [prompt_text, "\n\n## Referenced Files\n"]
         for file_path in mentioned_files:
             try:
-                content = file_path.read_text()
-                if len(content) > 50000:
-                    content = content[:50000] + "\n... (file truncated)"
-                context_parts.append(
-                    f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
-                )
+                file_size = file_path.stat().st_size
+                if file_size > max_embed_bytes:
+                    # File too large - include reference instead of content
+                    size_kb = file_size // 1024
+                    context_parts.append(
+                        f"\n### {file_path.name}\n"
+                        f"Path: `{file_path}`\n"
+                        f"Size: {size_kb}KB (too large to embed, use read_file tool to view)"
+                    )
+                else:
+                    content = file_path.read_text()
+                    context_parts.append(
+                        f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+                    )
             except Exception as e:
                 context_parts.append(f"\n### {file_path.name}\n[Error reading file: {e}]")
         final_input = "\n".join(context_parts)
@@ -171,6 +182,10 @@ async def execute_task_textual(
                 # Convert namespace to hashable tuple for dict keys
                 ns_key = tuple(namespace) if namespace else ()
 
+                # Filter out subagent outputs - only show main agent (empty namespace)
+                # Subagents run via Task tool and should only report back to the main agent
+                is_main_agent = ns_key == ()
+
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
                     if not isinstance(data, dict):
@@ -197,6 +212,10 @@ async def execute_task_textual(
 
                 # Handle MESSAGES stream - for content and tool calls
                 elif current_stream_mode == "messages":
+                    # Skip subagent outputs - only render main agent content in chat
+                    if not is_main_agent:
+                        continue
+
                     if not isinstance(data, tuple) or len(data) != 2:
                         continue
 
@@ -241,6 +260,7 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                             if tool_content:
                                 from deepagents_cli.widgets.messages import ErrorMessage
+
                                 await adapter._mount_message(ErrorMessage(str(tool_content)))
 
                         # Show file operation results - always show diffs in chat
@@ -253,6 +273,7 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                             if record.diff:
                                 from deepagents_cli.widgets.messages import DiffMessage
+
                                 await adapter._mount_message(
                                     DiffMessage(record.diff, record.display_path)
                                 )
@@ -288,6 +309,7 @@ async def execute_task_textual(
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
                                     from deepagents_cli.widgets.messages import AssistantMessage
+
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
@@ -364,9 +386,7 @@ async def execute_task_textual(
 
                             if buffer_id is not None and buffer_id not in displayed_tool_ids:
                                 displayed_tool_ids.add(buffer_id)
-                                file_op_tracker.start_operation(
-                                    buffer_name, parsed_args, buffer_id
-                                )
+                                file_op_tracker.start_operation(buffer_name, parsed_args, buffer_id)
 
                                 # Mount tool call message
                                 from deepagents_cli.widgets.messages import ToolCallMessage
@@ -407,6 +427,7 @@ async def execute_task_textual(
                         decisions = []
                         for action_request in hitl_request["action_requests"]:
                             from deepagents_cli.widgets.messages import SystemMessage
+
                             description = action_request.get("description", "tool action")
                             await adapter._mount_message(
                                 SystemMessage(f"⚡ Auto-approved: {description}")
@@ -440,18 +461,37 @@ async def execute_task_textual(
                                 decisions.append({"type": "approve"})
                                 mark_hitl_approved(action_request)
                                 # Approve remaining actions
-                                for _ in hitl_request["action_requests"][len(decisions):]:
+                                for _ in hitl_request["action_requests"][len(decisions) :]:
                                     decisions.append({"type": "approve"})
                                 break
 
                             decisions.append(decision)
+                            # Try multiple keys for tool call id
+                            tool_id = (
+                                action_request.get("id")
+                                or action_request.get("tool_call_id")
+                                or action_request.get("call_id")
+                            )
+                            tool_name = action_request.get("name", "")
+
+                            # Find matching tool message - by id or by name as fallback
+                            tool_msg = None
+                            if tool_id and tool_id in adapter._current_tool_messages:
+                                tool_msg = adapter._current_tool_messages[tool_id]
+                            elif tool_name:
+                                # Fallback: find last tool message with matching name
+                                for msg in reversed(list(adapter._current_tool_messages.values())):
+                                    if msg._tool_name == tool_name:
+                                        tool_msg = msg
+                                        break
+
                             if isinstance(decision, dict) and decision.get("type") == "approve":
                                 mark_hitl_approved(action_request)
+                                if tool_msg:
+                                    tool_msg.set_success("Approved")
                             elif isinstance(decision, dict) and decision.get("type") == "reject":
-                                # Mark the tool message as rejected
-                                tool_call_id = action_request.get("tool_call_id")
-                                if tool_call_id and tool_call_id in adapter._current_tool_messages:
-                                    adapter._current_tool_messages[tool_call_id].set_rejected()
+                                if tool_msg:
+                                    tool_msg.set_rejected()
 
                         if any(d.get("type") == "reject" for d in decisions):
                             any_rejected = True
@@ -463,6 +503,7 @@ async def execute_task_textual(
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:
                     from deepagents_cli.widgets.messages import SystemMessage
+
                     await adapter._mount_message(
                         SystemMessage("Command rejected. Tell the agent what you'd like instead.")
                     )
@@ -475,13 +516,34 @@ async def execute_task_textual(
     except asyncio.CancelledError:
         adapter._update_status("Interrupted")
         from deepagents_cli.widgets.messages import SystemMessage
+
         await adapter._mount_message(SystemMessage("Interrupted by user"))
+
+        # Append cancellation message to agent state so LLM knows what happened
+        # This preserves context rather than rolling back
+        try:
+            cancellation_msg = HumanMessage(
+                content="[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+            )
+            await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+        except Exception:  # noqa: S110
+            pass  # State update is best-effort
         return
 
     except KeyboardInterrupt:
         adapter._update_status("Interrupted")
         from deepagents_cli.widgets.messages import SystemMessage
+
         await adapter._mount_message(SystemMessage("Interrupted by user"))
+
+        # Append cancellation message to agent state
+        try:
+            cancellation_msg = HumanMessage(
+                content="[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+            )
+            await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+        except Exception:  # noqa: S110
+            pass  # State update is best-effort
         return
 
     adapter._update_status("Ready")
@@ -504,6 +566,7 @@ async def _flush_assistant_text_ns(
     current_msg = assistant_message_by_namespace.get(ns_key)
     if current_msg is None:
         from deepagents_cli.widgets.messages import AssistantMessage
+
         current_msg = AssistantMessage()
         await adapter._mount_message(current_msg)
         assistant_message_by_namespace[ns_key] = current_msg

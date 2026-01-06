@@ -1,9 +1,12 @@
 /* DeepAgents CLI Textual Stylesheet */
 
-/* Main screen layout */
+/* Define layers for z-ordering */
 Screen {
     layout: vertical;
+    layers: base autocomplete;
 }
+
+/* Main content goes on base layer by default */
 
 /* Chat area - main scrollable messages area */
 #chat {
@@ -27,6 +30,8 @@ Screen {
 #bottom-app-container {
     height: auto;
     dock: bottom;
+    margin-bottom: 1;
+    padding: 0 1;
 }
 
 /* Input area */
@@ -34,7 +39,6 @@ Screen {
     height: auto;
     min-height: 3;
     max-height: 12;
-    margin: 0 1;
 }
 
 /* Approval Menu - inline in messages area */
@@ -146,4 +150,16 @@ Screen {
     background: $surface-darken-1;
     padding: 1;
     margin-top: 0;
+}
+
+/* Completion popup styling (used by ChatInput) - appears BELOW input */
+#completion-popup {
+    height: auto;
+    max-height: 12;
+    width: 100%;
+    margin-left: 3;
+    margin-top: 0;
+    padding: 0;
+    background: $background;
+    color: $text;
 }

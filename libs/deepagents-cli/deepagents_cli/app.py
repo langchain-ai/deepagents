@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import uuid
 from pathlib import Path
@@ -16,8 +17,8 @@ from textual.events import MouseUp  # noqa: TC002 - used in type annotation
 from textual.widgets import Static  # noqa: TC002 - used at runtime
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
-from deepagents_cli.widgets.autocomplete import TriggerAutoComplete
 from deepagents_cli.widgets.chat_input import ChatInput
+from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.messages import (
     AssistantMessage,
     ErrorMessage,
@@ -30,6 +31,7 @@ from deepagents_cli.widgets.welcome import WelcomeBanner
 if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
+    from textual.worker import Worker
 
     from deepagents_cli.textual_adapter import TextualUIAdapter
 
@@ -51,7 +53,8 @@ class DeepAgentsApp(App):
     ENABLE_COMMAND_PALETTE = False
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("ctrl+c", "quit_or_clear", "Quit", show=False),
+        Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
+        Binding("ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         # Approval menu keys (handled at App level for reliability)
@@ -66,7 +69,6 @@ class DeepAgentsApp(App):
         Binding("2", "approval_no", "No", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
         Binding("3", "approval_auto", "Auto", show=False),
-        Binding("escape", "approval_escape", "Escape", show=False),
     ]
 
     def __init__(
@@ -97,12 +99,15 @@ class DeepAgentsApp(App):
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
-        self._autocomplete: TriggerAutoComplete | None = None
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
         self._pending_approval: asyncio.Future | None = None
         self._pending_approval_widget: Any = None
+        # Agent task tracking for interruption
+        self._agent_worker: Worker[None] | None = None
+        self._agent_running = False
+        self._loading_widget: LoadingWidget | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -114,7 +119,7 @@ class DeepAgentsApp(App):
         # Bottom app container - holds either ChatInput OR ApprovalMenu (swapped)
         # This is OUTSIDE VerticalScroll so arrow keys work in approval
         with Container(id="bottom-app-container"):
-            yield ChatInput(id="input-area")
+            yield ChatInput(cwd=self._cwd, id="input-area")
 
         # Status bar at bottom
         yield StatusBar(cwd=self._cwd, id="status-bar")
@@ -143,15 +148,7 @@ class DeepAgentsApp(App):
                 scroll_to_bottom=self._scroll_chat_to_bottom,
             )
 
-        # Create autocomplete for @ and / triggers
-        if self._chat_input and self._chat_input.input_widget:
-            self._autocomplete = TriggerAutoComplete(
-                self._chat_input.input_widget,
-                cwd=self._cwd,
-            )
-            await self.mount(self._autocomplete)
-
-        # Focus the input
+        # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
 
     def _update_status(self, message: str) -> None:
@@ -168,7 +165,9 @@ class DeepAgentsApp(App):
             pass
 
     async def _request_approval(
-        self, action_request: Any, assistant_id: str | None  # noqa: ANN401
+        self,
+        action_request: Any,  # noqa: ANN401
+        assistant_id: str | None,
     ) -> asyncio.Future:
         """Request user approval inline in the messages area.
 
@@ -187,7 +186,7 @@ class DeepAgentsApp(App):
 
         # If there's already a pending approval, wait for it to complete first
         if self._pending_approval_widget is not None:
-            while self._pending_approval_widget is not None:
+            while self._pending_approval_widget is not None:  # noqa: ASYNC110
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
@@ -248,7 +247,8 @@ class DeepAgentsApp(App):
             self._status_bar.set_mode(event.mode)
 
     async def on_approval_menu_decided(
-        self, event: Any  # noqa: ANN401  # ApprovalMenu.Decided
+        self,
+        event: Any,  # noqa: ANN401, ARG002
     ) -> None:
         """Handle approval menu decision - remove from messages and refocus input."""
         # Remove ApprovalMenu using stored reference
@@ -292,9 +292,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(SystemMessage("Command completed (no output)"))
 
             if result.returncode != 0:
-                await self._mount_message(
-                    ErrorMessage(f"Exit code: {result.returncode}")
-                )
+                await self._mount_message(ErrorMessage(f"Exit code: {result.returncode}"))
 
         except subprocess.TimeoutExpired:
             await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
@@ -334,9 +332,14 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
+            # Show loading widget
+            self._loading_widget = LoadingWidget("Thinking")
+            await self._mount_message(self._loading_widget)
+            self._agent_running = True
+
             # Use run_worker to avoid blocking the main event loop
             # This allows the UI to remain responsive during agent execution
-            self.run_worker(
+            self._agent_worker = self.run_worker(
                 self._run_agent_task(message),
                 exclusive=False,
             )
@@ -363,6 +366,20 @@ class DeepAgentsApp(App):
             )
         except Exception as e:  # noqa: BLE001
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
+        finally:
+            # Clean up loading widget and agent state
+            await self._cleanup_agent_task()
+
+    async def _cleanup_agent_task(self) -> None:
+        """Clean up after agent task completes or is cancelled."""
+        self._agent_running = False
+        self._agent_worker = None
+
+        # Remove loading widget if present
+        if self._loading_widget:
+            with contextlib.suppress(Exception):
+                await self._loading_widget.remove()
+            self._loading_widget = None
 
     async def _mount_message(self, widget: Static) -> None:
         """Mount a message widget to the messages area.
@@ -388,24 +405,47 @@ class DeepAgentsApp(App):
             # Widget not found - can happen during shutdown
             pass
 
-    def action_quit_or_clear(self) -> None:
-        """Handle Ctrl+C - clear input, reject approval, or quit on double press."""
+    def action_quit_or_interrupt(self) -> None:
+        """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
+
+        Priority order:
+        1. If agent is running, interrupt it (preserve input)
+        2. If approval menu is active, reject it
+        3. If double press (quit_pending), quit
+        4. Otherwise show quit hint
+        """
+        # If agent is running, interrupt it
+        if self._agent_running and self._agent_worker:
+            self._agent_worker.cancel()
+            self._quit_pending = False
+            return
+
         # If approval menu is active, reject it
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+            self._quit_pending = False
             return
 
-        if self._chat_input and self._chat_input.value:
-            # Clear the input
-            self._chat_input.value = ""
-            self._quit_pending = False
-        elif self._quit_pending:
-            # Second Ctrl+C - quit
+        # Double Ctrl+C to quit
+        if self._quit_pending:
             self.exit()
         else:
-            # First Ctrl+C with empty input - show hint
             self._quit_pending = True
             self.notify("Press Ctrl+C again to quit", timeout=3)
+
+    def action_interrupt(self) -> None:
+        """Handle escape key - interrupt agent or reject approval.
+
+        This is the primary way to stop a running agent.
+        """
+        # If agent is running, interrupt it
+        if self._agent_running and self._agent_worker:
+            self._agent_worker.cancel()
+            return
+
+        # If approval menu is active, reject it
+        if self._pending_approval_widget:
+            self._pending_approval_widget.action_select_reject()
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
@@ -420,20 +460,33 @@ class DeepAgentsApp(App):
             self._session_state.auto_approve = self._auto_approve
 
     # Approval menu action handlers (delegated from App-level bindings)
+    # NOTE: These only activate when approval widget is pending AND input is not focused
     def action_approval_up(self) -> None:
         """Handle up arrow in approval menu."""
-        if self._pending_approval_widget:
+        # Only handle if approval is active (input handles its own up for history/completion)
+        if self._pending_approval_widget and not self._is_input_focused():
             self._pending_approval_widget.action_move_up()
 
     def action_approval_down(self) -> None:
         """Handle down arrow in approval menu."""
-        if self._pending_approval_widget:
+        if self._pending_approval_widget and not self._is_input_focused():
             self._pending_approval_widget.action_move_down()
 
     def action_approval_select(self) -> None:
         """Handle enter in approval menu."""
-        if self._pending_approval_widget:
+        # Only handle if approval is active AND input is not focused
+        if self._pending_approval_widget and not self._is_input_focused():
             self._pending_approval_widget.action_select()
+
+    def _is_input_focused(self) -> bool:
+        """Check if the chat input (or its text area) has focus."""
+        if not self._chat_input:
+            return False
+        focused = self.focused
+        if focused is None:
+            return False
+        # Check if focused widget is the text area inside chat input
+        return focused.id == "chat-input" or focused in self._chat_input.walk_children()
 
     def action_approval_yes(self) -> None:
         """Handle yes/1 in approval menu."""
@@ -455,7 +508,7 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
-    def on_mouse_up(self, event: MouseUp) -> None:
+    def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 

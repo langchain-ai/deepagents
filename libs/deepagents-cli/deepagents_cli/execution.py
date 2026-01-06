@@ -191,17 +191,30 @@ async def execute_task(
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
 
+    # Max file size to embed inline (256KB, matching mistral-vibe)
+    # Larger files get a reference instead - use read_file tool to view them
+    max_embed_bytes = 256 * 1024
+
     if mentioned_files:
         context_parts = [prompt_text, "\n\n## Referenced Files\n"]
         for file_path in mentioned_files:
             try:
-                content = file_path.read_text()
-                # Limit file content to reasonable size
-                if len(content) > 50000:
-                    content = content[:50000] + "\n... (file truncated)"
-                context_parts.append(
-                    f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
-                )
+                file_size = file_path.stat().st_size
+                if file_size > max_embed_bytes:
+                    # File too large - include reference instead of content
+                    size_kb = file_size // 1024
+                    context_parts.append(
+                        f"\n### {file_path.name}\n"
+                        f"Path: `{file_path}`\n"
+                        f"Size: {size_kb}KB (too large to embed, use read_file tool to view)"
+                    )
+                else:
+                    content = file_path.read_text()
+                    context_parts.append(
+                        f"\n### {file_path.name}\n"
+                        f"Path: `{file_path}`\n"
+                        f"```\n{content}\n```"
+                    )
             except Exception as e:
                 context_parts.append(f"\n### {file_path.name}\n[Error reading file: {e}]")
 

@@ -249,6 +249,8 @@ async def execute_task_textual(
                             else:
                                 err = str(tool_content)[:100] if tool_content else "Error"
                                 tool_msg.set_error(err)
+                            # Clean up - remove from tracking dict after status update
+                            del adapter._current_tool_messages[tool_id]
 
                         # Show shell errors
                         if tool_name == "shell" and tool_status != "success":
@@ -476,13 +478,16 @@ async def execute_task_textual(
 
                             # Find matching tool message - by id or by name as fallback
                             tool_msg = None
+                            tool_msg_key = None  # Track key for cleanup
                             if tool_id and tool_id in adapter._current_tool_messages:
                                 tool_msg = adapter._current_tool_messages[tool_id]
+                                tool_msg_key = tool_id
                             elif tool_name:
                                 # Fallback: find last tool message with matching name
-                                for msg in reversed(list(adapter._current_tool_messages.values())):
+                                for key, msg in reversed(list(adapter._current_tool_messages.items())):
                                     if msg._tool_name == tool_name:
                                         tool_msg = msg
+                                        tool_msg_key = key
                                         break
 
                             if isinstance(decision, dict) and decision.get("type") == "approve":
@@ -492,6 +497,10 @@ async def execute_task_textual(
                             elif isinstance(decision, dict) and decision.get("type") == "reject":
                                 if tool_msg:
                                     tool_msg.set_rejected()
+
+                            # Clean up - remove from tracking dict after HITL decision
+                            if tool_msg_key and tool_msg_key in adapter._current_tool_messages:
+                                del adapter._current_tool_messages[tool_msg_key]
 
                         if any(d.get("type") == "reject" for d in decisions):
                             any_rejected = True

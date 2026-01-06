@@ -105,26 +105,48 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         old_string = self.data.get("old_string", "")
         new_string = self.data.get("new_string", "")
 
-        # File path header
-        yield Static(f"[bold cyan]File:[/bold cyan] {file_path}")
+        # Calculate stats first for header
+        additions, deletions = self._count_stats(diff_lines, old_string, new_string)
+
+        # File path header with stats
+        stats_str = self._format_stats(additions, deletions)
+        yield Static(f"[bold cyan]File:[/bold cyan] {file_path}  {stats_str}")
         yield Static("")
 
         if not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
             return
 
-        # Render content and collect stats
+        # Render content
         if diff_lines:
-            additions, deletions = yield from self._render_diff_lines(diff_lines)
+            yield from self._render_diff_lines_only(diff_lines)
         else:
-            additions, deletions = yield from self._render_strings(old_string, new_string)
+            yield from self._render_strings_only(old_string, new_string)
 
-        # Show stats summary
-        yield from self._render_stats(additions, deletions)
+    def _count_stats(
+        self, diff_lines: list[str], old_string: str, new_string: str
+    ) -> tuple[int, int]:
+        """Count additions and deletions from diff data."""
+        if diff_lines:
+            additions = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
+            deletions = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
+        else:
+            additions = new_string.count("\n") + 1 if new_string else 0
+            deletions = old_string.count("\n") + 1 if old_string else 0
+        return additions, deletions
 
-    def _render_diff_lines(self, diff_lines: list[str]) -> tuple[int, int]:
-        """Render unified diff lines and return (additions, deletions)."""
-        additions = deletions = lines_shown = 0
+    def _format_stats(self, additions: int, deletions: int) -> str:
+        """Format stats as colored string."""
+        parts = []
+        if additions:
+            parts.append(f"[green]+{additions}[/green]")
+        if deletions:
+            parts.append(f"[red]-{deletions}[/red]")
+        return " ".join(parts)
+
+    def _render_diff_lines_only(self, diff_lines: list[str]) -> ComposeResult:
+        """Render unified diff lines without returning stats."""
+        lines_shown = 0
 
         for line in diff_lines:
             if lines_shown >= _MAX_DIFF_LINES:
@@ -137,13 +159,18 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             widget = self._render_diff_line(line)
             if widget:
                 yield widget
-                if line.startswith("-"):
-                    deletions += 1
-                elif line.startswith("+"):
-                    additions += 1
                 lines_shown += 1
 
-        return additions, deletions
+    def _render_strings_only(self, old_string: str, new_string: str) -> ComposeResult:
+        """Render old/new strings without returning stats."""
+        if old_string:
+            yield Static("[bold red]Removing:[/bold red]")
+            yield from self._render_string_lines(old_string, is_addition=False)
+            yield Static("")
+
+        if new_string:
+            yield Static("[bold green]Adding:[/bold green]")
+            yield from self._render_string_lines(new_string, is_addition=True)
 
     def _render_diff_line(self, line: str) -> Static | None:
         """Render a single diff line with appropriate styling."""
@@ -159,23 +186,6 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             return Static(line, markup=False)
         return None
 
-    def _render_strings(self, old_string: str, new_string: str) -> tuple[int, int]:
-        """Render old/new strings directly and return (additions, deletions)."""
-        additions = deletions = 0
-
-        if old_string:
-            deletions = old_string.count("\n") + 1
-            yield Static("[bold red]Removing:[/bold red]")
-            yield from self._render_string_lines(old_string, is_addition=False)
-            yield Static("")
-
-        if new_string:
-            additions = new_string.count("\n") + 1
-            yield Static("[bold green]Adding:[/bold green]")
-            yield from self._render_string_lines(new_string, is_addition=True)
-
-        return additions, deletions
-
     def _render_string_lines(self, text: str, *, is_addition: bool) -> ComposeResult:
         """Render lines from a string with appropriate styling."""
         lines = text.split("\n")
@@ -189,16 +199,6 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         if len(lines) > _MAX_PREVIEW_LINES:
             remaining = len(lines) - _MAX_PREVIEW_LINES
             yield Static(f"[dim]... ({remaining} more lines)[/dim]")
-
-    def _render_stats(self, additions: int, deletions: int) -> ComposeResult:
-        """Render the stats summary line."""
-        stats_parts = []
-        if additions:
-            stats_parts.append(f"[green]+{additions}[/green]")
-        if deletions:
-            stats_parts.append(f"[red]-{deletions}[/red]")
-        if stats_parts:
-            yield Static(" ".join(stats_parts), classes="diff-stats")
 
 
 class BashApprovalWidget(ToolApprovalWidget):

@@ -6,6 +6,8 @@ for slash commands (/) and file mentions (@).
 
 from __future__ import annotations
 
+import subprocess
+from difflib import SequenceMatcher
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -194,28 +196,137 @@ class SlashCommandController:
 
 
 # ============================================================================
-# Path/File Completion
+# Fuzzy File Completion (from project root)
 # ============================================================================
 
+# Constants for fuzzy file completion
+_MAX_FALLBACK_FILES = 1000
+_MIN_FUZZY_RATIO = 0.4
 
-class PathCompletionController:
-    """Controller for @ file path completion."""
+
+def _find_project_root(start_path: Path) -> Path:
+    """Find git root or return start_path."""
+    current = start_path.resolve()
+    for parent in [current, *list(current.parents)]:
+        if (parent / ".git").exists():
+            return parent
+    return start_path
+
+
+def _get_project_files(root: Path) -> list[str]:
+    """Get project files using git ls-files or fallback to glob."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files"],  # noqa: S607
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            files = result.stdout.strip().split("\n")
+            return [f for f in files if f]  # Filter empty strings
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    # Fallback: simple glob (limited depth to avoid slowness)
+    files = []
+    try:
+        for pattern in ["*", "*/*", "*/*/*", "*/*/*/*"]:
+            for p in root.glob(pattern):
+                if p.is_file() and not any(part.startswith(".") for part in p.parts):
+                    files.append(str(p.relative_to(root)))
+                if len(files) >= _MAX_FALLBACK_FILES:
+                    break
+            if len(files) >= _MAX_FALLBACK_FILES:
+                break
+    except OSError:
+        pass
+    return files
+
+
+def _fuzzy_score(query: str, candidate: str) -> float:  # noqa: PLR0911
+    """Score a candidate against query. Higher = better match."""
+    query_lower = query.lower()
+    candidate_lower = candidate.lower()
+
+    # Extract filename for matching (prioritize filename over full path)
+    filename = candidate.rsplit("/", 1)[-1].lower()
+    filename_start = candidate_lower.rfind("/") + 1
+
+    # Check filename first (higher priority)
+    if query_lower in filename:
+        idx = filename.find(query_lower)
+        # Bonus for being at start of filename
+        if idx == 0:
+            return 150 + (1 / len(candidate))
+        # Bonus for word boundary in filename
+        if idx > 0 and filename[idx - 1] in "_-.":
+            return 120 + (1 / len(candidate))
+        return 100 + (1 / len(candidate))
+
+    # Check full path
+    if query_lower in candidate_lower:
+        idx = candidate_lower.find(query_lower)
+        # At start of filename
+        if idx == filename_start:
+            return 80 + (1 / len(candidate))
+        # At word boundary in path
+        if idx == 0 or candidate[idx - 1] in "/_-.":
+            return 60 + (1 / len(candidate))
+        return 40 + (1 / len(candidate))
+
+    # Fuzzy match on filename only (more relevant)
+    filename_ratio = SequenceMatcher(None, query_lower, filename).ratio()
+    if filename_ratio > _MIN_FUZZY_RATIO:
+        return filename_ratio * 30
+
+    # Fallback: fuzzy on full path
+    ratio = SequenceMatcher(None, query_lower, candidate_lower).ratio()
+    return ratio * 15
+
+
+def _fuzzy_search(query: str, candidates: list[str], limit: int = 10) -> list[str]:
+    """Return top matches sorted by score."""
+    if not query:
+        return candidates[:limit]
+
+    scored = [(score, c) for c in candidates if (score := _fuzzy_score(query, c)) > 0]
+    scored.sort(key=lambda x: -x[0])
+    return [c for _, c in scored[:limit]]
+
+
+class FuzzyFileController:
+    """Controller for @ file completion with fuzzy matching from project root."""
 
     def __init__(
         self,
         view: CompletionView,
         cwd: Path | None = None,
     ) -> None:
-        """Initialize the path completion controller.
+        """Initialize the fuzzy file controller.
 
         Args:
             view: View to render suggestions to
-            cwd: Current working directory for file listing
+            cwd: Starting directory to find project root from
         """
         self._view = view
         self._cwd = cwd or Path.cwd()
+        self._project_root = _find_project_root(self._cwd)
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
+        self._file_cache: list[str] | None = None
+
+    def _get_files(self) -> list[str]:
+        """Get cached file list or refresh."""
+        if self._file_cache is None:
+            self._file_cache = _get_project_files(self._project_root)
+        return self._file_cache
+
+    def refresh_cache(self) -> None:
+        """Force refresh of file cache."""
+        self._file_cache = None
 
     def can_handle(self, text: str, cursor_index: int) -> bool:
         """Handle input that contains @ not followed by space."""
@@ -251,7 +362,7 @@ class PathCompletionController:
         at_index = before_cursor.rfind("@")
         search = before_cursor[at_index + 1 :]
 
-        suggestions = self._get_file_suggestions(search)
+        suggestions = self._get_fuzzy_suggestions(search)
 
         if suggestions:
             self._suggestions = suggestions
@@ -260,54 +371,17 @@ class PathCompletionController:
         else:
             self.reset()
 
-    def _get_file_suggestions(self, search: str) -> list[tuple[str, str]]:
-        """Get file/directory suggestions based on search string."""
+    def _get_fuzzy_suggestions(self, search: str) -> list[tuple[str, str]]:
+        """Get fuzzy file suggestions."""
+        files = self._get_files()
+        matches = _fuzzy_search(search, files, limit=MAX_SUGGESTIONS)
+
         suggestions: list[tuple[str, str]] = []
-
-        try:
-            # Determine base path and search pattern
-            if "/" in search:
-                # User is navigating into a subdirectory
-                parts = search.rsplit("/", 1)
-                base_path = self._cwd / parts[0]
-                pattern = parts[1].lower()
-            else:
-                base_path = self._cwd
-                pattern = search.lower()
-
-            if not base_path.exists() or not base_path.is_dir():
-                return []
-
-            for item in sorted(base_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-                name = item.name
-
-                # Skip hidden files unless searching for them
-                if name.startswith(".") and not pattern.startswith("."):
-                    continue
-
-                # Filter by pattern
-                if pattern and pattern not in name.lower():
-                    continue
-
-                # Build the full relative path from search context
-                rel_path = search.rsplit("/", 1)[0] + "/" + name if "/" in search else name
-
-                # Determine type indicator
-                if item.is_dir():
-                    label = f"@{rel_path}/"
-                    type_hint = "dir"
-                else:
-                    label = f"@{rel_path}"
-                    ext = item.suffix.lower()
-                    type_hint = ext[1:] if ext else "file"
-
-                suggestions.append((label, type_hint))
-
-                if len(suggestions) >= MAX_SUGGESTIONS:
-                    break
-
-        except OSError:
-            pass
+        for path in matches:
+            # Get file extension for type hint
+            ext = Path(path).suffix.lower()
+            type_hint = ext[1:] if ext else "file"
+            suggestions.append((f"@{path}", type_hint))
 
         return suggestions
 
@@ -359,6 +433,10 @@ class PathCompletionController:
         self._view.replace_completion_range(at_index, cursor_index, label)
         self.reset()
         return True
+
+
+# Keep old name as alias for backwards compatibility
+PathCompletionController = FuzzyFileController
 
 
 # ============================================================================

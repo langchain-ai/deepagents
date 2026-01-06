@@ -75,12 +75,19 @@ class StatusBar(Horizontal):
         text-align: right;
         color: $text-muted;
     }
+
+    StatusBar .status-tokens {
+        width: auto;
+        padding: 0 1;
+        color: $text-muted;
+    }
     """
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)
     auto_approve: reactive[bool] = reactive(default=False, init=False)
     cwd: reactive[str] = reactive("", init=False)
+    tokens: reactive[int] = reactive(0, init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the status bar.
@@ -98,6 +105,7 @@ class StatusBar(Horizontal):
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static("manual (^T)", classes="status-auto-approve off", id="auto-approve-indicator")
         yield Static("", classes="status-message", id="status-message")
+        yield Static("", classes="status-tokens", id="tokens-display")
         yield Static(self._format_cwd(self._initial_cwd), classes="status-cwd", id="cwd-display")
 
     def on_mount(self) -> None:
@@ -195,3 +203,27 @@ class StatusBar(Horizontal):
             message: Status message to display (empty string to clear)
         """
         self.status_message = message
+
+    def watch_tokens(self, new_value: int) -> None:
+        """Update token display when count changes."""
+        try:
+            display = self.query_one("#tokens-display", Static)
+        except NoMatches:
+            return
+
+        if new_value > 0:
+            # Format with K suffix for thousands
+            if new_value >= 1000:
+                display.update(f"{new_value / 1000:.1f}K tokens")
+            else:
+                display.update(f"{new_value} tokens")
+        else:
+            display.update("")
+
+    def set_tokens(self, count: int) -> None:
+        """Set the token count.
+
+        Args:
+            count: Current context token count
+        """
+        self.tokens = count

@@ -90,6 +90,8 @@ class LoadingWidget(Static):
         self._spinner_widget: Static | None = None
         self._status_widget: Static | None = None
         self._hint_widget: Static | None = None
+        self._paused = False
+        self._paused_elapsed: int = 0
 
     def compose(self) -> ComposeResult:
         """Compose the loading widget layout."""
@@ -110,6 +112,9 @@ class LoadingWidget(Static):
 
     def _update_animation(self) -> None:
         """Update spinner and elapsed time."""
+        if self._paused:
+            return
+
         if self._spinner_widget:
             frame = self._spinner.next_frame()
             self._spinner_widget.update(f"[#FFD800]{frame}[/]")
@@ -125,6 +130,30 @@ class LoadingWidget(Static):
             status: New status text
         """
         self._status = status
+        if self._status_widget:
+            self._status_widget.update(f" {self._status}... ")
+
+    def pause(self, status: str = "Awaiting decision") -> None:
+        """Pause the animation and update status.
+
+        Args:
+            status: Status to show while paused
+        """
+        self._paused = True
+        if self._start_time is not None:
+            self._paused_elapsed = int(time() - self._start_time)
+        self._status = status
+        if self._status_widget:
+            self._status_widget.update(f" {status}... ")
+        if self._hint_widget:
+            self._hint_widget.update(f"(paused at {self._paused_elapsed}s)")
+        if self._spinner_widget:
+            self._spinner_widget.update("[dim]⏸[/dim]")
+
+    def resume(self) -> None:
+        """Resume the animation."""
+        self._paused = False
+        self._status = "Thinking"
         if self._status_widget:
             self._status_widget.update(f" {self._status}... ")
 

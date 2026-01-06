@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -16,14 +17,23 @@ from textual.widgets import Static, TextArea
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionResult,
+    FuzzyFileController,
     MultiCompletionManager,
-    PathCompletionController,
     SlashCommandController,
 )
 from deepagents_cli.widgets.history import HistoryManager
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+
+# Minimum lines to trigger paste collapse
+_PASTE_THRESHOLD = 5
+# Pattern to match paste markers: [Pasted text #N +X lines]
+_PASTE_MARKER_PATTERN = re.compile(r"\[Pasted text #(\d+) \+\d+ lines\]")
+
+# Global paste registry shared across instances (simple approach)
+_paste_registry: dict[int, str] = {}
+_paste_counter: int = 0
 
 
 class CompletionPopup(Static):
@@ -81,9 +91,16 @@ class ChatTextArea(TextArea):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding(
-            "shift+enter,ctrl+j",
+            "shift+enter,ctrl+j,alt+enter,ctrl+enter",
             "insert_newline",
             "New Line",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+a",
+            "select_all_text",
+            "Select All",
             show=False,
             priority=True,
         ),
@@ -124,17 +141,27 @@ class ChatTextArea(TextArea):
         """Insert a newline character."""
         self.insert("\n")
 
+    def action_select_all_text(self) -> None:
+        """Select all text in the text area."""
+        if not self.text:
+            return
+        # Select from start to end
+        lines = self.text.split("\n")
+        end_row = len(lines) - 1
+        end_col = len(lines[end_row])
+        self.selection = ((0, 0), (end_row, end_col))
+
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
-        # Shift+Enter or Ctrl+J inserts newline
-        if event.key in ("shift+enter", "ctrl+j"):
+        # Modifier+Enter inserts newline (Ctrl+J is most reliable across terminals)
+        if event.key in ("shift+enter", "ctrl+j", "alt+enter", "ctrl+enter"):
             event.prevent_default()
             event.stop()
             self.insert("\n")
             return
 
         # If completion is active, let parent handle navigation keys
-        if self._completion_active and event.key in ("up", "down", "tab", "enter", "escape"):
+        if self._completion_active and event.key in ("up", "down", "tab", "enter"):
             # Prevent TextArea's default behavior (e.g., Enter inserting newline)
             # but let event bubble to ChatInput for completion handling
             event.prevent_default()
@@ -188,13 +215,40 @@ class ChatTextArea(TextArea):
         self.text = ""
         self.move_cursor((0, 0))
 
+    def on_paste(self, event: events.Paste) -> None:
+        """Handle paste events - collapse large pastes into markers."""
+        global _paste_counter  # noqa: PLW0603
+
+        text = event.text
+        lines = text.split("\n")
+
+        if len(lines) >= _PASTE_THRESHOLD:
+            # Collapse large paste into marker
+            event.prevent_default()
+            _paste_counter += 1
+            paste_id = _paste_counter
+            _paste_registry[paste_id] = text
+            marker = f"[Pasted text #{paste_id} +{len(lines)} lines]"
+            self.insert(marker)
+        # else: let default paste happen
+
+
+def _expand_paste_markers(text: str) -> str:
+    """Expand paste markers in text to their original content."""
+
+    def replacer(match: re.Match) -> str:
+        paste_id = int(match.group(1))
+        return _paste_registry.get(paste_id, match.group(0))
+
+    return _PASTE_MARKER_PATTERN.sub(replacer, text)
+
 
 class ChatInput(Vertical):
     """Chat input widget with prompt indicator, multi-line text, autocomplete, and history.
 
     Features:
     - Multi-line input with TextArea
-    - Enter to submit, Shift+Enter for newlines
+    - Enter to submit, Ctrl+J for newlines (most reliable across terminals)
     - Up/Down arrows for command history on first/last line
     - Autocomplete for @ (files) and / (commands)
     """
@@ -296,7 +350,7 @@ class ChatInput(Vertical):
         self._completion_manager = MultiCompletionManager(
             [
                 SlashCommandController(SLASH_COMMANDS, self),
-                PathCompletionController(self, cwd=self._cwd),
+                FuzzyFileController(self, cwd=self._cwd),
             ]
         )
 
@@ -314,6 +368,12 @@ class ChatInput(Vertical):
         else:
             self.mode = "normal"
 
+        # Skip completion during history navigation to avoid popup flashing
+        if self._text_area and self._text_area._navigating_history:
+            if self._completion_manager:
+                self._completion_manager.reset()
+            return
+
         # Update completion suggestions
         if self._completion_manager and self._text_area:
             cursor_offset = self._get_cursor_offset()
@@ -326,10 +386,13 @@ class ChatInput(Vertical):
             if self._completion_manager:
                 self._completion_manager.reset()
 
-            # Add to history
+            # Expand any paste markers to their original content
+            expanded_value = _expand_paste_markers(value)
+
+            # Add to history (use original with markers for brevity)
             self._history.add(value)
 
-            self.post_message(self.Submitted(value, self.mode))
+            self.post_message(self.Submitted(expanded_value, self.mode))
             if self._text_area:
                 self._text_area.clear_text()
             self.mode = "normal"
@@ -369,8 +432,9 @@ class ChatInput(Vertical):
                 value = self._text_area.text.strip()
                 if value:
                     self._completion_manager.reset()
+                    expanded_value = _expand_paste_markers(value)
                     self._history.add(value)
-                    self.post_message(self.Submitted(value, self.mode))
+                    self.post_message(self.Submitted(expanded_value, self.mode))
                     self._text_area.clear_text()
                     self.mode = "normal"
 

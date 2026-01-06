@@ -36,6 +36,25 @@ if TYPE_CHECKING:
     from deepagents_cli.textual_adapter import TextualUIAdapter
 
 
+class TextualTokenTracker:
+    """Token tracker that updates the status bar."""
+
+    def __init__(self, update_callback: callable) -> None:
+        """Initialize with a callback to update the display."""
+        self._update_callback = update_callback
+        self.current_context = 0
+
+    def add(self, input_tokens: int, output_tokens: int) -> None:  # noqa: ARG002
+        """Update token count from a response."""
+        self.current_context = input_tokens
+        self._update_callback(input_tokens)
+
+    def reset(self) -> None:
+        """Reset token count."""
+        self.current_context = 0
+        self._update_callback(0)
+
+
 class TextualSessionState:
     """Session state for the Textual app."""
 
@@ -108,6 +127,7 @@ class DeepAgentsApp(App):
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
         self._loading_widget: LoadingWidget | None = None
+        self._token_tracker: TextualTokenTracker | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -136,6 +156,9 @@ class DeepAgentsApp(App):
         # Create session state
         self._session_state = TextualSessionState(auto_approve=self._auto_approve)
 
+        # Create token tracker that updates status bar
+        self._token_tracker = TextualTokenTracker(self._update_tokens)
+
         # Create UI adapter if agent is provided
         if self._agent:
             from deepagents_cli.textual_adapter import TextualUIAdapter
@@ -147,6 +170,7 @@ class DeepAgentsApp(App):
                 on_auto_approve_enabled=self._on_auto_approve_enabled,
                 scroll_to_bottom=self._scroll_chat_to_bottom,
             )
+            self._ui_adapter.set_token_tracker(self._token_tracker)
 
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
@@ -155,6 +179,11 @@ class DeepAgentsApp(App):
         """Update the status bar with a message."""
         if self._status_bar:
             self._status_bar.set_status_message(message)
+
+    def _update_tokens(self, count: int) -> None:
+        """Update the token count in status bar."""
+        if self._status_bar:
+            self._status_bar.set_tokens(count)
 
     def _scroll_chat_to_bottom(self) -> None:
         """Scroll the chat area to the bottom."""
@@ -196,6 +225,10 @@ class DeepAgentsApp(App):
 
         # Store reference
         self._pending_approval_widget = menu
+
+        # Pause the loading spinner during approval
+        if self._loading_widget:
+            self._loading_widget.pause("Awaiting decision")
 
         # Update status to show we're waiting for approval
         self._update_status("Waiting for approval...")
@@ -255,6 +288,13 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             await self._pending_approval_widget.remove()
             self._pending_approval_widget = None
+
+        # Resume the loading spinner after approval
+        if self._loading_widget:
+            self._loading_widget.resume()
+
+        # Clear status message
+        self._update_status("")
 
         # Refocus the chat input
         if self._chat_input:
@@ -316,7 +356,15 @@ class DeepAgentsApp(App):
             await self._clear_messages()
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
-            await self._mount_message(SystemMessage("Token tracking not yet implemented"))
+            if self._token_tracker and self._token_tracker.current_context > 0:
+                count = self._token_tracker.current_context
+                if count >= 1000:
+                    formatted = f"{count / 1000:.1f}K"
+                else:
+                    formatted = str(count)
+                await self._mount_message(SystemMessage(f"Current context: {formatted} tokens"))
+            else:
+                await self._mount_message(SystemMessage("No token usage yet"))
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(SystemMessage(f"Unknown command: {cmd}"))

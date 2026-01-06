@@ -40,6 +40,10 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
 
     lines = diff.splitlines()
 
+    # Compute stats first
+    additions = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+    deletions = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+
     # Find max line number for width calculation
     max_line = 0
     for line in lines:
@@ -48,6 +52,17 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     width = max(3, len(str(max_line + len(lines))))
 
     formatted = []
+
+    # Add stats header
+    stats_parts = []
+    if additions:
+        stats_parts.append(f"[green]+{additions}[/green]")
+    if deletions:
+        stats_parts.append(f"[red]-{deletions}[/red]")
+    if stats_parts:
+        formatted.append(" ".join(stats_parts))
+        formatted.append("")  # Blank line after stats
+
     old_num = new_num = 0
     line_count = 0
 
@@ -58,39 +73,36 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
 
         # Skip file headers (--- and +++)
         if line.startswith(("---", "+++")):
-            formatted.append(f"[bold]{_escape_markup(line)}[/bold]")
             continue
 
-        # Handle hunk headers
+        # Handle hunk headers - just update line numbers, don't display
         if m := re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line):
             old_num, new_num = int(m.group(1)), int(m.group(2))
-            formatted.append(f"[cyan bold]{_escape_markup(line)}[/cyan bold]")
-            line_count += 1
             continue
 
-        # Handle diff lines
+        # Handle diff lines - use gutter bar instead of +/- prefix
         content = line[1:] if line else ""
         escaped_content = _escape_markup(content)
 
         if line.startswith("-"):
-            # Deletion - red background
-            del_style = "red on #3f1111"
+            # Deletion - red gutter bar, subtle red background
             formatted.append(
-                f"[dim]{old_num:>{width}}[/dim] [{del_style}]- {escaped_content}[/{del_style}]"
+                f"[red bold]▌[/red bold][dim]{old_num:>{width}}[/dim] "
+                f"[on #2d1515]{escaped_content}[/on #2d1515]"
             )
             old_num += 1
             line_count += 1
         elif line.startswith("+"):
-            # Addition - green background
-            add_style = "green on #113f11"
+            # Addition - green gutter bar, subtle green background
             formatted.append(
-                f"[dim]{new_num:>{width}}[/dim] [{add_style}]+ {escaped_content}[/{add_style}]"
+                f"[green bold]▌[/green bold][dim]{new_num:>{width}}[/dim] "
+                f"[on #152d15]{escaped_content}[/on #152d15]"
             )
             new_num += 1
             line_count += 1
         elif line.startswith(" "):
-            # Context line
-            formatted.append(f"[dim]{old_num:>{width}}[/dim]   {escaped_content}")
+            # Context line - dim gutter
+            formatted.append(f"[dim]│{old_num:>{width}}[/dim]  {escaped_content}")
             old_num += 1
             new_num += 1
             line_count += 1

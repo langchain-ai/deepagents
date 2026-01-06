@@ -428,15 +428,18 @@ class SkillsMiddleware(AgentMiddleware):
     Skills are loaded in source order with later sources overriding earlier ones.
 
     Example:
-        >>> from deepagents.backends.filesystem import FilesystemBackend
-        >>> backend = FilesystemBackend(root_dir="/path/to/skills")
-        >>> middleware = SkillsMiddleware(
-        ...     backend=backend,
-        ...     sources=[
-        ...         {"path": "/path/to/skills/user/", "name": "user"},
-        ...         {"path": "/path/to/skills/project/", "name": "project"},
-        ...     ],
-        ... )
+        ```python
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        backend = FilesystemBackend(root_dir="/path/to/skills")
+        middleware = SkillsMiddleware(
+            backend=backend,
+            sources=[
+                {"path": "/path/to/skills/user/", "name": "user"},
+                {"path": "/path/to/skills/project/", "name": "project"},
+            ],
+        )
+        ```
 
     Args:
         backend: Backend instance for file operations

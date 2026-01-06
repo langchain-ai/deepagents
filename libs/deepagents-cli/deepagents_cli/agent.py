@@ -7,6 +7,7 @@ from pathlib import Path
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from langchain.agents.middleware import (
     InterruptOnConfig,
@@ -335,7 +336,7 @@ def create_cli_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
-) -> tuple[Pregel, CompositeBackend]:
+) -> tuple[Pregel, BackendProtocol]:
     """Create a CLI-configured agent with flexible options.
 
     This is the main entry point for creating a deepagents CLI agent, usable both
@@ -344,7 +345,7 @@ def create_cli_agent(
     Args:
         model: LLM model to use (e.g., "anthropic:claude-sonnet-4-5-20250929")
         assistant_id: Agent identifier for memory/state storage
-        tools: Additional tools to provide to agent (default: empty list)
+        tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
                  If None, uses local filesystem + shell.
         sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
@@ -358,12 +359,11 @@ def create_cli_agent(
         enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
 
     Returns:
-        2-tuple of (agent_graph, composite_backend)
+        2-tuple of (agent_graph, backend)
         - agent_graph: Configured LangGraph Pregel instance ready for execution
-        - composite_backend: CompositeBackend for file operations
+        - backend: Backend for file operations (FilesystemBackend or SandboxBackend)
     """
-    if tools is None:
-        tools = []
+    tools = tools or []
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
@@ -383,29 +383,27 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware = []
 
+    # Add memory middleware
+    if enable_memory:
+        agent_middleware.append(AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id))
+
+    # Add skills middleware (uses local filesystem in both local and sandbox modes)
+    if enable_skills:
+        sources = [{"path": str(skills_dir), "name": "user"}]
+        if project_skills_dir:
+            sources.append({"path": str(project_skills_dir), "name": "project"})
+
+        agent_middleware.append(
+            SkillsMiddleware(
+                backend=FilesystemBackend(),  # Always uses local filesystem
+                sources=sources,
+            )
+        )
+
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
-        composite_backend = CompositeBackend(
-            default=FilesystemBackend(),  # Current working directory
-            routes={},  # No virtualization - use real paths
-        )
-
-        # Add memory middleware
-        if enable_memory:
-            agent_middleware.append(
-                AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id)
-            )
-
-        # Add skills middleware
-        if enable_skills:
-            agent_middleware.append(
-                SkillsMiddleware(
-                    skills_dir=skills_dir,
-                    assistant_id=assistant_id,
-                    project_skills_dir=project_skills_dir,
-                )
-            )
+        backend = FilesystemBackend()  # Current working directory
 
         # Add shell middleware (only in local mode)
         if enable_shell:
@@ -423,27 +421,7 @@ def create_cli_agent(
             )
     else:
         # ========== REMOTE SANDBOX MODE ==========
-        composite_backend = CompositeBackend(
-            default=sandbox,  # Remote sandbox (ModalBackend, etc.)
-            routes={},  # No virtualization
-        )
-
-        # Add memory middleware
-        if enable_memory:
-            agent_middleware.append(
-                AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id)
-            )
-
-        # Add skills middleware
-        if enable_skills:
-            agent_middleware.append(
-                SkillsMiddleware(
-                    skills_dir=skills_dir,
-                    assistant_id=assistant_id,
-                    project_skills_dir=project_skills_dir,
-                )
-            )
-
+        backend = sandbox  # Remote sandbox (ModalBackend, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
 
@@ -464,9 +442,9 @@ def create_cli_agent(
         model=model,
         system_prompt=system_prompt,
         tools=tools,
-        backend=composite_backend,
+        backend=backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
         checkpointer=InMemorySaver(),
     ).with_config(config)
-    return agent, composite_backend
+    return agent, backend

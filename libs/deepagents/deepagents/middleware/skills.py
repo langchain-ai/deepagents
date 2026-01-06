@@ -1,12 +1,12 @@
 """Skills middleware for loading and exposing agent skills to the system prompt.
 
 This module implements Anthropic's agent skills pattern with progressive disclosure,
-loading skills from backend storage via configurable registries.
+loading skills from backend storage via configurable sources.
 
 ## Architecture
 
-Skills are loaded from one or more **registries** - named locations in a backend where
-skills are organized. Registries are loaded in order, with later registries overriding
+Skills are loaded from one or more **sources** - named locations in a backend where
+skills are organized. Sources are loaded in order, with later sources overriding
 earlier ones when skills have the same name (last one wins). This enables layering:
 base -> user -> project -> team skills.
 
@@ -49,16 +49,16 @@ Parsed from YAML frontmatter per Agent Skills specification:
 - `name`: Skill identifier (max 64 chars, lowercase alphanumeric and hyphens)
 - `description`: What the skill does (max 1024 chars)
 - `path`: Backend path to the SKILL.md file
-- `registry`: Name of the registry this skill came from (e.g., "user", "project")
+- `source`: Name of the source this skill came from (e.g., "user", "project")
 - Optional: `license`, `compatibility`, `metadata`, `allowed_tools`
 
-## Registries (SkillRegistry)
+## Sources (SkillsSource)
 
 Configuration for where skills are stored:
 - `path`: Virtual path in backend (e.g., "/skills/user/")
-- `name`: Registry name for organization (e.g., "user", "project", "team")
+- `name`: Source name for organization (e.g., "user", "project", "team")
 
-Default registries:
+Default sources:
 ```python
 [
     {"path": "/skills/user/", "name": "user"},
@@ -81,7 +81,7 @@ from deepagents.middleware.skills import SkillsMiddleware
 
 middleware = SkillsMiddleware(
     backend=my_backend,
-    registries=[
+    sources=[
         {"path": "/skills/base/", "name": "base"},
         {"path": "/skills/user/", "name": "user"},
         {"path": "/skills/project/", "name": "project"},
@@ -138,8 +138,8 @@ class SkillMetadata(TypedDict):
     path: str
     """Path to the SKILL.md file."""
 
-    registry: str
-    """Name of the registry this skill came from (e.g., "user", "project")."""
+    source: str
+    """Name of the source this skill came from (e.g., "user", "project")."""
 
     license: str | None
     """License name or reference to bundled license file."""
@@ -154,11 +154,11 @@ class SkillMetadata(TypedDict):
     """Space-delimited list of pre-approved tools. (Experimental)"""
 
 
-class SkillRegistry(TypedDict):
-    """Configuration for a skill registry location.
+class SkillsSource(TypedDict):
+    """Configuration for a skill source location.
 
-    Registries are named locations in a backend where skills are organized.
-    When multiple registries are configured, later ones override earlier ones
+    Sources are named locations in a backend where skills are organized.
+    When multiple sources are configured, later ones override earlier ones
     (last one wins), enabling skill layering.
     """
 
@@ -166,14 +166,14 @@ class SkillRegistry(TypedDict):
     """Virtual path in backend where skills are stored (e.g., "/skills/user/")."""
 
     name: str
-    """Registry name for organization and display (e.g., "user", "project", "team")."""
+    """Source name for organization and display (e.g., "user", "project", "team")."""
 
 
 class SkillsState(AgentState):
     """State for the skills middleware."""
 
     skills_metadata: NotRequired[list[SkillMetadata]]
-    """List of loaded skill metadata from all configured registries."""
+    """List of loaded skill metadata from all configured sources."""
 
 
 class SkillsStateUpdate(TypedDict):
@@ -216,7 +216,7 @@ def _parse_skill_metadata(
     content: str,
     skill_path: str,
     directory_name: str,
-    registry: str,
+    source: str,
 ) -> SkillMetadata | None:
     """Parse YAML frontmatter from SKILL.md content.
 
@@ -227,7 +227,7 @@ def _parse_skill_metadata(
         content: Content of the SKILL.md file
         skill_path: Path to the SKILL.md file (for error messages and metadata)
         directory_name: Name of the parent directory containing the skill
-        registry: Name of the registry this skill belongs to (e.g., "user", "project")
+        source: Name of the source this skill belongs to (e.g., "user", "project")
 
     Returns:
         SkillMetadata if parsing succeeds, None if parsing fails or validation errors occur
@@ -294,7 +294,7 @@ def _parse_skill_metadata(
         name=str(name),
         description=description_str,
         path=skill_path,
-        registry=registry,
+        source=source,
         metadata=frontmatter_data.get("metadata", {}),
         license=frontmatter_data.get("license", "").strip() or None,
         compatibility=frontmatter_data.get("compatibility", "").strip() or None,
@@ -302,7 +302,7 @@ def _parse_skill_metadata(
     )
 
 
-def _list_skills_from_backend(backend: BackendProtocol, base_path: str, registry: str) -> list[SkillMetadata]:
+def _list_skills_from_backend(backend: BackendProtocol, base_path: str, source: str) -> list[SkillMetadata]:
     """List all skills from a backend path.
 
     Scans backend for subdirectories containing SKILL.md files, downloads their content,
@@ -317,7 +317,7 @@ def _list_skills_from_backend(backend: BackendProtocol, base_path: str, registry
     Args:
         backend: Backend instance to use for file operations
         base_path: Virtual path to the skills directory in the backend
-        registry: Name of the registry these skills belong to (e.g., "user", "project")
+        source: Name of the source these skills belong to (e.g., "user", "project")
 
     Returns:
         List of skill metadata from successfully parsed SKILL.md files
@@ -369,7 +369,7 @@ def _list_skills_from_backend(backend: BackendProtocol, base_path: str, registry
             content=content,
             skill_path=skill_md_path,
             directory_name=directory_name,
-            registry=registry,
+            source=source,
         )
         if skill_metadata:
             skills.append(skill_metadata)
@@ -422,17 +422,17 @@ Remember: Skills make you more capable and consistent. When in doubt, check if a
 class SkillsMiddleware(AgentMiddleware):
     """Middleware for loading and exposing agent skills to the system prompt.
 
-    Loads skills from backend registries and injects them into the system prompt
+    Loads skills from backend sources and injects them into the system prompt
     using progressive disclosure (metadata first, full content on demand).
 
-    Skills are loaded in registry order with later registries overriding earlier ones.
+    Skills are loaded in source order with later sources overriding earlier ones.
 
     Example:
         >>> from deepagents.backends.filesystem import FilesystemBackend
         >>> backend = FilesystemBackend(root_dir="/path/to/skills")
         >>> middleware = SkillsMiddleware(
         ...     backend=backend,
-        ...     registries=[
+        ...     sources=[
         ...         {"path": "/path/to/skills/user/", "name": "user"},
         ...         {"path": "/path/to/skills/project/", "name": "project"},
         ...     ],
@@ -440,21 +440,21 @@ class SkillsMiddleware(AgentMiddleware):
 
     Args:
         backend: Backend instance for file operations
-        registries: List of SkillRegistry configurations. Defaults to user and project registries.
+        sources: List of SkillsSource configurations. Defaults to user and project sources.
     """
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BackendOrFactory, registries: list[SkillRegistry]) -> None:
+    def __init__(self, *, backend: BackendOrFactory, sources: list[SkillsSource]) -> None:
         """Initialize the skills middleware.
 
         Args:
             backend: Backend instance or factory function that takes runtime and returns a backend.
                      Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
-            registries: List of registry configurations.
+            sources: List of skill source configurations.
         """
         self._backend = backend
-        self.registries = registries
+        self.sources = sources
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 
     def _get_backend(self, runtime: Runtime) -> BackendProtocol:
@@ -473,35 +473,35 @@ class SkillsMiddleware(AgentMiddleware):
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
         locations = []
-        for i, registry in enumerate(self.registries):
-            name = registry["name"].capitalize()
-            path = registry["path"]
-            suffix = " (higher priority)" if i == len(self.registries) - 1 else ""
+        for i, source in enumerate(self.sources):
+            name = source["name"].capitalize()
+            path = source["path"]
+            suffix = " (higher priority)" if i == len(self.sources) - 1 else ""
             locations.append(f"**{name} Skills**: `{path}`{suffix}")
         return "\n".join(locations)
 
     def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
         """Format skills metadata for display in system prompt."""
         if not skills:
-            paths = [f"{reg['path']}" for reg in self.registries]
+            paths = [f"{source['path']}" for source in self.sources]
             return f"(No skills available yet. You can create skills in {' or '.join(paths)})"
 
-        # Group skills by registry name
-        skills_by_registry: dict[str, list[SkillMetadata]] = {}
+        # Group skills by source name
+        skills_by_source: dict[str, list[SkillMetadata]] = {}
         for skill in skills:
-            registry = skill["registry"]
-            if registry not in skills_by_registry:
-                skills_by_registry[registry] = []
-            skills_by_registry[registry].append(skill)
+            source_name = skill["source"]
+            if source_name not in skills_by_source:
+                skills_by_source[source_name] = []
+            skills_by_source[source_name].append(skill)
 
         lines = []
-        # Show in registry order
-        for registry in self.registries:
-            registry_name = registry["name"]
-            if registry_name in skills_by_registry:
-                name_display = registry_name.capitalize()
+        # Show in source order
+        for source in self.sources:
+            source_name = source["name"]
+            if source_name in skills_by_source:
+                name_display = source_name.capitalize()
                 lines.append(f"**{name_display} Skills:**")
-                for skill in skills_by_registry[registry_name]:
+                for skill in skills_by_source[source_name]:
                     lines.append(f"- **{skill['name']}**: {skill['description']}")
                     lines.append(f"  -> Read `{skill['path']}` for full instructions")
                 lines.append("")
@@ -537,9 +537,9 @@ class SkillsMiddleware(AgentMiddleware):
         """Load skills metadata before agent execution.
 
         Runs before each agent interaction to discover available skills from all
-        configured registries. Re-loads on every call to capture any changes.
+        configured sources. Re-loads on every call to capture any changes.
 
-        Skills are loaded in registry order with later registries overriding
+        Skills are loaded in source order with later sources overriding
         earlier ones if they contain skills with the same name (last one wins).
 
         Args:
@@ -554,15 +554,15 @@ class SkillsMiddleware(AgentMiddleware):
 
         all_skills: dict[str, SkillMetadata] = {}
 
-        # Load skills from each registry in order
-        # Later registries override earlier ones (last one wins)
-        for registry in self.registries:
-            registry_skills = _list_skills_from_backend(
+        # Load skills from each source in order
+        # Later sources override earlier ones (last one wins)
+        for source in self.sources:
+            source_skills = _list_skills_from_backend(
                 backend,
-                registry["path"],
-                registry=registry["name"],
+                source["path"],
+                source=source["name"],
             )
-            for skill in registry_skills:
+            for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
@@ -603,4 +603,4 @@ class SkillsMiddleware(AgentMiddleware):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillRegistry", "SkillsMiddleware"]
+__all__ = ["SkillMetadata", "SkillsMiddleware", "SkillsSource"]

@@ -18,8 +18,8 @@ from deepagents.middleware.skills import (
     MAX_SKILL_DESCRIPTION_LENGTH,
     MAX_SKILL_FILE_SIZE,
     SkillMetadata,
-    SkillRegistry,
     SkillsMiddleware,
+    SkillsSource,
     _list_skills_from_backend,
     _parse_skill_metadata,
     _validate_skill_name,
@@ -138,7 +138,7 @@ Instructions here.
     assert result["metadata"] == {"author": "Test Author", "version": "1.0.0"}
     assert result["allowed_tools"] == ["read_file", "write_file"]
     assert result["path"] == "/skills/test-skill/SKILL.md"
-    assert result["registry"] == "user"
+    assert result["source"] == "user"
 
 
 def test_parse_skill_metadata_minimal() -> None:
@@ -160,7 +160,7 @@ description: Minimal skill
     assert result["compatibility"] is None
     assert result["metadata"] == {}
     assert result["allowed_tools"] == []
-    assert result["registry"] == "project"
+    assert result["source"] == "project"
 
 
 def test_parse_skill_metadata_no_frontmatter() -> None:
@@ -280,7 +280,7 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
             "name": "my-skill",
             "description": "My test skill",
             "path": skill_path,
-            "registry": "user",
+            "source": "user",
             "metadata": {},
             "license": None,
             "compatibility": None,
@@ -427,11 +427,11 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
 
 
 def test_format_skills_locations_single_registry() -> None:
-    """Test _format_skills_locations with a single registry."""
-    registries: list[SkillRegistry] = [{"path": "/skills/user/", "name": "user"}]
+    """Test _format_skills_locations with a single source."""
+    sources: list[SkillsSource] = [{"path": "/skills/user/", "name": "user"}]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=registries,
+        sources=sources,
     )
 
     result = middleware._format_skills_locations()
@@ -441,15 +441,15 @@ def test_format_skills_locations_single_registry() -> None:
 
 
 def test_format_skills_locations_multiple_registries() -> None:
-    """Test _format_skills_locations with multiple registries."""
-    registries: list[SkillRegistry] = [
+    """Test _format_skills_locations with multiple sources."""
+    sources: list[SkillsSource] = [
         {"path": "/skills/base/", "name": "base"},
         {"path": "/skills/user/", "name": "user"},
         {"path": "/skills/project/", "name": "project"},
     ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=registries,
+        sources=sources,
     )
 
     result = middleware._format_skills_locations()
@@ -462,13 +462,13 @@ def test_format_skills_locations_multiple_registries() -> None:
 
 def test_format_skills_list_empty() -> None:
     """Test _format_skills_list with no skills."""
-    registries: list[SkillRegistry] = [
+    sources: list[SkillsSource] = [
         {"path": "/skills/user/", "name": "user"},
         {"path": "/skills/project/", "name": "project"},
     ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=registries,
+        sources=sources,
     )
 
     result = middleware._format_skills_list([])
@@ -479,10 +479,10 @@ def test_format_skills_list_empty() -> None:
 
 def test_format_skills_list_single_skill() -> None:
     """Test _format_skills_list with a single skill."""
-    registries: list[SkillRegistry] = [{"path": "/skills/user/", "name": "user"}]
+    sources: list[SkillsSource] = [{"path": "/skills/user/", "name": "user"}]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=registries,
+        sources=sources,
     )
 
     skills: list[SkillMetadata] = [
@@ -490,7 +490,7 @@ def test_format_skills_list_single_skill() -> None:
             "name": "web-research",
             "description": "Research topics on the web",
             "path": "/skills/user/web-research/SKILL.md",
-            "registry": "user",
+            "source": "user",
             "license": None,
             "compatibility": None,
             "metadata": {},
@@ -506,14 +506,14 @@ def test_format_skills_list_single_skill() -> None:
 
 
 def test_format_skills_list_multiple_skills_multiple_registries() -> None:
-    """Test _format_skills_list with skills from multiple registries."""
-    registries: list[SkillRegistry] = [
+    """Test _format_skills_list with skills from multiple sources."""
+    sources: list[SkillsSource] = [
         {"path": "/skills/user/", "name": "user"},
         {"path": "/skills/project/", "name": "project"},
     ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=registries,
+        sources=sources,
     )
 
     skills: list[SkillMetadata] = [
@@ -521,7 +521,7 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "name": "skill-a",
             "description": "User skill A",
             "path": "/skills/user/skill-a/SKILL.md",
-            "registry": "user",
+            "source": "user",
             "license": None,
             "compatibility": None,
             "metadata": {},
@@ -531,7 +531,7 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "name": "skill-b",
             "description": "Project skill B",
             "path": "/skills/project/skill-b/SKILL.md",
-            "registry": "project",
+            "source": "project",
             "license": None,
             "compatibility": None,
             "metadata": {},
@@ -541,7 +541,7 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "name": "skill-c",
             "description": "User skill C",
             "path": "/skills/user/skill-c/SKILL.md",
-            "registry": "user",
+            "source": "user",
             "license": None,
             "compatibility": None,
             "metadata": {},
@@ -585,10 +585,10 @@ def test_before_agent_loads_skills(tmp_path: Path) -> None:
         ]
     )
 
-    registries: list[SkillRegistry] = [{"path": str(skills_dir), "name": "user"}]
+    sources: list[SkillsSource] = [{"path": str(skills_dir), "name": "user"}]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=registries,
+        sources=sources,
     )
 
     # Call before_agent
@@ -603,10 +603,10 @@ def test_before_agent_loads_skills(tmp_path: Path) -> None:
 
 
 def test_before_agent_skill_override(tmp_path: Path) -> None:
-    """Test that skills from later registries override earlier ones."""
+    """Test that skills from later sources override earlier ones."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    # Create same skill name in two registries
+    # Create same skill name in two sources
     base_dir = tmp_path / "skills" / "base"
     user_dir = tmp_path / "skills" / "user"
 
@@ -623,13 +623,13 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
         ]
     )
 
-    registries: list[SkillRegistry] = [
+    sources: list[SkillsSource] = [
         {"path": str(base_dir), "name": "base"},
         {"path": str(user_dir), "name": "user"},
     ]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=registries,
+        sources=sources,
     )
 
     # Call before_agent
@@ -638,24 +638,24 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     assert result is not None
     assert len(result["skills_metadata"]) == 1
 
-    # Should have the user version (later registry wins)
+    # Should have the user version (later source wins)
     skill = result["skills_metadata"][0]
     assert skill["name"] == "shared-skill"
     assert skill["description"] == "User description"
-    assert skill["registry"] == "user"
+    assert skill["source"] == "user"
 
 
 def test_before_agent_empty_registries(tmp_path: Path) -> None:
-    """Test before_agent with empty registries."""
+    """Test before_agent with empty sources."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create empty directories
     (tmp_path / "skills" / "user").mkdir(parents=True)
 
-    registries: list[SkillRegistry] = [{"path": str(tmp_path / "skills" / "user"), "name": "user"}]
+    sources: list[SkillsSource] = [{"path": str(tmp_path / "skills" / "user"), "name": "user"}]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=registries,
+        sources=sources,
     )
 
     result = middleware.before_agent({}, None)  # type: ignore
@@ -684,10 +684,10 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     )
 
     # Create middleware
-    registries: list[SkillRegistry] = [{"path": str(skills_dir), "name": "user"}]
+    sources: list[SkillsSource] = [{"path": str(skills_dir), "name": "user"}]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=registries,
+        sources=sources,
     )
 
     # Create agent with middleware
@@ -721,17 +721,17 @@ def test_skills_middleware_with_state_backend_factory() -> None:
     """Test that SkillsMiddleware can be initialized with StateBackend factory."""
     # Test that the middleware accepts StateBackend as a factory function
     # This is the recommended pattern for StateBackend since it needs runtime context
-    registries: list[SkillRegistry] = [{"path": "/skills/user", "name": "user"}]
+    sources: list[SkillsSource] = [{"path": "/skills/user", "name": "user"}]
     middleware = SkillsMiddleware(
         backend=lambda rt: StateBackend(rt),
-        registries=registries,
+        sources=sources,
     )
 
     # Verify the middleware was created successfully
     assert middleware is not None
     assert callable(middleware._backend)
-    assert len(middleware.registries) == 1
-    assert middleware.registries[0]["name"] == "user"
+    assert len(middleware.sources) == 1
+    assert middleware.sources[0]["name"] == "user"
 
     runtime = ToolRuntime(
         state={"messages": [], "files": {}},
@@ -751,17 +751,17 @@ def test_skills_middleware_with_store_backend_factory() -> None:
     """Test that SkillsMiddleware can be initialized with StoreBackend factory."""
     # Test that the middleware accepts StoreBackend as a factory function
     # This is the recommended pattern for StoreBackend since it needs runtime context with store
-    registries: list[SkillRegistry] = [{"path": "/skills/user", "name": "user"}]
+    sources: list[SkillsSource] = [{"path": "/skills/user", "name": "user"}]
     middleware = SkillsMiddleware(
         backend=lambda rt: StoreBackend(rt),
-        registries=registries,
+        sources=sources,
     )
 
     # Verify the middleware was created successfully
     assert middleware is not None
     assert callable(middleware._backend)
-    assert len(middleware.registries) == 1
-    assert middleware.registries[0]["name"] == "user"
+    assert len(middleware.sources) == 1
+    assert middleware.sources[0]["name"] == "user"
 
     # Test that we can create a runtime with store and get a backend from the factory
     store = InMemoryStore()
@@ -799,10 +799,10 @@ async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
     )
 
     # Create middleware
-    registries: list[SkillRegistry] = [{"path": str(skills_dir), "name": "user"}]
+    sources: list[SkillsSource] = [{"path": str(skills_dir), "name": "user"}]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=registries,
+        sources=sources,
     )
 
     # Create agent with middleware
@@ -833,10 +833,10 @@ async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
 
 
 def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Path) -> None:
-    """Test skills middleware with multiple registries where later registries override earlier ones."""
+    """Test skills middleware with multiple sources where later sources override earlier ones."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    # Create same-named skill in two registries with different descriptions
+    # Create same-named skill in two sources with different descriptions
     base_dir = tmp_path / "skills" / "base"
     user_dir = tmp_path / "skills" / "user"
 
@@ -863,14 +863,14 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
         )
     )
 
-    # Create middleware with multiple registries - user should override base
-    registries: list[SkillRegistry] = [
+    # Create middleware with multiple sources - user should override base
+    sources: list[SkillsSource] = [
         {"path": str(base_dir), "name": "base"},
         {"path": str(user_dir), "name": "user"},
     ]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=registries,
+        sources=sources,
     )
 
     # Create agent with middleware
@@ -898,5 +898,5 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     content = system_message.text
     assert "Skills System" in content, "System prompt should contain 'Skills System' section"
     assert "shared-skill" in content, "System prompt should mention the skill name"
-    assert "User registry description - should win" in content, "Should use user registry description"
-    assert "Base registry description" not in content, "Should not contain base registry description"
+    assert "User registry description - should win" in content, "Should use user source description"
+    assert "Base registry description" not in content, "Should not contain base source description"

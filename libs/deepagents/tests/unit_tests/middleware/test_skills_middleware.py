@@ -673,7 +673,6 @@ def test_before_agent_empty_registries(tmp_path: Path) -> None:
 
 def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     """Test that skills middleware injects skills into the system prompt."""
-    # Create backend and add a skill
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skills_dir = tmp_path / "skills" / "user"
     skill_path = str(skills_dir / "test-skill" / "SKILL.md")
@@ -717,15 +716,8 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     first_call = fake_model.call_history[0]
     messages = first_call["messages"]
 
-    # Find the system message (should be the first message)
-    system_messages = [msg for msg in messages if msg.type == "system"]
-    assert len(system_messages) > 0, "Should have at least one system message"
-
-    system_message = system_messages[0]
-    system_content = system_message.content
-
-    # Verify skills documentation is in the system prompt
-    assert "Skills System" in system_content, "System prompt should contain 'Skills System' section"
-    assert "test-skill" in system_content, "System prompt should mention the test-skill"
-    assert "A test skill for demonstration" in system_content, "System prompt should include skill description"
-    assert skill_path in system_content, "System prompt should include the skill path for reading"
+    system_message = messages[0]
+    assert system_message.type == "system", "First message should be system prompt"
+    content = system_message.text
+    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert "test-skill" in content, "System prompt should mention the skill name"

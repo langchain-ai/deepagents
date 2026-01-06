@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from deepagents_cli.config import console, settings
 
@@ -66,7 +66,6 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
 
     # Count tokens using the model's official method
     # Note: Some providers (like Anthropic) require at least one user message
-    from langchain_core.messages import HumanMessage
 
     messages = [
         SystemMessage(content=full_system_prompt),

@@ -550,8 +550,12 @@ class SkillsMiddleware(AgentMiddleware):
             runtime: Runtime context
 
         Returns:
-            State update with skills_metadata populated
+            State update with skills_metadata populated, or None if already present
         """
+        # Skip if skills_metadata is already present in state (even if empty)
+        if "skills_metadata" in state:
+            return None
+
         # Resolve backend (supports both direct instances and factory functions)
         backend = self._get_backend(runtime)
 

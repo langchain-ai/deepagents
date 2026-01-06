@@ -953,3 +953,57 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     assert "shared-skill" in content, "System prompt should mention the skill name"
     assert "User registry description - should win" in content, "Should use user source description"
     assert "Base registry description" not in content, "Should not contain base source description"
+
+
+def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
+    """Test that before_agent skips loading if skills_metadata is already in state."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    # Create a skill in the backend
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    sources: list[SkillsSource] = [{"path": str(skills_dir), "name": "user"}]
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=sources,
+    )
+
+    # Case 1: State has skills_metadata with some skills
+    existing_metadata: list[SkillMetadata] = [
+        {
+            "name": "existing-skill",
+            "description": "An existing skill",
+            "path": "/some/path/SKILL.md",
+            "source": "user",
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
+    state_with_metadata = {"skills_metadata": existing_metadata}
+    result = middleware.before_agent(state_with_metadata, None)  # type: ignore
+
+    # Should return None, not load new skills
+    assert result is None
+
+    # Case 2: State has empty list for skills_metadata
+    state_with_empty_list = {"skills_metadata": []}
+    result = middleware.before_agent(state_with_empty_list, None)  # type: ignore
+
+    # Should still return None and not reload
+    assert result is None
+
+    # Case 3: State does NOT have skills_metadata key
+    state_without_metadata = {}
+    result = middleware.before_agent(state_without_metadata, None)  # type: ignore
+
+    # Should load skills and return update
+    assert result is not None
+    assert "skills_metadata" in result
+    assert len(result["skills_metadata"]) == 1
+    assert result["skills_metadata"][0]["name"] == "test-skill"

@@ -20,9 +20,9 @@ from deepagents.middleware.skills import (
     SkillMetadata,
     SkillsMiddleware,
     SkillsSource,
-    list_skills,
     _parse_skill_metadata,
     _validate_skill_name,
+    list_skills,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -865,6 +865,9 @@ async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
     assert "messages" in result
     assert len(result["messages"]) > 0
 
+    # Verify skills_metadata is NOT in final state (it's a PrivateStateAttr)
+    assert "skills_metadata" not in result, "skills_metadata should be private and not in final state"
+
     # Inspect the call history to verify system prompt was injected
     assert len(fake_model.call_history) > 0, "Model should have been called at least once"
 
@@ -932,6 +935,9 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     # Verify the agent was invoked
     assert "messages" in result
     assert len(result["messages"]) > 0
+
+    # Verify skills_metadata is NOT in final state (it's a PrivateStateAttr)
+    assert "skills_metadata" not in result, "skills_metadata should be private and not in final state"
 
     # Inspect the call history to verify system prompt was injected with USER version
     assert len(fake_model.call_history) > 0, "Model should have been called at least once"

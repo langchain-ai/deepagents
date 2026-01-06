@@ -95,12 +95,13 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 import yaml
+from langchain.agents.middleware.types import PrivateStateAttr
 
 if TYPE_CHECKING:
-    from deepagents.backends.protocol import BackendProtocol
+    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict
@@ -114,9 +115,6 @@ from langchain.agents.middleware.types import (
 from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
-
-# Type alias for backend parameter: either an instance or a factory function
-BackendOrFactory = "BackendProtocol | Callable[[Runtime], BackendProtocol]"
 
 # Security: Maximum size for SKILL.md files to prevent DoS attacks (10MB)
 MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
@@ -172,7 +170,7 @@ class SkillsSource(TypedDict):
 class SkillsState(AgentState):
     """State for the skills middleware."""
 
-    skills_metadata: NotRequired[list[SkillMetadata]]
+    skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
     """List of loaded skill metadata from all configured sources."""
 
 
@@ -447,7 +445,7 @@ class SkillsMiddleware(AgentMiddleware):
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BackendOrFactory, sources: list[SkillsSource]) -> None:
+    def __init__(self, *, backend: BACKEND_TYPES, sources: list[SkillsSource]) -> None:
         """Initialize the skills middleware.
 
         Args:

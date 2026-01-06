@@ -20,7 +20,7 @@ from deepagents.middleware.skills import (
     SkillMetadata,
     SkillsMiddleware,
     SkillsSource,
-    _list_skills_from_backend,
+    list_skills,
     _parse_skill_metadata,
     _validate_skill_name,
 )
@@ -130,15 +130,16 @@ Instructions here.
 
     result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill", "user")
 
-    assert result is not None
-    assert result["name"] == "test-skill"
-    assert result["description"] == "A test skill"
-    assert result["license"] == "MIT"
-    assert result["compatibility"] == "Python 3.8+"
-    assert result["metadata"] == {"author": "Test Author", "version": "1.0.0"}
-    assert result["allowed_tools"] == ["read_file", "write_file"]
-    assert result["path"] == "/skills/test-skill/SKILL.md"
-    assert result["source"] == "user"
+    assert result == {
+        "name": "test-skill",
+        "description": "A test skill",
+        "license": "MIT",
+        "compatibility": "Python 3.8+",
+        "metadata": {"author": "Test Author", "version": "1.0.0"},
+        "allowed_tools": ["read_file", "write_file"],
+        "path": "/skills/test-skill/SKILL.md",
+        "source": "user",
+    }
 
 
 def test_parse_skill_metadata_minimal() -> None:
@@ -153,14 +154,16 @@ description: Minimal skill
 
     result = _parse_skill_metadata(content, "/skills/minimal-skill/SKILL.md", "minimal-skill", "project")
 
-    assert result is not None
-    assert result["name"] == "minimal-skill"
-    assert result["description"] == "Minimal skill"
-    assert result["license"] is None
-    assert result["compatibility"] is None
-    assert result["metadata"] == {}
-    assert result["allowed_tools"] == []
-    assert result["source"] == "project"
+    assert result == {
+        "name": "minimal-skill",
+        "description": "Minimal skill",
+        "license": None,
+        "compatibility": None,
+        "metadata": {},
+        "allowed_tools": [],
+        "path": "/skills/minimal-skill/SKILL.md",
+        "source": "project",
+    }
 
 
 def test_parse_skill_metadata_no_frontmatter() -> None:
@@ -273,7 +276,8 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
     assert responses[0].error is None
 
     # List skills using the full absolute path
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    source = {"path": str(skills_dir), "name": "user"}
+    skills = list_skills(backend, source)
 
     assert skills == [
         {
@@ -314,7 +318,8 @@ def test_list_skills_from_backend_multiple_skills(tmp_path: Path) -> None:
     assert all(r.error is None for r in responses)
 
     # List skills
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    source = {"path": str(skills_dir), "name": "user"}
+    skills = list_skills(backend, source)
 
     # Should return all three skills (order may vary)
     assert len(skills) == 3
@@ -331,7 +336,8 @@ def test_list_skills_from_backend_empty_directory(tmp_path: Path) -> None:
     skills_dir.mkdir()
 
     # Should return empty list
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    source = {"path": str(skills_dir), "name": "user"}
+    skills = list_skills(backend, source)
     assert skills == []
 
 
@@ -340,7 +346,8 @@ def test_list_skills_from_backend_nonexistent_path(tmp_path: Path) -> None:
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Try to list from non-existent directory
-    skills = _list_skills_from_backend(backend, str(tmp_path / "nonexistent"), "user")
+    source = {"path": str(tmp_path / "nonexistent"), "name": "user"}
+    skills = list_skills(backend, source)
     assert skills == []
 
 
@@ -363,10 +370,21 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     )
 
     # List skills - should only get the valid one
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    source = {"path": str(skills_dir), "name": "user"}
+    skills = list_skills(backend, source)
 
-    assert len(skills) == 1
-    assert skills[0]["name"] == "valid-skill"
+    assert skills == [
+        {
+            "name": "valid-skill",
+            "description": "Valid skill",
+            "path": valid_skill_path,
+            "source": "user",
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
 
 
 def test_list_skills_from_backend_invalid_frontmatter(tmp_path: Path) -> None:
@@ -394,10 +412,21 @@ Content
     )
 
     # Should only get the valid skill
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    source = {"path": str(skills_dir), "name": "user"}
+    skills = list_skills(backend, source)
 
-    assert len(skills) == 1
-    assert skills[0]["name"] == "valid-skill"
+    assert skills == [
+        {
+            "name": "valid-skill",
+            "description": "Valid skill",
+            "path": valid_skill_path,
+            "source": "user",
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
 
 
 def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
@@ -420,10 +449,21 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     )
 
     # List skills - should find the skill and not be confused by helper files
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    source = {"path": str(skills_dir), "name": "user"}
+    skills = list_skills(backend, source)
 
-    assert len(skills) == 1
-    assert skills[0]["name"] == "my-skill"
+    assert skills == [
+        {
+            "name": "my-skill",
+            "description": "My test skill",
+            "path": skill_path,
+            "source": "user",
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
 
 
 def test_format_skills_locations_single_registry() -> None:
@@ -640,9 +680,16 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
 
     # Should have the user version (later source wins)
     skill = result["skills_metadata"][0]
-    assert skill["name"] == "shared-skill"
-    assert skill["description"] == "User description"
-    assert skill["source"] == "user"
+    assert skill == {
+        "name": "shared-skill",
+        "description": "User description",
+        "path": user_skill_path,
+        "source": "user",
+        "metadata": {},
+        "license": None,
+        "compatibility": None,
+        "allowed_tools": [],
+    }
 
 
 def test_before_agent_empty_registries(tmp_path: Path) -> None:

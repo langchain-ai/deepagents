@@ -302,26 +302,28 @@ def _parse_skill_metadata(
     )
 
 
-def _list_skills_from_backend(backend: BackendProtocol, base_path: str, source: str) -> list[SkillMetadata]:
-    """List all skills from a backend path.
+def list_skills(backend: BackendProtocol, source: SkillsSource) -> list[SkillMetadata]:
+    """List all skills from a backend source.
 
     Scans backend for subdirectories containing SKILL.md files, downloads their content,
     parses YAML frontmatter, and returns skill metadata.
 
     Expected structure:
-        base_path/
+        source["path"]/
         ├── skill-name/
         │   ├── SKILL.md        # Required
         │   └── helper.py       # Optional
 
     Args:
         backend: Backend instance to use for file operations
-        base_path: Virtual path to the skills directory in the backend
-        source: Name of the source these skills belong to (e.g., "user", "project")
+        source: SkillsSource configuration with path and name
 
     Returns:
         List of skill metadata from successfully parsed SKILL.md files
     """
+    base_path = source["path"]
+    source_name = source["name"]
+
     skills: list[SkillMetadata] = []
     items = backend.ls_info(base_path)
     # Find all skill directories (directories containing SKILL.md)
@@ -369,7 +371,7 @@ def _list_skills_from_backend(backend: BackendProtocol, base_path: str, source: 
             content=content,
             skill_path=skill_md_path,
             directory_name=directory_name,
-            source=source,
+            source=source_name,
         )
         if skill_metadata:
             skills.append(skill_metadata)
@@ -557,11 +559,7 @@ class SkillsMiddleware(AgentMiddleware):
         # Load skills from each source in order
         # Later sources override earlier ones (last one wins)
         for source in self.sources:
-            source_skills = _list_skills_from_backend(
-                backend,
-                source["path"],
-                source=source["name"],
-            )
+            source_skills = list_skills(backend, source)
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
@@ -603,4 +601,4 @@ class SkillsMiddleware(AgentMiddleware):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware", "SkillsSource"]
+__all__ = ["SkillMetadata", "SkillsMiddleware", "SkillsSource", "list_skills"]

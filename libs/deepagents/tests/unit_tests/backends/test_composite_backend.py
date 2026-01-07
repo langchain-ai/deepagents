@@ -206,8 +206,39 @@ def test_composite_backend_multiple_routes():
     assert "persistent memory" in updated_content
 
 
-def test_composite_backend_ls_nested_directories(tmp_path: Path):
+def test_composite_backend_grep_path_isolation():
+    """Test that grep with path=/tools doesn't return results from /memories."""
     rt = make_runtime("t7")
+
+    # Use StateBackend as default, StoreBackend for /memories/
+    state = StateBackend(rt)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=state, routes={"/memories/": store})
+
+    # Write to state backend (default) in /tools directory
+    comp.write("/tools/hammer.txt", "tool for nailing")
+    comp.write("/tools/saw.txt", "tool for cutting")
+
+    # Write to memories route with content that would match our grep
+    comp.write("/memories/workshop.txt", "tool shed location")
+    comp.write("/memories/notes.txt", "remember to buy tools")
+
+    # Grep for "tool" in /tools directory - should NOT return /memories results
+    matches = comp.grep_raw("tool", path="/tools")
+    match_paths = [m["path"] for m in matches] if isinstance(matches, list) else []
+    
+    # Should find results in /tools
+    assert any("/tools/hammer.txt" in p for p in match_paths)
+    assert any("/tools/saw.txt" in p for p in match_paths)
+    
+    # Should NOT find results in /memories (this is the bug)
+    assert not any("/memories/" in p for p in match_paths), \
+        f"grep path=/tools should not return /memories results, but got: {match_paths}"
+
+
+def test_composite_backend_ls_nested_directories(tmp_path: Path):
+    rt = make_runtime("t8")
     root = tmp_path
 
     files = {

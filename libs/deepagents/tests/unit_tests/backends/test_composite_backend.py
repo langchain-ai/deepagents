@@ -701,7 +701,7 @@ def test_composite_download_preserves_original_paths(tmp_path: Path):
     assert responses[0].content == b"Nested file"
 
 
-def test_composite_grep_targeting_specific_route(tmp_path: Path):
+def test_composite_grep_targeting_specific_route(tmp_path: Path) -> None:
     """Test grep with path targeting a specific routed backend."""
     rt = make_runtime("t_grep1")
     root = tmp_path
@@ -732,7 +732,7 @@ def test_composite_grep_targeting_specific_route(tmp_path: Path):
     assert not any("/default" in p for p in match_paths)
 
 
-def test_composite_grep_with_glob_filter(tmp_path: Path):
+def test_composite_grep_with_glob_filter(tmp_path: Path) -> None:
     """Test grep with glob parameter to filter files."""
     rt = make_runtime("t_grep2")
     root = tmp_path
@@ -765,7 +765,7 @@ def test_composite_grep_with_glob_filter(tmp_path: Path):
     assert not any(".md" in p for p in match_paths)
 
 
-def test_composite_grep_with_glob_in_specific_route(tmp_path: Path):
+def test_composite_grep_with_glob_in_specific_route(tmp_path: Path) -> None:
     """Test grep with glob parameter targeting a specific route."""
     rt = make_runtime("t_grep3")
     root = tmp_path
@@ -794,7 +794,7 @@ def test_composite_grep_with_glob_in_specific_route(tmp_path: Path):
     assert not any("/local.md" in p for p in match_paths)
 
 
-def test_composite_grep_with_path_none(tmp_path: Path):
+def test_composite_grep_with_path_none(tmp_path: Path) -> None:
     """Test grep with path=None behaves like path='/'."""
     rt = make_runtime("t_grep4")
     root = tmp_path
@@ -824,7 +824,7 @@ def test_composite_grep_with_path_none(tmp_path: Path):
     assert len(paths_none) == 2
 
 
-def test_composite_grep_invalid_regex(tmp_path: Path):
+def test_composite_grep_invalid_regex(tmp_path: Path) -> None:
     """Test grep with invalid regex pattern returns error string."""
     rt = make_runtime("t_grep5")
     root = tmp_path
@@ -838,7 +838,7 @@ def test_composite_grep_invalid_regex(tmp_path: Path):
     assert "Invalid regex" in result or "error" in result.lower()
 
 
-def test_composite_grep_nested_path_in_route(tmp_path: Path):
+def test_composite_grep_nested_path_in_route(tmp_path: Path) -> None:
     """Test grep with nested path within a routed backend."""
     rt = make_runtime("t_grep6")
     root = tmp_path
@@ -869,7 +869,7 @@ def test_composite_grep_nested_path_in_route(tmp_path: Path):
     assert not any("/local.txt" in p for p in match_paths)
 
 
-def test_composite_grep_empty_results(tmp_path: Path):
+def test_composite_grep_empty_results(tmp_path: Path) -> None:
     """Test grep that matches nothing returns empty list."""
     rt = make_runtime("t_grep7")
     root = tmp_path
@@ -889,7 +889,7 @@ def test_composite_grep_empty_results(tmp_path: Path):
     assert len(matches) == 0
 
 
-def test_composite_grep_route_prefix_restoration(tmp_path: Path):
+def test_composite_grep_route_prefix_restoration(tmp_path: Path) -> None:
     """Test that grep correctly restores route prefixes in results."""
     rt = make_runtime("t_grep8")
     root = tmp_path
@@ -923,7 +923,7 @@ def test_composite_grep_route_prefix_restoration(tmp_path: Path):
         assert match["path"].startswith("/memories/")
 
 
-def test_composite_grep_multiple_matches_per_file(tmp_path: Path):
+def test_composite_grep_multiple_matches_per_file(tmp_path: Path) -> None:
     """Test grep returns multiple matches from same file."""
     rt = make_runtime("t_grep9")
     root = tmp_path
@@ -951,7 +951,7 @@ def test_composite_grep_multiple_matches_per_file(tmp_path: Path):
     "causing files written to one route to appear in all routes that use the same backend instance. "
     "This violates the expected isolation between routes."
 )
-def test_composite_grep_multiple_routes_aggregation(tmp_path: Path):
+def test_composite_grep_multiple_routes_aggregation(tmp_path: Path) -> None:
     """Test grep aggregates results from multiple routed backends with expected isolation.
 
     This test represents the intuitive expected behavior: files written to /memories/

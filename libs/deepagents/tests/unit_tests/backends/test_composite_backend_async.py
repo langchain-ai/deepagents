@@ -580,3 +580,291 @@ async def test_composite_adownload_preserves_original_paths_async(tmp_path: Path
     # Response should have the original composite path, not stripped
     assert responses[0].path == "/subdir/file.bin"
     assert responses[0].content == b"Nested file"
+
+
+async def test_composite_agrep_targeting_specific_route_async(tmp_path: Path) -> None:
+    """Test async grep with path targeting a specific routed backend."""
+    rt = make_runtime("t_agrep1")
+    root = tmp_path
+
+    # Setup filesystem backend with some files
+    (root / "default.txt").write_text("default backend content")
+    (root / "default2.txt").write_text("more default stuff")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Write to memories route
+    await comp.awrite("/memories/note1.txt", "memory content alpha")
+    await comp.awrite("/memories/note2.txt", "memory content beta")
+
+    # Grep with path="/memories/" should only search memories backend
+    matches = await comp.agrep_raw("memory", path="/memories/")
+    assert isinstance(matches, list)
+    match_paths = [m["path"] for m in matches]
+
+    # Should find matches in /memories/
+    assert any("/memories/note1.txt" in p for p in match_paths)
+    assert any("/memories/note2.txt" in p for p in match_paths)
+
+    # Should NOT find matches in default backend
+    assert not any("/default" in p for p in match_paths)
+
+
+async def test_composite_agrep_with_glob_filter_async(tmp_path: Path) -> None:
+    """Test async grep with glob parameter to filter files."""
+    rt = make_runtime("t_agrep2")
+    root = tmp_path
+
+    # Create files with different extensions
+    (root / "script.py").write_text("python code here")
+    (root / "config.json").write_text("json config here")
+    (root / "readme.md").write_text("markdown docs here")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Add some files to memories route
+    await comp.awrite("/memories/notes.py", "python notes here")
+    await comp.awrite("/memories/data.json", "json data here")
+
+    # Grep with glob="*.py" should only search Python files
+    matches = await comp.agrep_raw("here", path="/", glob="*.py")
+    assert isinstance(matches, list)
+    match_paths = [m["path"] for m in matches]
+
+    # Should find .py files
+    assert any("/script.py" in p for p in match_paths)
+    assert any("/memories/notes.py" in p for p in match_paths)
+
+    # Should NOT find non-.py files
+    assert not any(".json" in p for p in match_paths)
+    assert not any(".md" in p for p in match_paths)
+
+
+async def test_composite_agrep_with_glob_in_specific_route_async(tmp_path: Path) -> None:
+    """Test async grep with glob parameter targeting a specific route."""
+    rt = make_runtime("t_agrep3")
+    root = tmp_path
+
+    (root / "local.md").write_text("local markdown")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Add files to memories
+    await comp.awrite("/memories/important.md", "important notes")
+    await comp.awrite("/memories/data.txt", "text data")
+
+    # Grep memories with glob="*.md"
+    matches = await comp.agrep_raw("notes", path="/memories/", glob="*.md")
+    assert isinstance(matches, list)
+    match_paths = [m["path"] for m in matches]
+
+    # Should find .md file in memories
+    assert any("/memories/important.md" in p for p in match_paths)
+
+    # Should NOT find .txt files or default backend files
+    assert not any("/memories/data.txt" in p for p in match_paths)
+    assert not any("/local.md" in p for p in match_paths)
+
+
+async def test_composite_agrep_with_path_none_async(tmp_path: Path) -> None:
+    """Test async grep with path=None behaves like path='/'."""
+    rt = make_runtime("t_agrep4")
+    root = tmp_path
+
+    (root / "file1.txt").write_text("searchable content")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    await comp.awrite("/memories/file2.txt", "searchable memory")
+
+    # Grep with path=None
+    matches_none = await comp.agrep_raw("searchable", path=None)
+    assert isinstance(matches_none, list)
+
+    # Grep with path="/"
+    matches_root = await comp.agrep_raw("searchable", path="/")
+    assert isinstance(matches_root, list)
+
+    # Both should return same results
+    paths_none = sorted([m["path"] for m in matches_none])
+    paths_root = sorted([m["path"] for m in matches_root])
+
+    assert paths_none == paths_root
+    assert len(paths_none) == 2
+
+
+async def test_composite_agrep_invalid_regex_async(tmp_path: Path) -> None:
+    """Test async grep with invalid regex pattern returns error string."""
+    rt = make_runtime("t_agrep5")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    comp = CompositeBackend(default=fs, routes={})
+
+    # Invalid regex patterns
+    result = await comp.agrep_raw("[invalid(", path="/")
+    assert isinstance(result, str)
+    assert "Invalid regex" in result or "error" in result.lower()
+
+
+async def test_composite_agrep_nested_path_in_route_async(tmp_path: Path) -> None:
+    """Test async grep with nested path within a routed backend."""
+    rt = make_runtime("t_agrep6")
+    root = tmp_path
+
+    (root / "local.txt").write_text("local content")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Create nested structure in memories
+    await comp.awrite("/memories/docs/readme.md", "documentation here")
+    await comp.awrite("/memories/docs/guide.md", "guide here")
+    await comp.awrite("/memories/notes.txt", "notes here")
+
+    # Grep with nested path
+    matches = await comp.agrep_raw("here", path="/memories/docs/")
+    assert isinstance(matches, list)
+    match_paths = [m["path"] for m in matches]
+
+    # Should find files in /memories/docs/
+    assert any("/memories/docs/readme.md" in p for p in match_paths)
+    assert any("/memories/docs/guide.md" in p for p in match_paths)
+
+    # Should NOT find files outside /memories/docs/
+    assert not any("/memories/notes.txt" in p for p in match_paths)
+    assert not any("/local.txt" in p for p in match_paths)
+
+
+async def test_composite_agrep_empty_results_async(tmp_path: Path) -> None:
+    """Test async grep that matches nothing returns empty list."""
+    rt = make_runtime("t_agrep7")
+    root = tmp_path
+
+    (root / "file.txt").write_text("some content")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    await comp.awrite("/memories/note.txt", "memory content")
+
+    # Search for pattern that doesn't exist
+    matches = await comp.agrep_raw("nonexistent_pattern_xyz", path="/")
+    assert isinstance(matches, list)
+    assert len(matches) == 0
+
+
+async def test_composite_agrep_route_prefix_restoration_async(tmp_path: Path) -> None:
+    """Test async grep correctly restores route prefixes in results."""
+    rt = make_runtime("t_agrep8")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Write files to memories
+    await comp.awrite("/memories/alpha.txt", "test content alpha")
+    await comp.awrite("/memories/beta.txt", "test content beta")
+
+    # Grep in memories route
+    matches = await comp.agrep_raw("test", path="/memories/")
+    assert isinstance(matches, list)
+    assert len(matches) > 0
+
+    # All paths should start with /memories/
+    for match in matches:
+        assert match["path"].startswith("/memories/")
+        assert not match["path"].startswith("/memories//")  # No double slashes
+
+    # Grep across all backends (path="/")
+    matches_all = await comp.agrep_raw("test", path="/")
+    assert isinstance(matches_all, list)
+
+    # Filter matches from memories
+    memory_matches = [m for m in matches_all if "/memories/" in m["path"]]
+    for match in memory_matches:
+        assert match["path"].startswith("/memories/")
+
+
+async def test_composite_agrep_multiple_matches_per_file_async(tmp_path: Path) -> None:
+    """Test async grep returns multiple matches from same file."""
+    rt = make_runtime("t_agrep9")
+    root = tmp_path
+
+    # File with multiple matching lines
+    (root / "multi.txt").write_text("line1 pattern\nline2 pattern\nline3 other")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    comp = CompositeBackend(default=fs, routes={})
+
+    matches = await comp.agrep_raw("pattern", path="/")
+    assert isinstance(matches, list)
+
+    # Should have 2 matches from the same file
+    multi_matches = [m for m in matches if "multi.txt" in m["path"]]
+    assert len(multi_matches) == 2
+
+    # Verify line numbers are correct
+    line_numbers = sorted([m["line"] for m in multi_matches])
+    assert line_numbers == [1, 2]
+
+
+@pytest.mark.xfail(
+    reason="StoreBackend instances share the same underlying store when using the same runtime, "
+    "causing files written to one route to appear in all routes that use the same backend instance. "
+    "This violates the expected isolation between routes."
+)
+async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path) -> None:
+    """Test async grep aggregates results from multiple routed backends with expected isolation.
+
+    This test represents the intuitive expected behavior: files written to /memories/
+    should only appear in /memories/, and files written to /archive/ should only appear
+    in /archive/.
+    """
+    rt = make_runtime("t_agrep10")
+    root = tmp_path
+
+    (root / "default.txt").write_text("default findme")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store1 = StoreBackend(rt)
+    store2 = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
+
+    # Write to each route
+    await comp.awrite("/memories/mem.txt", "memory findme")
+    await comp.awrite("/archive/arch.txt", "archive findme")
+
+    # Grep across all backends
+    matches = await comp.agrep_raw("findme", path="/")
+    assert isinstance(matches, list)
+    match_paths = sorted([m["path"] for m in matches])
+
+    # Expected: each file appears only in its own route
+    expected_paths = sorted(
+        [
+            "/archive/arch.txt",
+            "/default.txt",
+            "/memories/mem.txt",
+        ]
+    )
+    assert match_paths == expected_paths

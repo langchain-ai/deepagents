@@ -97,8 +97,11 @@ Examples:
     parser.add_argument("--iterations", type=int, default=0, help="Max iterations (0 = unlimited, default: unlimited)")
     parser.add_argument("--model", help="Model to use (e.g., claude-haiku-4-5-20251001)")
     args = parser.parse_args()
-    
-    asyncio.run(ralph(args.task, args.iterations, args.model))
+
+    try:
+        asyncio.run(ralph(args.task, args.iterations, args.model))
+    except KeyboardInterrupt:
+        pass  # Clean exit on Ctrl+C
 
 
 if __name__ == "__main__":

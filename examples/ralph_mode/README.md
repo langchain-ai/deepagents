@@ -28,7 +28,7 @@ source .venv/bin/activate
 uv pip install deepagents-cli
 
 # Download the script (or copy from examples/ralph_mode/ if you have the repo)
-curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/main/examples/ralph_mode/ralph_mode.py
+curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/master/examples/ralph_mode/ralph_mode.py
 
 # Run Ralph
 python ralph_mode.py "Build a Python programming course for beginners. Use git."

@@ -6,10 +6,13 @@ Ralph is an autonomous looping pattern created by Geoff Huntley.
 Each loop starts with fresh context. The filesystem and git serve as memory.
 
 Usage:
-    pip install deepagents[cli]
+    uv pip install deepagents-cli
     python ralph_mode.py "Build a Python course. Use git."
     python ralph_mode.py "Build a REST API" --iterations 5
 """
+import warnings
+warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality")
+
 import argparse
 import asyncio
 import tempfile

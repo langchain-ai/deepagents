@@ -19,7 +19,7 @@ from deepagents.middleware.skills import SkillsMiddleware
 class TestRealAgentIntegration:
     """Test that middleware actually injects into real agents."""
 
-    def test_memory_middleware_injects_into_agent(self, tmp_path: Path) -> None:
+    async def test_memory_middleware_injects_into_agent(self, tmp_path: Path) -> None:
         """Prove that MemoryMiddleware actually injects content into agent's system prompt."""
         # Create memory file with unique content we can search for
         memory_dir = tmp_path / "memory"
@@ -41,7 +41,7 @@ class TestRealAgentIntegration:
         mock_request.system_prompt = "Base prompt"
 
         # Step 1: before_agent loads memory
-        state_update = memory_middleware.before_agent({}, None)
+        state_update = await memory_middleware.abefore_agent({}, None)
         assert state_update is not None
         assert unique_marker in state_update["memory_contents"]["test"]
 
@@ -126,7 +126,7 @@ description: {unique_marker}
         assert unique_marker in final_prompt, f"Skills not injected! Prompt was: {final_prompt[:500]}"
         print(f"\n✓ VERIFIED: Skill marker '{unique_marker}' found in system prompt")
 
-    def test_combined_memory_and_skills(self, tmp_path: Path) -> None:
+    async def test_combined_memory_and_skills(self, tmp_path: Path) -> None:
         """Prove that both Memory and Skills can be combined and both inject."""
         # Create memory
         memory_dir = tmp_path / "memory"
@@ -163,7 +163,7 @@ description: {skill_marker}
         state: dict[str, Any] = {}
 
         # Both middleware run before_agent
-        memory_update = memory_middleware.before_agent(state, None)
+        memory_update = await memory_middleware.abefore_agent(state, None)
         skills_update = skills_middleware.before_agent(state, None)
 
         # Merge state updates (as LangGraph would)
@@ -228,7 +228,7 @@ description: {skill_marker}
 class TestBackendCompatibility:
     """Test that middleware works with different backend types."""
 
-    def test_memory_with_filesystem_backend(self, tmp_path: Path) -> None:
+    async def test_memory_with_filesystem_backend(self, tmp_path: Path) -> None:
         """Test MemoryMiddleware with FilesystemBackend."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -240,7 +240,7 @@ class TestBackendCompatibility:
             sources=[{"path": str(memory_dir / "AGENTS.md"), "name": "test"}],
         )
 
-        state_update = middleware.before_agent({}, None)
+        state_update = await middleware.abefore_agent({}, None)
 
         assert state_update is not None
         assert "Filesystem backend test" in state_update["memory_contents"]["test"]
@@ -304,7 +304,7 @@ description: Filesystem skill test
 class TestInjectionProof:
     """Definitive proof that injection happens."""
 
-    def test_prompt_before_and_after_injection(self, tmp_path: Path) -> None:
+    async def test_prompt_before_and_after_injection(self, tmp_path: Path) -> None:
         """Show exact prompt transformation."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -317,7 +317,7 @@ class TestInjectionProof:
         )
 
         # Load memory
-        state_update = middleware.before_agent({}, None)
+        state_update = await middleware.abefore_agent({}, None)
 
         # Create request with BEFORE prompt
         from langchain.agents.middleware.types import ModelRequest
@@ -361,7 +361,7 @@ class TestInjectionProof:
 
         print("\n✓ DEFINITIVE PROOF: Content was injected into system prompt")
 
-    def test_handler_receives_modified_request(self, tmp_path: Path) -> None:
+    async def test_handler_receives_modified_request(self, tmp_path: Path) -> None:
         """Prove the handler function receives the modified request."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -373,7 +373,7 @@ class TestInjectionProof:
             sources=[{"path": str(memory_dir / "AGENTS.md"), "name": "test"}],
         )
 
-        state_update = middleware.before_agent({}, None)
+        state_update = await middleware.abefore_agent({}, None)
 
         from langchain.agents.middleware.types import ModelRequest
 

@@ -15,6 +15,9 @@ loaded and provides persistent context.
 from deepagents import MemoryMiddleware
 from deepagents.backends.filesystem import FilesystemBackend
 
+# Security: FilesystemBackend allows reading/writing from the entire filesystem.
+# Either ensure the agent is running within a sandbox OR add human-in-the-loop (HIL)
+# approval to file operations.
 backend = FilesystemBackend(root_dir="/")
 
 middleware = MemoryMiddleware(
@@ -123,15 +126,21 @@ class MemoryMiddleware(AgentMiddleware):
     Supports multiple sources that are combined together.
 
     Example:
-        >>> from deepagents.backends.filesystem import FilesystemBackend
-        >>> backend = FilesystemBackend(root_dir="/")
-        >>> middleware = MemoryMiddleware(
-        ...     backend=backend,
-        ...     sources=[
-        ...         {"path": "/home/user/.deepagents/AGENTS.md", "name": "user"},
-        ...         {"path": "/project/.deepagents/AGENTS.md", "name": "project"},
-        ...     ],
-        ... )
+        ```python
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        # Security: FilesystemBackend allows reading/writing from the entire filesystem.
+        # Either ensure the agent is running within a sandbox OR add human-in-the-loop (HIL)
+        # approval to file operations.
+        backend = FilesystemBackend(root_dir="/")
+        middleware = MemoryMiddleware(
+            backend=backend,
+            sources=[
+                {"path": "/home/user/.deepagents/AGENTS.md", "name": "user"},
+                {"path": "/project/.deepagents/AGENTS.md", "name": "project"},
+            ],
+        )
+        ```
 
     Args:
         backend: Backend instance or factory function for file operations.

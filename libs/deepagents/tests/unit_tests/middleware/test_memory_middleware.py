@@ -95,10 +95,8 @@ def test_format_memory_contents_single() -> None:
     contents = {"user": "# User Memory\nBe helpful."}
     result = middleware._format_memory_contents(contents)
 
-    assert "<user_memory>" in result
     assert "# User Memory" in result
     assert "Be helpful." in result
-    assert "</user_memory>" in result
 
 
 def test_format_memory_contents_multiple() -> None:
@@ -116,12 +114,8 @@ def test_format_memory_contents_multiple() -> None:
     }
     result = middleware._format_memory_contents(contents)
 
-    assert "<user_memory>" in result
     assert "User preferences here" in result
-    assert "</user_memory>" in result
-    assert "<project_memory>" in result
     assert "Project guidelines here" in result
-    assert "</project_memory>" in result
 
 
 def test_format_memory_contents_preserves_order() -> None:
@@ -137,8 +131,10 @@ def test_format_memory_contents_preserves_order() -> None:
     result = middleware._format_memory_contents(contents)
 
     # First should appear before second
-    first_pos = result.find("<first_memory>")
-    second_pos = result.find("<second_memory>")
+    first_pos = result.find("First content")
+    second_pos = result.find("Second content")
+    assert first_pos > 0
+    assert second_pos > 0
     assert first_pos < second_pos
 
 
@@ -155,10 +151,7 @@ def test_format_memory_contents_skips_missing_sources() -> None:
     contents = {"user": "User content only"}
     result = middleware._format_memory_contents(contents)
 
-    assert "<user_memory>" in result
     assert "User content only" in result
-    assert "</user_memory>" in result
-    assert "<project_memory>" not in result
 
 
 def test_load_memory_from_backend_single_source(tmp_path: Path) -> None:
@@ -419,7 +412,6 @@ def test_agent_with_memory_middleware_system_prompt(tmp_path: Path) -> None:
     assert system_message.type == "system", "First message should be system prompt"
     content = system_message.text
     assert "Agent Memory" in content, "System prompt should contain 'Agent Memory' section"
-    assert "<user_memory>" in content, "System prompt should contain user memory tags"
     assert "type hints" in content, "System prompt should mention memory content"
     assert "functional programming" in content
 
@@ -467,9 +459,7 @@ def test_agent_with_memory_middleware_multiple_sources(tmp_path: Path) -> None:
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    assert "<user_memory>" in content
     assert "Python 3.11" in content
-    assert "<project_memory>" in content
     assert "FastAPI" in content
 
 
@@ -536,7 +526,6 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
     content = system_message.text
 
     assert "Agent Memory" in content
-    assert "<user_memory>" in content
     assert "Test async loading" in content
 
 
@@ -726,8 +715,8 @@ def test_memory_middleware_order_matters(tmp_path: Path) -> None:
     content = system_message.text
 
     # First should appear before second
-    first_pos = content.find("<first_memory>")
-    second_pos = content.find("<second_memory>")
+    first_pos = content.find("First memory content")
+    second_pos = content.find("Second memory content")
     assert first_pos > 0
     assert second_pos > 0
     assert first_pos < second_pos

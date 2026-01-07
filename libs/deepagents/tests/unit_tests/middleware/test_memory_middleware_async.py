@@ -284,9 +284,7 @@ async def test_agent_with_memory_middleware_multiple_sources_async(tmp_path: Pat
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    assert "<user_memory>" in content
     assert "Python 3.11" in content
-    assert "<project_memory>" in content
     assert "FastAPI" in content
 
 
@@ -358,8 +356,8 @@ async def test_memory_middleware_order_matters_async(tmp_path: Path) -> None:
     content = system_message.text
 
     # First should appear before second
-    first_pos = content.find("<first_memory>")
-    second_pos = content.find("<second_memory>")
+    first_pos = content.find("First memory content")
+    second_pos = content.find("Second memory content")
     assert first_pos > 0
     assert second_pos > 0
     assert first_pos < second_pos

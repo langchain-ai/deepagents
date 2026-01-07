@@ -287,12 +287,6 @@ See the [agent harness documentation](https://docs.langchain.com/oss/python/deep
 | **PatchToolCallsMiddleware** | Fixes dangling tool calls from interruptions |
 | **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
 
-### Optional Middleware
-
-| Middleware | Purpose |
-|------------|---------|
-| **SkillsMiddleware** | Inject reusable skill instructions (progressive disclosure pattern) |
-
 ## Built-in prompts
 
 The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:

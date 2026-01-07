@@ -150,7 +150,7 @@ def create_deep_agent(
     # Convert system_prompt to SystemMessage if needed
     system_message: SystemMessage = SystemMessage(content=BASE_AGENT_PROMPT)
     if system_prompt is not None:
-        content = system_prompt.content if isinstance(system_prompt, SystemMessage) else system_prompt
+        content = system_prompt.text if isinstance(system_prompt, SystemMessage) else system_prompt
         system_message = SystemMessage(content=content + "\n\n" + BASE_AGENT_PROMPT)
 
     return create_agent(

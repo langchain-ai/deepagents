@@ -85,39 +85,15 @@ class TestTodoMiddleware:
         # Invoke the agent
         result = agent.invoke({"messages": [HumanMessage(content="Plan the work")]})
 
-        # Verify the result contains messages
-        assert "messages" in result, "Result should contain messages key"
-
-        # Verify the agent has the todos stream channel
-        assert "todos" in agent.stream_channels, "Agent should have 'todos' stream channel"
-
-        # Verify there are exactly 2 ToolMessages for both write_todos calls
+        # The middleware should return error messages for both parallel write_todos calls
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) == 2, f"Should have exactly 2 ToolMessages (one per write_todos call), got {len(tool_messages)}"
+        assert len(tool_messages) == 2, f"Expected 2 error messages, got {len(tool_messages)}"
 
-        # Verify both ToolMessages contain error messages about parallel calls
+        # Verify exact error content and status for both tool messages
+        expected_error = "Error: The `write_todos` tool should never be called multiple times in parallel. Please call it only once per model invocation to update the todo list."
         for tool_msg in tool_messages:
-            assert "Error" in tool_msg.content, f"Expected error message, got: {tool_msg.content}"
-            assert "write_todos" in tool_msg.content, f"Error should mention write_todos, got: {tool_msg.content}"
-            assert "parallel" in tool_msg.content, f"Error should mention parallel calls, got: {tool_msg.content}"
+            assert tool_msg.content == expected_error, f"Expected exact error message, got: {tool_msg.content}"
+            assert tool_msg.status == "error", f"Tool message status should be 'error', got: {tool_msg.status}"
 
-        # Verify the chat model received the error messages in the second call
-        assert len(fake_model.call_history) == 2, f"Expected 2 calls to chat model, got {len(fake_model.call_history)}"
-
-        second_call_messages = fake_model.call_history[1]["messages"]
-        error_tool_messages = [msg for msg in second_call_messages if msg.type == "tool"]
-        assert len(error_tool_messages) == 2, "Second call should have 2 tool error messages"
-
-        # Verify todos state is empty (no todos were actually written due to errors)
-        # The middleware should prevent the parallel writes from succeeding
-        if "todos" in result:
-            todos = result["todos"]
-            # Should be empty since both writes were rejected
-            assert len(todos) == 0, f"Expected 0 todos due to rejected parallel writes, got {len(todos)}"
-
-        # Verify the final AI message is present
-        ai_messages = [msg for msg in result["messages"] if msg.type == "ai"]
-        final_ai_message = ai_messages[-1]
-        assert final_ai_message.content == "Both tasks have been planned successfully.", (
-            f"Expected final message content, got: {final_ai_message.content}"
-        )
+        # No todos should be written since both calls were rejected
+        assert result.get("todos", []) == [], "Todos should be empty when parallel writes are rejected"

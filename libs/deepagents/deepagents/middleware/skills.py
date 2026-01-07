@@ -5,10 +5,10 @@ loading skills from backend storage via configurable sources.
 
 ## Architecture
 
-Skills are loaded from one or more **sources** - named locations in a backend where
-skills are organized. Sources are loaded in order, with later sources overriding
-earlier ones when skills have the same name (last one wins). This enables layering:
-base -> user -> project -> team skills.
+Skills are loaded from one or more **sources** - paths in a backend where skills are
+organized. Sources are loaded in order, with later sources overriding earlier ones
+when skills have the same name (last one wins). This enables layering: base -> user
+-> project -> team skills.
 
 The middleware uses backend APIs exclusively (no direct filesystem access), making it
 portable across different storage backends (filesystem, state, remote storage, etc.).
@@ -49,20 +49,18 @@ Parsed from YAML frontmatter per Agent Skills specification:
 - `name`: Skill identifier (max 64 chars, lowercase alphanumeric and hyphens)
 - `description`: What the skill does (max 1024 chars)
 - `path`: Backend path to the SKILL.md file
-- `source`: Name of the source this skill came from (e.g., "user", "project")
 - Optional: `license`, `compatibility`, `metadata`, `allowed_tools`
 
-## Sources (SkillsSource)
+## Sources
 
-Configuration for where skills are stored:
-- `path`: Virtual path in backend (e.g., "/skills/user/")
-- `name`: Source name for organization (e.g., "user", "project", "team")
+Sources are simply paths to skill directories in the backend. The source name is
+derived from the last component of the path (e.g., "/skills/user/" -> "user").
 
-Default sources:
+Example sources:
 ```python
 [
-    {"path": "/skills/user/", "name": "user"},
-    {"path": "/skills/project/", "name": "project"}
+    "/skills/user/",
+    "/skills/project/"
 ]
 ```
 
@@ -82,9 +80,9 @@ from deepagents.middleware.skills import SkillsMiddleware
 middleware = SkillsMiddleware(
     backend=my_backend,
     sources=[
-        {"path": "/skills/base/", "name": "base"},
-        {"path": "/skills/user/", "name": "user"},
-        {"path": "/skills/project/", "name": "project"},
+        "/skills/base/",
+        "/skills/user/",
+        "/skills/project/",
     ],
 )
 ```
@@ -137,9 +135,6 @@ class SkillMetadata(TypedDict):
     path: str
     """Path to the SKILL.md file."""
 
-    source: str
-    """Name of the source this skill came from (e.g., "user", "project")."""
-
     license: str | None
     """License name or reference to bundled license file."""
 
@@ -151,21 +146,6 @@ class SkillMetadata(TypedDict):
 
     allowed_tools: list[str]
     """Space-delimited list of pre-approved tools. (Experimental)"""
-
-
-class SkillsSource(TypedDict):
-    """Configuration for a skill source location.
-
-    Sources are named locations in a backend where skills are organized.
-    When multiple sources are configured, later ones override earlier ones
-    (last one wins), enabling skill layering.
-    """
-
-    path: str
-    """Virtual path in backend where skills are stored (e.g., "/skills/user/")."""
-
-    name: str
-    """Source name for organization and display (e.g., "user", "project", "team")."""
 
 
 class SkillsState(AgentState):
@@ -215,7 +195,6 @@ def _parse_skill_metadata(
     content: str,
     skill_path: str,
     directory_name: str,
-    source: str,
 ) -> SkillMetadata | None:
     """Parse YAML frontmatter from SKILL.md content.
 
@@ -226,7 +205,6 @@ def _parse_skill_metadata(
         content: Content of the SKILL.md file
         skill_path: Path to the SKILL.md file (for error messages and metadata)
         directory_name: Name of the parent directory containing the skill
-        source: Name of the source this skill belongs to (e.g., "user", "project")
 
     Returns:
         SkillMetadata if parsing succeeds, None if parsing fails or validation errors occur
@@ -293,7 +271,6 @@ def _parse_skill_metadata(
         name=str(name),
         description=description_str,
         path=skill_path,
-        source=source,
         metadata=frontmatter_data.get("metadata", {}),
         license=frontmatter_data.get("license", "").strip() or None,
         compatibility=frontmatter_data.get("compatibility", "").strip() or None,
@@ -301,27 +278,26 @@ def _parse_skill_metadata(
     )
 
 
-def list_skills(backend: BackendProtocol, source: SkillsSource) -> list[SkillMetadata]:
+def list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source.
 
     Scans backend for subdirectories containing SKILL.md files, downloads their content,
     parses YAML frontmatter, and returns skill metadata.
 
     Expected structure:
-        source["path"]/
+        source_path/
         ├── skill-name/
         │   ├── SKILL.md        # Required
         │   └── helper.py       # Optional
 
     Args:
         backend: Backend instance to use for file operations
-        source: SkillsSource configuration with path and name
+        source_path: Path to the skills directory in the backend
 
     Returns:
         List of skill metadata from successfully parsed SKILL.md files
     """
-    base_path = source["path"]
-    source_name = source["name"]
+    base_path = source_path
 
     skills: list[SkillMetadata] = []
     items = backend.ls_info(base_path)
@@ -370,7 +346,6 @@ def list_skills(backend: BackendProtocol, source: SkillsSource) -> list[SkillMet
             content=content,
             skill_path=skill_md_path,
             directory_name=directory_name,
-            source=source_name,
         )
         if skill_metadata:
             skills.append(skill_metadata)
@@ -436,26 +411,26 @@ class SkillsMiddleware(AgentMiddleware):
         middleware = SkillsMiddleware(
             backend=backend,
             sources=[
-                {"path": "/path/to/skills/user/", "name": "user"},
-                {"path": "/path/to/skills/project/", "name": "project"},
+                "/path/to/skills/user/",
+                "/path/to/skills/project/",
             ],
         )
         ```
 
     Args:
         backend: Backend instance for file operations
-        sources: List of SkillsSource configurations. Defaults to user and project sources.
+        sources: List of skill source paths. Source names are derived from the last path component.
     """
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BACKEND_TYPES, sources: list[SkillsSource]) -> None:
+    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str]) -> None:
         """Initialize the skills middleware.
 
         Args:
             backend: Backend instance or factory function that takes runtime and returns a backend.
                      Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
-            sources: List of skill source configurations.
+            sources: List of skill source paths (e.g., ["/skills/user/", "/skills/project/"]).
         """
         self._backend = backend
         self.sources = sources
@@ -490,40 +465,24 @@ class SkillsMiddleware(AgentMiddleware):
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
         locations = []
-        for i, source in enumerate(self.sources):
-            name = source["name"].capitalize()
-            path = source["path"]
+        for i, source_path in enumerate(self.sources):
+            name = PurePosixPath(source_path.rstrip("/")).name.capitalize()
             suffix = " (higher priority)" if i == len(self.sources) - 1 else ""
-            locations.append(f"**{name} Skills**: `{path}`{suffix}")
+            locations.append(f"**{name} Skills**: `{source_path}`{suffix}")
         return "\n".join(locations)
 
     def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
         """Format skills metadata for display in system prompt."""
         if not skills:
-            paths = [f"{source['path']}" for source in self.sources]
+            paths = [f"{source_path}" for source_path in self.sources]
             return f"(No skills available yet. You can create skills in {' or '.join(paths)})"
 
-        # Group skills by source name
-        skills_by_source: dict[str, list[SkillMetadata]] = {}
-        for skill in skills:
-            source_name = skill["source"]
-            if source_name not in skills_by_source:
-                skills_by_source[source_name] = []
-            skills_by_source[source_name].append(skill)
-
         lines = []
-        # Show in source order
-        for source in self.sources:
-            source_name = source["name"]
-            if source_name in skills_by_source:
-                name_display = source_name.capitalize()
-                lines.append(f"**{name_display} Skills:**")
-                for skill in skills_by_source[source_name]:
-                    lines.append(f"- **{skill['name']}**: {skill['description']}")
-                    lines.append(f"  -> Read `{skill['path']}` for full instructions")
-                lines.append("")
+        for skill in skills:
+            lines.append(f"- **{skill['name']}**: {skill['description']}")
+            lines.append(f"  -> Read `{skill['path']}` for full instructions")
 
-        return "\n".join(lines).rstrip()
+        return "\n".join(lines)
 
     def modify_request(self, request: ModelRequest) -> ModelRequest:
         """Inject skills documentation into a model request's system prompt.
@@ -576,8 +535,8 @@ class SkillsMiddleware(AgentMiddleware):
 
         # Load skills from each source in order
         # Later sources override earlier ones (last one wins)
-        for source in self.sources:
-            source_skills = list_skills(backend, source)
+        for source_path in self.sources:
+            source_skills = list_skills(backend, source_path)
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
@@ -619,4 +578,4 @@ class SkillsMiddleware(AgentMiddleware):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware", "SkillsSource", "list_skills"]
+__all__ = ["SkillMetadata", "SkillsMiddleware", "list_skills"]

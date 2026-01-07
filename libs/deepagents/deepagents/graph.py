@@ -22,7 +22,7 @@ from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.skills import SkillsMiddleware, SkillsSource
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
@@ -47,7 +47,7 @@ def create_deep_agent(
     system_prompt: str | None = None,
     middleware: Sequence[AgentMiddleware] = (),
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
-    skills: list[SkillsSource] | None = None,
+    skills: list[str] | None = None,
     response_format: ResponseFormat | None = None,
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
@@ -83,7 +83,7 @@ def create_deep_agent(
                 - (optional) `model` (either a LanguageModelLike instance or dict
                   settings)
                 - (optional) `middleware` (list of AgentMiddleware)
-        skills: Optional list of skill sources. Each source is a dict with 'path' and 'name' keys.
+        skills: Optional list of skill source paths (e.g., ["/skills/user/", "/skills/project/"]).
             Paths are relative to the backend. When using StateBackend (default), provide skill
             files via `invoke(files={...})`. With FilesystemBackend, skills are loaded from disk.
             Later sources override earlier ones for skills with the same name.

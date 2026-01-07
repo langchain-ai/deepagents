@@ -4,18 +4,30 @@ This module tests the skills middleware and helper functions using temporary
 directories and the FilesystemBackend in normal (non-virtual) mode.
 """
 
+from datetime import UTC, datetime
 from pathlib import Path
 
+from langchain.agents import create_agent
+from langchain.tools import ToolRuntime
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
+
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.state import StateBackend
+from deepagents.backends.store import StoreBackend
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import (
     MAX_SKILL_DESCRIPTION_LENGTH,
     MAX_SKILL_FILE_SIZE,
     SkillMetadata,
     SkillsMiddleware,
-    _list_skills_from_backend,
+    _list_skills,
     _parse_skill_metadata,
     _validate_skill_name,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def make_skill_content(name: str, description: str) -> str:
@@ -37,11 +49,6 @@ description: {description}
 
 Instructions go here.
 """
-
-
-# ============================================================================
-# Tests for _validate_skill_name
-# ============================================================================
 
 
 def test_validate_skill_name_valid() -> None:
@@ -106,11 +113,6 @@ def test_validate_skill_name_invalid() -> None:
     assert "must match directory" in error
 
 
-# ============================================================================
-# Tests for _parse_skill_metadata
-# ============================================================================
-
-
 def test_parse_skill_metadata_valid() -> None:
     """Test _parse_skill_metadata with valid YAML frontmatter."""
     content = """---
@@ -129,17 +131,17 @@ allowed-tools: read_file write_file
 Instructions here.
 """
 
-    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill", "user")
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
 
-    assert result is not None
-    assert result["name"] == "test-skill"
-    assert result["description"] == "A test skill"
-    assert result["license"] == "MIT"
-    assert result["compatibility"] == "Python 3.8+"
-    assert result["metadata"] == {"author": "Test Author", "version": "1.0.0"}
-    assert result["allowed_tools"] == ["read_file", "write_file"]
-    assert result["path"] == "/skills/test-skill/SKILL.md"
-    assert result["registry"] == "user"
+    assert result == {
+        "name": "test-skill",
+        "description": "A test skill",
+        "license": "MIT",
+        "compatibility": "Python 3.8+",
+        "metadata": {"author": "Test Author", "version": "1.0.0"},
+        "allowed_tools": ["read_file", "write_file"],
+        "path": "/skills/test-skill/SKILL.md",
+    }
 
 
 def test_parse_skill_metadata_minimal() -> None:
@@ -152,16 +154,17 @@ description: Minimal skill
 # Minimal Skill
 """
 
-    result = _parse_skill_metadata(content, "/skills/minimal-skill/SKILL.md", "minimal-skill", "project")
+    result = _parse_skill_metadata(content, "/skills/minimal-skill/SKILL.md", "minimal-skill")
 
-    assert result is not None
-    assert result["name"] == "minimal-skill"
-    assert result["description"] == "Minimal skill"
-    assert result["license"] is None
-    assert result["compatibility"] is None
-    assert result["metadata"] == {}
-    assert result["allowed_tools"] == []
-    assert result["registry"] == "project"
+    assert result == {
+        "name": "minimal-skill",
+        "description": "Minimal skill",
+        "license": None,
+        "compatibility": None,
+        "metadata": {},
+        "allowed_tools": [],
+        "path": "/skills/minimal-skill/SKILL.md",
+    }
 
 
 def test_parse_skill_metadata_no_frontmatter() -> None:
@@ -171,7 +174,7 @@ def test_parse_skill_metadata_no_frontmatter() -> None:
 No YAML frontmatter here.
 """
 
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test", "user")
+    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test")
     assert result is None
 
 
@@ -185,7 +188,7 @@ description: [unclosed list
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test", "user")
+    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test")
     assert result is None
 
 
@@ -198,7 +201,7 @@ name: test-skill
 
 Content
 """
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test", "user")
+    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test")
     assert result is None
 
     # Missing name
@@ -208,7 +211,7 @@ description: Test skill
 
 Content
 """
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test", "user")
+    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test")
     assert result is None
 
 
@@ -223,7 +226,7 @@ description: {long_description}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill", "user")
+    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
     assert result is not None
     assert len(result["description"]) == MAX_SKILL_DESCRIPTION_LENGTH
 
@@ -238,7 +241,7 @@ description: Test
 
 """ + ("X" * MAX_SKILL_FILE_SIZE)
 
-    result = _parse_skill_metadata(large_content, "/skills/test/SKILL.md", "test-skill", "user")
+    result = _parse_skill_metadata(large_content, "/skills/test/SKILL.md", "test-skill")
     assert result is None
 
 
@@ -254,15 +257,10 @@ compatibility: ""
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill", "user")
+    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
     assert result is not None
     assert result["license"] is None  # Empty string should become None
     assert result["compatibility"] is None  # Empty string should become None
-
-
-# ============================================================================
-# Tests for _list_skills_from_backend
-# ============================================================================
 
 
 def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
@@ -279,14 +277,13 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
     assert responses[0].error is None
 
     # List skills using the full absolute path
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    skills = _list_skills(backend, str(skills_dir))
 
     assert skills == [
         {
             "name": "my-skill",
             "description": "My test skill",
             "path": skill_path,
-            "registry": "user",
             "metadata": {},
             "license": None,
             "compatibility": None,
@@ -320,7 +317,7 @@ def test_list_skills_from_backend_multiple_skills(tmp_path: Path) -> None:
     assert all(r.error is None for r in responses)
 
     # List skills
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    skills = _list_skills(backend, str(skills_dir))
 
     # Should return all three skills (order may vary)
     assert len(skills) == 3
@@ -337,7 +334,7 @@ def test_list_skills_from_backend_empty_directory(tmp_path: Path) -> None:
     skills_dir.mkdir()
 
     # Should return empty list
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    skills = _list_skills(backend, str(skills_dir))
     assert skills == []
 
 
@@ -346,7 +343,7 @@ def test_list_skills_from_backend_nonexistent_path(tmp_path: Path) -> None:
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Try to list from non-existent directory
-    skills = _list_skills_from_backend(backend, str(tmp_path / "nonexistent"), "user")
+    skills = _list_skills(backend, str(tmp_path / "nonexistent"))
     assert skills == []
 
 
@@ -369,10 +366,19 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     )
 
     # List skills - should only get the valid one
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    skills = _list_skills(backend, str(skills_dir))
 
-    assert len(skills) == 1
-    assert skills[0]["name"] == "valid-skill"
+    assert skills == [
+        {
+            "name": "valid-skill",
+            "description": "Valid skill",
+            "path": valid_skill_path,
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
 
 
 def test_list_skills_from_backend_invalid_frontmatter(tmp_path: Path) -> None:
@@ -400,10 +406,19 @@ Content
     )
 
     # Should only get the valid skill
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    skills = _list_skills(backend, str(skills_dir))
 
-    assert len(skills) == 1
-    assert skills[0]["name"] == "valid-skill"
+    assert skills == [
+        {
+            "name": "valid-skill",
+            "description": "Valid skill",
+            "path": valid_skill_path,
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
 
 
 def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
@@ -426,22 +441,27 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     )
 
     # List skills - should find the skill and not be confused by helper files
-    skills = _list_skills_from_backend(backend, str(skills_dir), "user")
+    skills = _list_skills(backend, str(skills_dir))
 
-    assert len(skills) == 1
-    assert skills[0]["name"] == "my-skill"
-
-
-# ============================================================================
-# Tests for SkillsMiddleware
-# ============================================================================
+    assert skills == [
+        {
+            "name": "my-skill",
+            "description": "My test skill",
+            "path": skill_path,
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
 
 
 def test_format_skills_locations_single_registry() -> None:
-    """Test _format_skills_locations with a single registry."""
+    """Test _format_skills_locations with a single source."""
+    sources = ["/skills/user/"]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[{"path": "/skills/user/", "name": "user"}],
+        sources=sources,
     )
 
     result = middleware._format_skills_locations()
@@ -451,14 +471,15 @@ def test_format_skills_locations_single_registry() -> None:
 
 
 def test_format_skills_locations_multiple_registries() -> None:
-    """Test _format_skills_locations with multiple registries."""
+    """Test _format_skills_locations with multiple sources."""
+    sources = [
+        "/skills/base/",
+        "/skills/user/",
+        "/skills/project/",
+    ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[
-            {"path": "/skills/base/", "name": "base"},
-            {"path": "/skills/user/", "name": "user"},
-            {"path": "/skills/project/", "name": "project"},
-        ],
+        sources=sources,
     )
 
     result = middleware._format_skills_locations()
@@ -471,12 +492,13 @@ def test_format_skills_locations_multiple_registries() -> None:
 
 def test_format_skills_list_empty() -> None:
     """Test _format_skills_list with no skills."""
+    sources = [
+        "/skills/user/",
+        "/skills/project/",
+    ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[
-            {"path": "/skills/user/", "name": "user"},
-            {"path": "/skills/project/", "name": "project"},
-        ],
+        sources=sources,
     )
 
     result = middleware._format_skills_list([])
@@ -487,9 +509,10 @@ def test_format_skills_list_empty() -> None:
 
 def test_format_skills_list_single_skill() -> None:
     """Test _format_skills_list with a single skill."""
+    sources = ["/skills/user/"]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[{"path": "/skills/user/", "name": "user"}],
+        sources=sources,
     )
 
     skills: list[SkillMetadata] = [
@@ -497,7 +520,6 @@ def test_format_skills_list_single_skill() -> None:
             "name": "web-research",
             "description": "Research topics on the web",
             "path": "/skills/user/web-research/SKILL.md",
-            "registry": "user",
             "license": None,
             "compatibility": None,
             "metadata": {},
@@ -509,17 +531,17 @@ def test_format_skills_list_single_skill() -> None:
     assert "web-research" in result
     assert "Research topics on the web" in result
     assert "/skills/user/web-research/SKILL.md" in result
-    assert "User Skills" in result
 
 
 def test_format_skills_list_multiple_skills_multiple_registries() -> None:
-    """Test _format_skills_list with skills from multiple registries."""
+    """Test _format_skills_list with skills from multiple sources."""
+    sources = [
+        "/skills/user/",
+        "/skills/project/",
+    ]
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore
-        registries=[
-            {"path": "/skills/user/", "name": "user"},
-            {"path": "/skills/project/", "name": "project"},
-        ],
+        sources=sources,
     )
 
     skills: list[SkillMetadata] = [
@@ -527,7 +549,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "name": "skill-a",
             "description": "User skill A",
             "path": "/skills/user/skill-a/SKILL.md",
-            "registry": "user",
             "license": None,
             "compatibility": None,
             "metadata": {},
@@ -537,7 +558,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "name": "skill-b",
             "description": "Project skill B",
             "path": "/skills/project/skill-b/SKILL.md",
-            "registry": "project",
             "license": None,
             "compatibility": None,
             "metadata": {},
@@ -547,7 +567,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "name": "skill-c",
             "description": "User skill C",
             "path": "/skills/user/skill-c/SKILL.md",
-            "registry": "user",
             "license": None,
             "compatibility": None,
             "metadata": {},
@@ -561,10 +580,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
     assert "skill-a" in result
     assert "skill-b" in result
     assert "skill-c" in result
-
-    # Check registry headings
-    assert "User Skills" in result
-    assert "Project Skills" in result
 
     # Check descriptions
     assert "User skill A" in result
@@ -591,9 +606,10 @@ def test_before_agent_loads_skills(tmp_path: Path) -> None:
         ]
     )
 
+    sources = [str(skills_dir)]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=[{"path": str(skills_dir), "name": "user"}],
+        sources=sources,
     )
 
     # Call before_agent
@@ -608,10 +624,10 @@ def test_before_agent_loads_skills(tmp_path: Path) -> None:
 
 
 def test_before_agent_skill_override(tmp_path: Path) -> None:
-    """Test that skills from later registries override earlier ones."""
+    """Test that skills from later sources override earlier ones."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    # Create same skill name in two registries
+    # Create same skill name in two sources
     base_dir = tmp_path / "skills" / "base"
     user_dir = tmp_path / "skills" / "user"
 
@@ -628,12 +644,13 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
         ]
     )
 
+    sources = [
+        str(base_dir),
+        str(user_dir),
+    ]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=[
-            {"path": str(base_dir), "name": "base"},
-            {"path": str(user_dir), "name": "user"},
-        ],
+        sources=sources,
     )
 
     # Call before_agent
@@ -642,26 +659,436 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     assert result is not None
     assert len(result["skills_metadata"]) == 1
 
-    # Should have the user version (later registry wins)
+    # Should have the user version (later source wins)
     skill = result["skills_metadata"][0]
-    assert skill["name"] == "shared-skill"
-    assert skill["description"] == "User description"
-    assert skill["registry"] == "user"
+    assert skill == {
+        "name": "shared-skill",
+        "description": "User description",
+        "path": user_skill_path,
+        "metadata": {},
+        "license": None,
+        "compatibility": None,
+        "allowed_tools": [],
+    }
 
 
 def test_before_agent_empty_registries(tmp_path: Path) -> None:
-    """Test before_agent with empty registries."""
+    """Test before_agent with empty sources."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create empty directories
     (tmp_path / "skills" / "user").mkdir(parents=True)
 
+    sources = [str(tmp_path / "skills" / "user")]
     middleware = SkillsMiddleware(
         backend=backend,
-        registries=[{"path": str(tmp_path / "skills" / "user"), "name": "user"}],
+        sources=sources,
     )
 
     result = middleware.before_agent({}, None)  # type: ignore
 
     assert result is not None
     assert result["skills_metadata"] == []
+
+
+def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
+    """Test that skills middleware injects skills into the system prompt."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill for demonstration")
+
+    responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+    assert responses[0].error is None
+
+    # Create a fake chat model that we can inspect
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="I have processed your request using the test-skill."),
+            ]
+        )
+    )
+
+    # Create middleware
+    sources = [str(skills_dir)]
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=sources,
+    )
+
+    # Create agent with middleware
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    # Invoke the agent
+    result = agent.invoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+
+    # Verify the agent was invoked
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+    # Inspect the call history to verify system prompt was injected
+    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+
+    # Get the first call
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+
+    system_message = messages[0]
+    assert system_message.type == "system", "First message should be system prompt"
+    content = system_message.text
+    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert "test-skill" in content, "System prompt should mention the skill name"
+
+
+def test_skills_middleware_with_state_backend_factory() -> None:
+    """Test that SkillsMiddleware can be initialized with StateBackend factory."""
+    # Test that the middleware accepts StateBackend as a factory function
+    # This is the recommended pattern for StateBackend since it needs runtime context
+    sources = ["/skills/user"]
+    middleware = SkillsMiddleware(
+        backend=lambda rt: StateBackend(rt),
+        sources=sources,
+    )
+
+    # Verify the middleware was created successfully
+    assert middleware is not None
+    assert callable(middleware._backend)
+    assert len(middleware.sources) == 1
+    assert middleware.sources[0] == "/skills/user"
+
+    runtime = ToolRuntime(
+        state={"messages": [], "files": {}},
+        context=None,
+        tool_call_id="test",
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+    backend = middleware._get_backend({"messages": [], "files": {}}, runtime)
+    assert isinstance(backend, StateBackend)
+    assert backend.runtime is not None
+
+
+def test_skills_middleware_with_store_backend_factory() -> None:
+    """Test that SkillsMiddleware can be initialized with StoreBackend factory."""
+    # Test that the middleware accepts StoreBackend as a factory function
+    # This is the recommended pattern for StoreBackend since it needs runtime context with store
+    sources = ["/skills/user"]
+    middleware = SkillsMiddleware(
+        backend=lambda rt: StoreBackend(rt),
+        sources=sources,
+    )
+
+    # Verify the middleware was created successfully
+    assert middleware is not None
+    assert callable(middleware._backend)
+    assert len(middleware.sources) == 1
+    assert middleware.sources[0] == "/skills/user"
+
+    # Test that we can create a runtime with store and get a backend from the factory
+    store = InMemoryStore()
+    runtime = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="test",
+        store=store,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+    backend = middleware._get_backend({"messages": [], "files": {}}, runtime)
+    assert isinstance(backend, StoreBackend)
+    assert backend.runtime is not None
+
+
+async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
+    """Test that skills middleware works with async agent invocation."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "async-skill" / "SKILL.md")
+    skill_content = make_skill_content("async-skill", "A test skill for async testing")
+
+    responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+    assert responses[0].error is None
+
+    # Create a fake chat model
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="I have processed your async request using the async-skill."),
+            ]
+        )
+    )
+
+    # Create middleware
+    sources = [str(skills_dir)]
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=sources,
+    )
+
+    # Create agent with middleware
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    # Invoke the agent asynchronously
+    result = await agent.ainvoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+
+    # Verify the agent was invoked
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+    # Verify skills_metadata is NOT in final state (it's a PrivateStateAttr)
+    assert "skills_metadata" not in result, "skills_metadata should be private and not in final state"
+
+    # Inspect the call history to verify system prompt was injected
+    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+
+    # Get the first call
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+
+    system_message = messages[0]
+    assert system_message.type == "system", "First message should be system prompt"
+    content = system_message.text
+    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert "async-skill" in content, "System prompt should mention the skill name"
+
+
+def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Path) -> None:
+    """Test skills middleware with multiple sources where later sources override earlier ones."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    # Create same-named skill in two sources with different descriptions
+    base_dir = tmp_path / "skills" / "base"
+    user_dir = tmp_path / "skills" / "user"
+
+    base_skill_path = str(base_dir / "shared-skill" / "SKILL.md")
+    user_skill_path = str(user_dir / "shared-skill" / "SKILL.md")
+
+    base_content = make_skill_content("shared-skill", "Base registry description")
+    user_content = make_skill_content("shared-skill", "User registry description - should win")
+
+    responses = backend.upload_files(
+        [
+            (base_skill_path, base_content.encode("utf-8")),
+            (user_skill_path, user_content.encode("utf-8")),
+        ]
+    )
+    assert all(r.error is None for r in responses)
+
+    # Create a fake chat model
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="I have processed your request."),
+            ]
+        )
+    )
+
+    # Create middleware with multiple sources - user should override base
+    sources = [
+        str(base_dir),
+        str(user_dir),
+    ]
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=sources,
+    )
+
+    # Create agent with middleware
+    agent = create_agent(
+        model=fake_model,
+        middleware=[middleware],
+    )
+
+    # Invoke the agent
+    result = agent.invoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+
+    # Verify the agent was invoked
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+    # Verify skills_metadata is NOT in final state (it's a PrivateStateAttr)
+    assert "skills_metadata" not in result, "skills_metadata should be private and not in final state"
+
+    # Inspect the call history to verify system prompt was injected with USER version
+    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+
+    # Get the first call
+    first_call = fake_model.call_history[0]
+    messages = first_call["messages"]
+
+    system_message = messages[0]
+    assert system_message.type == "system", "First message should be system prompt"
+    content = system_message.text
+    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert "shared-skill" in content, "System prompt should mention the skill name"
+    assert "User registry description - should win" in content, "Should use user source description"
+    assert "Base registry description" not in content, "Should not contain base source description"
+
+
+def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
+    """Test that before_agent skips loading if skills_metadata is already in state."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    # Create a skill in the backend
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    sources = [str(skills_dir)]
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=sources,
+    )
+
+    # Case 1: State has skills_metadata with some skills
+    existing_metadata: list[SkillMetadata] = [
+        {
+            "name": "existing-skill",
+            "description": "An existing skill",
+            "path": "/some/path/SKILL.md",
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
+    state_with_metadata = {"skills_metadata": existing_metadata}
+    result = middleware.before_agent(state_with_metadata, None)  # type: ignore
+
+    # Should return None, not load new skills
+    assert result is None
+
+    # Case 2: State has empty list for skills_metadata
+    state_with_empty_list = {"skills_metadata": []}
+    result = middleware.before_agent(state_with_empty_list, None)  # type: ignore
+
+    # Should still return None and not reload
+    assert result is None
+
+    # Case 3: State does NOT have skills_metadata key
+    state_without_metadata = {}
+    result = middleware.before_agent(state_without_metadata, None)  # type: ignore
+
+    # Should load skills and return update
+    assert result is not None
+    assert "skills_metadata" in result
+    assert len(result["skills_metadata"]) == 1
+    assert result["skills_metadata"][0]["name"] == "test-skill"
+
+
+def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) -> None:
+    """Test end-to-end: create_deep_agent with skills parameter and FilesystemBackend."""
+    # Create skill on filesystem
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skill_path = str(skills_dir / "test-skill" / "SKILL.md")
+    skill_content = make_skill_content("test-skill", "A test skill for deep agents")
+
+    backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+
+    # Create agent with skills parameter and FilesystemBackend
+    agent = create_deep_agent(
+        backend=backend,
+        skills=[str(skills_dir)],
+        model=GenericFakeChatModel(messages=iter([AIMessage(content="I see the test-skill in the system prompt.")])),
+    )
+
+    # Invoke agent
+    result = agent.invoke({"messages": [HumanMessage(content="What skills are available?")]})
+
+    # Verify invocation succeeded
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+
+def test_create_deep_agent_with_skills_empty_directory(tmp_path: Path) -> None:
+    """Test that skills work gracefully when no skills are found (empty directory)."""
+    # Create empty skills directory
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skills_dir = tmp_path / "skills" / "user"
+    skills_dir.mkdir(parents=True)
+
+    # Create agent with skills parameter but empty directory
+    agent = create_deep_agent(
+        backend=backend,
+        skills=[str(skills_dir)],
+        model=GenericFakeChatModel(messages=iter([AIMessage(content="No skills found, but that's okay.")])),
+    )
+
+    # Invoke agent
+    result = agent.invoke({"messages": [HumanMessage(content="What skills are available?")]})
+
+    # Verify invocation succeeded even without skills
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+
+def test_create_deep_agent_with_skills_default_backend() -> None:
+    """Test create_deep_agent with skills parameter using default backend (no backend specified).
+
+    When no backend is specified, StateBackend is used by tools. Since SkillsMiddleware
+    receives None for backend (no explicit backend provided), it logs a warning and
+    returns empty skills. However, if we pass files via invoke(), tools can still
+    access those files via StateBackend.
+    """
+    checkpointer = InMemorySaver()
+    agent = create_deep_agent(
+        skills=["/skills/user"],
+        model=GenericFakeChatModel(messages=iter([AIMessage(content="Working with default backend.")])),
+        checkpointer=checkpointer,
+    )
+
+    # Create skill content with proper
+    skill_content = make_skill_content("test-skill", "A test skill for default backend")
+    timestamp = datetime.now(UTC).isoformat()
+
+    # Prepare files dict with FileData format (for StateBackend tools)
+    # Note: SkillsMiddleware will still get backend=None, so it won't load these
+    # But this demonstrates the proper format for StateBackend
+    skill_files = {
+        "/skills/user/test-skill/SKILL.md": {
+            "content": skill_content.split("\n"),
+            "created_at": timestamp,
+            "modified_at": timestamp,
+        }
+    }
+
+    config: RunnableConfig = {"configurable": {"thread_id": "123"}}
+
+    # Invoke agent with files parameter
+    # Skills won't be loaded (backend=None for SkillsMiddleware), but tools can access files
+    result = agent.invoke(
+        {
+            "messages": [HumanMessage(content="What skills are available?")],
+            "files": skill_files,
+        },
+        config,
+    )
+
+    assert len(result["messages"]) > 0
+
+    checkpoint = agent.checkpointer.get(config)
+    assert "/skills/user/test-skill/SKILL.md" in checkpoint["channel_values"]["files"]
+    assert checkpoint["channel_values"]["skills_metadata"] == [
+        {
+            "allowed_tools": [],
+            "compatibility": None,
+            "description": "A test skill for default backend",
+            "license": None,
+            "metadata": {},
+            "name": "test-skill",
+            "path": "/skills/user/test-skill/SKILL.md",
+        },
+    ]

@@ -23,6 +23,7 @@ class GenericFakeChatModel(BaseChatModel):
     * Invokes `on_llm_new_token` to allow for testing of callback related code for new
         tokens.
     * Includes configurable logic to break messages into chunks for streaming.
+    * Tracks all invoke calls for inspection (messages, kwargs)
 
     Args:
         messages: An iterator over messages (use `iter()` to convert a list)
@@ -50,6 +51,12 @@ class GenericFakeChatModel(BaseChatModel):
             stream_delimiter=r"(\\s)"
         )
         # Yields: "Hello", " ", "world"
+
+        # Access call history
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="Hello")]))
+        model.invoke([HumanMessage(content="Hi")])
+        print(model.call_history[0]["messages"])
+        print(model.call_history[0]["kwargs"])
     """
 
     messages: Iterator[AIMessage | str]
@@ -62,6 +69,8 @@ class GenericFakeChatModel(BaseChatModel):
         if you want to pass a list, you can use `iter` to convert it to an iterator.
     """
 
+    call_history: list[Any] = []
+
     stream_delimiter: str | None = None
     """Delimiter for chunking content during streaming.
 
@@ -69,6 +78,10 @@ class GenericFakeChatModel(BaseChatModel):
     - String: Split content on this exact string, preserving delimiter as chunks
     - Regex pattern: Use re.split() with the pattern (use capture groups to preserve delimiters)
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize the fake chat model with call tracking."""
+        super().__init__(**kwargs)
 
     def bind_tools(
         self,
@@ -88,6 +101,18 @@ class GenericFakeChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        # Record this call
+        self.call_history.append(
+            {
+                "messages": messages,
+                "kwargs": {
+                    "stop": stop,
+                    "run_manager": run_manager,
+                    **kwargs,
+                },
+            }
+        )
+
         message = next(self.messages)
         message_ = AIMessage(content=message) if isinstance(message, str) else message
         generation = ChatGeneration(message=message_)

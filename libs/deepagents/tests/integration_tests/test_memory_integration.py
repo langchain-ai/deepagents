@@ -19,7 +19,7 @@ from deepagents.middleware.memory import (
 class TestMemoryLoadingFlow:
     """Test the complete memory loading flow."""
 
-    def test_full_loading_flow(self, tmp_path: Path) -> None:
+    async def test_full_loading_flow(self, tmp_path: Path) -> None:
         """Test complete flow: init -> before_agent -> wrap_model_call."""
         # Setup: Create memory files
         user_dir = tmp_path / "user"
@@ -44,7 +44,7 @@ class TestMemoryLoadingFlow:
 
         # Step 1: before_agent should load memory
         initial_state: MemoryState = {}
-        state_update = middleware.before_agent(initial_state, None)  # type: ignore
+        state_update = await middleware.abefore_agent(initial_state, None)  # type: ignore
 
         assert state_update is not None
         assert "memory_contents" in state_update
@@ -87,7 +87,7 @@ class TestMemoryLoadingFlow:
         assert "You are a helpful assistant." in captured_prompt
         assert "Agent Memory" in captured_prompt
 
-    def test_memory_persists_across_calls(self, tmp_path: Path) -> None:
+    async def test_memory_persists_across_calls(self, tmp_path: Path) -> None:
         """Test that memory is only loaded once and persists."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -101,7 +101,7 @@ class TestMemoryLoadingFlow:
 
         # First call - should load
         state1: MemoryState = {}
-        update1 = middleware.before_agent(state1, None)  # type: ignore
+        update1 = await middleware.abefore_agent(state1, None)  # type: ignore
         assert update1 is not None
         assert update1["memory_contents"]["test"] == "Initial content"
 
@@ -110,12 +110,12 @@ class TestMemoryLoadingFlow:
 
         # Second call with memory already in state - should NOT reload
         state2: MemoryState = {"memory_contents": update1["memory_contents"]}
-        update2 = middleware.before_agent(state2, None)  # type: ignore
+        update2 = await middleware.abefore_agent(state2, None)  # type: ignore
         assert update2 is None  # No update needed
 
         # Third call with fresh state - SHOULD reload (gets new content)
         state3: MemoryState = {}
-        update3 = middleware.before_agent(state3, None)  # type: ignore
+        update3 = await middleware.abefore_agent(state3, None)  # type: ignore
         assert update3 is not None
         assert update3["memory_contents"]["test"] == "Changed content"
 
@@ -123,7 +123,7 @@ class TestMemoryLoadingFlow:
 class TestMemorySourceCombination:
     """Test how multiple memory sources are combined."""
 
-    def test_sources_combined_in_order(self, tmp_path: Path) -> None:
+    async def test_sources_combined_in_order(self, tmp_path: Path) -> None:
         """Test that sources are combined in the order specified."""
         # Create three sources
         for name in ["first", "second", "third"]:
@@ -142,7 +142,7 @@ class TestMemorySourceCombination:
         )
 
         state: MemoryState = {}
-        update = middleware.before_agent(state, None)  # type: ignore
+        update = await middleware.abefore_agent(state, None)  # type: ignore
 
         # All three should be loaded
         assert len(update["memory_contents"]) == 3
@@ -156,7 +156,7 @@ class TestMemorySourceCombination:
 
         assert first_pos < second_pos < third_pos
 
-    def test_partial_sources_loaded(self, tmp_path: Path) -> None:
+    async def test_partial_sources_loaded(self, tmp_path: Path) -> None:
         """Test that missing sources don't block others from loading."""
         # Only create one of the sources
         existing = tmp_path / "existing"
@@ -174,7 +174,7 @@ class TestMemorySourceCombination:
         )
 
         state: MemoryState = {}
-        update = middleware.before_agent(state, None)  # type: ignore
+        update = await middleware.abefore_agent(state, None)  # type: ignore
 
         # Only existing should be loaded
         assert "existing" in update["memory_contents"]
@@ -253,7 +253,7 @@ class TestSystemPromptInjection:
 class TestBackendCompatibility:
     """Test compatibility with different backend types."""
 
-    def test_filesystem_backend_direct(self, tmp_path: Path) -> None:
+    async def test_filesystem_backend_direct(self, tmp_path: Path) -> None:
         """Test with FilesystemBackend passed directly."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -266,11 +266,11 @@ class TestBackendCompatibility:
         )
 
         state: MemoryState = {}
-        update = middleware.before_agent(state, None)  # type: ignore
+        update = await middleware.abefore_agent(state, None)  # type: ignore
 
         assert update["memory_contents"]["test"] == "Direct backend test"
 
-    def test_factory_backend_pattern(self, tmp_path: Path) -> None:
+    async def test_factory_backend_pattern(self, tmp_path: Path) -> None:
         """Test with factory function for backend creation."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -293,7 +293,7 @@ class TestBackendCompatibility:
 
         state: MemoryState = {}
         mock_runtime = MagicMock()
-        update = middleware.before_agent(state, mock_runtime)
+        update = await middleware.abefore_agent(state, mock_runtime)
 
         assert factory_called, "Factory should have been called"
         assert update["memory_contents"]["test"] == "Factory backend test"
@@ -302,7 +302,7 @@ class TestBackendCompatibility:
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_empty_memory_file(self, tmp_path: Path) -> None:
+    async def test_empty_memory_file(self, tmp_path: Path) -> None:
         """Test handling of empty AGENTS.md file."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -315,12 +315,12 @@ class TestEdgeCases:
         )
 
         state: MemoryState = {}
-        update = middleware.before_agent(state, None)  # type: ignore
+        update = await middleware.abefore_agent(state, None)  # type: ignore
 
         # Empty files are not included (nothing to load)
         assert "test" not in update["memory_contents"]
 
-    def test_large_memory_file(self, tmp_path: Path) -> None:
+    async def test_large_memory_file(self, tmp_path: Path) -> None:
         """Test handling of large memory files."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -336,11 +336,11 @@ class TestEdgeCases:
         )
 
         state: MemoryState = {}
-        update = middleware.before_agent(state, None)  # type: ignore
+        update = await middleware.abefore_agent(state, None)  # type: ignore
 
         assert update["memory_contents"]["test"] == large_content
 
-    def test_unicode_content(self, tmp_path: Path) -> None:
+    async def test_unicode_content(self, tmp_path: Path) -> None:
         """Test handling of unicode characters."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -355,12 +355,12 @@ class TestEdgeCases:
         )
 
         state: MemoryState = {}
-        update = middleware.before_agent(state, None)  # type: ignore
+        update = await middleware.abefore_agent(state, None)  # type: ignore
 
         assert "你好世界" in update["memory_contents"]["test"]
         assert "🎉🚀💻" in update["memory_contents"]["test"]
 
-    def test_multiline_content_preserved(self, tmp_path: Path) -> None:
+    async def test_multiline_content_preserved(self, tmp_path: Path) -> None:
         """Test that multiline content and formatting is preserved."""
         memory_dir = tmp_path / "memory"
         memory_dir.mkdir()
@@ -391,7 +391,7 @@ def example():
         )
 
         state: MemoryState = {}
-        update = middleware.before_agent(state, None)  # type: ignore
+        update = await middleware.abefore_agent(state, None)  # type: ignore
 
         loaded = update["memory_contents"]["test"]
         assert "```python" in loaded
@@ -462,7 +462,7 @@ class TestComparisonWithCLI:
         assert "</user_memory>" in formatted
         assert "Test content" in formatted
 
-    def test_multiple_sources_format(self, tmp_path: Path) -> None:
+    async def test_multiple_sources_format(self, tmp_path: Path) -> None:
         """Test that multiple sources are formatted correctly."""
         for name in ["user", "project"]:
             d = tmp_path / name
@@ -479,7 +479,7 @@ class TestComparisonWithCLI:
         )
 
         state: MemoryState = {}
-        update = middleware.before_agent(state, None)  # type: ignore
+        update = await middleware.abefore_agent(state, None)  # type: ignore
 
         formatted = middleware._format_memory_contents(update["memory_contents"])
 

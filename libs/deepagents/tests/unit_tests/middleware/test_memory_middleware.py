@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
@@ -39,10 +38,6 @@ def make_memory_content(title: str, content: str) -> str:
 
 {content}
 """
-
-
-# --- Unit Tests for Helper Methods ---
-
 
 def test_format_memory_locations_empty() -> None:
     """Test formatting with no sources."""
@@ -166,9 +161,6 @@ def test_format_memory_contents_skips_missing_sources() -> None:
     assert "User content only" in result
     assert "</user_memory>" in result
     assert "<project_memory>" not in result
-
-
-# --- Integration Tests with FilesystemBackend ---
 
 
 def test_load_memory_from_backend_single_source(tmp_path: Path) -> None:
@@ -383,9 +375,6 @@ def test_memory_content_with_large_file(tmp_path: Path) -> None:
     assert content.count("Line of content") == 500
 
 
-# --- End-to-End Tests with Agent and Fake Chat Model ---
-
-
 def test_agent_with_memory_middleware_system_prompt(tmp_path: Path) -> None:
     """Test that memory middleware injects memory into the system prompt."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -569,6 +558,7 @@ def test_memory_middleware_with_state_backend_factory() -> None:
 
     # Create a mock Runtime (simplified for testing)
     from types import SimpleNamespace
+
     state = {"messages": [], "files": {}}
     runtime = SimpleNamespace(
         context=None,
@@ -595,6 +585,7 @@ def test_memory_middleware_with_store_backend_factory() -> None:
 
     # Create a mock Runtime with store
     from types import SimpleNamespace
+
     store = InMemoryStore()
     state = {"messages": []}
     runtime = SimpleNamespace(

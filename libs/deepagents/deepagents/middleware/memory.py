@@ -56,8 +56,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
+from langchain.messages import SystemMessage
+
 if TYPE_CHECKING:
-    from deepagents.backends.protocol import BackendProtocol
+    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -118,32 +120,12 @@ You have access to persistent memory that provides context and instructions.
 - If you need to update memory, use the appropriate file editing tools
 """
 
-# Type alias for backend or factory function
-BackendOrFactory = "BackendProtocol | Callable[[Runtime], BackendProtocol]"
-
 
 class MemoryMiddleware(AgentMiddleware):
     """Middleware for loading agent memory from AGENTS.md files.
 
     Loads memory content from configured sources and injects into the system prompt.
     Supports multiple sources that are combined together.
-
-    Example:
-        ```python
-        from deepagents.backends.filesystem import FilesystemBackend
-
-        # Security: FilesystemBackend allows reading/writing from the entire filesystem.
-        # Either ensure the agent is running within a sandbox OR add human-in-the-loop (HIL)
-        # approval to file operations.
-        backend = FilesystemBackend(root_dir="/")
-        middleware = MemoryMiddleware(
-            backend=backend,
-            sources=[
-                {"path": "/home/user/.deepagents/AGENTS.md", "name": "user"},
-                {"path": "/project/.deepagents/AGENTS.md", "name": "project"},
-            ],
-        )
-        ```
 
     Args:
         backend: Backend instance or factory function for file operations.
@@ -155,7 +137,7 @@ class MemoryMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        backend: BackendOrFactory,
+        backend: BACKEND_TYPES,
         sources: list[MemorySource],
     ) -> None:
         """Initialize the memory middleware.
@@ -240,14 +222,23 @@ class MemoryMiddleware(AgentMiddleware):
         Returns:
             File content if found, None otherwise.
         """
-        try:
-            results = await backend.adownload_files([path])
-            # adownload_files returns a list of FileDownloadResponse objects
-            for response in results:
-                if response.path == path and response.content is not None and response.error is None:
-                    return response.content.decode("utf-8")
-        except Exception as e:
-            logger.debug(f"Could not load memory from {path}: {e}")
+        results = await backend.adownload_files([path])
+        # Should get exactly one response for one path
+        if len(results) != 1:
+            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+        response = results[0]
+
+        if response.error is not None:
+            # For now, memory files are treated as optional. file_not_found is expected
+            # and we skip silently to allow graceful degradation.
+            if response.error == "file_not_found":
+                return None
+            # Other errors should be raised
+            raise ValueError(f"Failed to download {path}: {response.error}")
+
+        if response.content is not None:
+            return response.content.decode("utf-8")
+
         return None
 
     def _load_memory_from_backend_sync(
@@ -264,14 +255,23 @@ class MemoryMiddleware(AgentMiddleware):
         Returns:
             File content if found, None otherwise.
         """
-        try:
-            results = backend.download_files([path])
-            # download_files returns a list of FileDownloadResponse objects
-            for response in results:
-                if response.path == path and response.content is not None and response.error is None:
-                    return response.content.decode("utf-8")
-        except Exception as e:
-            logger.debug(f"Could not load memory from {path}: {e}")
+        results = backend.download_files([path])
+        # Should get exactly one response for one path
+        if len(results) != 1:
+            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+        response = results[0]
+
+        if response.error is not None:
+            # For now, memory files are treated as optional. file_not_found is expected
+            # and we skip silently to allow graceful degradation.
+            if response.error == "file_not_found":
+                return None
+            # Other errors should be raised
+            raise ValueError(f"Failed to download {path}: {response.error}")
+
+        if response.content is not None:
+            return response.content.decode("utf-8")
+
         return None
 
     def before_agent(self, state: MemoryState, runtime: Runtime) -> MemoryStateUpdate | None:
@@ -353,7 +353,7 @@ class MemoryMiddleware(AgentMiddleware):
         else:
             system_prompt = memory_section
 
-        return request.override(system_prompt=system_prompt)
+        return request.override(system_message=SystemMessage(system_prompt))
 
     def wrap_model_call(
         self,

@@ -8,6 +8,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
+from deepagents.middleware import SkillsMiddleware
 from langchain.agents.middleware import (
     InterruptOnConfig,
 )
@@ -23,7 +24,6 @@ from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.shell import ShellMiddleware
-from deepagents_cli.skills import SkillsMiddleware
 
 
 def list_agents() -> None:
@@ -388,9 +388,9 @@ def create_cli_agent(
 
     # Add skills middleware (uses local filesystem in both local and sandbox modes)
     if enable_skills:
-        sources = [{"path": str(skills_dir), "name": "user"}]
+        sources = [str(skills_dir)]
         if project_skills_dir:
-            sources.append({"path": str(project_skills_dir), "name": "project"})
+            sources.append(str(project_skills_dir))
 
         agent_middleware.append(
             SkillsMiddleware(

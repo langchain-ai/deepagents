@@ -699,3 +699,291 @@ def test_composite_download_preserves_original_paths(tmp_path: Path):
     # Response should have the original composite path, not stripped
     assert responses[0].path == "/subdir/file.bin"
     assert responses[0].content == b"Nested file"
+
+
+def test_composite_grep_targeting_specific_route(tmp_path: Path):
+    """Test grep with path targeting a specific routed backend."""
+    rt = make_runtime("t_grep1")
+    root = tmp_path
+
+    # Setup filesystem backend with some files
+    (root / "default.txt").write_text("default backend content")
+    (root / "default2.txt").write_text("more default stuff")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Write to memories route
+    comp.write("/memories/note1.txt", "memory content alpha")
+    comp.write("/memories/note2.txt", "memory content beta")
+
+    # Grep with path="/memories/" should only search memories backend
+    matches = comp.grep_raw("memory", path="/memories/")
+    assert isinstance(matches, list)
+    match_paths = [m["path"] for m in matches]
+
+    # Should find matches in /memories/
+    assert any("/memories/note1.txt" in p for p in match_paths)
+    assert any("/memories/note2.txt" in p for p in match_paths)
+
+    # Should NOT find matches in default backend
+    assert not any("/default" in p for p in match_paths)
+
+
+def test_composite_grep_with_glob_filter(tmp_path: Path):
+    """Test grep with glob parameter to filter files."""
+    rt = make_runtime("t_grep2")
+    root = tmp_path
+
+    # Create files with different extensions
+    (root / "script.py").write_text("python code here")
+    (root / "config.json").write_text("json config here")
+    (root / "readme.md").write_text("markdown docs here")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Add some files to memories route
+    comp.write("/memories/notes.py", "python notes here")
+    comp.write("/memories/data.json", "json data here")
+
+    # Grep with glob="*.py" should only search Python files
+    matches = comp.grep_raw("here", path="/", glob="*.py")
+    assert isinstance(matches, list)
+    match_paths = [m["path"] for m in matches]
+
+    # Should find .py files
+    assert any("/script.py" in p for p in match_paths)
+    assert any("/memories/notes.py" in p for p in match_paths)
+
+    # Should NOT find non-.py files
+    assert not any(".json" in p for p in match_paths)
+    assert not any(".md" in p for p in match_paths)
+
+
+def test_composite_grep_with_glob_in_specific_route(tmp_path: Path):
+    """Test grep with glob parameter targeting a specific route."""
+    rt = make_runtime("t_grep3")
+    root = tmp_path
+
+    (root / "local.md").write_text("local markdown")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Add files to memories
+    comp.write("/memories/important.md", "important notes")
+    comp.write("/memories/data.txt", "text data")
+
+    # Grep memories with glob="*.md"
+    matches = comp.grep_raw("notes", path="/memories/", glob="*.md")
+    assert isinstance(matches, list)
+    match_paths = [m["path"] for m in matches]
+
+    # Should find .md file in memories
+    assert any("/memories/important.md" in p for p in match_paths)
+
+    # Should NOT find .txt files or default backend files
+    assert not any("/memories/data.txt" in p for p in match_paths)
+    assert not any("/local.md" in p for p in match_paths)
+
+
+def test_composite_grep_with_path_none(tmp_path: Path):
+    """Test grep with path=None behaves like path='/'."""
+    rt = make_runtime("t_grep4")
+    root = tmp_path
+
+    (root / "file1.txt").write_text("searchable content")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    comp.write("/memories/file2.txt", "searchable memory")
+
+    # Grep with path=None
+    matches_none = comp.grep_raw("searchable", path=None)
+    assert isinstance(matches_none, list)
+
+    # Grep with path="/"
+    matches_root = comp.grep_raw("searchable", path="/")
+    assert isinstance(matches_root, list)
+
+    # Both should return same results
+    paths_none = sorted([m["path"] for m in matches_none])
+    paths_root = sorted([m["path"] for m in matches_root])
+
+    assert paths_none == paths_root
+    assert len(paths_none) == 2
+
+
+def test_composite_grep_invalid_regex(tmp_path: Path):
+    """Test grep with invalid regex pattern returns error string."""
+    rt = make_runtime("t_grep5")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    comp = CompositeBackend(default=fs, routes={})
+
+    # Invalid regex patterns
+    result = comp.grep_raw("[invalid(", path="/")
+    assert isinstance(result, str)
+    assert "Invalid regex" in result or "error" in result.lower()
+
+
+def test_composite_grep_nested_path_in_route(tmp_path: Path):
+    """Test grep with nested path within a routed backend."""
+    rt = make_runtime("t_grep6")
+    root = tmp_path
+
+    (root / "local.txt").write_text("local content")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Create nested structure in memories
+    comp.write("/memories/docs/readme.md", "documentation here")
+    comp.write("/memories/docs/guide.md", "guide here")
+    comp.write("/memories/notes.txt", "notes here")
+
+    # Grep with nested path
+    matches = comp.grep_raw("here", path="/memories/docs/")
+    assert isinstance(matches, list)
+    match_paths = [m["path"] for m in matches]
+
+    # Should find files in /memories/docs/
+    assert any("/memories/docs/readme.md" in p for p in match_paths)
+    assert any("/memories/docs/guide.md" in p for p in match_paths)
+
+    # Should NOT find files outside /memories/docs/
+    assert not any("/memories/notes.txt" in p for p in match_paths)
+    assert not any("/local.txt" in p for p in match_paths)
+
+
+def test_composite_grep_empty_results(tmp_path: Path):
+    """Test grep that matches nothing returns empty list."""
+    rt = make_runtime("t_grep7")
+    root = tmp_path
+
+    (root / "file.txt").write_text("some content")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    comp.write("/memories/note.txt", "memory content")
+
+    # Search for pattern that doesn't exist
+    matches = comp.grep_raw("nonexistent_pattern_xyz", path="/")
+    assert isinstance(matches, list)
+    assert len(matches) == 0
+
+
+def test_composite_grep_route_prefix_restoration(tmp_path: Path):
+    """Test that grep correctly restores route prefixes in results."""
+    rt = make_runtime("t_grep8")
+    root = tmp_path
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Write files to memories
+    comp.write("/memories/alpha.txt", "test content alpha")
+    comp.write("/memories/beta.txt", "test content beta")
+
+    # Grep in memories route
+    matches = comp.grep_raw("test", path="/memories/")
+    assert isinstance(matches, list)
+    assert len(matches) > 0
+
+    # All paths should start with /memories/
+    for match in matches:
+        assert match["path"].startswith("/memories/")
+        assert not match["path"].startswith("/memories//")  # No double slashes
+
+    # Grep across all backends (path="/")
+    matches_all = comp.grep_raw("test", path="/")
+    assert isinstance(matches_all, list)
+
+    # Filter matches from memories
+    memory_matches = [m for m in matches_all if "/memories/" in m["path"]]
+    for match in memory_matches:
+        assert match["path"].startswith("/memories/")
+
+
+def test_composite_grep_multiple_matches_per_file(tmp_path: Path):
+    """Test grep returns multiple matches from same file."""
+    rt = make_runtime("t_grep9")
+    root = tmp_path
+
+    # File with multiple matching lines
+    (root / "multi.txt").write_text("line1 pattern\nline2 pattern\nline3 other")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    comp = CompositeBackend(default=fs, routes={})
+
+    matches = comp.grep_raw("pattern", path="/")
+    assert isinstance(matches, list)
+
+    # Should have 2 matches from the same file
+    multi_matches = [m for m in matches if "multi.txt" in m["path"]]
+    assert len(multi_matches) == 2
+
+    # Verify line numbers are correct
+    line_numbers = sorted([m["line"] for m in multi_matches])
+    assert line_numbers == [1, 2]
+
+
+@pytest.mark.xfail(
+    reason="StoreBackend instances share the same underlying store when using the same runtime, "
+    "causing files written to one route to appear in all routes that use the same backend instance. "
+    "This violates the expected isolation between routes."
+)
+def test_composite_grep_multiple_routes_aggregation(tmp_path: Path):
+    """Test grep aggregates results from multiple routed backends with expected isolation.
+
+    This test represents the intuitive expected behavior: files written to /memories/
+    should only appear in /memories/, and files written to /archive/ should only appear
+    in /archive/.
+    """
+    rt = make_runtime("t_grep10")
+    root = tmp_path
+
+    (root / "default.txt").write_text("default findme")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store1 = StoreBackend(rt)
+    store2 = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
+
+    # Write to each route
+    comp.write("/memories/mem.txt", "memory findme")
+    comp.write("/archive/arch.txt", "archive findme")
+
+    # Grep across all backends
+    matches = comp.grep_raw("findme", path="/")
+    assert isinstance(matches, list)
+    match_paths = sorted([m["path"] for m in matches])
+
+    # Expected: each file appears only in its own route
+    expected_paths = sorted(
+        [
+            "/archive/arch.txt",
+            "/default.txt",
+            "/memories/mem.txt",
+        ]
+    )
+    assert match_paths == expected_paths

@@ -227,9 +227,8 @@ class CompositeBackend:
                 all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)
 
             return all_matches
-        else:
-            # Path specified but doesn't match a route - search only default
-            return self.default.grep_raw(pattern, path, glob)  # type: ignore[attr-defined]
+        # Path specified but doesn't match a route - search only default
+        return self.default.grep_raw(pattern, path, glob)  # type: ignore[attr-defined]
 
     async def agrep_raw(
         self,
@@ -297,9 +296,8 @@ class CompositeBackend:
                 all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)
 
             return all_matches
-        else:
-            # Path specified but doesn't match a route - search only default
-            return await self.default.agrep_raw(pattern, path, glob)  # type: ignore[attr-defined]
+        # Path specified but doesn't match a route - search only default
+        return await self.default.agrep_raw(pattern, path, glob)  # type: ignore[attr-defined]
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         results: list[FileInfo] = []

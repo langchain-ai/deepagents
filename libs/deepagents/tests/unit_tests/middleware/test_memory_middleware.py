@@ -552,7 +552,7 @@ def test_memory_middleware_with_state_backend_factory() -> None:
     assert middleware is not None
     assert callable(middleware._backend)
     assert len(middleware.sources) == 1
-    assert middleware.sources[0]["path"] == "/memory/AGENTS.md"
+    assert middleware.sources[0] == "/memory/AGENTS.md"
 
     # Create a mock Runtime (simplified for testing)
     from types import SimpleNamespace

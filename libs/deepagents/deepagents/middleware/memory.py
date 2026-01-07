@@ -244,13 +244,8 @@ class MemoryMiddleware(AgentMiddleware):
             results = await backend.adownload_files([path])
             # adownload_files returns a list of FileDownloadResponse objects
             for response in results:
-                if response.path == path and response.content is not None:
-                    # Content may be bytes or string
-                    if isinstance(response.content, bytes):
-                        return response.content.decode("utf-8")
-                    if isinstance(response.content, list):
-                        return "\n".join(response.content)
-                    return str(response.content)
+                if response.path == path and response.content is not None and response.error is None:
+                    return response.content.decode("utf-8")
         except Exception as e:
             logger.debug(f"Could not load memory from {path}: {e}")
         return None
@@ -273,13 +268,8 @@ class MemoryMiddleware(AgentMiddleware):
             results = backend.download_files([path])
             # download_files returns a list of FileDownloadResponse objects
             for response in results:
-                if response.path == path and response.content is not None:
-                    # Content may be bytes or string
-                    if isinstance(response.content, bytes):
-                        return response.content.decode("utf-8")
-                    if isinstance(response.content, list):
-                        return "\n".join(response.content)
-                    return str(response.content)
+                if response.path == path and response.content is not None and response.error is None:
+                    return response.content.decode("utf-8")
         except Exception as e:
             logger.debug(f"Could not load memory from {path}: {e}")
         return None

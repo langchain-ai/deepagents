@@ -9,10 +9,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.memory import (
-    MemoryMiddleware,
-    MemorySource,
-)
+from deepagents.middleware.memory import MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -50,7 +47,7 @@ async def test_load_memory_from_backend_single_source_async(tmp_path: Path) -> N
     assert responses[0].error is None
 
     # Create middleware
-    sources: list[MemorySource] = [{"path": memory_path, "name": "user"}]
+    sources: list[str] = [memory_path]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test abefore_agent loads the memory
@@ -83,9 +80,9 @@ async def test_load_memory_from_backend_multiple_sources_async(tmp_path: Path) -
     assert all(r.error is None for r in responses)
 
     # Create middleware with multiple sources
-    sources: list[MemorySource] = [
-        {"path": user_path, "name": "user"},
-        {"path": project_path, "name": "project"},
+    sources: list[str] = [
+        user_path,
+        project_path,
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
@@ -112,9 +109,9 @@ async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
     backend.upload_files([(user_path, user_content.encode("utf-8"))])
 
     # Create middleware with existing and missing sources
-    sources: list[MemorySource] = [
-        {"path": missing_path, "name": "missing"},
-        {"path": user_path, "name": "user"},
+    sources: list[str] = [
+        missing_path,
+        user_path,
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
@@ -138,7 +135,7 @@ async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> Non
     user_content = make_memory_content("User Preferences", "- Some content")
     backend.upload_files([(user_path, user_content.encode("utf-8"))])
 
-    sources: list[MemorySource] = [{"path": user_path, "name": "user"}]
+    sources: list[str] = [{"path": user_path, "name": "user"}]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Pre-populate state
@@ -178,7 +175,7 @@ async def test_memory_content_with_special_characters_async(tmp_path: Path) -> N
 
     middleware = MemoryMiddleware(
         backend=backend,
-        sources=[{"path": memory_path, "name": "test"}],
+        sources=[memory_path],
     )
 
     result = await middleware.abefore_agent({}, None)  # type: ignore
@@ -208,7 +205,7 @@ async def test_memory_content_with_unicode_async(tmp_path: Path) -> None:
 
     middleware = MemoryMiddleware(
         backend=backend,
-        sources=[{"path": memory_path, "name": "test"}],
+        sources=[memory_path],
     )
 
     result = await middleware.abefore_agent({}, None)  # type: ignore
@@ -233,7 +230,7 @@ async def test_memory_content_with_large_file_async(tmp_path: Path) -> None:
 
     middleware = MemoryMiddleware(
         backend=backend,
-        sources=[{"path": memory_path, "name": "test"}],
+        sources=[memory_path],
     )
 
     result = await middleware.abefore_agent({}, None)  # type: ignore
@@ -267,9 +264,9 @@ async def test_agent_with_memory_middleware_multiple_sources_async(tmp_path: Pat
     fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I see both user and project preferences.")]))
 
     # Create middleware with multiple sources
-    sources: list[MemorySource] = [
-        {"path": user_path, "name": "user"},
-        {"path": project_path, "name": "project"},
+    sources: list[str] = [
+        user_path,
+        project_path,
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
@@ -343,9 +340,9 @@ async def test_memory_middleware_order_matters_async(tmp_path: Path) -> None:
     fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Understood.")]))
 
     # Create middleware with specific order
-    sources: list[MemorySource] = [
-        {"path": first_path, "name": "first"},
-        {"path": second_path, "name": "second"},
+    sources: list[str] = [
+        first_path,
+        second_path,
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 

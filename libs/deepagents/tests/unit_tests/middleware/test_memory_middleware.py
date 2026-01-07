@@ -17,10 +17,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.memory import (
-    MemoryMiddleware,
-    MemorySource,
-)
+from deepagents.middleware.memory import MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -54,7 +51,7 @@ def test_format_memory_locations_single() -> None:
     """Test formatting with single source."""
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
-        sources=[{"path": "/home/user/.deepagents/AGENTS.md", "name": "user"}],
+        sources=["/home/user/.deepagents/AGENTS.md"],
     )
     result = middleware._format_memory_locations()
 
@@ -67,8 +64,8 @@ def test_format_memory_locations_multiple() -> None:
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
         sources=[
-            {"path": "~/.deepagents/AGENTS.md", "name": "user"},
-            {"path": "./.deepagents/AGENTS.md", "name": "project"},
+            "~/.deepagents/AGENTS.md",
+            "./.deepagents/AGENTS.md",
         ],
     )
     result = middleware._format_memory_locations()
@@ -83,7 +80,7 @@ def test_format_memory_contents_empty() -> None:
     """Test formatting with no contents."""
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
-        sources=[{"path": "/test/AGENTS.md", "name": "test"}],
+        sources=["/test/AGENTS.md"],
     )
     result = middleware._format_memory_contents({})
     assert "No memory loaded" in result
@@ -93,7 +90,7 @@ def test_format_memory_contents_single() -> None:
     """Test formatting with single source content."""
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
-        sources=[{"path": "/user/AGENTS.md", "name": "user"}],
+        sources=["/user/AGENTS.md"],
     )
     contents = {"user": "# User Memory\nBe helpful."}
     result = middleware._format_memory_contents(contents)
@@ -109,8 +106,8 @@ def test_format_memory_contents_multiple() -> None:
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
         sources=[
-            {"path": "/user/AGENTS.md", "name": "user"},
-            {"path": "/project/AGENTS.md", "name": "project"},
+            "/user/AGENTS.md",
+            "/project/AGENTS.md",
         ],
     )
     contents = {
@@ -132,8 +129,8 @@ def test_format_memory_contents_preserves_order() -> None:
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
         sources=[
-            {"path": "/first/AGENTS.md", "name": "first"},
-            {"path": "/second/AGENTS.md", "name": "second"},
+            "/first/AGENTS.md",
+            "/second/AGENTS.md",
         ],
     )
     contents = {"second": "Second content", "first": "First content"}
@@ -150,8 +147,8 @@ def test_format_memory_contents_skips_missing_sources() -> None:
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
         sources=[
-            {"path": "/user/AGENTS.md", "name": "user"},
-            {"path": "/project/AGENTS.md", "name": "project"},
+            "/user/AGENTS.md",
+            "/project/AGENTS.md",
         ],
     )
     # Only provide content for user, not project
@@ -182,7 +179,7 @@ def test_load_memory_from_backend_single_source(tmp_path: Path) -> None:
     assert responses[0].error is None
 
     # Create middleware
-    sources: list[MemorySource] = [{"path": memory_path, "name": "user"}]
+    sources: list[str] = [memory_path]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test before_agent loads the memory
@@ -215,9 +212,9 @@ def test_load_memory_from_backend_multiple_sources(tmp_path: Path) -> None:
     assert all(r.error is None for r in responses)
 
     # Create middleware with multiple sources
-    sources: list[MemorySource] = [
-        {"path": user_path, "name": "user"},
-        {"path": project_path, "name": "project"},
+    sources: list[str] = [
+        user_path,
+        project_path,
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
@@ -244,9 +241,9 @@ def test_load_memory_handles_missing_file(tmp_path: Path) -> None:
     backend.upload_files([(user_path, user_content.encode("utf-8"))])
 
     # Create middleware with existing and missing sources
-    sources: list[MemorySource] = [
-        {"path": missing_path, "name": "missing"},
-        {"path": user_path, "name": "user"},
+    sources: list[str] = [
+        missing_path,
+        user_path,
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
@@ -270,7 +267,7 @@ def test_before_agent_skips_if_already_loaded(tmp_path: Path) -> None:
     user_content = make_memory_content("User Preferences", "- Some content")
     backend.upload_files([(user_path, user_content.encode("utf-8"))])
 
-    sources: list[MemorySource] = [{"path": user_path, "name": "user"}]
+    sources: list[str] = [user_path]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Pre-populate state
@@ -310,7 +307,7 @@ def test_memory_content_with_special_characters(tmp_path: Path) -> None:
 
     middleware = MemoryMiddleware(
         backend=backend,
-        sources=[{"path": memory_path, "name": "test"}],
+        sources=[memory_path],
     )
 
     result = middleware.before_agent({}, None)  # type: ignore
@@ -340,7 +337,7 @@ def test_memory_content_with_unicode(tmp_path: Path) -> None:
 
     middleware = MemoryMiddleware(
         backend=backend,
-        sources=[{"path": memory_path, "name": "test"}],
+        sources=[memory_path],
     )
 
     result = middleware.before_agent({}, None)  # type: ignore
@@ -365,7 +362,7 @@ def test_memory_content_with_large_file(tmp_path: Path) -> None:
 
     middleware = MemoryMiddleware(
         backend=backend,
-        sources=[{"path": memory_path, "name": "test"}],
+        sources=[memory_path],
     )
 
     result = middleware.before_agent({}, None)  # type: ignore
@@ -395,7 +392,7 @@ def test_agent_with_memory_middleware_system_prompt(tmp_path: Path) -> None:
     fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I understand your preferences.")]))
 
     # Create middleware
-    sources: list[MemorySource] = [{"path": memory_path, "name": "user"}]
+    sources: list[str] = [memory_path]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Create agent with middleware
@@ -450,9 +447,9 @@ def test_agent_with_memory_middleware_multiple_sources(tmp_path: Path) -> None:
     fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I see both user and project preferences.")]))
 
     # Create middleware with multiple sources
-    sources: list[MemorySource] = [
-        {"path": user_path, "name": "user"},
-        {"path": project_path, "name": "project"},
+    sources: list[str] = [
+        user_path,
+        project_path,
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
@@ -518,7 +515,7 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
     fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Async invocation successful.")]))
 
     # Create middleware
-    sources: list[MemorySource] = [{"path": memory_path, "name": "user"}]
+    sources: list[str] = [memory_path]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Create agent
@@ -545,7 +542,7 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
 
 def test_memory_middleware_with_state_backend_factory() -> None:
     """Test that MemoryMiddleware can be initialized with StateBackend factory."""
-    sources: list[MemorySource] = [{"path": "/memory/AGENTS.md", "name": "user"}]
+    sources: list[str] = ["/memory/AGENTS.md"]
     middleware = MemoryMiddleware(
         backend=lambda rt: StateBackend(rt),
         sources=sources,
@@ -574,7 +571,7 @@ def test_memory_middleware_with_state_backend_factory() -> None:
 
 def test_memory_middleware_with_store_backend_factory() -> None:
     """Test that MemoryMiddleware can be initialized with StoreBackend factory."""
-    sources: list[MemorySource] = [{"path": "/memory/AGENTS.md", "name": "user"}]
+    sources: list[str] = ["/memory/AGENTS.md"]
     middleware = MemoryMiddleware(
         backend=lambda rt: StoreBackend(rt),
         sources=sources,
@@ -612,7 +609,7 @@ def test_create_deep_agent_with_memory_and_filesystem_backend(tmp_path: Path) ->
     # Create agent with memory parameter
     agent = create_deep_agent(
         backend=backend,
-        memory=[{"path": memory_path, "name": "user"}],
+        memory=[memory_path],
         model=GenericFakeChatModel(messages=iter([AIMessage(content="Memory loaded successfully.")])),
     )
 
@@ -631,7 +628,7 @@ def test_create_deep_agent_with_memory_missing_files(tmp_path: Path) -> None:
     # Create agent with non-existent memory files
     agent = create_deep_agent(
         backend=backend,
-        memory=[{"path": str(tmp_path / "nonexistent" / "AGENTS.md"), "name": "missing"}],
+        memory=[str(tmp_path / "nonexistent" / "AGENTS.md")],
         model=GenericFakeChatModel(messages=iter([AIMessage(content="No memory, but that's okay.")])),
     )
 
@@ -651,7 +648,7 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
     """
     checkpointer = InMemorySaver()
     agent = create_deep_agent(
-        memory=[{"path": "/user/.deepagents/AGENTS.md", "name": "user"}],
+        memory=["/user/.deepagents/AGENTS.md"],
         model=GenericFakeChatModel(messages=iter([AIMessage(content="Working with default backend.")])),
         checkpointer=checkpointer,
     )
@@ -711,9 +708,9 @@ def test_memory_middleware_order_matters(tmp_path: Path) -> None:
     fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Understood.")]))
 
     # Create middleware with specific order
-    sources: list[MemorySource] = [
-        {"path": first_path, "name": "first"},
-        {"path": second_path, "name": "second"},
+    sources: list[str] = [
+        first_path,
+        second_path,
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 

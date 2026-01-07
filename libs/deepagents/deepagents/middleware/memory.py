@@ -54,6 +54,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 from langchain.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
@@ -69,8 +70,6 @@ from langchain.tools import ToolRuntime
 from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
-
-
 
 
 class MemoryState(AgentState):
@@ -140,12 +139,13 @@ class MemoryMiddleware(AgentMiddleware):
         self.sources = sources
         self.system_prompt_template = MEMORY_SYSTEM_PROMPT
 
-    def _get_backend(self, state: MemoryState, runtime: Runtime) -> BackendProtocol:
+    def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:
             state: Current agent state.
             runtime: Runtime context for factory functions.
+            config: Runnable config to pass to backend factory.
 
         Returns:
             Resolved backend instance.
@@ -157,7 +157,7 @@ class MemoryMiddleware(AgentMiddleware):
                 context=runtime.context,
                 stream_writer=runtime.stream_writer,
                 store=runtime.store,
-                config={},
+                config=config,
                 tool_call_id=None,
             )
             return self._backend(tool_runtime)
@@ -261,7 +261,7 @@ class MemoryMiddleware(AgentMiddleware):
 
         return None
 
-    def before_agent(self, state: MemoryState, runtime: Runtime) -> MemoryStateUpdate | None:
+    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.
@@ -270,6 +270,7 @@ class MemoryMiddleware(AgentMiddleware):
         Args:
             state: Current agent state.
             runtime: Runtime context.
+            config: Runnable config.
 
         Returns:
             State update with memory_contents populated.
@@ -278,7 +279,7 @@ class MemoryMiddleware(AgentMiddleware):
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend(state, runtime)
+        backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
         for path in self.sources:
@@ -289,7 +290,7 @@ class MemoryMiddleware(AgentMiddleware):
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    async def abefore_agent(self, state: MemoryState, runtime: Runtime) -> MemoryStateUpdate | None:
+    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.
@@ -298,6 +299,7 @@ class MemoryMiddleware(AgentMiddleware):
         Args:
             state: Current agent state.
             runtime: Runtime context.
+            config: Runnable config.
 
         Returns:
             State update with memory_contents populated.
@@ -306,7 +308,7 @@ class MemoryMiddleware(AgentMiddleware):
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend(state, runtime)
+        backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
         for path in self.sources:

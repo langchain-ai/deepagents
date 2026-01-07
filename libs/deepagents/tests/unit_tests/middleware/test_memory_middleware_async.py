@@ -51,7 +51,7 @@ async def test_load_memory_from_backend_single_source_async(tmp_path: Path) -> N
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test abefore_agent loads the memory
-    result = await middleware.abefore_agent({}, None)  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert "memory_contents" in result
@@ -87,7 +87,7 @@ async def test_load_memory_from_backend_multiple_sources_async(tmp_path: Path) -
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test abefore_agent loads all memory
-    result = await middleware.abefore_agent({}, None)  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert "memory_contents" in result
@@ -116,7 +116,7 @@ async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test abefore_agent loads only existing memory
-    result = await middleware.abefore_agent({}, None)  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert "memory_contents" in result
@@ -140,7 +140,7 @@ async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> Non
 
     # Pre-populate state
     state = {"memory_contents": {user_path: "Already loaded content"}}
-    result = await middleware.abefore_agent(state, None)  # type: ignore
+    result = await middleware.abefore_agent(state, None, {})  # type: ignore
 
     # Should return None (no update needed)
     assert result is None
@@ -152,7 +152,7 @@ async def test_load_memory_with_empty_sources_async(tmp_path: Path) -> None:
 
     middleware = MemoryMiddleware(backend=backend, sources=[])
 
-    result = await middleware.abefore_agent({}, None)  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert result["memory_contents"] == {}
@@ -178,7 +178,7 @@ async def test_memory_content_with_special_characters_async(tmp_path: Path) -> N
         sources=[memory_path],
     )
 
-    result = await middleware.abefore_agent({}, None)  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore
 
     assert result is not None
     content = result["memory_contents"][memory_path]
@@ -208,7 +208,7 @@ async def test_memory_content_with_unicode_async(tmp_path: Path) -> None:
         sources=[memory_path],
     )
 
-    result = await middleware.abefore_agent({}, None)  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore
 
     assert result is not None
     content = result["memory_contents"][memory_path]
@@ -233,7 +233,7 @@ async def test_memory_content_with_large_file_async(tmp_path: Path) -> None:
         sources=[memory_path],
     )
 
-    result = await middleware.abefore_agent({}, None)  # type: ignore
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore
 
     assert result is not None
     content = result["memory_contents"][memory_path]

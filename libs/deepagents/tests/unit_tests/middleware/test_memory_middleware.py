@@ -175,7 +175,7 @@ def test_load_memory_from_backend_single_source(tmp_path: Path) -> None:
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test before_agent loads the memory
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert "memory_contents" in result
@@ -211,7 +211,7 @@ def test_load_memory_from_backend_multiple_sources(tmp_path: Path) -> None:
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test before_agent loads all memory
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert "memory_contents" in result
@@ -240,7 +240,7 @@ def test_load_memory_handles_missing_file(tmp_path: Path) -> None:
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Test before_agent loads only existing memory
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert "memory_contents" in result
@@ -264,7 +264,7 @@ def test_before_agent_skips_if_already_loaded(tmp_path: Path) -> None:
 
     # Pre-populate state
     state = {"memory_contents": {user_path: "Already loaded content"}}
-    result = middleware.before_agent(state, None)  # type: ignore
+    result = middleware.before_agent(state, None, {})  # type: ignore
 
     # Should return None (no update needed)
     assert result is None
@@ -276,7 +276,7 @@ def test_load_memory_with_empty_sources(tmp_path: Path) -> None:
 
     middleware = MemoryMiddleware(backend=backend, sources=[])
 
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert result["memory_contents"] == {}
@@ -302,7 +302,7 @@ def test_memory_content_with_special_characters(tmp_path: Path) -> None:
         sources=[memory_path],
     )
 
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     content = result["memory_contents"][memory_path]
@@ -332,7 +332,7 @@ def test_memory_content_with_unicode(tmp_path: Path) -> None:
         sources=[memory_path],
     )
 
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     content = result["memory_contents"][memory_path]
@@ -357,7 +357,7 @@ def test_memory_content_with_large_file(tmp_path: Path) -> None:
         sources=[memory_path],
     )
 
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     content = result["memory_contents"][memory_path]
@@ -552,7 +552,7 @@ def test_memory_middleware_with_state_backend_factory() -> None:
         stream_writer=lambda _: None,
     )
 
-    backend = middleware._get_backend(state, runtime)  # type: ignore
+    backend = middleware._get_backend(state, runtime, {})  # type: ignore
     assert isinstance(backend, StateBackend)
     assert backend.runtime is not None
 
@@ -580,7 +580,7 @@ def test_memory_middleware_with_store_backend_factory() -> None:
         stream_writer=lambda _: None,
     )
 
-    backend = middleware._get_backend(state, runtime)  # type: ignore
+    backend = middleware._get_backend(state, runtime, {})  # type: ignore
     assert isinstance(backend, StoreBackend)
     assert backend.runtime is not None
 

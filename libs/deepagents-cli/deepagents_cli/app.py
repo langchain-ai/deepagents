@@ -58,10 +58,25 @@ class TextualTokenTracker:
 class TextualSessionState:
     """Session state for the Textual app."""
 
-    def __init__(self, *, auto_approve: bool = False) -> None:
-        """Initialize session state."""
+    def __init__(
+        self,
+        *,
+        auto_approve: bool = False,
+        thread_id: str | None = None,
+    ) -> None:
+        """Initialize session state.
+
+        Args:
+            auto_approve: Whether to auto-approve tool calls
+            thread_id: Optional thread ID (generates 8-char hex if not provided)
+        """
         self.auto_approve = auto_approve
-        self.thread_id = str(uuid.uuid4())
+        self.thread_id = thread_id if thread_id else uuid.uuid4().hex[:8]
+
+    def reset_thread(self) -> str:
+        """Reset to a new thread. Returns the new thread_id."""
+        self.thread_id = uuid.uuid4().hex[:8]
+        return self.thread_id
 
 
 class DeepAgentsApp(App):
@@ -98,6 +113,7 @@ class DeepAgentsApp(App):
         backend: Any = None,  # noqa: ANN401  # CompositeBackend
         auto_approve: bool = False,
         cwd: str | Path | None = None,
+        thread_id: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the DeepAgents application.
@@ -108,6 +124,7 @@ class DeepAgentsApp(App):
             backend: Backend for file operations
             auto_approve: Whether to start with auto-approve enabled
             cwd: Current working directory to display
+            thread_id: Optional thread ID for session persistence
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -116,6 +133,7 @@ class DeepAgentsApp(App):
         self._backend = backend
         self._auto_approve = auto_approve
         self._cwd = str(cwd) if cwd else str(Path.cwd())
+        self._thread_id = thread_id
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -154,7 +172,10 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=True)
 
         # Create session state
-        self._session_state = TextualSessionState(auto_approve=self._auto_approve)
+        self._session_state = TextualSessionState(
+            auto_approve=self._auto_approve,
+            thread_id=self._thread_id,
+        )
 
         # Create token tracker that updates status bar
         self._token_tracker = TextualTokenTracker(self._update_tokens)
@@ -351,9 +372,25 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            await self._mount_message(SystemMessage("Commands: /quit, /clear, /tokens, /help"))
+            await self._mount_message(
+                SystemMessage("Commands: /quit, /clear, /tokens, /threads, /help")
+            )
         elif cmd == "/clear":
             await self._clear_messages()
+            # Reset thread to start fresh conversation
+            if self._session_state:
+                new_thread_id = self._session_state.reset_thread()
+                await self._mount_message(
+                    SystemMessage(f"Started new session: {new_thread_id}")
+                )
+        elif cmd == "/threads":
+            await self._mount_message(UserMessage(command))
+            if self._session_state:
+                await self._mount_message(
+                    SystemMessage(f"Current session: {self._session_state.thread_id}")
+                )
+            else:
+                await self._mount_message(SystemMessage("No active session"))
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
@@ -561,13 +598,14 @@ class DeepAgentsApp(App):
         copy_selection_to_clipboard(self)
 
 
-def run_textual_app(
+async def run_textual_app(
     *,
     agent: Pregel | None = None,
     assistant_id: str | None = None,
     backend: Any = None,  # noqa: ANN401  # CompositeBackend
     auto_approve: bool = False,
     cwd: str | Path | None = None,
+    thread_id: str | None = None,
 ) -> None:
     """Run the Textual application.
 
@@ -577,6 +615,7 @@ def run_textual_app(
         backend: Backend for file operations
         auto_approve: Whether to start with auto-approve enabled
         cwd: Current working directory to display
+        thread_id: Optional thread ID for session persistence
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -584,9 +623,12 @@ def run_textual_app(
         backend=backend,
         auto_approve=auto_approve,
         cwd=cwd,
+        thread_id=thread_id,
     )
-    app.run()
+    await app.run_async()
 
 
 if __name__ == "__main__":
-    run_textual_app()
+    import asyncio
+
+    asyncio.run(run_textual_app())

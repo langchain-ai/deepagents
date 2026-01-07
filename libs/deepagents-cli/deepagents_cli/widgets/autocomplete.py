@@ -80,10 +80,11 @@ class CompletionController(Protocol):
 # Built-in slash commands with descriptions
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
-    ("/clear", "Clear chat"),
+    ("/clear", "Clear chat and start new session"),
     ("/quit", "Exit app"),
     ("/exit", "Exit app"),
     ("/tokens", "Token usage"),
+    ("/threads", "Show session info"),
 ]
 
 MAX_SUGGESTIONS = 10

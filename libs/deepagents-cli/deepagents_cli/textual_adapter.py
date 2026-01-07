@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.human_in_the_loop import (
@@ -134,9 +135,16 @@ async def execute_task_textual(
     else:
         message_content = final_input
 
+    thread_id = session_state.thread_id
     config = {
-        "configurable": {"thread_id": session_state.thread_id},
-        "metadata": {"assistant_id": assistant_id} if assistant_id else {},
+        "configurable": {"thread_id": thread_id},
+        "metadata": {
+            "assistant_id": assistant_id,
+            "agent_name": assistant_id,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        if assistant_id
+        else {},
     }
 
     captured_input_tokens = 0

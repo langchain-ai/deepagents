@@ -22,6 +22,8 @@ dependencies = [
   "pyyaml>=6.0",
   "textual>=1.0.0",
   "textual-autocomplete>=3.0.0",
+  "aiosqlite>=0.19.0",
+  "langgraph-checkpoint-sqlite>=2.0.0",
 ]
 
 [project.scripts]

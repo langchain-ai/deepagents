@@ -33,7 +33,6 @@ from deepagents.backends.utils import (
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id,
-    truncate_if_too_long,
 )
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -331,8 +330,7 @@ def _ls_tool_generator(
         validated_path = _validate_path(path)
         infos = resolved_backend.ls_info(validated_path)
         paths = [fi.get("path", "") for fi in infos]
-        result = truncate_if_too_long(paths)
-        return str(result)
+        return str(paths)
 
     async def async_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
         """Asynchronous wrapper for ls tool."""
@@ -340,8 +338,7 @@ def _ls_tool_generator(
         validated_path = _validate_path(path)
         infos = await resolved_backend.als_info(validated_path)
         paths = [fi.get("path", "") for fi in infos]
-        result = truncate_if_too_long(paths)
-        return str(result)
+        return str(paths)
 
     return StructuredTool.from_function(
         name="ls",
@@ -570,16 +567,14 @@ def _glob_tool_generator(
         resolved_backend = _get_backend(backend, runtime)
         infos = resolved_backend.glob_info(pattern, path=path)
         paths = [fi.get("path", "") for fi in infos]
-        result = truncate_if_too_long(paths)
-        return str(result)
+        return str(paths)
 
     async def async_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
         """Asynchronous wrapper for glob tool."""
         resolved_backend = _get_backend(backend, runtime)
         infos = await resolved_backend.aglob_info(pattern, path=path)
         paths = [fi.get("path", "") for fi in infos]
-        result = truncate_if_too_long(paths)
-        return str(result)
+        return str(paths)
 
     return StructuredTool.from_function(
         name="glob",
@@ -617,7 +612,7 @@ def _grep_tool_generator(
         if isinstance(raw, str):
             return raw
         formatted = format_grep_matches(raw, output_mode)
-        return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+        return formatted
 
     async def async_grep(
         pattern: str,
@@ -632,7 +627,7 @@ def _grep_tool_generator(
         if isinstance(raw, str):
             return raw
         formatted = format_grep_matches(raw, output_mode)
-        return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+        return formatted
 
     return StructuredTool.from_function(
         name="grep",
@@ -763,6 +758,8 @@ TOOL_GENERATORS = {
     "grep": _grep_tool_generator,
     "execute": _execute_tool_generator,
 }
+
+TOOLS_WITH_INTERNAL_TRUNCATION = {"read_file"}
 
 
 def _get_filesystem_tools(
@@ -1061,7 +1058,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_WITH_INTERNAL_TRUNCATION:
             return handler(request)
 
         tool_result = handler(request)
@@ -1081,7 +1078,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_WITH_INTERNAL_TRUNCATION:
             return await handler(request)
 
         tool_result = await handler(request)

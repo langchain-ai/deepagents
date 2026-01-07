@@ -55,9 +55,9 @@ async def test_load_memory_from_backend_single_source_async(tmp_path: Path) -> N
 
     assert result is not None
     assert "memory_contents" in result
-    assert "user" in result["memory_contents"]
-    assert "type hints" in result["memory_contents"]["user"]
-    assert "functional patterns" in result["memory_contents"]["user"]
+    assert memory_path in result["memory_contents"]
+    assert "type hints" in result["memory_contents"][memory_path]
+    assert "functional patterns" in result["memory_contents"][memory_path]
 
 
 async def test_load_memory_from_backend_multiple_sources_async(tmp_path: Path) -> None:
@@ -91,10 +91,10 @@ async def test_load_memory_from_backend_multiple_sources_async(tmp_path: Path) -
 
     assert result is not None
     assert "memory_contents" in result
-    assert "user" in result["memory_contents"]
-    assert "project" in result["memory_contents"]
-    assert "Python 3.11" in result["memory_contents"]["user"]
-    assert "FastAPI" in result["memory_contents"]["project"]
+    assert user_path in result["memory_contents"]
+    assert project_path in result["memory_contents"]
+    assert "Python 3.11" in result["memory_contents"][user_path]
+    assert "FastAPI" in result["memory_contents"][project_path]
 
 
 async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
@@ -121,10 +121,10 @@ async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
     assert result is not None
     assert "memory_contents" in result
     # Missing file should not be in contents
-    assert "missing" not in result["memory_contents"]
+    assert missing_path not in result["memory_contents"]
     # Existing file should be loaded
-    assert "user" in result["memory_contents"]
-    assert "Be helpful" in result["memory_contents"]["user"]
+    assert user_path in result["memory_contents"]
+    assert "Be helpful" in result["memory_contents"][user_path]
 
 
 async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> None:
@@ -135,11 +135,11 @@ async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> Non
     user_content = make_memory_content("User Preferences", "- Some content")
     backend.upload_files([(user_path, user_content.encode("utf-8"))])
 
-    sources: list[str] = [{"path": user_path, "name": "user"}]
+    sources: list[str] = [user_path]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Pre-populate state
-    state = {"memory_contents": {"user": "Already loaded content"}}
+    state = {"memory_contents": {user_path: "Already loaded content"}}
     result = await middleware.abefore_agent(state, None)  # type: ignore
 
     # Should return None (no update needed)
@@ -181,7 +181,7 @@ async def test_memory_content_with_special_characters_async(tmp_path: Path) -> N
     result = await middleware.abefore_agent({}, None)  # type: ignore
 
     assert result is not None
-    content = result["memory_contents"]["test"]
+    content = result["memory_contents"][memory_path]
     assert "`backticks`" in content
     assert "<xml>" in content
     assert '"Quotes"' in content
@@ -211,7 +211,7 @@ async def test_memory_content_with_unicode_async(tmp_path: Path) -> None:
     result = await middleware.abefore_agent({}, None)  # type: ignore
 
     assert result is not None
-    content = result["memory_contents"]["test"]
+    content = result["memory_contents"][memory_path]
     assert "日本語" in content
     assert "中文" in content
     assert "🚀" in content
@@ -236,7 +236,7 @@ async def test_memory_content_with_large_file_async(tmp_path: Path) -> None:
     result = await middleware.abefore_agent({}, None)  # type: ignore
 
     assert result is not None
-    content = result["memory_contents"]["test"]
+    content = result["memory_contents"][memory_path]
     # Verify content was loaded (check for repeated pattern)
     assert content.count("Line of content") == 500
 

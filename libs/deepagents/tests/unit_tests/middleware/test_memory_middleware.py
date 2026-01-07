@@ -55,8 +55,8 @@ def test_format_memory_locations_single() -> None:
     )
     result = middleware._format_memory_locations()
 
-    assert "**User**" in result
-    assert "/home/user/.deepagents/AGENTS.md" in result
+    assert "**Memory Sources:**" in result
+    assert "`/home/user/.deepagents/AGENTS.md`" in result
 
 
 def test_format_memory_locations_multiple() -> None:
@@ -70,10 +70,9 @@ def test_format_memory_locations_multiple() -> None:
     )
     result = middleware._format_memory_locations()
 
-    assert "**User**" in result
-    assert "**Project**" in result
-    assert "~/.deepagents/AGENTS.md" in result
-    assert "./.deepagents/AGENTS.md" in result
+    assert "**Memory Sources:**" in result
+    assert "`~/.deepagents/AGENTS.md`" in result
+    assert "`./.deepagents/AGENTS.md`" in result
 
 
 def test_format_memory_contents_empty() -> None:
@@ -92,7 +91,7 @@ def test_format_memory_contents_single() -> None:
         backend=None,  # type: ignore
         sources=["/user/AGENTS.md"],
     )
-    contents = {"user": "# User Memory\nBe helpful."}
+    contents = {"/user/AGENTS.md": "# User Memory\nBe helpful."}
     result = middleware._format_memory_contents(contents)
 
     assert "# User Memory" in result
@@ -109,8 +108,8 @@ def test_format_memory_contents_multiple() -> None:
         ],
     )
     contents = {
-        "user": "User preferences here",
-        "project": "Project guidelines here",
+        "/user/AGENTS.md": "User preferences here",
+        "/project/AGENTS.md": "Project guidelines here",
     }
     result = middleware._format_memory_contents(contents)
 
@@ -127,15 +126,15 @@ def test_format_memory_contents_preserves_order() -> None:
             "/second/AGENTS.md",
         ],
     )
-    contents = {"second": "Second content", "first": "First content"}
+    contents = {"/second/AGENTS.md": "Second content", "/first/AGENTS.md": "First content"}
     result = middleware._format_memory_contents(contents)
 
-    # First should appear before second
+    # First should appear before second (based on sources order)
     first_pos = result.find("First content")
     second_pos = result.find("Second content")
-    assert first_pos > 0
-    assert second_pos > 0
-    assert first_pos < second_pos
+    assert first_pos >= 0  # Found in result
+    assert second_pos > 0  # Found after start
+    assert first_pos < second_pos  # First appears before second
 
 
 def test_format_memory_contents_skips_missing_sources() -> None:
@@ -148,7 +147,7 @@ def test_format_memory_contents_skips_missing_sources() -> None:
         ],
     )
     # Only provide content for user, not project
-    contents = {"user": "User content only"}
+    contents = {"/user/AGENTS.md": "User content only"}
     result = middleware._format_memory_contents(contents)
 
     assert "User content only" in result
@@ -180,9 +179,9 @@ def test_load_memory_from_backend_single_source(tmp_path: Path) -> None:
 
     assert result is not None
     assert "memory_contents" in result
-    assert "user" in result["memory_contents"]
-    assert "type hints" in result["memory_contents"]["user"]
-    assert "functional patterns" in result["memory_contents"]["user"]
+    assert memory_path in result["memory_contents"]
+    assert "type hints" in result["memory_contents"][memory_path]
+    assert "functional patterns" in result["memory_contents"][memory_path]
 
 
 def test_load_memory_from_backend_multiple_sources(tmp_path: Path) -> None:
@@ -216,10 +215,10 @@ def test_load_memory_from_backend_multiple_sources(tmp_path: Path) -> None:
 
     assert result is not None
     assert "memory_contents" in result
-    assert "user" in result["memory_contents"]
-    assert "project" in result["memory_contents"]
-    assert "Python 3.11" in result["memory_contents"]["user"]
-    assert "FastAPI" in result["memory_contents"]["project"]
+    assert user_path in result["memory_contents"]
+    assert project_path in result["memory_contents"]
+    assert "Python 3.11" in result["memory_contents"][user_path]
+    assert "FastAPI" in result["memory_contents"][project_path]
 
 
 def test_load_memory_handles_missing_file(tmp_path: Path) -> None:
@@ -246,10 +245,10 @@ def test_load_memory_handles_missing_file(tmp_path: Path) -> None:
     assert result is not None
     assert "memory_contents" in result
     # Missing file should not be in contents
-    assert "missing" not in result["memory_contents"]
+    assert missing_path not in result["memory_contents"]
     # Existing file should be loaded
-    assert "user" in result["memory_contents"]
-    assert "Be helpful" in result["memory_contents"]["user"]
+    assert user_path in result["memory_contents"]
+    assert "Be helpful" in result["memory_contents"][user_path]
 
 
 def test_before_agent_skips_if_already_loaded(tmp_path: Path) -> None:
@@ -264,7 +263,7 @@ def test_before_agent_skips_if_already_loaded(tmp_path: Path) -> None:
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
     # Pre-populate state
-    state = {"memory_contents": {"user": "Already loaded content"}}
+    state = {"memory_contents": {user_path: "Already loaded content"}}
     result = middleware.before_agent(state, None)  # type: ignore
 
     # Should return None (no update needed)
@@ -306,7 +305,7 @@ def test_memory_content_with_special_characters(tmp_path: Path) -> None:
     result = middleware.before_agent({}, None)  # type: ignore
 
     assert result is not None
-    content = result["memory_contents"]["test"]
+    content = result["memory_contents"][memory_path]
     assert "`backticks`" in content
     assert "<xml>" in content
     assert '"Quotes"' in content
@@ -336,7 +335,7 @@ def test_memory_content_with_unicode(tmp_path: Path) -> None:
     result = middleware.before_agent({}, None)  # type: ignore
 
     assert result is not None
-    content = result["memory_contents"]["test"]
+    content = result["memory_contents"][memory_path]
     assert "日本語" in content
     assert "中文" in content
     assert "🚀" in content
@@ -361,7 +360,7 @@ def test_memory_content_with_large_file(tmp_path: Path) -> None:
     result = middleware.before_agent({}, None)  # type: ignore
 
     assert result is not None
-    content = result["memory_contents"]["test"]
+    content = result["memory_contents"][memory_path]
     # Verify content was loaded (check for repeated pattern)
     assert content.count("Line of content") == 500
 
@@ -672,7 +671,7 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
     checkpoint = agent.checkpointer.get(config)
     assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["files"]
     assert "memory_contents" in checkpoint["channel_values"]
-    assert "user" in checkpoint["channel_values"]["memory_contents"]
+    assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["memory_contents"]
 
 
 def test_memory_middleware_order_matters(tmp_path: Path) -> None:

@@ -23,8 +23,8 @@ backend = FilesystemBackend(root_dir="/")
 middleware = MemoryMiddleware(
     backend=backend,
     sources=[
-        {"path": "~/.deepagents/AGENTS.md", "name": "user"},
-        {"path": "./.deepagents/AGENTS.md", "name": "project"},
+        "~/.deepagents/AGENTS.md",
+        "./.deepagents/AGENTS.md",
     ],
 )
 
@@ -33,11 +33,8 @@ agent = create_deep_agent(middleware=[middleware])
 
 ## Memory Sources
 
-Sources are loaded in order and combined. Each source has:
-- `path`: Path to the AGENTS.md file (resolved via backend)
-- `name`: Display name for the source (e.g., "user", "project")
-
-Multiple sources are combined in order, with all content included.
+Sources are simply paths to AGENTS.md files that are loaded in order and combined.
+Multiple sources are concatenated in order, with all content included.
 Later sources appear after earlier ones in the combined prompt.
 
 ## File Format
@@ -74,23 +71,13 @@ from langgraph.runtime import Runtime
 logger = logging.getLogger(__name__)
 
 
-class MemorySource(TypedDict):
-    """Configuration for a memory source.
-
-    Attributes:
-        path: Path to the AGENTS.md file.
-        name: Display name for this source (e.g., "user", "project").
-    """
-
-    path: str
-    name: str
 
 
 class MemoryState(AgentState):
     """State schema for MemoryMiddleware.
 
     Attributes:
-        memory_contents: Dict mapping source names to their loaded content.
+        memory_contents: Dict mapping source paths to their loaded content.
             Marked as private so it's not included in the final agent state.
     """
 
@@ -138,15 +125,16 @@ class MemoryMiddleware(AgentMiddleware):
         self,
         *,
         backend: BACKEND_TYPES,
-        sources: list[MemorySource],
+        sources: list[str],
     ) -> None:
         """Initialize the memory middleware.
 
         Args:
             backend: Backend instance or factory function that takes runtime
                      and returns a backend. Use a factory for StateBackend.
-            sources: List of memory sources to load. Each source specifies
-                     a path and display name. Sources are loaded in order.
+            sources: List of memory file paths to load (e.g., ["~/.deepagents/AGENTS.md",
+                     "./.deepagents/AGENTS.md"]). Display names are automatically derived
+                     from the paths. Sources are loaded in order.
         """
         self._backend = backend
         self.sources = sources
@@ -181,27 +169,26 @@ class MemoryMiddleware(AgentMiddleware):
             return "**Memory Sources:** None configured"
 
         lines = ["**Memory Sources:**"]
-        for source in self.sources:
-            lines.append(f"- **{source['name'].capitalize()}**: `{source['path']}`")
+        for path in self.sources:
+            lines.append(f"- `{path}`")
         return "\n".join(lines)
 
     def _format_memory_contents(self, contents: dict[str, str]) -> str:
         """Format loaded memory contents for injection into prompt.
 
         Args:
-            contents: Dict mapping source names to content.
+            contents: Dict mapping source paths to content.
 
         Returns:
-            Formatted string with all memory contents.
+            Formatted string with all memory contents concatenated.
         """
         if not contents:
             return "(No memory loaded)"
 
         sections = []
-        for source in self.sources:
-            name = source["name"]
-            if contents.get(name):
-                sections.append(f"<{name}_memory>\n{contents[name]}\n</{name}_memory>")
+        for path in self.sources:
+            if contents.get(path):
+                sections.append(contents[path])
 
         if not sections:
             return "(No memory loaded)"
@@ -294,11 +281,11 @@ class MemoryMiddleware(AgentMiddleware):
         backend = self._get_backend(state, runtime)
         contents: dict[str, str] = {}
 
-        for source in self.sources:
-            content = self._load_memory_from_backend_sync(backend, source["path"])
+        for path in self.sources:
+            content = self._load_memory_from_backend_sync(backend, path)
             if content:
-                contents[source["name"]] = content
-                logger.debug(f"Loaded memory from {source['name']}: {source['path']}")
+                contents[path] = content
+                logger.debug(f"Loaded memory from: {path}")
 
         return MemoryStateUpdate(memory_contents=contents)
 
@@ -322,11 +309,11 @@ class MemoryMiddleware(AgentMiddleware):
         backend = self._get_backend(state, runtime)
         contents: dict[str, str] = {}
 
-        for source in self.sources:
-            content = await self._load_memory_from_backend(backend, source["path"])
+        for path in self.sources:
+            content = await self._load_memory_from_backend(backend, path)
             if content:
-                contents[source["name"]] = content
-                logger.debug(f"Loaded memory from {source['name']}: {source['path']}")
+                contents[path] = content
+                logger.debug(f"Loaded memory from: {path}")
 
         return MemoryStateUpdate(memory_contents=contents)
 

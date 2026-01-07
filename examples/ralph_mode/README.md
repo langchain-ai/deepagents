@@ -17,11 +17,18 @@ The filesystem and git allow the agent to track progress over time. This serves 
 ## Quick Start
 
 ```bash
-# Install the CLI
-pip install deepagents[cli]
+# Install uv (if you don't have it)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Download the script
-curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/master/examples/ralph_mode/ralph_mode.py
+# Create a virtual environment
+uv venv
+source .venv/bin/activate
+
+# Install the CLI
+uv pip install deepagents-cli
+
+# Download the script (or copy from examples/ralph_mode/ if you have the repo)
+curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/main/examples/ralph_mode/ralph_mode.py
 
 # Run Ralph
 python ralph_mode.py "Build a Python programming course for beginners. Use git."

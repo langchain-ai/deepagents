@@ -39,6 +39,7 @@ def make_memory_content(title: str, content: str) -> str:
 {content}
 """
 
+
 def test_format_memory_locations_empty() -> None:
     """Test formatting with no sources."""
     middleware = MemoryMiddleware(

@@ -84,9 +84,11 @@ def create_deep_agent(
                   settings)
                 - (optional) `middleware` (list of AgentMiddleware)
         skills: Optional list of skill source paths (e.g., ["/skills/user/", "/skills/project/"]).
-            Paths are relative to the backend. When using StateBackend (default), provide skill
-            files via `invoke(files={...})`. With FilesystemBackend, skills are loaded from disk.
-            Later sources override earlier ones for skills with the same name.
+            Paths must be specified using POSIX conventions (forward slashes) and are relative
+            to the backend's root. When using StateBackend (default), provide skill files via
+            `invoke(files={...})`. With FilesystemBackend, skills are loaded from disk relative
+            to the backend's root_dir. Later sources override earlier ones for skills with the
+            same name (last one wins).
         response_format: A structured output response format to use for the agent.
         context_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.

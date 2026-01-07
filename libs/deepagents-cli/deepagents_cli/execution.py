@@ -186,7 +186,8 @@ async def execute_task(
     token_tracker: TokenTracker | None = None,
     backend=None,
     image_tracker: ImageTracker | None = None,
-) -> None:
+    return_response: bool = False,
+) -> str | None:
     """Execute any task by passing it directly to the AI agent."""
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
@@ -255,10 +256,12 @@ async def execute_task(
     tool_call_buffers: dict[str | int, dict] = {}
     # Buffer assistant text so we can render complete markdown segments
     pending_text = ""
+    # Accumulate full response for ralph mode
+    full_response_text = ""
 
     def flush_text_buffer(*, final: bool = False) -> None:
         """Flush accumulated assistant text as rendered markdown when appropriate."""
-        nonlocal pending_text, spinner_active, has_responded
+        nonlocal pending_text, spinner_active, has_responded, full_response_text
         if not final or not pending_text.strip():
             return
         if spinner_active:
@@ -269,6 +272,7 @@ async def execute_task(
             has_responded = True
         markdown = Markdown(pending_text.rstrip())
         console.print(markdown, style=COLORS["agent"])
+        full_response_text += pending_text
         pending_text = ""
 
     # Clear images from tracker after creating the message
@@ -696,3 +700,7 @@ async def execute_task(
         # Track token usage (display only via /tokens command)
         if token_tracker and (captured_input_tokens or captured_output_tokens):
             token_tracker.add(captured_input_tokens, captured_output_tokens)
+
+    if return_response:
+        return full_response_text
+    return None

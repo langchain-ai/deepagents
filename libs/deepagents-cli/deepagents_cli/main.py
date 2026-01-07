@@ -4,7 +4,11 @@ import argparse
 import asyncio
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress Pydantic v1 compatibility warnings from LangChain on Python 3.14+
+warnings.filterwarnings("ignore", message=".*Pydantic V1.*Python 3.14.*")
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
@@ -132,6 +136,17 @@ def parse_args():
         "--no-splash",
         action="store_true",
         help="Disable the startup splash screen",
+    )
+    parser.add_argument(
+        "--ralph",
+        metavar="TASK",
+        help="Run in Ralph loop mode with the given task (loops until <promise>DONE</promise>)",
+    )
+    parser.add_argument(
+        "--ralph-iterations",
+        type=int,
+        default=0,
+        help="Max iterations for Ralph mode (0 = unlimited, default: unlimited)",
     )
 
     return parser.parse_args()
@@ -304,6 +319,101 @@ async def simple_cli(
         )
 
 
+async def ralph_cli(
+    agent,
+    assistant_id: str | None,
+    session_state,
+    task: str,
+    max_iterations: int = 10,
+    backend=None,
+    work_dir: str | None = None,
+) -> None:
+    """Run agent in Ralph loop mode - same task repeated until completion."""
+    import os
+    from deepagents_cli.ui import TokenTracker
+
+    # Change to work directory if specified
+    original_dir = None
+    if work_dir:
+        original_dir = os.getcwd()
+        os.chdir(work_dir)
+
+    console.print()
+    console.print(
+        f"[bold {COLORS['primary']}]Ralph Mode[/bold {COLORS['primary']}]",
+    )
+    console.print(f"[dim]Task: {task[:100]}{'...' if len(task) > 100 else ''}[/dim]")
+    console.print(f"[dim]Iterations: {'unlimited (Ctrl+C to stop)' if max_iterations == 0 else max_iterations}[/dim]")
+    if work_dir:
+        console.print(f"[dim]Working directory: {work_dir}[/dim]")
+    console.print()
+
+    token_tracker = TokenTracker()
+    iteration = 1
+
+    try:
+        while max_iterations == 0 or iteration <= max_iterations:
+            console.print()
+            console.print(
+                f"[bold cyan]{'='*60}[/bold cyan]"
+            )
+            console.print(
+                f"[bold cyan]RALPH ITERATION {iteration}[/bold cyan]"
+            )
+            console.print(
+                f"[bold cyan]{'='*60}[/bold cyan]"
+            )
+            console.print()
+
+            # Build prompt - pure Ralph style, simple and declarative
+            iter_display = f"{iteration}/{max_iterations}" if max_iterations > 0 else str(iteration)
+            prompt = f"""## Iteration {iter_display}
+
+Your previous work is in the filesystem. Check what exists and keep building.
+
+TASK:
+{task}
+
+Make progress. You'll be called again."""
+
+            # Execute with beautiful CLI output
+            await execute_task(
+                prompt,
+                agent,
+                assistant_id,
+                session_state,
+                token_tracker,
+                backend=backend,
+            )
+
+            console.print()
+            console.print(f"[dim]...continuing to iteration {iteration + 1}[/dim]")
+            iteration += 1
+
+        console.print()
+        console.print(
+            f"[bold green]✓ COMPLETE - Finished {max_iterations} iterations[/bold green]"
+        )
+    except KeyboardInterrupt:
+        console.print()
+        console.print(
+            f"[bold yellow]Stopped by user after {iteration} iterations[/bold yellow]"
+        )
+
+    # Show created files if in a work directory
+    if work_dir:
+        console.print()
+        console.print(f"[bold]Files created in {work_dir}:[/bold]")
+        for f in sorted(Path(work_dir).rglob("*")):
+            if f.is_file() and ".git" not in str(f):
+                rel = f.relative_to(work_dir)
+                console.print(f"  {rel}", style="dim")
+
+    # Restore original directory
+    if original_dir:
+        os.chdir(original_dir)
+
+
 async def _run_agent_session(
     model,
     assistant_id: str,
@@ -311,6 +421,8 @@ async def _run_agent_session(
     sandbox_backend=None,
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
+    ralph_task: str | None = None,
+    ralph_iterations: int = 10,
 ) -> None:
     """Helper to create agent and run CLI session.
 
@@ -323,6 +435,8 @@ async def _run_agent_session(
         sandbox_backend: Optional sandbox backend for remote execution
         sandbox_type: Type of sandbox being used
         setup_script_path: Path to setup script that was run (if any)
+        ralph_task: If provided, run in Ralph loop mode with this task
+        ralph_iterations: Max iterations for Ralph mode (default: 10)
     """
     # Create agent with conditional tools
     tools = [http_request, fetch_url]
@@ -346,16 +460,30 @@ async def _run_agent_session(
     system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
     baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, assistant_id)
 
-    await simple_cli(
-        agent,
-        assistant_id,
-        session_state,
-        baseline_tokens,
-        backend=composite_backend,
-        sandbox_type=sandbox_type,
-        setup_script_path=setup_script_path,
-        no_splash=session_state.no_splash,
-    )
+    # Route to Ralph mode or interactive CLI
+    if ralph_task:
+        import tempfile
+        work_dir = tempfile.mkdtemp(prefix="ralph-")
+        await ralph_cli(
+            agent,
+            assistant_id,
+            session_state,
+            task=ralph_task,
+            max_iterations=ralph_iterations,
+            backend=composite_backend,
+            work_dir=work_dir,
+        )
+    else:
+        await simple_cli(
+            agent,
+            assistant_id,
+            session_state,
+            baseline_tokens,
+            backend=composite_backend,
+            sandbox_type=sandbox_type,
+            setup_script_path=setup_script_path,
+            no_splash=session_state.no_splash,
+        )
 
 
 async def main(
@@ -365,6 +493,8 @@ async def main(
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
     model_name: str | None = None,
+    ralph_task: str | None = None,
+    ralph_iterations: int = 10,
 ) -> None:
     """Main entry point with conditional sandbox support.
 
@@ -375,6 +505,8 @@ async def main(
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run in sandbox
         model_name: Optional model name to use instead of environment variable
+        ralph_task: If provided, run in Ralph loop mode with this task
+        ralph_iterations: Max iterations for Ralph mode (default: 10)
     """
     model = create_model(model_name)
 
@@ -396,6 +528,8 @@ async def main(
                     sandbox_backend,
                     sandbox_type=sandbox_type,
                     setup_script_path=setup_script_path,
+                    ralph_task=ralph_task,
+                    ralph_iterations=ralph_iterations,
                 )
         except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
             # Sandbox creation failed - fail hard (no silent fallback)
@@ -414,7 +548,14 @@ async def main(
     # Branch 2: User wants local mode (none or default)
     else:
         try:
-            await _run_agent_session(model, assistant_id, session_state, sandbox_backend=None)
+            await _run_agent_session(
+                model,
+                assistant_id,
+                session_state,
+                sandbox_backend=None,
+                ralph_task=ralph_task,
+                ralph_iterations=ralph_iterations,
+            )
         except KeyboardInterrupt:
             console.print("\n\n[yellow]Interrupted[/yellow]")
             sys.exit(0)
@@ -451,7 +592,9 @@ def cli_main() -> None:
             execute_skills_command(args)
         else:
             # Create session state from args
-            session_state = SessionState(auto_approve=args.auto_approve, no_splash=args.no_splash)
+            # Ralph mode defaults to auto-approve (autonomous looping)
+            auto_approve = args.auto_approve or bool(args.ralph)
+            session_state = SessionState(auto_approve=auto_approve, no_splash=args.no_splash)
 
             # API key validation happens in create_model()
             asyncio.run(
@@ -462,6 +605,8 @@ def cli_main() -> None:
                     args.sandbox_id,
                     args.sandbox_setup,
                     getattr(args, "model", None),
+                    ralph_task=args.ralph,
+                    ralph_iterations=args.ralph_iterations,
                 )
             )
     except KeyboardInterrupt:

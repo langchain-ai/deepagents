@@ -342,10 +342,12 @@ def create_prompt_session(
             buffer.validate_and_handle()
             # If empty, do nothing (don't submit)
 
-    # Alt+Enter for newlines (press ESC then Enter, or Option+Enter on Mac)
+    # Newline insertion: Ctrl+J (standard Unix newline, works everywhere)
+    # Also keep escape+enter for terminals configured with "Option as Meta"
+    @kb.add("c-j")
     @kb.add("escape", "enter")
     def _(event) -> None:
-        """Alt+Enter inserts a newline for multi-line input."""
+        """Ctrl+J or Option+Enter inserts a newline for multi-line input."""
         event.current_buffer.insert_text("\n")
 
     # Ctrl+E to open in external editor

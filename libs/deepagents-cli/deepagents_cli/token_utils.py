@@ -71,9 +71,8 @@ def calculate_baseline_tokens(model, agent_dir: Path, system_prompt: str, assist
         # Note: tools parameter is not supported by LangChain's token counting
         # Tool tokens will be included in the API response after first message
         return model.get_num_tokens_from_messages(messages)
-    except Exception as e:
-        # Fallback if token counting fails
-        console.print(f"[yellow]Warning: Could not calculate baseline tokens: {e}[/yellow]")
+    except Exception:
+        # Silently fallback if token counting fails (e.g., empty messages error)
         return 0
 
 

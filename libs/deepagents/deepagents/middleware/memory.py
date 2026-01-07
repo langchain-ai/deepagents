@@ -204,7 +204,7 @@ class MemoryMiddleware(AgentMiddleware):
 
         return "\n\n".join(sections)
 
-    def _load_memory_from_backend(
+    async def _load_memory_from_backend(
         self,
         backend: BackendProtocol,
         path: str,
@@ -219,8 +219,8 @@ class MemoryMiddleware(AgentMiddleware):
             File content if found, None otherwise.
         """
         try:
-            results = backend.download_files([path])
-            # download_files returns a list of FileDownloadResponse objects
+            results = await backend.adownload_files([path])
+            # adownload_files returns a list of FileDownloadResponse objects
             for response in results:
                 if response.path == path and response.content is not None:
                     # Content may be bytes or string
@@ -233,7 +233,7 @@ class MemoryMiddleware(AgentMiddleware):
             logger.debug(f"Could not load memory from {path}: {e}")
         return None
 
-    def before_agent(self, state: MemoryState, runtime: Runtime) -> MemoryStateUpdate | None:
+    async def abefore_agent(self, state: MemoryState, runtime: Runtime) -> MemoryStateUpdate | None:
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.
@@ -254,7 +254,7 @@ class MemoryMiddleware(AgentMiddleware):
         contents: dict[str, str] = {}
 
         for source in self.sources:
-            content = self._load_memory_from_backend(backend, source["path"])
+            content = await self._load_memory_from_backend(backend, source["path"])
             if content:
                 contents[source["name"]] = content
                 logger.debug(f"Loaded memory from {source['name']}: {source['path']}")

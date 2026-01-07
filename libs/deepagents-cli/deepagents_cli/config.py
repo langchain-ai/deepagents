@@ -10,6 +10,8 @@ from pathlib import Path
 import dotenv
 from rich.console import Console
 
+from deepagents_cli._version import __version__
+
 dotenv.load_dotenv()
 
 # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
@@ -35,7 +37,8 @@ COLORS = {
 }
 
 # ASCII art banner
-DEEP_AGENTS_ASCII = """
+
+DEEP_AGENTS_ASCII = f"""
  ██████╗  ███████╗ ███████╗ ██████╗
  ██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
  ██║  ██║ █████╗   █████╗   ██████╔╝
@@ -49,6 +52,7 @@ DEEP_AGENTS_ASCII = """
  ██╔══██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║    ╚════██║
  ██║  ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║    ███████║
  ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
+                                              v{__version__}
 """
 
 # Interactive commands
@@ -154,8 +158,12 @@ class Settings:
     deepagents_langchain_project: str | None  # For deepagents agent tracing
     user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
 
+    # Model configuration
+    model_name: str | None = None  # Currently active model name
+    model_provider: str | None = None  # Provider (openai, anthropic, google)
+
     # Project information
-    project_root: Path | None
+    project_root: Path | None = None
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
@@ -392,52 +400,113 @@ def get_default_coding_instructions() -> str:
     return default_prompt_path.read_text()
 
 
-def create_model() -> BaseChatModel:
+def _detect_provider(model_name: str) -> str | None:
+    """Auto-detect provider from model name.
+
+    Args:
+        model_name: Model name to detect provider from
+
+    Returns:
+        Provider name (openai, anthropic, google) or None if can't detect
+    """
+    model_lower = model_name.lower()
+    if any(x in model_lower for x in ["gpt", "o1", "o3"]):
+        return "openai"
+    if "claude" in model_lower:
+        return "anthropic"
+    if "gemini" in model_lower:
+        return "google"
+    return None
+
+
+def create_model(model_name_override: str | None = None) -> BaseChatModel:
     """Create the appropriate model based on available API keys.
 
     Uses the global settings instance to determine which model to create.
 
+    Args:
+        model_name_override: Optional model name to use instead of environment variable
+
     Returns:
-        ChatModel instance (OpenAI or Anthropic)
+        ChatModel instance (OpenAI, Anthropic, or Google)
 
     Raises:
-        SystemExit if no API key is configured
+        SystemExit if no API key is configured or model provider can't be determined
     """
-    if settings.has_openai:
+    # Determine provider and model
+    if model_name_override:
+        # Use provided model, auto-detect provider
+        provider = _detect_provider(model_name_override)
+        if not provider:
+            console.print(
+                f"[bold red]Error:[/bold red] Could not detect provider from model name: {model_name_override}"
+            )
+            console.print("\nSupported model name patterns:")
+            console.print("  - OpenAI: gpt-*, o1-*, o3-*")
+            console.print("  - Anthropic: claude-*")
+            console.print("  - Google: gemini-*")
+            sys.exit(1)
+
+        # Check if API key for detected provider is available
+        if provider == "openai" and not settings.has_openai:
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires OPENAI_API_KEY"
+            )
+            sys.exit(1)
+        elif provider == "anthropic" and not settings.has_anthropic:
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires ANTHROPIC_API_KEY"
+            )
+            sys.exit(1)
+        elif provider == "google" and not settings.has_google:
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY"
+            )
+            sys.exit(1)
+
+        model_name = model_name_override
+    # Use environment variable defaults, detect provider by API key priority
+    elif settings.has_openai:
+        provider = "openai"
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+    elif settings.has_anthropic:
+        provider = "anthropic"
+        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+    elif settings.has_google:
+        provider = "google"
+        model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
+    else:
+        console.print("[bold red]Error:[/bold red] No API key configured.")
+        console.print("\nPlease set one of the following environment variables:")
+        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
+        console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
+        console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
+        console.print("\nExample:")
+        console.print("  export OPENAI_API_KEY=your_api_key_here")
+        console.print("\nOr add it to your .env file.")
+        sys.exit(1)
+
+    # Store model info in settings for display
+    settings.model_name = model_name
+    settings.model_provider = provider
+
+    # Create and return the model
+    if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-        console.print(f"[dim]Using OpenAI model: {model_name}[/dim]")
-        return ChatOpenAI(
-            model=model_name,
-        )
-    if settings.has_anthropic:
+        return ChatOpenAI(model=model_name)
+    if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        console.print(f"[dim]Using Anthropic model: {model_name}[/dim]")
         return ChatAnthropic(
             model_name=model_name,
-            # The attribute exists, but it has a Pydantic alias which
-            # causes issues in IDEs/type checkers.
             max_tokens=20_000,  # type: ignore[arg-type]
         )
-    if settings.has_google:
+    if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
-        console.print(f"[dim]Using Google Gemini model: {model_name}[/dim]")
         return ChatGoogleGenerativeAI(
             model=model_name,
             temperature=0,
             max_tokens=None,
         )
-    console.print("[bold red]Error:[/bold red] No API key configured.")
-    console.print("\nPlease set one of the following environment variables:")
-    console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
-    console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-    console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
-    console.print("\nExample:")
-    console.print("  export OPENAI_API_KEY=your_api_key_here")
-    console.print("\nOr add it to your .env file.")
-    sys.exit(1)

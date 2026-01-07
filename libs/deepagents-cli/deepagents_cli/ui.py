@@ -554,6 +554,9 @@ def show_help() -> None:
 
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
     console.print("  --agent NAME                  Agent identifier (default: agent)")
+    console.print(
+        "  --model MODEL                 Model to use (e.g., claude-sonnet-4-5-20250929, gpt-4o)"
+    )
     console.print("  --auto-approve                Auto-approve tool usage without prompting")
     console.print(
         "  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)"
@@ -567,6 +570,10 @@ def show_help() -> None:
     )
     console.print(
         "  deepagents --agent mybot                # Start with agent named 'mybot'",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --model gpt-4o               # Use specific model (auto-detects provider)",
         style=COLORS["dim"],
     )
     console.print(

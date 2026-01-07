@@ -8,6 +8,10 @@ from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 
+# Now safe to import agent (which imports LangChain modules)
+from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
+from deepagents_cli.commands import execute_bash_command, handle_command
+
 # CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import (
     COLORS,
@@ -17,10 +21,6 @@ from deepagents_cli.config import (
     create_model,
     settings,
 )
-
-# Now safe to import agent (which imports LangChain modules)
-from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
-from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.execution import execute_task
 from deepagents_cli.input import ImageTracker, create_prompt_session
 from deepagents_cli.integrations.sandbox_factory import (
@@ -106,6 +106,10 @@ def parse_args():
         help="Agent identifier for separate memory stores (default: agent).",
     )
     parser.add_argument(
+        "--model",
+        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5-mini, gemini-3-pro-preview). Provider is auto-detected from model name.",
+    )
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
         help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
@@ -177,6 +181,19 @@ async def simple_cli(
             console.print(
                 f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]"
             )
+        console.print()
+
+    # Display model info
+    if settings.model_name and settings.model_provider:
+        provider_display = {
+            "openai": "OpenAI",
+            "anthropic": "Anthropic",
+            "google": "Google",
+        }.get(settings.model_provider, settings.model_provider)
+        console.print(
+            f"[green]✓ Model:[/green] {provider_display} → '{settings.model_name}'",
+            style=COLORS["dim"],
+        )
         console.print()
 
     if not settings.has_tavily:
@@ -347,6 +364,7 @@ async def main(
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
+    model_name: str | None = None,
 ) -> None:
     """Main entry point with conditional sandbox support.
 
@@ -356,8 +374,9 @@ async def main(
         sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run in sandbox
+        model_name: Optional model name to use instead of environment variable
     """
-    model = create_model()
+    model = create_model(model_name)
 
     # Branch 1: User wants a sandbox
     if sandbox_type != "none":
@@ -442,6 +461,7 @@ def cli_main() -> None:
                     args.sandbox,
                     args.sandbox_id,
                     args.sandbox_setup,
+                    getattr(args, "model", None),
                 )
             )
     except KeyboardInterrupt:

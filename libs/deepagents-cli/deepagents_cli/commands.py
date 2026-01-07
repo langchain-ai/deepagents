@@ -18,7 +18,7 @@ async def handle_command(
     command: str,
     token_tracker: TokenTracker,
     session_state: SessionState | None = None,
-) -> str | bool:
+) -> str | bool | dict:
     """Handle slash commands.
 
     Args:
@@ -27,7 +27,8 @@ async def handle_command(
         session_state: Optional session state for persistent threads
 
     Returns:
-        'exit' to exit, True if handled, False to pass to agent
+        'exit' to exit, True if handled, False to pass to agent,
+        or dict {"clear": True, "thread_id": str} for /clear command
     """
     cmd = command.lower().strip().lstrip("/")
 
@@ -35,10 +36,7 @@ async def handle_command(
         return "exit"
 
     if cmd == "clear":
-        new_thread_id = None
-        if session_state is not None:
-            new_thread_id = generate_thread_id()
-            session_state.thread_id = new_thread_id
+        new_thread_id = generate_thread_id() if session_state is not None else None
 
         token_tracker.reset()
         console.clear()
@@ -48,7 +46,8 @@ async def handle_command(
         if new_thread_id:
             console.print(f"[dim]Thread: {new_thread_id}[/dim]")
         console.print()
-        return True
+        # Return new thread_id for caller to update session_state (avoids mutation in place)
+        return {"clear": True, "thread_id": new_thread_id}
 
     if cmd == "help":
         show_interactive_help()

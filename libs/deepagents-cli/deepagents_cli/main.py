@@ -1,12 +1,18 @@
 """Main entry point and CLI loop for deepagents."""
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import SandboxBackendProtocol
+
+if TYPE_CHECKING:
+    from langgraph.checkpoint.base import BaseCheckpointSaver
 
 # Now safe to import agent (which imports LangChain modules)
 from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
@@ -16,6 +22,7 @@ from deepagents_cli.commands import execute_bash_command, handle_command
 from deepagents_cli.config import (
     COLORS,
     DEEP_AGENTS_ASCII,
+    DEFAULT_AGENT_NAME,
     SessionState,
     console,
     create_model,
@@ -28,12 +35,12 @@ from deepagents_cli.integrations.sandbox_factory import (
     get_default_working_dir,
 )
 from deepagents_cli.sessions import (
-    delete_thread_command,
+    execute_threads_command,
     generate_thread_id,
     get_checkpointer,
     get_most_recent,
     get_thread_agent,
-    list_threads_command,
+    setup_threads_parser,
     thread_exists,
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
@@ -108,26 +115,14 @@ def parse_args():
     # Skills command - setup delegated to skills module
     setup_skills_parser(subparsers)
 
-    # Threads command
-    threads_parser = subparsers.add_parser("threads", help="Manage conversation threads")
-    threads_sub = threads_parser.add_subparsers(dest="threads_command")
-
-    # threads list
-    threads_list = threads_sub.add_parser("list", help="List threads")
-    threads_list.add_argument(
-        "--agent", default=None, help="Filter by agent name (default: show all)"
-    )
-    threads_list.add_argument("--limit", type=int, default=20, help="Max threads (default: 20)")
-
-    # threads delete
-    threads_delete = threads_sub.add_parser("delete", help="Delete a thread")
-    threads_delete.add_argument("thread_id", help="Thread ID to delete")
+    # Threads command - setup delegated to sessions module
+    setup_threads_parser(subparsers)
 
     # Default interactive mode
     parser.add_argument(
         "--agent",
-        default="agent",
-        help="Agent identifier for separate memory stores (default: agent).",
+        default=DEFAULT_AGENT_NAME,
+        help=f"Agent identifier for separate memory stores (default: {DEFAULT_AGENT_NAME}).",
     )
 
     # Thread resume argument
@@ -315,6 +310,11 @@ async def simple_cli(
             if result == "exit":
                 console.print("\nGoodbye!", style=COLORS["primary"])
                 break
+            # Handle /clear command - update session_state with new thread_id
+            if isinstance(result, dict) and result.get("clear"):
+                if session_state is not None and result.get("thread_id"):
+                    session_state.thread_id = result["thread_id"]
+                continue
             if result:
                 # Command was handled, continue to next input
                 continue
@@ -343,11 +343,11 @@ async def simple_cli(
 async def _run_agent_session(
     model,
     assistant_id: str,
-    session_state,
+    session_state: SessionState,
     sandbox_backend=None,
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
-    checkpointer=None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> None:
     """Helper to create agent and run CLI session.
 
@@ -501,17 +501,7 @@ def cli_main() -> None:
         elif args.command == "skills":
             execute_skills_command(args)
         elif args.command == "threads":
-            if args.threads_command == "list":
-                asyncio.run(
-                    list_threads_command(
-                        agent_name=args.agent,  # None = show all
-                        limit=args.limit,
-                    )
-                )
-            elif args.threads_command == "delete":
-                asyncio.run(delete_thread_command(args.thread_id))
-            else:
-                console.print("[yellow]Usage: deepagents threads <list|delete>[/yellow]")
+            execute_threads_command(args)
         else:
             # Interactive mode - handle thread resume
             thread_id = None
@@ -520,7 +510,7 @@ def cli_main() -> None:
             if args.resume_thread == "__MOST_RECENT__":
                 # -r (no ID): Get most recent thread
                 # If --agent specified, filter by that agent; otherwise get most recent overall
-                agent_filter = args.agent if args.agent != "agent" else None
+                agent_filter = args.agent if args.agent != DEFAULT_AGENT_NAME else None
                 thread_id = asyncio.run(get_most_recent(agent_filter))
                 if thread_id:
                     is_resumed = True
@@ -540,7 +530,7 @@ def cli_main() -> None:
                 if asyncio.run(thread_exists(args.resume_thread)):
                     thread_id = args.resume_thread
                     is_resumed = True
-                    if args.agent == "agent":
+                    if args.agent == DEFAULT_AGENT_NAME:
                         agent_name = asyncio.run(get_thread_agent(thread_id))
                         if agent_name:
                             args.agent = agent_name

@@ -5,6 +5,7 @@ import json
 import sys
 import termios
 import tty
+from datetime import UTC, datetime
 
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
@@ -217,8 +218,6 @@ async def execute_task(
         message_content = create_multimodal_content(final_input, images_to_send)
     else:
         message_content = final_input
-
-    from datetime import UTC, datetime
 
     config = {
         "configurable": {"thread_id": session_state.thread_id},

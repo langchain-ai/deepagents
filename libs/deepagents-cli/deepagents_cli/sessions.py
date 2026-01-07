@@ -1,10 +1,15 @@
 """Thread management using LangGraph's built-in checkpoint persistence."""
 
+from __future__ import annotations
+
+import argparse
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -178,3 +183,72 @@ async def delete_thread_command(thread_id: str) -> None:
         console.print(f"[green]Thread '{thread_id}' deleted.[/green]")
     else:
         console.print(f"[red]Thread '{thread_id}' not found.[/red]")
+
+
+def setup_threads_parser(
+    subparsers: Any,
+) -> argparse.ArgumentParser:
+    """Setup the threads subcommand parser with all its subcommands."""
+    threads_parser = subparsers.add_parser(
+        "threads",
+        help="Manage conversation threads",
+        description="Manage conversation threads - list, view, and delete threads",
+    )
+    threads_subparsers = threads_parser.add_subparsers(
+        dest="threads_command", help="Threads command"
+    )
+
+    # threads list
+    list_parser = threads_subparsers.add_parser(
+        "list", help="List threads", description="List all conversation threads"
+    )
+    list_parser.add_argument(
+        "--agent",
+        default=None,
+        help="Filter by agent name (default: show all)",
+    )
+    list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of threads to show (default: 20)",
+    )
+
+    # threads delete
+    delete_parser = threads_subparsers.add_parser(
+        "delete", help="Delete a thread", description="Delete a specific thread"
+    )
+    delete_parser.add_argument("thread_id", help="Thread ID to delete")
+
+    return threads_parser
+
+
+def execute_threads_command(args: argparse.Namespace) -> None:
+    """Execute threads subcommands based on parsed arguments.
+
+    Args:
+        args: Parsed command line arguments with threads_command attribute
+    """
+    if args.threads_command == "list":
+        asyncio.run(
+            list_threads_command(
+                agent_name=args.agent,
+                limit=args.limit,
+            )
+        )
+    elif args.threads_command == "delete":
+        asyncio.run(delete_thread_command(args.thread_id))
+    else:
+        # No subcommand provided, show help
+        console.print("[yellow]Please specify a threads subcommand: list or delete[/yellow]")
+        console.print("\n[bold]Usage:[/bold]", style=COLORS["primary"])
+        console.print("  deepagents threads <command> [options]\n")
+        console.print("[bold]Available commands:[/bold]", style=COLORS["primary"])
+        console.print("  list              List all conversation threads")
+        console.print("  delete <id>       Delete a specific thread")
+        console.print("\n[bold]Examples:[/bold]", style=COLORS["primary"])
+        console.print("  deepagents threads list")
+        console.print("  deepagents threads list --agent mybot")
+        console.print("  deepagents threads delete a1b2c3d4")
+        console.print("\n[dim]For more help on a specific command:[/dim]", style=COLORS["dim"])
+        console.print("  deepagents threads <command> --help", style=COLORS["dim"])

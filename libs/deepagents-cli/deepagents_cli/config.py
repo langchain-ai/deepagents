@@ -67,6 +67,9 @@ COMMANDS = {
 # Maximum argument length for display
 MAX_ARG_LENGTH = 150
 
+# Default agent name used when no --agent is specified
+DEFAULT_AGENT_NAME = "agent"
+
 # Agent configuration
 config = {"recursion_limit": 1000}
 
@@ -382,7 +385,7 @@ class SessionState:
         no_splash: bool = False,
         *,
         thread_id: str | None = None,
-        agent_name: str = "agent",
+        agent_name: str = DEFAULT_AGENT_NAME,
         is_resumed: bool = False,
     ) -> None:
         """Initialize session state.
@@ -391,7 +394,7 @@ class SessionState:
             auto_approve: Auto-approve tool usage without prompting
             no_splash: Disable startup splash screen
             thread_id: Thread ID (8-char hex), set by main() on startup
-            agent_name: Agent name (for creating new threads on /clear)
+            agent_name: Agent name for thread metadata (default: DEFAULT_AGENT_NAME)
             is_resumed: Whether this is a resumed thread
         """
         self.auto_approve = auto_approve

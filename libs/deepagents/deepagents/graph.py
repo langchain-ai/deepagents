@@ -21,6 +21,7 @@ from langgraph.types import Checkpointer
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.memory import MemoryMiddleware, MemorySource
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
@@ -48,6 +49,7 @@ def create_deep_agent(
     middleware: Sequence[AgentMiddleware] = (),
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     skills: list[str] | None = None,
+    memory: list[MemorySource] | None = None,
     response_format: ResponseFormat | None = None,
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
@@ -89,6 +91,9 @@ def create_deep_agent(
             `invoke(files={...})`. With FilesystemBackend, skills are loaded from disk relative
             to the backend's root_dir. Later sources override earlier ones for skills with the
             same name (last one wins).
+        memory: Optional list of memory sources (AGENTS.md files) to load. Each source is a dict
+            with `path` (file path) and `name` (display name like "user", "project"). Memory is
+            loaded at agent startup and injected into the system prompt.
         response_format: A structured output response format to use for the agent.
         context_schema: The schema of the deep agent.
         checkpointer: Optional checkpointer for persisting agent state between runs.
@@ -149,6 +154,8 @@ def create_deep_agent(
     deepagent_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
     ]
+    if memory is not None:
+        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(

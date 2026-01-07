@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -64,7 +64,9 @@ from langchain.agents.middleware.types import (
     AgentState,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
 )
+from langchain.tools import ToolRuntime
 from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -87,9 +89,10 @@ class MemoryState(AgentState):
 
     Attributes:
         memory_contents: Dict mapping source names to their loaded content.
+            Marked as private so it's not included in the final agent state.
     """
 
-    memory_contents: NotRequired[dict[str, str]]
+    memory_contents: NotRequired[Annotated[dict[str, str], PrivateStateAttr]]
 
 
 class MemoryStateUpdate(TypedDict):
@@ -167,17 +170,27 @@ class MemoryMiddleware(AgentMiddleware):
         self.sources = sources
         self.system_prompt_template = MEMORY_SYSTEM_PROMPT
 
-    def _get_backend(self, runtime: Runtime) -> BackendProtocol:
+    def _get_backend(self, state: MemoryState, runtime: Runtime) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:
+            state: Current agent state.
             runtime: Runtime context for factory functions.
 
         Returns:
             Resolved backend instance.
         """
         if callable(self._backend):
-            return self._backend(runtime)
+            # Construct an artificial tool runtime to resolve backend factory
+            tool_runtime = ToolRuntime(
+                state=state,
+                context=runtime.context,
+                stream_writer=runtime.stream_writer,
+                store=runtime.store,
+                config={},
+                tool_call_id=None,
+            )
+            return self._backend(tool_runtime)
         return self._backend
 
     def _format_memory_locations(self) -> str:
@@ -242,6 +255,63 @@ class MemoryMiddleware(AgentMiddleware):
             logger.debug(f"Could not load memory from {path}: {e}")
         return None
 
+    def _load_memory_from_backend_sync(
+        self,
+        backend: BackendProtocol,
+        path: str,
+    ) -> str | None:
+        """Load memory content from a backend path synchronously.
+
+        Args:
+            backend: Backend to load from.
+            path: Path to the AGENTS.md file.
+
+        Returns:
+            File content if found, None otherwise.
+        """
+        try:
+            results = backend.download_files([path])
+            # download_files returns a list of FileDownloadResponse objects
+            for response in results:
+                if response.path == path and response.content is not None:
+                    # Content may be bytes or string
+                    if isinstance(response.content, bytes):
+                        return response.content.decode("utf-8")
+                    if isinstance(response.content, list):
+                        return "\n".join(response.content)
+                    return str(response.content)
+        except Exception as e:
+            logger.debug(f"Could not load memory from {path}: {e}")
+        return None
+
+    def before_agent(self, state: MemoryState, runtime: Runtime) -> MemoryStateUpdate | None:
+        """Load memory content before agent execution (synchronous).
+
+        Loads memory from all configured sources and stores in state.
+        Only loads if not already present in state.
+
+        Args:
+            state: Current agent state.
+            runtime: Runtime context.
+
+        Returns:
+            State update with memory_contents populated.
+        """
+        # Skip if already loaded
+        if "memory_contents" in state:
+            return None
+
+        backend = self._get_backend(state, runtime)
+        contents: dict[str, str] = {}
+
+        for source in self.sources:
+            content = self._load_memory_from_backend_sync(backend, source["path"])
+            if content:
+                contents[source["name"]] = content
+                logger.debug(f"Loaded memory from {source['name']}: {source['path']}")
+
+        return MemoryStateUpdate(memory_contents=contents)
+
     async def abefore_agent(self, state: MemoryState, runtime: Runtime) -> MemoryStateUpdate | None:
         """Load memory content before agent execution.
 
@@ -259,7 +329,7 @@ class MemoryMiddleware(AgentMiddleware):
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend(runtime)
+        backend = self._get_backend(state, runtime)
         contents: dict[str, str] = {}
 
         for source in self.sources:

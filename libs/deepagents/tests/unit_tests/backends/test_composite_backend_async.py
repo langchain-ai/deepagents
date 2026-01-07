@@ -868,3 +868,129 @@ async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path)
         ]
     )
     assert match_paths == expected_paths
+
+
+async def test_composite_agrep_error_in_routed_backend_async() -> None:
+    """Test async grep error handling when routed backend returns error string."""
+    rt = make_runtime("t_agrep_err1")
+
+    # Create a mock backend that returns error strings for grep
+    class ErrorBackend(StoreBackend):
+        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+            return "Invalid regex pattern error"
+
+    error_backend = ErrorBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
+
+    # When searching a specific route that errors, return the error
+    result = await comp.agrep_raw("test", path="/errors/")
+    assert result == "Invalid regex pattern error"
+
+
+async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
+    """Test async grep error handling when routed backend errors during root search."""
+    rt = make_runtime("t_agrep_err2")
+
+    # Create a mock backend that returns error strings for grep
+    class ErrorBackend(StoreBackend):
+        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+            return "Backend error occurred"
+
+    error_backend = ErrorBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
+
+    # When searching from root and a routed backend errors, return the error
+    result = await comp.agrep_raw("test", path="/")
+    assert result == "Backend error occurred"
+
+
+async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
+    """Test async grep error handling when default backend errors during root search."""
+    rt = make_runtime("t_agrep_err3")
+
+    # Create a mock backend that returns error strings for grep
+    class ErrorDefaultBackend(StateBackend):
+        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+            return "Default backend error"
+
+    error_default = ErrorDefaultBackend(rt)
+    store_backend = StoreBackend(rt)
+
+    comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})
+
+    # When searching from root and default backend errors, return the error
+    result = await comp.agrep_raw("test", path="/")
+    assert result == "Default backend error"
+
+
+async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: Path) -> None:
+    """Test async grep with non-root path on default backend."""
+    rt = make_runtime("t_agrep_default")
+    root = tmp_path
+
+    # Create nested structure
+    (root / "work").mkdir()
+    (root / "work" / "project.txt").write_text("project content")
+    (root / "other.txt").write_text("other content")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Search in /work directory (doesn't match any route)
+    matches = await comp.agrep_raw("content", path="/work")
+    match_paths = [m["path"] for m in matches]
+
+    # Should only find files in /work, not /other.txt
+    assert match_paths == ["/work/project.txt"]
+
+
+async def test_composite_aglob_info_targeting_specific_route_async() -> None:
+    """Test async glob_info when path matches a specific route."""
+    rt = make_runtime("t_aglob1")
+
+    store = StoreBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/memories/": store})
+
+    # Write files to memories
+    await comp.awrite("/memories/test.py", "python file")
+    await comp.awrite("/memories/data.json", "json file")
+    await comp.awrite("/memories/docs/readme.md", "markdown file")
+
+    # Write to default backend
+    await state_backend.awrite("/local.py", "local python")
+
+    # Glob in specific route with pattern - should only find .py files in memories
+    results = await comp.aglob_info("**/*.py", path="/memories/")
+    result_paths = [fi["path"] for fi in results]
+
+    assert result_paths == ["/memories/test.py"]
+
+
+async def test_composite_aglob_info_nested_path_in_route_async() -> None:
+    """Test async glob_info with nested path within route."""
+    rt = make_runtime("t_aglob2")
+
+    store = StoreBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/archive/": store})
+
+    # Write nested files
+    await comp.awrite("/archive/2024/jan.log", "january logs")
+    await comp.awrite("/archive/2024/feb.log", "february logs")
+    await comp.awrite("/archive/2023/dec.log", "december logs")
+    await comp.awrite("/archive/notes.txt", "general notes")
+
+    # Glob in nested path within route - should only find .log files in /archive/2024/
+    results = await comp.aglob_info("*.log", path="/archive/2024/")
+    result_paths = sorted([fi["path"] for fi in results])
+
+    assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]

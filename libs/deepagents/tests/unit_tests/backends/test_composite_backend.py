@@ -987,3 +987,129 @@ def test_composite_grep_multiple_routes_aggregation(tmp_path: Path) -> None:
         ]
     )
     assert match_paths == expected_paths
+
+
+def test_composite_grep_error_in_routed_backend() -> None:
+    """Test grep error handling when routed backend returns error string."""
+    rt = make_runtime("t_grep_err1")
+
+    # Create a mock backend that returns error strings for grep
+    class ErrorBackend(StoreBackend):
+        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+            return "Invalid regex pattern error"
+
+    error_backend = ErrorBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
+
+    # When searching a specific route that errors, return the error
+    result = comp.grep_raw("test", path="/errors/")
+    assert result == "Invalid regex pattern error"
+
+
+def test_composite_grep_error_in_routed_backend_at_root() -> None:
+    """Test grep error handling when routed backend errors during root search."""
+    rt = make_runtime("t_grep_err2")
+
+    # Create a mock backend that returns error strings for grep
+    class ErrorBackend(StoreBackend):
+        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+            return "Backend error occurred"
+
+    error_backend = ErrorBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
+
+    # When searching from root and a routed backend errors, return the error
+    result = comp.grep_raw("test", path="/")
+    assert result == "Backend error occurred"
+
+
+def test_composite_grep_error_in_default_backend_at_root() -> None:
+    """Test grep error handling when default backend errors during root search."""
+    rt = make_runtime("t_grep_err3")
+
+    # Create a mock backend that returns error strings for grep
+    class ErrorDefaultBackend(StateBackend):
+        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+            return "Default backend error"
+
+    error_default = ErrorDefaultBackend(rt)
+    store_backend = StoreBackend(rt)
+
+    comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})
+
+    # When searching from root and default backend errors, return the error
+    result = comp.grep_raw("test", path="/")
+    assert result == "Default backend error"
+
+
+def test_composite_grep_non_root_path_on_default_backend(tmp_path: Path) -> None:
+    """Test grep with non-root path on default backend."""
+    rt = make_runtime("t_grep_default")
+    root = tmp_path
+
+    # Create nested structure
+    (root / "work").mkdir()
+    (root / "work" / "project.txt").write_text("project content")
+    (root / "other.txt").write_text("other content")
+
+    fs = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+    store = StoreBackend(rt)
+
+    comp = CompositeBackend(default=fs, routes={"/memories/": store})
+
+    # Search in /work directory (doesn't match any route)
+    matches = comp.grep_raw("content", path="/work")
+    match_paths = [m["path"] for m in matches]
+
+    # Should only find files in /work, not /other.txt
+    assert match_paths == ["/work/project.txt"]
+
+
+def test_composite_glob_info_targeting_specific_route() -> None:
+    """Test glob_info when path matches a specific route."""
+    rt = make_runtime("t_glob1")
+
+    store = StoreBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/memories/": store})
+
+    # Write files to memories
+    comp.write("/memories/test.py", "python file")
+    comp.write("/memories/data.json", "json file")
+    comp.write("/memories/docs/readme.md", "markdown file")
+
+    # Write to default backend
+    state_backend.write("/local.py", "local python")
+
+    # Glob in specific route with pattern - should only find .py files in memories
+    results = comp.glob_info("**/*.py", path="/memories/")
+    result_paths = [fi["path"] for fi in results]
+
+    assert result_paths == ["/memories/test.py"]
+
+
+def test_composite_glob_info_nested_path_in_route() -> None:
+    """Test glob_info with nested path within route."""
+    rt = make_runtime("t_glob2")
+
+    store = StoreBackend(rt)
+    state_backend = StateBackend(rt)
+
+    comp = CompositeBackend(default=state_backend, routes={"/archive/": store})
+
+    # Write nested files
+    comp.write("/archive/2024/jan.log", "january logs")
+    comp.write("/archive/2024/feb.log", "february logs")
+    comp.write("/archive/2023/dec.log", "december logs")
+    comp.write("/archive/notes.txt", "general notes")
+
+    # Glob in nested path within route - should only find .log files in /archive/2024/
+    results = comp.glob_info("*.log", path="/archive/2024/")
+    result_paths = sorted([fi["path"] for fi in results])
+
+    assert result_paths == ["/archive/2024/feb.log", "/archive/2024/jan.log"]

@@ -558,7 +558,7 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "name": "skill-b",
             "description": "Project skill B",
             "path": "/skills/project/skill-b/SKILL.md",
-                "license": None,
+            "license": None,
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],

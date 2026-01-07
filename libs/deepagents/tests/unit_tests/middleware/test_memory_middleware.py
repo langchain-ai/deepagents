@@ -6,6 +6,7 @@ and temporary directories with the FilesystemBackend in normal (non-virtual) mod
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
@@ -35,6 +36,23 @@ def make_memory_content(title: str, content: str) -> str:
 
 {content}
 """
+
+
+def create_store_memory_item(content: str) -> dict:
+    """Create a memory item in StoreBackend FileData format.
+
+    Args:
+        content: Memory content string
+
+    Returns:
+        Dict with content (as list of lines), created_at, and modified_at
+    """
+    timestamp = datetime.now(UTC).isoformat()
+    return {
+        "content": content.split("\n"),
+        "created_at": timestamp,
+        "modified_at": timestamp,
+    }
 
 
 def test_format_memory_locations_empty() -> None:
@@ -543,8 +561,6 @@ def test_memory_middleware_with_state_backend_factory() -> None:
     assert middleware.sources[0] == "/memory/AGENTS.md"
 
     # Create a mock Runtime (simplified for testing)
-    from types import SimpleNamespace
-
     state = {"messages": [], "files": {}}
     runtime = SimpleNamespace(
         context=None,
@@ -570,8 +586,6 @@ def test_memory_middleware_with_store_backend_factory() -> None:
     assert callable(middleware._backend)
 
     # Create a mock Runtime with store
-    from types import SimpleNamespace
-
     store = InMemoryStore()
     state = {"messages": []}
     runtime = SimpleNamespace(
@@ -586,151 +600,93 @@ def test_memory_middleware_with_store_backend_factory() -> None:
 
 
 def test_memory_middleware_with_store_backend_assistant_id() -> None:
-    """Test that MemoryMiddleware with StoreBackend handles assistant_id for namespace isolation."""
-    sources: list[str] = ["/memory/AGENTS.md"]
+    """Test namespace isolation: each assistant_id gets its own memory namespace."""
+    # Setup
     middleware = MemoryMiddleware(
         backend=lambda rt: StoreBackend(rt),
-        sources=sources,
+        sources=["/memory/AGENTS.md"],
     )
-
-    # Create a mock Runtime with store
-    from types import SimpleNamespace
-
     store = InMemoryStore()
-    memory_content = make_memory_content("Assistant Memory", "- Assistant-specific context")
+    runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
 
-    # Write memory to store with assistant_id namespace in FileData format
-    assistant_id = "assistant-123"
-    namespace = (assistant_id, "filesystem")
-    from datetime import UTC, datetime
-
-    timestamp = datetime.now(UTC).isoformat()
+    # Add memory for assistant-123 with namespace (assistant-123, filesystem)
+    assistant_1_content = make_memory_content("Assistant 1", "- Context for assistant 1")
     store.put(
-        namespace,
+        ("assistant-123", "filesystem"),
         "/memory/AGENTS.md",
-        {
-            "content": memory_content.split("\n"),
-            "created_at": timestamp,
-            "modified_at": timestamp,
-        },
+        create_store_memory_item(assistant_1_content),
     )
 
-    state: dict = {"messages": []}
-    runtime = SimpleNamespace(
-        context=None,
-        store=store,
-        stream_writer=lambda _: None,
-    )
+    # Test: assistant-123 can read its own memory
+    config_1 = {"metadata": {"assistant_id": "assistant-123"}}
+    result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore
 
-    # Config with assistant_id in metadata
-    config = {"metadata": {"assistant_id": assistant_id}}
+    assert result_1 is not None
+    assert "/memory/AGENTS.md" in result_1["memory_contents"]
+    assert "Context for assistant 1" in result_1["memory_contents"]["/memory/AGENTS.md"]
 
-    # Get backend and verify it uses the correct namespace
-    backend = middleware._get_backend(state, runtime, config)  # type: ignore
-    assert isinstance(backend, StoreBackend)
+    # Test: assistant-456 cannot see assistant-123's memory (different namespace)
+    config_2 = {"metadata": {"assistant_id": "assistant-456"}}
+    result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore
 
-    # Verify the backend can access memory from the assistant-specific namespace
-    result = middleware.before_agent(state, runtime, config)  # type: ignore
-    assert result is not None
-    assert "memory_contents" in result
-    assert "/memory/AGENTS.md" in result["memory_contents"]
-    assert "Assistant-specific context" in result["memory_contents"]["/memory/AGENTS.md"]
-
-    # Verify a different assistant_id would have different namespace and not find the memory
-    assistant_2_id = "assistant-456"
-    different_assistant_state: dict = {"messages": []}
-    different_config = {"metadata": {"assistant_id": assistant_2_id}}
-    result_different = middleware.before_agent(different_assistant_state, runtime, different_config)  # type: ignore
-    # Should return empty memory_contents since the different assistant doesn't have memory yet
-    assert result_different is not None
-    assert "memory_contents" in result_different
-    assert len(result_different["memory_contents"]) == 0
-
-    # Now add memory for the second assistant with different content
-    memory_content_2 = make_memory_content("Assistant 2 Memory", "- Different assistant context")
-    namespace_2 = (assistant_2_id, "filesystem")
-    timestamp_2 = datetime.now(UTC).isoformat()
-    store.put(
-        namespace_2,
-        "/memory/AGENTS.md",
-        {
-            "content": memory_content_2.split("\n"),
-            "created_at": timestamp_2,
-            "modified_at": timestamp_2,
-        },
-    )
-
-    # Verify assistant 2 can access their own memory
-    state_2: dict = {"messages": []}
-    result_2 = middleware.before_agent(state_2, runtime, different_config)  # type: ignore
     assert result_2 is not None
-    assert "memory_contents" in result_2
-    assert "/memory/AGENTS.md" in result_2["memory_contents"]
-    assert "Different assistant context" in result_2["memory_contents"]["/memory/AGENTS.md"]
-    assert "Assistant-specific context" not in result_2["memory_contents"]["/memory/AGENTS.md"]
+    assert len(result_2["memory_contents"]) == 0  # No memory in assistant-456's namespace yet
 
-    # Verify assistant 1 still sees only their own memory (not contaminated by assistant 2)
-    state_1_recheck: dict = {"messages": []}
-    result_1_recheck = middleware.before_agent(state_1_recheck, runtime, config)  # type: ignore
-    assert result_1_recheck is not None
-    assert "memory_contents" in result_1_recheck
-    assert "/memory/AGENTS.md" in result_1_recheck["memory_contents"]
-    assert "Assistant-specific context" in result_1_recheck["memory_contents"]["/memory/AGENTS.md"]
-    assert "Different assistant context" not in result_1_recheck["memory_contents"]["/memory/AGENTS.md"]
+    # Add memory for assistant-456 with namespace (assistant-456, filesystem)
+    assistant_2_content = make_memory_content("Assistant 2", "- Context for assistant 2")
+    store.put(
+        ("assistant-456", "filesystem"),
+        "/memory/AGENTS.md",
+        create_store_memory_item(assistant_2_content),
+    )
+
+    # Test: assistant-456 can read its own memory
+    result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore
+
+    assert result_3 is not None
+    assert "/memory/AGENTS.md" in result_3["memory_contents"]
+    assert "Context for assistant 2" in result_3["memory_contents"]["/memory/AGENTS.md"]
+    assert "Context for assistant 1" not in result_3["memory_contents"]["/memory/AGENTS.md"]
+
+    # Test: assistant-123 still only sees its own memory (no cross-contamination)
+    result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore
+
+    assert result_4 is not None
+    assert "/memory/AGENTS.md" in result_4["memory_contents"]
+    assert "Context for assistant 1" in result_4["memory_contents"]["/memory/AGENTS.md"]
+    assert "Context for assistant 2" not in result_4["memory_contents"]["/memory/AGENTS.md"]
 
 
 def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
-    """Test that MemoryMiddleware with StoreBackend works without assistant_id (default namespace)."""
-    sources: list[str] = ["/memory/AGENTS.md"]
+    """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
+    # Setup
     middleware = MemoryMiddleware(
         backend=lambda rt: StoreBackend(rt),
-        sources=sources,
+        sources=["/memory/AGENTS.md"],
     )
-
-    # Create a mock Runtime with store
-    from types import SimpleNamespace
-
     store = InMemoryStore()
-    memory_content = make_memory_content("Shared Memory", "- Default namespace context")
+    runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
 
-    # Write memory to store with default namespace (no assistant_id)
-    from datetime import UTC, datetime
-
-    default_namespace = ("filesystem",)
-    timestamp = datetime.now(UTC).isoformat()
+    # Add memory to default namespace (filesystem,) - no assistant_id
+    shared_content = make_memory_content("Shared Memory", "- Default namespace context")
     store.put(
-        default_namespace,
+        ("filesystem",),
         "/memory/AGENTS.md",
-        {
-            "content": memory_content.split("\n"),
-            "created_at": timestamp,
-            "modified_at": timestamp,
-        },
+        create_store_memory_item(shared_content),
     )
 
-    state: dict = {"messages": []}
-    runtime = SimpleNamespace(
-        context=None,
-        store=store,
-        stream_writer=lambda _: None,
-    )
+    # Test: empty config accesses default namespace
+    result_1 = middleware.before_agent({}, runtime, {})  # type: ignore
 
-    # Config without assistant_id (empty config or no metadata)
-    config_no_assistant: dict = {}
+    assert result_1 is not None
+    assert "/memory/AGENTS.md" in result_1["memory_contents"]
+    assert "Default namespace context" in result_1["memory_contents"]["/memory/AGENTS.md"]
 
-    # Verify memory is accessible from default namespace
-    result = middleware.before_agent(state, runtime, config_no_assistant)  # type: ignore
-    assert result is not None
-    assert "memory_contents" in result
-    assert "/memory/AGENTS.md" in result["memory_contents"]
-    assert "Default namespace context" in result["memory_contents"]["/memory/AGENTS.md"]
+    # Test: config with metadata but no assistant_id also uses default namespace
+    config_with_other_metadata = {"metadata": {"some_other_key": "value"}}
+    result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore
 
-    # Also test with metadata but no assistant_id
-    config_with_metadata_no_assistant = {"metadata": {"some_other_key": "value"}}
-    state_2: dict = {"messages": []}
-    result_2 = middleware.before_agent(state_2, runtime, config_with_metadata_no_assistant)  # type: ignore
     assert result_2 is not None
-    assert "memory_contents" in result_2
     assert "/memory/AGENTS.md" in result_2["memory_contents"]
     assert "Default namespace context" in result_2["memory_contents"]["/memory/AGENTS.md"]
 

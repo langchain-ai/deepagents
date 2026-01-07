@@ -169,6 +169,37 @@ class CompositeBackend:
         path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
+        """Search for a regex pattern in files, routing to appropriate backend(s).
+
+        This method routes grep searches to the appropriate backend based on the path.
+        If the path matches a specific route prefix, only that backend is searched.
+        If path is None or "/", all backends (default + routed) are searched and results merged.
+        Otherwise, only the default backend is searched.
+
+        The actual search implementation is delegated to the underlying backend(s).
+        Supports glob filtering to limit search to specific file patterns.
+
+        Args:
+            pattern: Regular expression pattern to search for in file contents.
+            path: Optional directory path to search in. If None or "/", searches all backends.
+                  If matches a route prefix, searches only that backend. Otherwise, searches default backend.
+            glob: Optional glob pattern to filter which FILES to search.
+                  Filters by filename/path, not content.
+                  Supports standard glob wildcards:
+                  - `*` matches any characters in filename
+                  - `**` matches any directories recursively
+                  - `?` matches single character
+                  - `[abc]` matches one character from set
+                  Examples: "*.py", "**/*.txt", "src/**/*.js"
+
+        Returns:
+            On success: list[GrepMatch] with structured results containing:
+                - path: Absolute file path (with route prefixes restored)
+                - line: Line number (1-indexed)
+                - text: Full line content containing the match
+
+            On error: str with error message (e.g., invalid regex pattern)
+        """
         # If path targets a specific route, search only that backend
         for route_prefix, backend in self.sorted_routes:
             if path is not None and path.startswith(route_prefix.rstrip("/")):
@@ -206,7 +237,39 @@ class CompositeBackend:
         path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
-        """Async version of grep_raw."""
+        """Async version of grep_raw.
+
+        Search for a regex pattern in files, routing to appropriate backend(s).
+
+        This method routes grep searches to the appropriate backend based on the path.
+        If the path matches a specific route prefix, only that backend is searched.
+        If path is None or "/", all backends (default + routed) are searched and results merged.
+        Otherwise, only the default backend is searched.
+
+        The actual search implementation is delegated to the underlying backend(s).
+        Supports glob filtering to limit search to specific file patterns.
+
+        Args:
+            pattern: Regular expression pattern to search for in file contents.
+            path: Optional directory path to search in. If None or "/", searches all backends.
+                  If matches a route prefix, searches only that backend. Otherwise, searches default backend.
+            glob: Optional glob pattern to filter which FILES to search.
+                  Filters by filename/path, not content.
+                  Supports standard glob wildcards:
+                  - `*` matches any characters in filename
+                  - `**` matches any directories recursively
+                  - `?` matches single character
+                  - `[abc]` matches one character from set
+                  Examples: "*.py", "**/*.txt", "src/**/*.js"
+
+        Returns:
+            On success: list[GrepMatch] with structured results containing:
+                - path: Absolute file path (with route prefixes restored)
+                - line: Line number (1-indexed)
+                - text: Full line content containing the match
+
+            On error: str with error message (e.g., invalid regex pattern)
+        """
         # If path targets a specific route, search only that backend
         for route_prefix, backend in self.sorted_routes:
             if path is not None and path.startswith(route_prefix.rstrip("/")):

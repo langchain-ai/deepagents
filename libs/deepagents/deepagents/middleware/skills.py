@@ -278,7 +278,7 @@ def _parse_skill_metadata(
     )
 
 
-def list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
+def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
     """List all skills from a backend source.
 
     Scans backend for subdirectories containing SKILL.md files, downloads their content,
@@ -536,7 +536,7 @@ class SkillsMiddleware(AgentMiddleware):
         # Load skills from each source in order
         # Later sources override earlier ones (last one wins)
         for source_path in self.sources:
-            source_skills = list_skills(backend, source_path)
+            source_skills = _list_skills(backend, source_path)
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
@@ -578,4 +578,4 @@ class SkillsMiddleware(AgentMiddleware):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware", "list_skills"]
+__all__ = ["SkillMetadata", "SkillsMiddleware"]

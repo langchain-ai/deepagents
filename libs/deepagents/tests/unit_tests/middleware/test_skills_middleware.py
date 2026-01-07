@@ -23,9 +23,9 @@ from deepagents.middleware.skills import (
     MAX_SKILL_FILE_SIZE,
     SkillMetadata,
     SkillsMiddleware,
+    _list_skills,
     _parse_skill_metadata,
     _validate_skill_name,
-    list_skills,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -277,7 +277,7 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
     assert responses[0].error is None
 
     # List skills using the full absolute path
-    skills = list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, str(skills_dir))
 
     assert skills == [
         {
@@ -317,7 +317,7 @@ def test_list_skills_from_backend_multiple_skills(tmp_path: Path) -> None:
     assert all(r.error is None for r in responses)
 
     # List skills
-    skills = list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, str(skills_dir))
 
     # Should return all three skills (order may vary)
     assert len(skills) == 3
@@ -334,7 +334,7 @@ def test_list_skills_from_backend_empty_directory(tmp_path: Path) -> None:
     skills_dir.mkdir()
 
     # Should return empty list
-    skills = list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, str(skills_dir))
     assert skills == []
 
 
@@ -343,7 +343,7 @@ def test_list_skills_from_backend_nonexistent_path(tmp_path: Path) -> None:
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Try to list from non-existent directory
-    skills = list_skills(backend, str(tmp_path / "nonexistent"))
+    skills = _list_skills(backend, str(tmp_path / "nonexistent"))
     assert skills == []
 
 
@@ -366,7 +366,7 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     )
 
     # List skills - should only get the valid one
-    skills = list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, str(skills_dir))
 
     assert skills == [
         {
@@ -406,7 +406,7 @@ Content
     )
 
     # Should only get the valid skill
-    skills = list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, str(skills_dir))
 
     assert skills == [
         {
@@ -441,7 +441,7 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     )
 
     # List skills - should find the skill and not be confused by helper files
-    skills = list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, str(skills_dir))
 
     assert skills == [
         {

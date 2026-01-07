@@ -178,22 +178,27 @@ class CompositeBackend:
                     return raw
                 return [{**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw]
 
-        # Otherwise, search default and all routed backends and merge
-        all_matches: list[GrepMatch] = []
-        raw_default = self.default.grep_raw(pattern, path, glob)  # type: ignore[attr-defined]
-        if isinstance(raw_default, str):
-            # This happens if error occurs
-            return raw_default
-        all_matches.extend(raw_default)
-
-        for route_prefix, backend in self.routes.items():
-            raw = backend.grep_raw(pattern, "/", glob)
-            if isinstance(raw, str):
+        # If path is None or "/", search default and all routed backends and merge
+        # Otherwise, search only the default backend
+        if path is None or path == "/":
+            all_matches: list[GrepMatch] = []
+            raw_default = self.default.grep_raw(pattern, path, glob)  # type: ignore[attr-defined]
+            if isinstance(raw_default, str):
                 # This happens if error occurs
-                return raw
-            all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)
+                return raw_default
+            all_matches.extend(raw_default)
 
-        return all_matches
+            for route_prefix, backend in self.routes.items():
+                raw = backend.grep_raw(pattern, "/", glob)
+                if isinstance(raw, str):
+                    # This happens if error occurs
+                    return raw
+                all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)
+
+            return all_matches
+        else:
+            # Path specified but doesn't match a route - search only default
+            return self.default.grep_raw(pattern, path, glob)  # type: ignore[attr-defined]
 
     async def agrep_raw(
         self,
@@ -211,22 +216,27 @@ class CompositeBackend:
                     return raw
                 return [{**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw]
 
-        # Otherwise, search default and all routed backends and merge
-        all_matches: list[GrepMatch] = []
-        raw_default = await self.default.agrep_raw(pattern, path, glob)  # type: ignore[attr-defined]
-        if isinstance(raw_default, str):
-            # This happens if error occurs
-            return raw_default
-        all_matches.extend(raw_default)
-
-        for route_prefix, backend in self.routes.items():
-            raw = await backend.agrep_raw(pattern, "/", glob)
-            if isinstance(raw, str):
+        # If path is None or "/", search default and all routed backends and merge
+        # Otherwise, search only the default backend
+        if path is None or path == "/":
+            all_matches: list[GrepMatch] = []
+            raw_default = await self.default.agrep_raw(pattern, path, glob)  # type: ignore[attr-defined]
+            if isinstance(raw_default, str):
                 # This happens if error occurs
-                return raw
-            all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)
+                return raw_default
+            all_matches.extend(raw_default)
 
-        return all_matches
+            for route_prefix, backend in self.routes.items():
+                raw = await backend.agrep_raw(pattern, "/", glob)
+                if isinstance(raw, str):
+                    # This happens if error occurs
+                    return raw
+                all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)
+
+            return all_matches
+        else:
+            # Path specified but doesn't match a route - search only default
+            return await self.default.agrep_raw(pattern, path, glob)  # type: ignore[attr-defined]
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         results: list[FileInfo] = []

@@ -4,7 +4,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -974,21 +974,41 @@ class FilesystemMiddleware(AgentMiddleware):
 
         return await handler(request)
 
-    def _is_text_content_block(self, block: dict) -> bool:
-        """Check if a dict is a text content block with type='text' and 'text' key."""
-        return isinstance(block, dict) and block.get("type") == "text" and "text" in block
+    def _is_text_content_block(self, block: Any) -> bool:
+        """Check if a block is a text content block.
 
-    def _get_evictable_content(self, content) -> str | None:
-        """Extract evictable text content from message content.
+        Args:
+            block: A potential content block to check.
 
         Returns:
-            String content to evict, or None if content type is not supported.
+            True if block is a dict with type='text' and has a 'text' key.
+
+        Note:
+            Text content blocks follow the format: {"type": "text", "text": "..."}
         """
-        # String content
+        return isinstance(block, dict) and block.get("type") == "text" and "text" in block
+
+    def _get_evictable_content(self, content: str | list[str | dict]) -> str | None:
+        """Extract evictable text content from message content.
+
+        Args:
+            content: The message content, either a string or list of content blocks.
+
+        Returns:
+            The text string to evict, or None if content type is not supported for eviction.
+
+        Note:
+            Only supports eviction of:
+            - Plain string content
+            - Content blocks where the first block is type='text' with a string 'text' field
+
+            Other content types (images, tool calls, etc.) are not evicted.
+        """
+        # String content - can be evicted directly
         if isinstance(content, str):
             return content
 
-        # List of content blocks
+        # List of content blocks - check if first block is text
         if isinstance(content, list) and len(content) > 0:
             first_block = content[0]
             if self._is_text_content_block(first_block):
@@ -998,8 +1018,21 @@ class FilesystemMiddleware(AgentMiddleware):
 
         return None
 
-    def _should_evict_content(self, content) -> bool:
-        """Check if content should be evicted based on size."""
+    def _should_evict_content(self, content: str | list[str | dict]) -> bool:
+        """Check if content should be evicted to filesystem based on size.
+
+        Args:
+            content: The message content to check.
+
+        Returns:
+            True if content should be evicted, False otherwise.
+
+        Note:
+            Content is evicted if:
+            1. tool_token_limit_before_evict is configured
+            2. Content is a supported type (string or text content block)
+            3. Content size exceeds threshold (4x token limit, ~4 chars per token)
+        """
         if not self.tool_token_limit_before_evict:
             return False
 
@@ -1014,7 +1047,23 @@ class FilesystemMiddleware(AgentMiddleware):
         message: ToolMessage,
         resolved_backend: BackendProtocol,
     ) -> tuple[ToolMessage, dict[str, FileData] | None]:
-        """Process a large ToolMessage by evicting its content to filesystem."""
+        """Process a large ToolMessage by evicting its content to filesystem.
+
+        Args:
+            message: The ToolMessage with large content to evict.
+            resolved_backend: The filesystem backend to write the content to.
+
+        Returns:
+            A tuple of (processed_message, files_update):
+            - processed_message: New ToolMessage with truncated content and file reference
+            - files_update: Dict of file updates to apply to state, or None if eviction failed
+
+        Note:
+            The original text content is written to /large_tool_results/{tool_call_id} and
+            replaced with a truncated preview plus file reference. For content blocks, the
+            structure is preserved - only the text in the first block is replaced, other
+            blocks are kept intact.
+        """
         if not self._should_evict_content(message.content):
             return message, None
 
@@ -1029,7 +1078,11 @@ class FilesystemMiddleware(AgentMiddleware):
         if result.error:
             return message, None
 
-        content_sample = format_content_with_line_numbers([line[:1000] for line in text_content.splitlines()[:10]], start_line=1)
+        # Create truncated preview for the replacement message
+        content_sample = format_content_with_line_numbers(
+            [line[:1000] for line in text_content.splitlines()[:10]],
+            start_line=1
+        )
         replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
             file_path=file_path,
@@ -1040,9 +1093,9 @@ class FilesystemMiddleware(AgentMiddleware):
         original_content = message.content
         if isinstance(original_content, str):
             # String content - replace with eviction message
-            new_content = replacement_text
+            new_content: str | list[str | dict] = replacement_text
         elif isinstance(original_content, list) and len(original_content) > 0:
-            # Content block - preserve structure, replace text in first block
+            # Content blocks - preserve structure, replace text in first block
             first_block = original_content[0]
             new_first_block = {**first_block, "text": replacement_text}
             new_content = [new_first_block] + original_content[1:]
@@ -1056,7 +1109,24 @@ class FilesystemMiddleware(AgentMiddleware):
         )
         return processed_message, result.files_update
 
-    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+    def _intercept_large_tool_result(
+        self, tool_result: ToolMessage | Command, runtime: ToolRuntime
+    ) -> ToolMessage | Command:
+        """Intercept and process large tool results before they're added to state.
+
+        Args:
+            tool_result: The tool result to potentially evict (ToolMessage or Command).
+            runtime: The tool runtime providing access to the filesystem backend.
+
+        Returns:
+            Either the original result (if small enough) or a Command with evicted
+            content written to filesystem and truncated message.
+
+        Note:
+            Handles both single ToolMessage results and Command objects containing
+            multiple messages. Large content is automatically offloaded to filesystem
+            to prevent context window overflow.
+        """
         if isinstance(tool_result, ToolMessage):
             if not self._should_evict_content(tool_result.content):
                 return tool_result

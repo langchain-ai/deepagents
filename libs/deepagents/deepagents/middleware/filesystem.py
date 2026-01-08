@@ -1004,6 +1004,8 @@ class FilesystemMiddleware(AgentMiddleware):
         content_str = message.content if isinstance(message.content, str) else str(message.content)
 
         # Check if content exceeds eviction threshold
+        # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
+        # This errs on the high side to avoid premature eviction of content that might fit
         if len(content_str) <= 4 * self.tool_token_limit_before_evict:
             return message, None
 

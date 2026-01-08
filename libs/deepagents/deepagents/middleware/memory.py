@@ -95,9 +95,7 @@ MEMORY_SYSTEM_PROMPT = """
 
 You have access to persistent memory that provides context and instructions.
 
-{memory_locations}
-
-{memory_contents}
+{agent_memory}
 
 **Memory Guidelines:**
 - Memory content above provides project-specific context and instructions
@@ -163,37 +161,28 @@ class MemoryMiddleware(AgentMiddleware):
             return self._backend(tool_runtime)
         return self._backend
 
-    def _format_memory_locations(self) -> str:
-        """Format memory source locations for display."""
-        if not self.sources:
-            return "**Memory Sources:** None configured"
-
-        lines = ["**Memory Sources:**"]
-        for path in self.sources:
-            lines.append(f"- `{path}`")
-        return "\n".join(lines)
-
-    def _format_memory_contents(self, contents: dict[str, str]) -> str:
-        """Format loaded memory contents for injection into prompt.
+    def _format_agent_memory(self, contents: dict[str, str]) -> str:
+        """Format memory with locations and contents paired together.
 
         Args:
             contents: Dict mapping source paths to content.
 
         Returns:
-            Formatted string with all memory contents concatenated.
+            Formatted string with location+content pairs wrapped in <agent_memory> tags.
         """
         if not contents:
-            return "(No memory loaded)"
+            return "<agent_memory>\n(No memory loaded)\n</agent_memory>"
 
         sections = []
         for path in self.sources:
             if contents.get(path):
-                sections.append(contents[path])
+                sections.append(f"{path}\n{contents[path]}")
 
         if not sections:
-            return "(No memory loaded)"
+            return "<agent_memory>\n(No memory loaded)\n</agent_memory>"
 
-        return "\n\n".join(sections)
+        memory_body = "\n\n".join(sections)
+        return f"<agent_memory>\n{memory_body}\n</agent_memory>"
 
     async def _load_memory_from_backend(
         self,
@@ -329,12 +318,10 @@ class MemoryMiddleware(AgentMiddleware):
             Modified request with memory injected into system prompt.
         """
         contents = request.state.get("memory_contents", {})
-        memory_locations = self._format_memory_locations()
-        memory_contents = self._format_memory_contents(contents)
+        agent_memory = self._format_agent_memory(contents)
 
         memory_section = self.system_prompt_template.format(
-            memory_locations=memory_locations,
-            memory_contents=memory_contents,
+            agent_memory=agent_memory,
         )
 
         if request.system_prompt:

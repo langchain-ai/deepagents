@@ -274,11 +274,14 @@ async def test_agent_with_memory_middleware_multiple_sources_async(tmp_path: Pat
     assert "messages" in result
     assert len(result["messages"]) > 0
 
-    # Verify both memory sources are in system prompt
+    # Verify both memory sources are in system prompt with new format
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
+    assert "<agent_memory>" in content
+    assert user_path in content
+    assert project_path in content
     assert "Python 3.11" in content
     assert "FastAPI" in content
 
@@ -302,13 +305,14 @@ async def test_agent_with_memory_middleware_empty_sources_async(tmp_path: Path) 
     assert "messages" in result
     assert len(result["messages"]) > 0
 
-    # Verify system prompt still contains Agent Memory section
+    # Verify system prompt still contains Agent Memory section with empty agent_memory
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
     assert "Agent Memory" in content
-    assert "No memory loaded" in content or "None configured" in content
+    assert "<agent_memory>" in content
+    assert "No memory loaded" in content
 
 
 async def test_memory_middleware_order_matters_async(tmp_path: Path) -> None:
@@ -345,12 +349,16 @@ async def test_memory_middleware_order_matters_async(tmp_path: Path) -> None:
     # Invoke asynchronously
     result = await agent.ainvoke({"messages": [HumanMessage(content="Test")]})
 
-    # Verify order in system prompt
+    # Verify order in system prompt with new format
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    # First should appear before second
+    assert "<agent_memory>" in content
+    assert first_path in content
+    assert second_path in content
+
+    # First should appear before second (both path and content)
     first_pos = content.find("First memory content")
     second_pos = content.find("Second memory content")
     assert first_pos > 0

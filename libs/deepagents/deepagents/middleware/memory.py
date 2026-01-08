@@ -88,6 +88,7 @@ class MemoryStateUpdate(TypedDict):
 
     memory_contents: dict[str, str]
 
+
 class MemoryMiddleware(AgentMiddleware):
     """Middleware for loading agent memory from AGENTS.md files.
 

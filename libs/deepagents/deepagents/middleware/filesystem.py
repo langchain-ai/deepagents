@@ -980,15 +980,25 @@ class FilesystemMiddleware(AgentMiddleware):
         resolved_backend: BackendProtocol,
     ) -> tuple[ToolMessage, dict[str, FileData] | None]:
         content = message.content
-        if not isinstance(content, str) or len(content) <= 4 * self.tool_token_limit_before_evict:
+        
+        # Convert non-string content to string for size checking and storage
+        if isinstance(content, str):
+            content_str = content
+        elif content is None:
+            return message, None
+        else:
+            # Convert any other type (list, dict, etc.) to string
+            content_str = str(content)
+        
+        if len(content_str) <= 4 * self.tool_token_limit_before_evict:
             return message, None
 
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
         file_path = f"/large_tool_results/{sanitized_id}"
-        result = resolved_backend.write(file_path, content)
+        result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message, None
-        content_sample = format_content_with_line_numbers([line[:1000] for line in content.splitlines()[:10]], start_line=1)
+        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
         processed_message = ToolMessage(
             TOO_LARGE_TOOL_MSG.format(
                 tool_call_id=message.tool_call_id,
@@ -1000,9 +1010,22 @@ class FilesystemMiddleware(AgentMiddleware):
         return processed_message, result.files_update
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
-        if isinstance(tool_result, ToolMessage) and isinstance(tool_result.content, str):
-            if not (self.tool_token_limit_before_evict and len(tool_result.content) > 4 * self.tool_token_limit_before_evict):
+        if isinstance(tool_result, ToolMessage):
+            if not self.tool_token_limit_before_evict:
                 return tool_result
+            
+            # Get string representation for size checking
+            content = tool_result.content
+            if isinstance(content, str):
+                content_str = content
+            elif content is None:
+                return tool_result
+            else:
+                content_str = str(content)
+            
+            if len(content_str) <= 4 * self.tool_token_limit_before_evict:
+                return tool_result
+            
             resolved_backend = self._get_backend(runtime)
             processed_message, files_update = self._process_large_message(
                 tool_result,
@@ -1028,14 +1051,24 @@ class FilesystemMiddleware(AgentMiddleware):
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
-                if not (
-                    self.tool_token_limit_before_evict
-                    and isinstance(message, ToolMessage)
-                    and isinstance(message.content, str)
-                    and len(message.content) > 4 * self.tool_token_limit_before_evict
-                ):
+                if not (self.tool_token_limit_before_evict and isinstance(message, ToolMessage)):
                     processed_messages.append(message)
                     continue
+                
+                # Get string representation for size checking
+                content = message.content
+                if isinstance(content, str):
+                    content_str = content
+                elif content is None:
+                    processed_messages.append(message)
+                    continue
+                else:
+                    content_str = str(content)
+                
+                if len(content_str) <= 4 * self.tool_token_limit_before_evict:
+                    processed_messages.append(message)
+                    continue
+                
                 processed_message, files_update = self._process_large_message(
                     message,
                     resolved_backend,

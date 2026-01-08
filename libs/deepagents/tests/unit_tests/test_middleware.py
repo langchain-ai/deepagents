@@ -957,6 +957,51 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         assert "/large_tool_results/test_call_id" in result.update["files"]
 
+    def test_intercept_non_string_content_list(self):
+        """Test that ToolMessages with list content are handled correctly."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_list", store=None, stream_writer=lambda _: None, config={})
+
+        # Create large list content
+        large_list_content = [{"key": "x" * 100} for _ in range(50)]
+        tool_message = ToolMessage(content=large_list_content, tool_call_id="test_list")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_list" in result.update["files"]
+        assert "Tool result too large" in result.update["messages"][0].content
+
+    def test_intercept_non_json_serializable_content(self):
+        """Test that ToolMessages with non-JSON-serializable content are handled correctly."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_obj", store=None, stream_writer=lambda _: None, config={})
+
+        # Create content with non-JSON-serializable object (e.g., custom class instance)
+        class CustomObject:
+            def __init__(self, data):
+                self.data = data
+
+            def __str__(self):
+                return f"CustomObject with {self.data}"
+
+        large_custom_content = [CustomObject("x" * 100) for _ in range(50)]
+        tool_message = ToolMessage(content=large_custom_content, tool_call_id="test_obj")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_obj" in result.update["files"]
+        assert "Tool result too large" in result.update["messages"][0].content
+        # Verify the content was stored as string representation
+        file_data = result.update["files"]["/large_tool_results/test_obj"]
+        stored_content = '\n'.join(file_data['content'])
+        assert "CustomObject with" in stored_content
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})

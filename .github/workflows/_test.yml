@@ -41,6 +41,10 @@ jobs:
           cache-suffix: test-${{ inputs.working-directory }}
           working-directory: ${{ inputs.working-directory }}
 
+      - name: "🔒 Verify Lockfile"
+        shell: bash
+        run: uv lock --check
+
       - name: "📦 Install Test Dependencies"
         shell: bash
         run: uv sync --group test

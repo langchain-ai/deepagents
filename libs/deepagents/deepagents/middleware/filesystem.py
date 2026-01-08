@@ -974,31 +974,35 @@ class FilesystemMiddleware(AgentMiddleware):
 
         return await handler(request)
 
+    def _normalize_tool_message_content(self, message: ToolMessage) -> ToolMessage:
+        """Convert non-string ToolMessage content to string representation.
+
+        This ensures all content is in string form for size checking and storage.
+        Returns a new ToolMessage with string content, or the original if already string/None.
+        """
+        content = message.content
+        if isinstance(content, str) or content is None:
+            return message
+
+        # Convert any other type (list, dict, custom objects, etc.) to string
+        content_str = str(content)
+        return ToolMessage(content=content_str, tool_call_id=message.tool_call_id)
+
     def _process_large_message(
         self,
         message: ToolMessage,
         resolved_backend: BackendProtocol,
     ) -> tuple[ToolMessage, dict[str, FileData] | None]:
         content = message.content
-        
-        # Convert non-string content to string for size checking and storage
-        if isinstance(content, str):
-            content_str = content
-        elif content is None:
-            return message, None
-        else:
-            # Convert any other type (list, dict, etc.) to string
-            content_str = str(content)
-        
-        if len(content_str) <= 4 * self.tool_token_limit_before_evict:
+        if not isinstance(content, str) or len(content) <= 4 * self.tool_token_limit_before_evict:
             return message, None
 
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
         file_path = f"/large_tool_results/{sanitized_id}"
-        result = resolved_backend.write(file_path, content_str)
+        result = resolved_backend.write(file_path, content)
         if result.error:
             return message, None
-        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
+        content_sample = format_content_with_line_numbers([line[:1000] for line in content.splitlines()[:10]], start_line=1)
         processed_message = ToolMessage(
             TOO_LARGE_TOOL_MSG.format(
                 tool_call_id=message.tool_call_id,
@@ -1010,22 +1014,9 @@ class FilesystemMiddleware(AgentMiddleware):
         return processed_message, result.files_update
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
-        if isinstance(tool_result, ToolMessage):
-            if not self.tool_token_limit_before_evict:
+        if isinstance(tool_result, ToolMessage) and isinstance(tool_result.content, str):
+            if not (self.tool_token_limit_before_evict and len(tool_result.content) > 4 * self.tool_token_limit_before_evict):
                 return tool_result
-            
-            # Get string representation for size checking
-            content = tool_result.content
-            if isinstance(content, str):
-                content_str = content
-            elif content is None:
-                return tool_result
-            else:
-                content_str = str(content)
-            
-            if len(content_str) <= 4 * self.tool_token_limit_before_evict:
-                return tool_result
-            
             resolved_backend = self._get_backend(runtime)
             processed_message, files_update = self._process_large_message(
                 tool_result,
@@ -1051,24 +1042,14 @@ class FilesystemMiddleware(AgentMiddleware):
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
-                if not (self.tool_token_limit_before_evict and isinstance(message, ToolMessage)):
+                if not (
+                    self.tool_token_limit_before_evict
+                    and isinstance(message, ToolMessage)
+                    and isinstance(message.content, str)
+                    and len(message.content) > 4 * self.tool_token_limit_before_evict
+                ):
                     processed_messages.append(message)
                     continue
-                
-                # Get string representation for size checking
-                content = message.content
-                if isinstance(content, str):
-                    content_str = content
-                elif content is None:
-                    processed_messages.append(message)
-                    continue
-                else:
-                    content_str = str(content)
-                
-                if len(content_str) <= 4 * self.tool_token_limit_before_evict:
-                    processed_messages.append(message)
-                    continue
-                
                 processed_message, files_update = self._process_large_message(
                     message,
                     resolved_backend,
@@ -1077,6 +1058,30 @@ class FilesystemMiddleware(AgentMiddleware):
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+
+        return tool_result
+
+    def _normalize_tool_result(self, tool_result: ToolMessage | Command) -> ToolMessage | Command:
+        """Normalize non-string ToolMessage content to string in tool results.
+
+        Handles both direct ToolMessage and Command with messages.
+        """
+        if isinstance(tool_result, ToolMessage):
+            return self._normalize_tool_message_content(tool_result)
+
+        if isinstance(tool_result, Command):
+            update = tool_result.update
+            if update is None or "messages" not in update:
+                return tool_result
+
+            normalized_messages = []
+            for message in update.get("messages", []):
+                if isinstance(message, ToolMessage):
+                    normalized_messages.append(self._normalize_tool_message_content(message))
+                else:
+                    normalized_messages.append(message)
+
+            return Command(update={**update, "messages": normalized_messages})
 
         return tool_result
 
@@ -1098,7 +1103,9 @@ class FilesystemMiddleware(AgentMiddleware):
             return handler(request)
 
         tool_result = handler(request)
-        return self._intercept_large_tool_result(tool_result, request.runtime)
+        # Normalize non-string content to strings first
+        normalized_result = self._normalize_tool_result(tool_result)
+        return self._intercept_large_tool_result(normalized_result, request.runtime)
 
     async def awrap_tool_call(
         self,
@@ -1118,4 +1125,6 @@ class FilesystemMiddleware(AgentMiddleware):
             return await handler(request)
 
         tool_result = await handler(request)
-        return self._intercept_large_tool_result(tool_result, request.runtime)
+        # Normalize non-string content to strings first
+        normalized_result = self._normalize_tool_result(tool_result)
+        return self._intercept_large_tool_result(normalized_result, request.runtime)

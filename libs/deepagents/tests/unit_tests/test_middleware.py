@@ -968,7 +968,9 @@ class TestFilesystemMiddleware:
         # Create large list content
         large_list_content = [{"key": "x" * 100} for _ in range(50)]
         tool_message = ToolMessage(content=large_list_content, tool_call_id="test_list")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        # Normalize first (simulating what wrap_tool_call does)
+        normalized = middleware._normalize_tool_result(tool_message)
+        result = middleware._intercept_large_tool_result(normalized, runtime)
 
         assert isinstance(result, Command)
         assert "/large_tool_results/test_list" in result.update["files"]
@@ -992,15 +994,62 @@ class TestFilesystemMiddleware:
 
         large_custom_content = [CustomObject("x" * 100) for _ in range(50)]
         tool_message = ToolMessage(content=large_custom_content, tool_call_id="test_obj")
-        result = middleware._intercept_large_tool_result(tool_message, runtime)
+        # Normalize first (simulating what wrap_tool_call does)
+        normalized = middleware._normalize_tool_result(tool_message)
+        result = middleware._intercept_large_tool_result(normalized, runtime)
 
         assert isinstance(result, Command)
         assert "/large_tool_results/test_obj" in result.update["files"]
         assert "Tool result too large" in result.update["messages"][0].content
         # Verify the content was stored as string representation
         file_data = result.update["files"]["/large_tool_results/test_obj"]
-        stored_content = '\n'.join(file_data['content'])
+        stored_content = "\n".join(file_data["content"])
         assert "CustomObject with" in stored_content
+
+    def test_intercept_small_non_string_content_not_evicted(self):
+        """Test that small non-string content is normalized but NOT evicted."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_small", store=None, stream_writer=lambda _: None, config={})
+
+        # Create small list content that shouldn't trigger eviction
+        small_list_content = [{"key": "value", "data": "x" * 10} for _ in range(5)]
+        tool_message = ToolMessage(content=small_list_content, tool_call_id="test_small")
+        # Normalize first (simulating what wrap_tool_call does)
+        normalized = middleware._normalize_tool_result(tool_message)
+        result = middleware._intercept_large_tool_result(normalized, runtime)
+
+        # Should return a normalized message (converted to string) but not evicted
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, str)
+        assert result.tool_call_id == "test_small"
+        # Content should be string representation of the list
+        assert "'key': 'value'" in result.content or '"key": "value"' in result.content
+
+    def test_intercept_large_non_string_content_gets_evicted(self):
+        """Test that large non-string content DOES get evicted."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_large", store=None, stream_writer=lambda _: None, config={})
+
+        # Create large list content that SHOULD trigger eviction
+        large_list_content = [{"key": "value_" + str(i), "data": "x" * 100} for i in range(100)]
+        tool_message = ToolMessage(content=large_list_content, tool_call_id="test_large")
+        # Normalize first (simulating what wrap_tool_call does)
+        normalized = middleware._normalize_tool_result(tool_message)
+        result = middleware._intercept_large_tool_result(normalized, runtime)
+
+        # Should return a Command with evicted content
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_large" in result.update["files"]
+        assert "Tool result too large" in result.update["messages"][0].content
+        # Original content should be preserved in file
+        file_data = result.update["files"]["/large_tool_results/test_large"]
+        stored_content = "\n".join(file_data["content"])
+        assert "value_0" in stored_content
+        assert "value_99" in stored_content
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

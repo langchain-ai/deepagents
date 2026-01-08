@@ -86,12 +86,17 @@ class DeepAgentsApp(App):
     CSS_PATH = "app.tcss"
     ENABLE_COMMAND_PALETTE = False
 
+    # Slow down scroll speed (default is 3 lines per scroll event)
+    # Using 0.5 to require 2 scroll events per line
+    SCROLL_SENSITIVITY_Y = 0.5
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
         Binding("ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         Binding("shift+tab", "toggle_auto_approve", "Toggle Auto-Approve", show=False, priority=True),
+        Binding("ctrl+o", "toggle_tool_output", "Toggle Tool Output", show=False),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),
@@ -423,6 +428,10 @@ class DeepAgentsApp(App):
             await self._mount_message(self._loading_widget)
             self._agent_running = True
 
+            # Disable cursor blink while agent is working
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=False)
+
             # Use run_worker to avoid blocking the main event loop
             # This allows the UI to remain responsive during agent execution
             self._agent_worker = self.run_worker(
@@ -466,6 +475,10 @@ class DeepAgentsApp(App):
             with contextlib.suppress(Exception):
                 await self._loading_widget.remove()
             self._loading_widget = None
+
+        # Re-enable cursor blink now that agent is done
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=True)
 
     async def _mount_message(self, widget: Static) -> None:
         """Mount a message widget to the messages area.
@@ -544,6 +557,21 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=self._auto_approve)
         if self._session_state:
             self._session_state.auto_approve = self._auto_approve
+
+    def action_toggle_tool_output(self) -> None:
+        """Toggle expand/collapse of the most recent tool output."""
+        from deepagents_cli.widgets.messages import ToolCallMessage
+
+        # Find all tool messages with output, get the most recent one
+        try:
+            tool_messages = list(self.query(ToolCallMessage))
+            # Find ones with output, toggle the most recent
+            for tool_msg in reversed(tool_messages):
+                if tool_msg.has_output:
+                    tool_msg.toggle_output()
+                    return
+        except Exception:
+            pass
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending AND input is not focused

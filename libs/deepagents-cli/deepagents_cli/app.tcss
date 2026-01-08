@@ -30,7 +30,7 @@ Screen {
 #bottom-app-container {
     height: auto;
     dock: bottom;
-    margin-bottom: 1;
+    margin-bottom: 3;
     padding: 0 1;
 }
 
@@ -83,6 +83,7 @@ Screen {
 #status-bar {
     height: 1;
     dock: bottom;
+    margin-bottom: 1;
 }
 
 /* Tool approval widgets */

@@ -248,15 +248,15 @@ async def execute_task_textual(
 
                         adapter._update_status("Agent is thinking...")
 
-                        # Update tool call status
+                        # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
                         if tool_id and tool_id in adapter._current_tool_messages:
                             tool_msg = adapter._current_tool_messages[tool_id]
+                            output_str = str(tool_content) if tool_content else ""
                             if tool_status == "success":
-                                tool_msg.set_success()
+                                tool_msg.set_success(output_str)
                             else:
-                                err = str(tool_content)[:100] if tool_content else "Error"
-                                tool_msg.set_error(err)
+                                tool_msg.set_error(output_str or "Error")
                             # Clean up - remove from tracking dict after status update
                             del adapter._current_tool_messages[tool_id]
 
@@ -310,7 +310,7 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
-                                # Use namespace-specific buffer to prevent interleaving
+                                # Track accumulated text for reference
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
                                 pending_text_by_namespace[ns_key] = pending_text
@@ -324,8 +324,9 @@ async def execute_task_textual(
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
 
-                                # Update the message content
-                                await current_msg.set_content(pending_text)
+                                # Append just the new text chunk for smoother streaming
+                                # (uses MarkdownStream internally for better performance)
+                                await current_msg.append_content(text)
                                 # Scroll to keep latest content visible
                                 if adapter._scroll_to_bottom:
                                     adapter._scroll_to_bottom()
@@ -433,16 +434,8 @@ async def execute_task_textual(
 
                 for interrupt_id, hitl_request in pending_interrupts.items():
                     if session_state.auto_approve:
-                        # Auto-approve without prompting
-                        decisions = []
-                        for action_request in hitl_request["action_requests"]:
-                            from deepagents_cli.widgets.messages import SystemMessage
-
-                            description = action_request.get("description", "tool action")
-                            await adapter._mount_message(
-                                SystemMessage(f"⚡ Auto-approved: {description}")
-                            )
-                            decisions.append({"type": "approve"})
+                        # Auto-approve silently (user sees tool calls already)
+                        decisions = [{"type": "approve"} for _ in hitl_request["action_requests"]]
                         hitl_response[interrupt_id] = {"decisions": decisions}
                     else:
                         # Request approval via adapter
@@ -500,15 +493,14 @@ async def execute_task_textual(
 
                             if isinstance(decision, dict) and decision.get("type") == "approve":
                                 mark_hitl_approved(action_request)
-                                if tool_msg:
-                                    tool_msg.set_success("Approved")
+                                # Don't call set_success here - wait for actual tool output
+                                # The ToolMessage handler will update with real results
                             elif isinstance(decision, dict) and decision.get("type") == "reject":
                                 if tool_msg:
                                     tool_msg.set_rejected()
-
-                            # Clean up - remove from tracking dict after HITL decision
-                            if tool_msg_key and tool_msg_key in adapter._current_tool_messages:
-                                del adapter._current_tool_messages[tool_msg_key]
+                                # Only remove from tracking on reject (approved tools need output update)
+                                if tool_msg_key and tool_msg_key in adapter._current_tool_messages:
+                                    del adapter._current_tool_messages[tool_msg_key]
 
                         if any(d.get("type") == "reject" for d in decisions):
                             any_rejected = True
@@ -534,6 +526,11 @@ async def execute_task_textual(
         adapter._update_status("Interrupted")
         from deepagents_cli.widgets.messages import SystemMessage
 
+        # Mark any pending tools as rejected
+        for tool_msg in list(adapter._current_tool_messages.values()):
+            tool_msg.set_rejected()
+        adapter._current_tool_messages.clear()
+
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
         # Append cancellation message to agent state so LLM knows what happened
@@ -550,6 +547,11 @@ async def execute_task_textual(
     except KeyboardInterrupt:
         adapter._update_status("Interrupted")
         from deepagents_cli.widgets.messages import SystemMessage
+
+        # Mark any pending tools as rejected
+        for tool_msg in list(adapter._current_tool_messages.values()):
+            tool_msg.set_rejected()
+        adapter._current_tool_messages.clear()
 
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
@@ -576,16 +578,23 @@ async def _flush_assistant_text_ns(
     ns_key: tuple,
     assistant_message_by_namespace: dict[tuple, Any],
 ) -> None:
-    """Flush accumulated assistant text for a specific namespace."""
+    """Flush accumulated assistant text for a specific namespace.
+
+    Finalizes the streaming by stopping the MarkdownStream.
+    If no message exists yet, creates one with the full content.
+    """
     if not text.strip():
         return
 
     current_msg = assistant_message_by_namespace.get(ns_key)
     if current_msg is None:
+        # No message was created during streaming - create one with full content
         from deepagents_cli.widgets.messages import AssistantMessage
 
-        current_msg = AssistantMessage()
+        current_msg = AssistantMessage(text)
         await adapter._mount_message(current_msg)
+        await current_msg.write_initial_content()
         assistant_message_by_namespace[ns_key] = current_msg
-
-    await current_msg.set_content(text)
+    else:
+        # Stop the stream to finalize the content
+        await current_msg.stop_stream()

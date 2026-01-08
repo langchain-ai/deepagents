@@ -125,6 +125,18 @@ class ChatTextArea(TextArea):
         super().__init__(**kwargs)
         self._navigating_history = False
         self._completion_active = False
+        self._app_has_focus = True
+
+    def set_app_focus(self, *, has_focus: bool) -> None:
+        """Set whether the app should show the cursor as active.
+
+        When has_focus=False (e.g., agent is running), disables cursor blink
+        so the cursor doesn't flash while waiting for a response.
+        """
+        self._app_has_focus = has_focus
+        self.cursor_blink = has_focus
+        if has_focus and not self.has_focus:
+            self.call_after_refresh(self.focus)
 
     def set_completion_active(self, *, active: bool) -> None:
         """Set whether completion suggestions are visible."""
@@ -451,6 +463,15 @@ class ChatInput(Vertical):
                 self._text_area.blur()
                 if self._completion_manager:
                     self._completion_manager.reset()
+
+    def set_cursor_active(self, *, active: bool) -> None:
+        """Set whether the cursor should be actively blinking.
+
+        When active=False (e.g., agent is working), disables cursor blink
+        so the cursor doesn't flash while waiting for a response.
+        """
+        if self._text_area:
+            self._text_area.set_app_focus(has_focus=active)
 
     # =========================================================================
     # CompletionView protocol implementation

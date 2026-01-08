@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from textual.containers import Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Markdown, Static
+from textual.widgets._markdown import MarkdownStream
 
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
@@ -56,7 +57,11 @@ class UserMessage(Static):
 
 
 class AssistantMessage(Vertical):
-    """Widget displaying an assistant message with markdown support."""
+    """Widget displaying an assistant message with markdown support.
+
+    Uses MarkdownStream for smoother streaming instead of re-rendering
+    the full content on each update.
+    """
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -81,38 +86,75 @@ class AssistantMessage(Vertical):
         super().__init__(**kwargs)
         self._content = content
         self._markdown: Markdown | None = None
+        self._stream: MarkdownStream | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the assistant message layout."""
-        yield Markdown(self._content, id="assistant-content")
+        yield Markdown("", id="assistant-content")
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
         self._markdown = self.query_one("#assistant-content", Markdown)
 
+    def _get_markdown(self) -> Markdown:
+        """Get the markdown widget, querying if not cached."""
+        if self._markdown is None:
+            self._markdown = self.query_one("#assistant-content", Markdown)
+        return self._markdown
+
+    def _ensure_stream(self) -> MarkdownStream:
+        """Ensure the markdown stream is initialized."""
+        if self._stream is None:
+            self._stream = Markdown.get_stream(self._get_markdown())
+        return self._stream
+
     async def append_content(self, text: str) -> None:
         """Append content to the message (for streaming).
+
+        Uses MarkdownStream for smoother rendering instead of re-rendering
+        the full content on each chunk.
 
         Args:
             text: Text to append
         """
+        if not text:
+            return
         self._content += text
-        if self._markdown:
-            await self._markdown.update(self._content)
+        stream = self._ensure_stream()
+        await stream.write(text)
+
+    async def write_initial_content(self) -> None:
+        """Write initial content if provided at construction time."""
+        if self._content:
+            stream = self._ensure_stream()
+            await stream.write(self._content)
+
+    async def stop_stream(self) -> None:
+        """Stop the streaming and finalize the content."""
+        if self._stream is not None:
+            await self._stream.stop()
+            self._stream = None
 
     async def set_content(self, content: str) -> None:
         """Set the full message content.
 
+        This stops any active stream and sets content directly.
+
         Args:
             content: The markdown content to display
         """
+        await self.stop_stream()
         self._content = content
         if self._markdown:
             await self._markdown.update(content)
 
 
 class ToolCallMessage(Vertical):
-    """Widget displaying a tool call."""
+    """Widget displaying a tool call with collapsible output.
+
+    Tool outputs are shown as a 3-line preview by default.
+    Press Ctrl+O to expand/collapse the full output.
+    """
 
     DEFAULT_CSS = """
     ToolCallMessage {
@@ -152,7 +194,32 @@ class ToolCallMessage(Vertical):
     ToolCallMessage .tool-status.rejected {
         color: $warning;
     }
+
+    ToolCallMessage .tool-output {
+        margin-left: 2;
+        margin-top: 1;
+        padding: 1;
+        background: $surface-darken-1;
+        color: $text-muted;
+        max-height: 20;
+        overflow-y: auto;
+    }
+
+    ToolCallMessage .tool-output-preview {
+        margin-left: 2;
+        color: $text-muted;
+    }
+
+    ToolCallMessage .tool-output-hint {
+        margin-left: 2;
+        color: $primary;
+        text-style: italic;
+    }
     """
+
+    # Max lines/chars to show in preview mode
+    _PREVIEW_LINES = 3
+    _PREVIEW_CHARS = 200
 
     def __init__(
         self,
@@ -171,6 +238,8 @@ class ToolCallMessage(Vertical):
         self._tool_name = tool_name
         self._args = args or {}
         self._status = "pending"
+        self._output: str = ""
+        self._expanded: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout."""
@@ -192,24 +261,36 @@ class ToolCallMessage(Vertical):
             classes="tool-status pending",
             id="status",
         )
+        # Output area - hidden initially, shown when output is set
+        yield Static("", classes="tool-output-preview", id="output-preview")
+        yield Static("", classes="tool-output-hint", id="output-hint")
+        yield Static("", classes="tool-output", id="output-full")
+
+    def on_mount(self) -> None:
+        """Hide output areas initially."""
+        try:
+            self.query_one("#output-preview").display = False
+            self.query_one("#output-hint").display = False
+            self.query_one("#output-full").display = False
+        except NoMatches:
+            pass
 
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
 
         Args:
-            result: Optional result message
+            result: Tool output/result to display
         """
         self._status = "success"
+        self._output = result
         try:
             status = self.query_one("#status", Static)
             status.remove_class("pending", "error")
             status.add_class("success")
-            msg = "[green]Success[/green]"
-            if result:
-                msg += f": {result[:100]}"
-            status.update(msg)
+            status.update("[green]✓ Success[/green]")
         except NoMatches:
             pass
+        self._update_output_display()
 
     def set_error(self, error: str) -> None:
         """Mark the tool call as failed.
@@ -218,13 +299,17 @@ class ToolCallMessage(Vertical):
             error: Error message
         """
         self._status = "error"
+        self._output = error
         try:
             status = self.query_one("#status", Static)
             status.remove_class("pending", "success")
             status.add_class("error")
-            status.update(f"[red]Error:[/red] {error[:100]}")
+            status.update(f"[red]✗ Error[/red]")
         except NoMatches:
             pass
+        # Always show full error - errors should be visible
+        self._expanded = True
+        self._update_output_display()
 
     def set_rejected(self) -> None:
         """Mark the tool call as rejected by user."""
@@ -233,9 +318,76 @@ class ToolCallMessage(Vertical):
             status = self.query_one("#status", Static)
             status.remove_class("pending", "success", "error")
             status.add_class("rejected")
-            status.update("[yellow]Rejected[/yellow]")
+            status.update("[yellow]✗ Rejected[/yellow]")
         except NoMatches:
             pass
+
+    def toggle_output(self) -> None:
+        """Toggle between preview and full output display."""
+        if not self._output:
+            return
+        self._expanded = not self._expanded
+        self._update_output_display()
+
+    def _update_output_display(self) -> None:
+        """Update the output display based on expanded state."""
+        if not self._output:
+            return
+
+        try:
+            preview = self.query_one("#output-preview", Static)
+            hint = self.query_one("#output-hint", Static)
+            full = self.query_one("#output-full", Static)
+
+            output_stripped = self._output.strip()
+            lines = output_stripped.split("\n")
+            total_lines = len(lines)
+            total_chars = len(output_stripped)
+
+            # Truncate if too many lines OR too many characters
+            needs_truncation = total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
+
+            if self._expanded:
+                # Show full output
+                preview.display = False
+                hint.display = False
+                full.update(self._output)
+                full.display = True
+            else:
+                # Show preview
+                full.display = False
+                if needs_truncation:
+                    # Truncate by lines first, then by chars
+                    if total_lines > self._PREVIEW_LINES:
+                        preview_text = "\n".join(lines[: self._PREVIEW_LINES])
+                    else:
+                        preview_text = output_stripped
+
+                    # Also truncate by chars if still too long
+                    if len(preview_text) > self._PREVIEW_CHARS:
+                        preview_text = preview_text[: self._PREVIEW_CHARS] + "..."
+
+                    preview.update(preview_text)
+                    preview.display = True
+
+                    # Show expand hint
+                    hint.update("[dim]... (Ctrl+O to expand)[/dim]")
+                    hint.display = True
+                elif output_stripped:
+                    # Output fits in preview, just show it
+                    preview.update(output_stripped)
+                    preview.display = True
+                    hint.display = False
+                else:
+                    preview.display = False
+                    hint.display = False
+        except NoMatches:
+            pass
+
+    @property
+    def has_output(self) -> bool:
+        """Check if this tool message has output to display."""
+        return bool(self._output)
 
     def _filtered_args(self) -> dict[str, Any]:
         """Filter large tool args for display."""

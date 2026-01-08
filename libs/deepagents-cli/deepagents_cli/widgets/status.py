@@ -103,10 +103,10 @@ class StatusBar(Horizontal):
     def compose(self) -> ComposeResult:
         """Compose the status bar layout."""
         yield Static("", classes="status-mode normal", id="mode-indicator")
-        yield Static("manual (^T)", classes="status-auto-approve off", id="auto-approve-indicator")
+        yield Static("manual | shift+tab to cycle", classes="status-auto-approve off", id="auto-approve-indicator")
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-tokens", id="tokens-display")
-        yield Static(self._format_cwd(self._initial_cwd), classes="status-cwd", id="cwd-display")
+        # CWD shown in welcome banner, not pinned in status bar
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -139,10 +139,10 @@ class StatusBar(Horizontal):
         indicator.remove_class("on", "off")
 
         if new_value:
-            indicator.update("auto (^T)")
+            indicator.update("auto | shift+tab to cycle")
             indicator.add_class("on")
         else:
-            indicator.update("manual (^T)")
+            indicator.update("manual | shift+tab to cycle")
             indicator.add_class("off")
 
     def watch_cwd(self, new_value: str) -> None:

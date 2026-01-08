@@ -296,7 +296,7 @@ jobs:
           uv run python -c "import $IMPORT_NAME; print(dir($IMPORT_NAME))"
 
       - name: Import test dependencies
-        run: uv sync --group test
+        run: uv sync --group test --locked
         working-directory: ${{ env.WORKING_DIR }}
 
       # Overwrite the local version of the package with the built version

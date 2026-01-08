@@ -39,14 +39,10 @@ jobs:
           cache-suffix: lint-${{ inputs.working-directory }}
           working-directory: ${{ inputs.working-directory }}
 
-      - name: "🔒 Verify Lockfile"
-        working-directory: ${{ inputs.working-directory }}
-        run: uv lock --check
-
       - name: "📦 Install Dependencies"
         working-directory: ${{ inputs.working-directory }}
         run: |
-          uv sync --group test --inexact
+          uv sync --group test --locked
 
       - name: "🔍 Run Linters"
         working-directory: ${{ inputs.working-directory }}

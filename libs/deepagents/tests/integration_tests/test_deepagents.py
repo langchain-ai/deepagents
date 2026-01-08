@@ -1,13 +1,13 @@
+from datetime import UTC, datetime
+
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import HumanMessage
+from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel
 
-from deepagents.graph import create_deep_agent
-from deepagents.middleware.memory import MemoryMiddleware
-from langgraph.store.memory import InMemoryStore
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
-from datetime import UTC, datetime
+from deepagents.graph import create_deep_agent
 
 from ..utils import (
     SAMPLE_MODEL,

@@ -150,6 +150,7 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 </memory_guidelines>
 """
 
+
 class MemoryMiddleware(AgentMiddleware):
     """Middleware for loading agent memory from AGENTS.md files.
 

@@ -980,14 +980,14 @@ class FilesystemMiddleware(AgentMiddleware):
 
     def _get_evictable_content(self, content) -> str | None:
         """Extract evictable text content from message content.
-        
+
         Returns:
             String content to evict, or None if content type is not supported.
         """
         # String content
         if isinstance(content, str):
             return content
-        
+
         # List of content blocks
         if isinstance(content, list) and len(content) > 0:
             first_block = content[0]
@@ -995,18 +995,18 @@ class FilesystemMiddleware(AgentMiddleware):
                 text_content = first_block["text"]
                 if isinstance(text_content, str):
                     return text_content
-        
+
         return None
 
     def _should_evict_content(self, content) -> bool:
         """Check if content should be evicted based on size."""
         if not self.tool_token_limit_before_evict:
             return False
-        
+
         text_content = self._get_evictable_content(content)
         if text_content is None:
             return False
-        
+
         return len(text_content) > 4 * self.tool_token_limit_before_evict
 
     def _process_large_message(
@@ -1017,28 +1017,25 @@ class FilesystemMiddleware(AgentMiddleware):
         """Process a large ToolMessage by evicting its content to filesystem."""
         if not self._should_evict_content(message.content):
             return message, None
-        
+
         text_content = self._get_evictable_content(message.content)
         if text_content is None:
             return message, None
-        
+
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
         file_path = f"/large_tool_results/{sanitized_id}"
         result = resolved_backend.write(file_path, text_content)
         if result.error:
             return message, None
-        
-        content_sample = format_content_with_line_numbers(
-            [line[:1000] for line in text_content.splitlines()[:10]], 
-            start_line=1
-        )
+
+        content_sample = format_content_with_line_numbers([line[:1000] for line in text_content.splitlines()[:10]], start_line=1)
         replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
             file_path=file_path,
             content_sample=content_sample,
         )
-        
+
         # Create new content based on original type
         original_content = message.content
         if isinstance(original_content, str):
@@ -1052,7 +1049,7 @@ class FilesystemMiddleware(AgentMiddleware):
         else:
             # Should not reach here given earlier checks, but return original as fallback
             return message, None
-        
+
         processed_message = ToolMessage(
             content=new_content,
             tool_call_id=message.tool_call_id,
@@ -1063,7 +1060,7 @@ class FilesystemMiddleware(AgentMiddleware):
         if isinstance(tool_result, ToolMessage):
             if not self._should_evict_content(tool_result.content):
                 return tool_result
-            
+
             resolved_backend = self._get_backend(runtime)
             processed_message, files_update = self._process_large_message(
                 tool_result,
@@ -1092,11 +1089,11 @@ class FilesystemMiddleware(AgentMiddleware):
                 if not (self.tool_token_limit_before_evict and isinstance(message, ToolMessage)):
                     processed_messages.append(message)
                     continue
-                
+
                 if not self._should_evict_content(message.content):
                     processed_messages.append(message)
                     continue
-                
+
                 processed_message, files_update = self._process_large_message(
                     message,
                     resolved_backend,

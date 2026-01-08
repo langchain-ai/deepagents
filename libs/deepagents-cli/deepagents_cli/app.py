@@ -87,8 +87,8 @@ class DeepAgentsApp(App):
     ENABLE_COMMAND_PALETTE = False
 
     # Slow down scroll speed (default is 3 lines per scroll event)
-    # Using 0.5 to require 2 scroll events per line
-    SCROLL_SENSITIVITY_Y = 0.5
+    # Using 0.25 to require 4 scroll events per line - very smooth
+    SCROLL_SENSITIVITY_Y = 0.25
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -213,10 +213,16 @@ class DeepAgentsApp(App):
             self._status_bar.set_tokens(count)
 
     def _scroll_chat_to_bottom(self) -> None:
-        """Scroll the chat area to the bottom."""
+        """Scroll the chat area to the bottom.
+
+        Uses anchor() for smoother streaming - keeps scroll locked to bottom
+        as new content is added without causing visual jumps.
+        """
         try:
             chat = self.query_one("#chat", VerticalScroll)
-            chat.scroll_end(animate=False)
+            # anchor() locks scroll to bottom and auto-scrolls as content grows
+            # Much smoother than calling scroll_end() on every chunk
+            chat.anchor()
         except NoMatches:
             pass
 

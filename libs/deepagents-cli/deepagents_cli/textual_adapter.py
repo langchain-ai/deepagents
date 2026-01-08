@@ -323,13 +323,14 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
+                                    # Anchor scroll once when message is created
+                                    # anchor() keeps scroll locked to bottom as content grows
+                                    if adapter._scroll_to_bottom:
+                                        adapter._scroll_to_bottom()
 
                                 # Append just the new text chunk for smoother streaming
                                 # (uses MarkdownStream internally for better performance)
                                 await current_msg.append_content(text)
-                                # Scroll to keep latest content visible
-                                if adapter._scroll_to_bottom:
-                                    adapter._scroll_to_bottom()
 
                         elif block_type in ("tool_call_chunk", "tool_call"):
                             chunk_name = block.get("name")

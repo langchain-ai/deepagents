@@ -3,8 +3,6 @@
 import asyncio
 import json
 import sys
-import termios
-import tty
 
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
@@ -79,6 +77,10 @@ def prompt_for_tool_approval(
     selected = 0  # Start with approve selected
 
     try:
+        # Import Unix-only modules lazily to avoid Windows import errors
+        import termios  # type: ignore
+        import tty  # type: ignore
+
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
 
@@ -156,7 +158,7 @@ def prompt_for_tool_approval(
             sys.stdout.flush()
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
-    except (termios.error, AttributeError):
+    except Exception:
         # Fallback for non-Unix systems
         console.print("  ☐ (A)pprove  (default)")
         console.print("  ☐ (R)eject")

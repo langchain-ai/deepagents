@@ -224,7 +224,7 @@ class CompiledSubAgent(TypedDict):
 **CompiledSubAgent fields:**
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
 - **description**: This is the description of the subagent that is shown to the main agent  
-- **runnable**: A pre-built LangGraph graph/agent that will be used as the subagent
+- **runnable**: A pre-built LangGraph graph/agent that will be used as the subagent. **Important:** The runnable's state schema must include a `messages` key. This is required for the subagent to communicate results back to the main agent.
 
 #### Using SubAgent
 
@@ -270,7 +270,8 @@ agent = create_deep_agent(
 For more complex use cases, you can provide your own pre-built LangGraph graph as a subagent:
 
 ```python
-# Create a custom agent graph
+# Create a custom agent graph using create_agent
+# (create_agent automatically includes 'messages' in the state)
 custom_graph = create_agent(
     model=your_model,
     tools=specialized_tools,
@@ -427,9 +428,11 @@ For more complex use cases, you can also provide your own pre-built LangGraph gr
 
 ```python
 # Create a custom LangGraph graph
+# Important: Your state must include a 'messages' key
 def create_weather_graph():
     workflow = StateGraph(...)
     # Build your custom graph
+    # Make sure your state schema includes 'messages'
     return workflow.compile()
 
 weather_graph = create_weather_graph()

@@ -978,15 +978,15 @@ class FilesystemMiddleware(AgentMiddleware):
         """Check if a dict is a text content block with type='text' and 'text' key."""
         return isinstance(block, dict) and block.get("type") == "text" and "text" in block
 
-    def _get_evictable_content(self, content) -> tuple[str, bool] | tuple[None, bool]:
-        """Extract evictable text content and whether it's a content block.
+    def _get_evictable_content(self, content) -> str | None:
+        """Extract evictable text content from message content.
         
         Returns:
-            (text_content, is_content_block) tuple, or (None, False) if not evictable
+            String content to evict, or None if content type is not supported.
         """
         # String content
         if isinstance(content, str):
-            return (content, False)
+            return content
         
         # List of content blocks
         if isinstance(content, list) and len(content) > 0:
@@ -994,71 +994,20 @@ class FilesystemMiddleware(AgentMiddleware):
             if self._is_text_content_block(first_block):
                 text_content = first_block["text"]
                 if isinstance(text_content, str):
-                    return (text_content, True)
+                    return text_content
         
-        return (None, False)
+        return None
 
     def _should_evict_content(self, content) -> bool:
         """Check if content should be evicted based on size."""
         if not self.tool_token_limit_before_evict:
             return False
         
-        text_content, _ = self._get_evictable_content(content)
+        text_content = self._get_evictable_content(content)
         if text_content is None:
             return False
         
         return len(text_content) > 4 * self.tool_token_limit_before_evict
-
-    def _create_evicted_message(
-        self,
-        original_message: ToolMessage,
-        text_content: str,
-        is_content_block: bool,
-        resolved_backend: BackendProtocol,
-    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
-        """Create a message with evicted content and write to backend.
-        
-        Args:
-            original_message: Original ToolMessage
-            text_content: The text content to evict
-            is_content_block: Whether this is from a content block (vs plain string)
-            resolved_backend: Backend to write the file to
-            
-        Returns:
-            (processed_message, files_update) tuple
-        """
-        sanitized_id = sanitize_tool_call_id(original_message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
-        result = resolved_backend.write(file_path, text_content)
-        if result.error:
-            return original_message, None
-        
-        content_sample = format_content_with_line_numbers(
-            [line[:1000] for line in text_content.splitlines()[:10]], 
-            start_line=1
-        )
-        replacement_text = TOO_LARGE_TOOL_MSG.format(
-            tool_call_id=original_message.tool_call_id,
-            file_path=file_path,
-            content_sample=content_sample,
-        )
-        
-        # Create new content based on type
-        if is_content_block:
-            # Preserve content block structure
-            original_content = original_message.content
-            first_block = original_content[0]
-            new_first_block = {**first_block, "text": replacement_text}
-            new_content = [new_first_block] + original_content[1:]
-        else:
-            # String content
-            new_content = replacement_text
-        
-        processed_message = ToolMessage(
-            content=new_content,
-            tool_call_id=original_message.tool_call_id,
-        )
-        return processed_message, result.files_update
 
     def _process_large_message(
         self,
@@ -1069,16 +1018,46 @@ class FilesystemMiddleware(AgentMiddleware):
         if not self._should_evict_content(message.content):
             return message, None
         
-        text_content, is_content_block = self._get_evictable_content(message.content)
+        text_content = self._get_evictable_content(message.content)
         if text_content is None:
             return message, None
         
-        return self._create_evicted_message(
-            message, 
-            text_content, 
-            is_content_block, 
-            resolved_backend
+        # Write content to filesystem
+        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
+        file_path = f"/large_tool_results/{sanitized_id}"
+        result = resolved_backend.write(file_path, text_content)
+        if result.error:
+            return message, None
+        
+        content_sample = format_content_with_line_numbers(
+            [line[:1000] for line in text_content.splitlines()[:10]], 
+            start_line=1
         )
+        replacement_text = TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=message.tool_call_id,
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+        
+        # Create new content based on original type
+        original_content = message.content
+        if isinstance(original_content, str):
+            # String content - replace with eviction message
+            new_content = replacement_text
+        elif isinstance(original_content, list) and len(original_content) > 0:
+            # Content block - preserve structure, replace text in first block
+            first_block = original_content[0]
+            new_first_block = {**first_block, "text": replacement_text}
+            new_content = [new_first_block] + original_content[1:]
+        else:
+            # Should not reach here given earlier checks, but return original as fallback
+            return message, None
+        
+        processed_message = ToolMessage(
+            content=new_content,
+            tool_call_id=message.tool_call_id,
+        )
+        return processed_message, result.files_update
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         if isinstance(tool_result, ToolMessage):

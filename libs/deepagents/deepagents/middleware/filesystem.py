@@ -974,74 +974,6 @@ class FilesystemMiddleware(AgentMiddleware):
 
         return await handler(request)
 
-    def _is_text_content_block(self, block: Any) -> bool:
-        """Check if a block is a text content block.
-
-        Args:
-            block: A potential content block to check.
-
-        Returns:
-            True if block is a dict with type='text' and has a 'text' key.
-
-        Note:
-            Text content blocks follow the format: {"type": "text", "text": "..."}
-        """
-        return isinstance(block, dict) and block.get("type") == "text" and "text" in block
-
-    def _get_evictable_content(self, content: str | list[str | dict]) -> str | None:
-        """Extract evictable text content from message content.
-
-        Args:
-            content: The message content, either a string or list of content blocks.
-
-        Returns:
-            The text string to evict, or None if content type is not supported for eviction.
-
-        Note:
-            Only supports eviction of:
-            - Plain string content
-            - Content blocks where the first block is type='text' with a string 'text' field
-
-            Other content types (images, tool calls, etc.) are not evicted.
-        """
-        # String content - can be evicted directly
-        if isinstance(content, str):
-            return content
-
-        # List of content blocks - check if first block is text
-        if isinstance(content, list) and len(content) > 0:
-            first_block = content[0]
-            if self._is_text_content_block(first_block):
-                text_content = first_block["text"]
-                if isinstance(text_content, str):
-                    return text_content
-
-        return None
-
-    def _should_evict_content(self, content: str | list[str | dict]) -> bool:
-        """Check if content should be evicted to filesystem based on size.
-
-        Args:
-            content: The message content to check.
-
-        Returns:
-            True if content should be evicted, False otherwise.
-
-        Note:
-            Content is evicted if:
-            1. tool_token_limit_before_evict is configured
-            2. Content is a supported type (string or text content block)
-            3. Content size exceeds threshold (4x token limit, ~4 chars per token)
-        """
-        if not self.tool_token_limit_before_evict:
-            return False
-
-        text_content = self._get_evictable_content(content)
-        if text_content is None:
-            return False
-
-        return len(text_content) > 4 * self.tool_token_limit_before_evict
-
     def _process_large_message(
         self,
         message: ToolMessage,
@@ -1059,28 +991,32 @@ class FilesystemMiddleware(AgentMiddleware):
             - files_update: Dict of file updates to apply to state, or None if eviction failed
 
         Note:
-            The original text content is written to /large_tool_results/{tool_call_id} and
-            replaced with a truncated preview plus file reference. For content blocks, the
-            structure is preserved - only the text in the first block is replaced, other
-            blocks are kept intact.
+            The entire content is converted to string, written to /large_tool_results/{tool_call_id},
+            and replaced with a truncated preview plus file reference. The replacement is always
+            returned as a plain string for consistency, regardless of original content type.
         """
-        if not self._should_evict_content(message.content):
+        # Early exit if eviction not configured
+        if not self.tool_token_limit_before_evict:
             return message, None
 
-        text_content = self._get_evictable_content(message.content)
-        if text_content is None:
+        # Convert content to string once for both size check and eviction
+        # For strings, use as-is; for lists (content blocks), convert to string
+        content_str = message.content if isinstance(message.content, str) else str(message.content)
+
+        # Check if content exceeds eviction threshold
+        if len(content_str) <= 4 * self.tool_token_limit_before_evict:
             return message, None
 
         # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
         file_path = f"/large_tool_results/{sanitized_id}"
-        result = resolved_backend.write(file_path, text_content)
+        result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message, None
 
         # Create truncated preview for the replacement message
         content_sample = format_content_with_line_numbers(
-            [line[:1000] for line in text_content.splitlines()[:10]],
+            [line[:1000] for line in content_str.splitlines()[:10]],
             start_line=1
         )
         replacement_text = TOO_LARGE_TOOL_MSG.format(
@@ -1089,22 +1025,9 @@ class FilesystemMiddleware(AgentMiddleware):
             content_sample=content_sample,
         )
 
-        # Create new content based on original type
-        original_content = message.content
-        if isinstance(original_content, str):
-            # String content - replace with eviction message
-            new_content: str | list[str | dict] = replacement_text
-        elif isinstance(original_content, list) and len(original_content) > 0:
-            # Content blocks - preserve structure, replace text in first block
-            first_block = original_content[0]
-            new_first_block = {**first_block, "text": replacement_text}
-            new_content = [new_first_block] + original_content[1:]
-        else:
-            # Should not reach here given earlier checks, but return original as fallback
-            return message, None
-
+        # Always return as plain string after eviction
         processed_message = ToolMessage(
-            content=new_content,
+            content=replacement_text,
             tool_call_id=message.tool_call_id,
         )
         return processed_message, result.files_update
@@ -1128,9 +1051,6 @@ class FilesystemMiddleware(AgentMiddleware):
             to prevent context window overflow.
         """
         if isinstance(tool_result, ToolMessage):
-            if not self._should_evict_content(tool_result.content):
-                return tool_result
-
             resolved_backend = self._get_backend(runtime)
             processed_message, files_update = self._process_large_message(
                 tool_result,
@@ -1156,11 +1076,7 @@ class FilesystemMiddleware(AgentMiddleware):
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
-                if not (self.tool_token_limit_before_evict and isinstance(message, ToolMessage)):
-                    processed_messages.append(message)
-                    continue
-
-                if not self._should_evict_content(message.content):
+                if not isinstance(message, ToolMessage):
                     processed_messages.append(message)
                     continue
 

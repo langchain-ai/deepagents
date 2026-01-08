@@ -958,7 +958,7 @@ class TestFilesystemMiddleware:
         assert "/large_tool_results/test_call_id" in result.update["files"]
 
     def test_intercept_content_block_with_large_text(self):
-        """Test that content blocks with type='text' and large text get evicted."""
+        """Test that content blocks with large text get evicted and converted to string."""
         from langgraph.types import Command
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
@@ -972,12 +972,10 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         assert "/large_tool_results/test_cb" in result.update["files"]
-        # The message should still be a list with content block
+        # After eviction, content is always converted to plain string
         returned_content = result.update["messages"][0].content
-        assert isinstance(returned_content, list)
-        assert len(returned_content) == 1
-        assert returned_content[0]["type"] == "text"
-        assert "Tool result too large" in returned_content[0]["text"]
+        assert isinstance(returned_content, str)
+        assert "Tool result too large" in returned_content
 
     def test_intercept_content_block_with_small_text(self):
         """Test that content blocks with small text are not evicted."""
@@ -995,34 +993,38 @@ class TestFilesystemMiddleware:
         assert result.content == content_blocks
 
     def test_intercept_content_block_non_text_type(self):
-        """Test that content blocks with type != 'text' are not evicted."""
+        """Test that content blocks with non-text type get evicted if large when stringified."""
+        from langgraph.types import Command
+
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_other", store=None, stream_writer=lambda _: None, config={})
 
-        # Create list with content block with different type
+        # Create list with content block with different type that's large when stringified
         content_blocks = [{"type": "image", "data": "x" * 5000}]
         tool_message = ToolMessage(content=content_blocks, tool_call_id="test_other")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
 
-        # Should return original message unchanged (we don't handle non-text content blocks)
-        assert result == tool_message
-        assert result.content == content_blocks
+        # All content types are evicted if large when converted to string
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_other" in result.update["files"]
 
-    def test_intercept_list_content_not_evicted(self):
-        """Test that list content (not string or text block) is not evicted."""
+    def test_intercept_list_content_gets_evicted_if_large(self):
+        """Test that list content gets evicted if large when stringified."""
+        from langgraph.types import Command
+
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_list", store=None, stream_writer=lambda _: None, config={})
 
-        # Create list content (valid ToolMessage content type but we don't evict it)
+        # Create list content that's large when stringified
         list_content = [{"key": "x" * 1000} for _ in range(50)]
         tool_message = ToolMessage(content=list_content, tool_call_id="test_list")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
 
-        # Should return original message unchanged (we don't handle list content)
-        assert result == tool_message
-        assert result.content == list_content
+        # List content is evicted if large when converted to string
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_list" in result.update["files"]
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

@@ -1083,8 +1083,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
-
-        return tool_result
+        raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
     def wrap_tool_call(
         self,

@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 from unittest.mock import patch
 
+from langchain.agents.middleware import AgentState
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -255,3 +256,34 @@ class TestDeepAgentEndToEnd:
             # Verify the agent executed correctly
             assert "messages" in result
             assert len(result["messages"]) > 0
+
+    def test_deep_agent_with_state_schema(self) -> None:
+        """Test that state_schema parameter is properly passed through.
+
+        This test verifies that when a custom state_schema is provided,
+        the agent correctly includes the custom state fields in its channels.
+        """
+
+        class CustomState(AgentState):
+            custom_field: str
+
+        # Create a fake model
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="Task completed.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with custom state_schema
+        agent = create_deep_agent(model=model, state_schema=CustomState)
+
+        # Verify the custom field is in the agent's stream channels
+        assert "custom_field" in agent.stream_channels
+
+        # Verify standard deepagent qualities are still present
+        assert "todos" in agent.stream_channels
+        assert "files" in agent.stream_channels

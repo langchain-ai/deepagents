@@ -8,9 +8,9 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "langchain-anthropic>=1.2.0,<2.0.0",
     "langchain-google-genai",
-    "langchain>=1.1.0,<2.0.0",
     "langchain-core>=1.2.5,<2.0.0",
     "wcmatch",
+    "langchain>=1.2.2",
 ]
 
 
@@ -98,3 +98,6 @@ warn_return_any = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.uv.sources]
+langchain = { path = "../../../../langchain/libs/langchain_v1" }

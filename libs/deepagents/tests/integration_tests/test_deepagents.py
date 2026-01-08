@@ -4,6 +4,10 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.memory import MemoryMiddleware
+from langgraph.store.memory import InMemoryStore
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from datetime import UTC, datetime
 
 from ..utils import (
     SAMPLE_MODEL,
@@ -163,3 +167,30 @@ class TestDeepAgents:
         response = agent.invoke({"messages": [{"role": "user", "content": "Who are all of the Kanto starters?"}]})
         structured_output = response["structured_response"]
         assert len(structured_output.pokemon) == 3
+
+    async def test_with_memory_middleware(self):
+        store = InMemoryStore()
+        now = datetime.now(UTC).isoformat()
+        store.put(
+            ("filesystem",),
+            "/AGENTS.md",
+            {
+                "content": ["Your name is Jackson"],
+                "created_at": now,
+                "modified_at": now,
+            },
+        )
+        sample_backend = lambda rt: CompositeBackend(
+            default=StateBackend(rt),
+            routes={
+                "/memories/": StoreBackend(rt),
+            },
+        )
+        agent = create_deep_agent(
+            backend=sample_backend,
+            memory=["/memories/AGENTS.md"],
+            store=store,
+        )
+        assert_all_deepagent_qualities(agent)
+        result = await agent.ainvoke({"messages": [HumanMessage(content="What is your name?")]})
+        assert "Jackson" in result["messages"][-1].content

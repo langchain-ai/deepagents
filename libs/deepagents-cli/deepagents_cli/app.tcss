@@ -75,7 +75,8 @@ Screen {
 .approval-menu .approval-help {
     color: $text-muted;
     text-style: italic;
-    margin-top: 1;
+    margin-top: 0;
+    margin-bottom: 0;
 }
 
 /* Status bar */
@@ -129,19 +130,19 @@ Screen {
     color: $text-muted;
 }
 
-/* Scrollable tool info area in approval menu */
+/* Separator line between options and tool details */
+.approval-menu .approval-separator {
+    height: 1;
+    color: $warning;
+    margin: 1 0 0 0;
+}
+
+/* Scrollable tool info area in approval menu - at bottom */
 .approval-menu .tool-info-scroll {
     height: auto;
     max-height: 15;
     overflow-y: auto;
-    margin-bottom: 0;
-}
-
-/* Separator line between content and options */
-.approval-menu .approval-separator {
-    height: 1;
-    color: $warning;
-    margin: 1 0;
+    margin-top: 0;
 }
 
 /* Options container with background */

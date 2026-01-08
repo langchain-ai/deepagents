@@ -74,22 +74,18 @@ class ApprovalMenu(Container):
         self._future = future
 
     def compose(self) -> ComposeResult:
-        """Compose the widget with Static children."""
+        """Compose the widget with Static children.
+
+        Layout prioritizes options visibility - they appear at the top so users
+        always see them even in small terminals.
+        """
         # Title
         yield Static(
             f">>> {self._tool_name} Requires Approval <<<",
             classes="approval-title",
         )
 
-        # Tool info in scrollable container
-        with VerticalScroll(classes="tool-info-scroll"):
-            self._tool_info_container = Vertical(classes="tool-info-container")
-            yield self._tool_info_container
-
-        # Separator between content and options
-        yield Static("─" * 40, classes="approval-separator")
-
-        # Options container with distinct styling
+        # Options container FIRST - always visible at top
         with Container(classes="approval-options-container"):
             # Options - create 3 Static widgets
             for i in range(3):
@@ -97,11 +93,19 @@ class ApprovalMenu(Container):
                 self._option_widgets.append(widget)
                 yield widget
 
-        # Help text
+        # Help text right after options
         yield Static(
             "↑/↓ navigate • Enter select • y/n/a quick keys",
             classes="approval-help",
         )
+
+        # Separator between options and tool details
+        yield Static("─" * 40, classes="approval-separator")
+
+        # Tool info in scrollable container BELOW options
+        with VerticalScroll(classes="tool-info-scroll"):
+            self._tool_info_container = Vertical(classes="tool-info-container")
+            yield self._tool_info_container
 
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""

@@ -91,6 +91,7 @@ class DeepAgentsApp(App):
         Binding("ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
+        Binding("shift+tab", "toggle_auto_approve", "Toggle Auto-Approve", show=False, priority=True),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),

@@ -258,9 +258,11 @@ def test_load_memory_handles_missing_file(tmp_path: Path) -> None:
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
-    # Test before_agent raises error for missing file
-    with pytest.raises(ValueError, match="Failed to download.*file_not_found"):
-        middleware.before_agent({}, None, {})  # type: ignore
+    # Test before_agent loads only existing memory
+    result = middleware.before_agent({}, None, {})  # type: ignore
+    assert result is not None
+    assert missing_path not in result["memory_contents"]
+    assert user_path in result["memory_contents"]
 
 
 def test_before_agent_skips_if_already_loaded(tmp_path: Path) -> None:
@@ -620,10 +622,10 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     assert "Context for assistant 1" in result_1["memory_contents"]["/memory/AGENTS.md"]
 
     # Test: assistant-456 cannot see assistant-123's memory (different namespace)
-    # and raises error because no memory exists yet
     config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    with pytest.raises(ValueError, match="Failed to download.*file_not_found"):
-        middleware.before_agent({}, runtime, config_2)  # type: ignore
+    result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore
+    assert result_2 is not None
+    assert len(result_2["memory_contents"]) == 0
 
     # Add memory for assistant-456 with namespace (assistant-456, filesystem)
     assistant_2_content = make_memory_content("Assistant 2", "- Context for assistant 2")
@@ -709,7 +711,7 @@ def test_create_deep_agent_with_memory_and_filesystem_backend(tmp_path: Path) ->
 
 
 def test_create_deep_agent_with_memory_missing_files(tmp_path: Path) -> None:
-    """Test that memory raises an error when files don't exist."""
+    """Test that memory works gracefully when files don't exist."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create agent with non-existent memory files
@@ -719,9 +721,9 @@ def test_create_deep_agent_with_memory_missing_files(tmp_path: Path) -> None:
         model=GenericFakeChatModel(messages=iter([AIMessage(content="No memory, but that's okay.")])),
     )
 
-    # Invoke agent - should raise error for missing memory file
-    with pytest.raises(ValueError, match="Failed to download.*file_not_found"):
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+    # Invoke agent - should succeed even without memory file
+    result = agent.invoke({"messages": [HumanMessage(content="Hello")]})
+    assert "messages" in result
 
 
 def test_create_deep_agent_with_memory_default_backend() -> None:

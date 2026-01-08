@@ -103,7 +103,11 @@ class StatusBar(Horizontal):
     def compose(self) -> ComposeResult:
         """Compose the status bar layout."""
         yield Static("", classes="status-mode normal", id="mode-indicator")
-        yield Static("manual | shift+tab to cycle", classes="status-auto-approve off", id="auto-approve-indicator")
+        yield Static(
+            "manual | shift+tab to cycle",
+            classes="status-auto-approve off",
+            id="auto-approve-indicator",
+        )
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-tokens", id="tokens-display")
         # CWD shown in welcome banner, not pinned in status bar

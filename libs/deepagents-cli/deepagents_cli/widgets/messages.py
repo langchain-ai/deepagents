@@ -250,9 +250,7 @@ class ToolCallMessage(Vertical):
         )
         args = self._filtered_args()
         if args:
-            args_str = ", ".join(
-                f"{k}={v!r}" for k, v in list(args.items())[:_MAX_INLINE_ARGS]
-            )
+            args_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:_MAX_INLINE_ARGS])
             if len(args) > _MAX_INLINE_ARGS:
                 args_str += ", ..."
             yield Static(f"({args_str})", classes="tool-args")
@@ -304,7 +302,7 @@ class ToolCallMessage(Vertical):
             status = self.query_one("#status", Static)
             status.remove_class("pending", "success")
             status.add_class("error")
-            status.update(f"[red]✗ Error[/red]")
+            status.update("[red]✗ Error[/red]")
         except NoMatches:
             pass
         # Always show full error - errors should be visible
@@ -345,7 +343,9 @@ class ToolCallMessage(Vertical):
             total_chars = len(output_stripped)
 
             # Truncate if too many lines OR too many characters
-            needs_truncation = total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
+            needs_truncation = (
+                total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
+            )
 
             if self._expanded:
                 # Show full output

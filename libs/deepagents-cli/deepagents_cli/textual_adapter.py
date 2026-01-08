@@ -483,7 +483,9 @@ async def execute_task_textual(
                                 tool_msg_key = tool_id
                             elif tool_name:
                                 # Fallback: find last tool message with matching name
-                                for key, msg in reversed(list(adapter._current_tool_messages.items())):
+                                for key, msg in reversed(
+                                    list(adapter._current_tool_messages.items())
+                                ):
                                     if msg._tool_name == tool_name:
                                         tool_msg = msg
                                         tool_msg_key = key

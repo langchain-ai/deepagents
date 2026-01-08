@@ -1,19 +1,19 @@
 """Tests for autocomplete fuzzy search functionality."""
 
-import pytest
-from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from deepagents_cli.widgets.autocomplete import (
+    SLASH_COMMANDS,
+    FuzzyFileController,
+    MultiCompletionManager,
+    SlashCommandController,
     _find_project_root,
     _fuzzy_score,
     _fuzzy_search,
     _is_dotpath,
     _path_depth,
-    FuzzyFileController,
-    MultiCompletionManager,
-    SlashCommandController,
-    SLASH_COMMANDS,
 )
 
 

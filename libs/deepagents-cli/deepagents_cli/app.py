@@ -96,7 +96,9 @@ class DeepAgentsApp(App):
         Binding("ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
-        Binding("shift+tab", "toggle_auto_approve", "Toggle Auto-Approve", show=False, priority=True),
+        Binding(
+            "shift+tab", "toggle_auto_approve", "Toggle Auto-Approve", show=False, priority=True
+        ),
         Binding("ctrl+o", "toggle_tool_output", "Toggle Tool Output", show=False),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
@@ -391,9 +393,7 @@ class DeepAgentsApp(App):
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
-                await self._mount_message(
-                    SystemMessage(f"Started new session: {new_thread_id}")
-                )
+                await self._mount_message(SystemMessage(f"Started new session: {new_thread_id}"))
         elif cmd == "/threads":
             await self._mount_message(UserMessage(command))
             if self._session_state:

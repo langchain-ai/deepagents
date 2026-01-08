@@ -1,8 +1,8 @@
 """Main entry point and CLI loop for deepagents."""
 # ruff: noqa: T201
 
-import asyncio
 import argparse
+import asyncio
 import contextlib
 import os
 import sys

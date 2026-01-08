@@ -188,7 +188,9 @@ def show_help() -> None:
         "  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)"
     )
     console.print("  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)")
-    console.print("  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific")
+    console.print(
+        "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"
+    )
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -222,8 +224,12 @@ def show_help() -> None:
     console.print()
 
     console.print("[bold]Thread Management:[/bold]", style=COLORS["primary"])
-    console.print("  deepagents threads list                 # List all sessions", style=COLORS["dim"])
-    console.print("  deepagents threads delete <ID>          # Delete a session", style=COLORS["dim"])
+    console.print(
+        "  deepagents threads list                 # List all sessions", style=COLORS["dim"]
+    )
+    console.print(
+        "  deepagents threads delete <ID>          # Delete a session", style=COLORS["dim"]
+    )
     console.print()
 
     console.print("[bold]Interactive Features:[/bold]", style=COLORS["primary"])

@@ -128,8 +128,12 @@ class EditFileApprovalWidget(ToolApprovalWidget):
     ) -> tuple[int, int]:
         """Count additions and deletions from diff data."""
         if diff_lines:
-            additions = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
-            deletions = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
+            additions = sum(
+                1 for line in diff_lines if line.startswith("+") and not line.startswith("+++")
+            )
+            deletions = sum(
+                1 for line in diff_lines if line.startswith("-") and not line.startswith("---")
+            )
         else:
             additions = new_string.count("\n") + 1 if new_string else 0
             deletions = old_string.count("\n") + 1 if old_string else 0

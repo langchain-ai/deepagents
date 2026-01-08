@@ -613,7 +613,7 @@ def test_before_agent_loads_skills(tmp_path: Path) -> None:
     )
 
     # Call before_agent
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert "skills_metadata" in result
@@ -654,7 +654,7 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     )
 
     # Call before_agent
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert len(result["skills_metadata"]) == 1
@@ -685,7 +685,7 @@ def test_before_agent_empty_registries(tmp_path: Path) -> None:
         sources=sources,
     )
 
-    result = middleware.before_agent({}, None)  # type: ignore
+    result = middleware.before_agent({}, None, {})  # type: ignore
 
     assert result is not None
     assert result["skills_metadata"] == []
@@ -769,7 +769,7 @@ def test_skills_middleware_with_state_backend_factory() -> None:
         config={},
     )
 
-    backend = middleware._get_backend({"messages": [], "files": {}}, runtime)
+    backend = middleware._get_backend({"messages": [], "files": {}}, runtime, {})
     assert isinstance(backend, StateBackend)
     assert backend.runtime is not None
 
@@ -801,7 +801,7 @@ def test_skills_middleware_with_store_backend_factory() -> None:
         config={},
     )
 
-    backend = middleware._get_backend({"messages": [], "files": {}}, runtime)
+    backend = middleware._get_backend({"messages": [], "files": {}}, runtime, {})
     assert isinstance(backend, StoreBackend)
     assert backend.runtime is not None
 
@@ -965,21 +965,21 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
         }
     ]
     state_with_metadata = {"skills_metadata": existing_metadata}
-    result = middleware.before_agent(state_with_metadata, None)  # type: ignore
+    result = middleware.before_agent(state_with_metadata, None, {})  # type: ignore
 
     # Should return None, not load new skills
     assert result is None
 
     # Case 2: State has empty list for skills_metadata
     state_with_empty_list = {"skills_metadata": []}
-    result = middleware.before_agent(state_with_empty_list, None)  # type: ignore
+    result = middleware.before_agent(state_with_empty_list, None, {})  # type: ignore
 
     # Should still return None and not reload
     assert result is None
 
     # Case 3: State does NOT have skills_metadata key
     state_without_metadata = {}
-    result = middleware.before_agent(state_without_metadata, None)  # type: ignore
+    result = middleware.before_agent(state_without_metadata, None, {})  # type: ignore
 
     # Should load skills and return update
     assert result is not None
@@ -1092,3 +1092,180 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
             "path": "/skills/user/test-skill/SKILL.md",
         },
     ]
+
+
+def create_store_skill_item(content: str) -> dict:
+    """Create a skill item in StoreBackend FileData format.
+
+    Args:
+        content: Skill content string
+
+    Returns:
+        Dict with content (as list of lines), created_at, and modified_at
+    """
+    timestamp = datetime.now(UTC).isoformat()
+    return {
+        "content": content.split("\n"),
+        "created_at": timestamp,
+        "modified_at": timestamp,
+    }
+
+
+def test_skills_middleware_with_store_backend_assistant_id() -> None:
+    """Test namespace isolation: each assistant_id gets its own skills namespace."""
+    from types import SimpleNamespace
+
+    # Setup
+    middleware = SkillsMiddleware(
+        backend=lambda rt: StoreBackend(rt),
+        sources=["/skills/user"],
+    )
+    store = InMemoryStore()
+    runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
+
+    # Add skill for assistant-123 with namespace (assistant-123, filesystem)
+    assistant_1_skill = make_skill_content("skill-one", "Skill for assistant 1")
+    store.put(
+        ("assistant-123", "filesystem"),
+        "/skills/user/skill-one/SKILL.md",
+        create_store_skill_item(assistant_1_skill),
+    )
+
+    # Test: assistant-123 can read its own skill
+    config_1 = {"metadata": {"assistant_id": "assistant-123"}}
+    result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore
+
+    assert result_1 is not None
+    assert len(result_1["skills_metadata"]) == 1
+    assert result_1["skills_metadata"][0]["name"] == "skill-one"
+    assert result_1["skills_metadata"][0]["description"] == "Skill for assistant 1"
+
+    # Test: assistant-456 cannot see assistant-123's skill (different namespace)
+    config_2 = {"metadata": {"assistant_id": "assistant-456"}}
+    result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore
+
+    assert result_2 is not None
+    assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
+
+    # Add skill for assistant-456 with namespace (assistant-456, filesystem)
+    assistant_2_skill = make_skill_content("skill-two", "Skill for assistant 2")
+    store.put(
+        ("assistant-456", "filesystem"),
+        "/skills/user/skill-two/SKILL.md",
+        create_store_skill_item(assistant_2_skill),
+    )
+
+    # Test: assistant-456 can read its own skill
+    result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore
+
+    assert result_3 is not None
+    assert len(result_3["skills_metadata"]) == 1
+    assert result_3["skills_metadata"][0]["name"] == "skill-two"
+    assert result_3["skills_metadata"][0]["description"] == "Skill for assistant 2"
+
+    # Test: assistant-123 still only sees its own skill (no cross-contamination)
+    result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore
+
+    assert result_4 is not None
+    assert len(result_4["skills_metadata"]) == 1
+    assert result_4["skills_metadata"][0]["name"] == "skill-one"
+    assert result_4["skills_metadata"][0]["description"] == "Skill for assistant 1"
+
+
+def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
+    """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
+    from types import SimpleNamespace
+
+    # Setup
+    middleware = SkillsMiddleware(
+        backend=lambda rt: StoreBackend(rt),
+        sources=["/skills/user"],
+    )
+    store = InMemoryStore()
+    runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
+
+    # Add skill to default namespace (filesystem,) - no assistant_id
+    shared_skill = make_skill_content("shared-skill", "Shared namespace skill")
+    store.put(
+        ("filesystem",),
+        "/skills/user/shared-skill/SKILL.md",
+        create_store_skill_item(shared_skill),
+    )
+
+    # Test: empty config accesses default namespace
+    result_1 = middleware.before_agent({}, runtime, {})  # type: ignore
+
+    assert result_1 is not None
+    assert len(result_1["skills_metadata"]) == 1
+    assert result_1["skills_metadata"][0]["name"] == "shared-skill"
+    assert result_1["skills_metadata"][0]["description"] == "Shared namespace skill"
+
+    # Test: config with metadata but no assistant_id also uses default namespace
+    config_with_other_metadata = {"metadata": {"some_other_key": "value"}}
+    result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore
+
+    assert result_2 is not None
+    assert len(result_2["skills_metadata"]) == 1
+    assert result_2["skills_metadata"][0]["name"] == "shared-skill"
+    assert result_2["skills_metadata"][0]["description"] == "Shared namespace skill"
+
+
+async def test_skills_middleware_with_store_backend_assistant_id_async() -> None:
+    """Test namespace isolation with async: each assistant_id gets its own skills namespace."""
+    from types import SimpleNamespace
+
+    # Setup
+    middleware = SkillsMiddleware(
+        backend=lambda rt: StoreBackend(rt),
+        sources=["/skills/user"],
+    )
+    store = InMemoryStore()
+    runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
+
+    # Add skill for assistant-123 with namespace (assistant-123, filesystem)
+    assistant_1_skill = make_skill_content("async-skill-one", "Async skill for assistant 1")
+    store.put(
+        ("assistant-123", "filesystem"),
+        "/skills/user/async-skill-one/SKILL.md",
+        create_store_skill_item(assistant_1_skill),
+    )
+
+    # Test: assistant-123 can read its own skill
+    config_1 = {"metadata": {"assistant_id": "assistant-123"}}
+    result_1 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore
+
+    assert result_1 is not None
+    assert len(result_1["skills_metadata"]) == 1
+    assert result_1["skills_metadata"][0]["name"] == "async-skill-one"
+    assert result_1["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+
+    # Test: assistant-456 cannot see assistant-123's skill (different namespace)
+    config_2 = {"metadata": {"assistant_id": "assistant-456"}}
+    result_2 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore
+
+    assert result_2 is not None
+    assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
+
+    # Add skill for assistant-456 with namespace (assistant-456, filesystem)
+    assistant_2_skill = make_skill_content("async-skill-two", "Async skill for assistant 2")
+    store.put(
+        ("assistant-456", "filesystem"),
+        "/skills/user/async-skill-two/SKILL.md",
+        create_store_skill_item(assistant_2_skill),
+    )
+
+    # Test: assistant-456 can read its own skill
+    result_3 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore
+
+    assert result_3 is not None
+    assert len(result_3["skills_metadata"]) == 1
+    assert result_3["skills_metadata"][0]["name"] == "async-skill-two"
+    assert result_3["skills_metadata"][0]["description"] == "Async skill for assistant 2"
+
+    # Test: assistant-123 still only sees its own skill (no cross-contamination)
+    result_4 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore
+
+    assert result_4 is not None
+    assert len(result_4["skills_metadata"]) == 1
+    assert result_4["skills_metadata"][0]["name"] == "async-skill-one"
+    assert result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"

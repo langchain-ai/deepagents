@@ -6,6 +6,7 @@ directories and the FilesystemBackend in normal (non-virtual) mode.
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
@@ -1113,9 +1114,6 @@ def create_store_skill_item(content: str) -> dict:
 
 def test_skills_middleware_with_store_backend_assistant_id() -> None:
     """Test namespace isolation: each assistant_id gets its own skills namespace."""
-    from types import SimpleNamespace
-
-    # Setup
     middleware = SkillsMiddleware(
         backend=lambda rt: StoreBackend(rt),
         sources=["/skills/user"],
@@ -1174,9 +1172,6 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 
 def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
-    from types import SimpleNamespace
-
-    # Setup
     middleware = SkillsMiddleware(
         backend=lambda rt: StoreBackend(rt),
         sources=["/skills/user"],
@@ -1212,9 +1207,6 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
 
 async def test_skills_middleware_with_store_backend_assistant_id_async() -> None:
     """Test namespace isolation with async: each assistant_id gets its own skills namespace."""
-    from types import SimpleNamespace
-
-    # Setup
     middleware = SkillsMiddleware(
         backend=lambda rt: StoreBackend(rt),
         sources=["/skills/user"],

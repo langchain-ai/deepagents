@@ -4,7 +4,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Any, Literal, NotRequired
+from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -1015,10 +1015,7 @@ class FilesystemMiddleware(AgentMiddleware):
             return message, None
 
         # Create truncated preview for the replacement message
-        content_sample = format_content_with_line_numbers(
-            [line[:1000] for line in content_str.splitlines()[:10]],
-            start_line=1
-        )
+        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
         replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
             file_path=file_path,
@@ -1032,9 +1029,7 @@ class FilesystemMiddleware(AgentMiddleware):
         )
         return processed_message, result.files_update
 
-    def _intercept_large_tool_result(
-        self, tool_result: ToolMessage | Command, runtime: ToolRuntime
-    ) -> ToolMessage | Command:
+    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
 
         Args:

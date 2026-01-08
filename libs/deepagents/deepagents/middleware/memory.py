@@ -216,11 +216,6 @@ class MemoryMiddleware(AgentMiddleware):
         response = results[0]
 
         if response.error is not None:
-            # For now, memory files are treated as optional. file_not_found is expected
-            # and we skip silently to allow graceful degradation.
-            if response.error == "file_not_found":
-                return None
-            # Other errors should be raised
             raise ValueError(f"Failed to download {path}: {response.error}")
 
         if response.content is not None:
@@ -249,11 +244,6 @@ class MemoryMiddleware(AgentMiddleware):
         response = results[0]
 
         if response.error is not None:
-            # For now, memory files are treated as optional. file_not_found is expected
-            # and we skip silently to allow graceful degradation.
-            if response.error == "file_not_found":
-                return None
-            # Other errors should be raised
             raise ValueError(f"Failed to download {path}: {response.error}")
 
         if response.content is not None:

@@ -5,6 +5,7 @@ This module contains async versions of memory middleware tests.
 
 from pathlib import Path
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -98,7 +99,7 @@ async def test_load_memory_from_backend_multiple_sources_async(tmp_path: Path) -
 
 
 async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
-    """Test that missing files are handled gracefully (async)."""
+    """Test that missing files raise an error (async)."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create only one of two memory files
@@ -115,16 +116,9 @@ async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
-    # Test abefore_agent loads only existing memory
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore
-
-    assert result is not None
-    assert "memory_contents" in result
-    # Missing file should not be in contents
-    assert missing_path not in result["memory_contents"]
-    # Existing file should be loaded
-    assert user_path in result["memory_contents"]
-    assert "Be helpful" in result["memory_contents"][user_path]
+    # Test abefore_agent raises error for missing file
+    with pytest.raises(ValueError, match="Failed to download.*file_not_found"):
+        await middleware.abefore_agent({}, None, {})  # type: ignore
 
 
 async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> None:

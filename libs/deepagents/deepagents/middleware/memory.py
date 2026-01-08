@@ -88,23 +88,6 @@ class MemoryStateUpdate(TypedDict):
 
     memory_contents: dict[str, str]
 
-
-# Default system prompt template for memory
-MEMORY_SYSTEM_PROMPT = """
-## Agent Memory
-
-You have access to persistent memory that provides context and instructions.
-
-{agent_memory}
-
-**Memory Guidelines:**
-- Memory content above provides project-specific context and instructions
-- Follow any guidelines, conventions, or patterns described in memory
-- Memory is read-only during this session (loaded at startup)
-- If you need to update memory, use the appropriate file editing tools
-"""
-
-
 class MemoryMiddleware(AgentMiddleware):
     """Middleware for loading agent memory from AGENTS.md files.
 
@@ -135,7 +118,6 @@ class MemoryMiddleware(AgentMiddleware):
         """
         self._backend = backend
         self.sources = sources
-        self.system_prompt_template = MEMORY_SYSTEM_PROMPT
 
     def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -320,14 +302,10 @@ class MemoryMiddleware(AgentMiddleware):
         contents = request.state.get("memory_contents", {})
         agent_memory = self._format_agent_memory(contents)
 
-        memory_section = self.system_prompt_template.format(
-            agent_memory=agent_memory,
-        )
-
         if request.system_prompt:
-            system_prompt = memory_section + "\n\n" + request.system_prompt
+            system_prompt = agent_memory + "\n\n" + request.system_prompt
         else:
-            system_prompt = memory_section
+            system_prompt = agent_memory
 
         return request.override(system_message=SystemMessage(system_prompt))
 

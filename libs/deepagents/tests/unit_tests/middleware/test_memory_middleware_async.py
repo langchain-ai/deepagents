@@ -310,7 +310,6 @@ async def test_agent_with_memory_middleware_empty_sources_async(tmp_path: Path) 
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    assert "Agent Memory" in content
     assert "<agent_memory>" in content
     assert "No memory loaded" in content
 

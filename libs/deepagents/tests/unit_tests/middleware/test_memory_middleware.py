@@ -445,7 +445,6 @@ def test_agent_with_memory_middleware_system_prompt(tmp_path: Path) -> None:
     system_message = messages[0]
     assert system_message.type == "system", "First message should be system prompt"
     content = system_message.text
-    assert "Agent Memory" in content, "System prompt should contain 'Agent Memory' section"
     assert "<agent_memory>" in content, "System prompt should contain <agent_memory> tags"
     assert memory_path in content, "System prompt should contain memory path"
     assert "type hints" in content, "System prompt should mention memory content"
@@ -526,7 +525,6 @@ def test_agent_with_memory_middleware_empty_sources(tmp_path: Path) -> None:
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    assert "Agent Memory" in content
     assert "<agent_memory>" in content
     assert "No memory loaded" in content
 
@@ -565,7 +563,6 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    assert "Agent Memory" in content
     assert "<agent_memory>" in content
     assert memory_path in content
     assert "Test async loading" in content

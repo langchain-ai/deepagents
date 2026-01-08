@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
@@ -146,7 +147,7 @@ async def simple_cli(
     sandbox_type: str | None = None,
     setup_script_path: str | None = None,
     no_splash: bool = False,
-) -> None:
+) -> str | None:
     """Main CLI loop.
 
     Args:
@@ -156,9 +157,12 @@ async def simple_cli(
         sandbox_id: ID of the active sandbox
         setup_script_path: Path to setup script that was run (if any)
         no_splash: If True, skip displaying the startup splash screen
+
+    Returns:
+        None if exiting normally, or new agent name if switching agents.
     """
-    console.clear()
     if not no_splash:
+        console.clear()
         console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
         console.print()
 
@@ -174,81 +178,85 @@ async def simple_cli(
         elif isinstance(backend, SandboxBackendProtocol):
             sandbox_id = backend.id
 
-    # Display sandbox info persistently (survives console.clear())
-    if sandbox_type and sandbox_id:
-        console.print(f"[yellow]⚡ {sandbox_type.capitalize()} sandbox: {sandbox_id}[/yellow]")
-        if setup_script_path:
+    # Display startup info (skip when switching agents)
+    if not no_splash:
+        # Display sandbox info persistently (survives console.clear())
+        if sandbox_type and sandbox_id:
+            console.print(f"[yellow]⚡ {sandbox_type.capitalize()} sandbox: {sandbox_id}[/yellow]")
+            if setup_script_path:
+                console.print(
+                    f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]"
+                )
+            console.print()
+
+        # Display model info
+        if settings.model_name and settings.model_provider:
+            provider_display = {
+                "openai": "OpenAI",
+                "anthropic": "Anthropic",
+                "google": "Google",
+            }.get(settings.model_provider, settings.model_provider)
             console.print(
-                f"[green]✓ Setup script ({setup_script_path}) completed successfully[/green]"
+                f"[green]✓ Model:[/green] {provider_display} → '{settings.model_name}'",
+                style=COLORS["dim"],
             )
+            console.print()
+
+        if not settings.has_tavily:
+            console.print(
+                "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
+                style=COLORS["dim"],
+            )
+            console.print("  To enable web search, set your Tavily API key:", style=COLORS["dim"])
+            console.print("    export TAVILY_API_KEY=your_api_key_here", style=COLORS["dim"])
+            console.print(
+                "  Or add it to your .env file. Get your key at: https://tavily.com",
+                style=COLORS["dim"],
+            )
+            console.print()
+
+        if settings.has_deepagents_langchain_project:
+            console.print(
+                f"[green]✓ LangSmith tracing enabled:[/green] Deepagents → '{settings.deepagents_langchain_project}'",
+                style=COLORS["dim"],
+            )
+            if settings.user_langchain_project:
+                console.print(
+                    f"  [dim]User code (shell) → '{settings.user_langchain_project}'[/dim]"
+                )
+            console.print()
+
+        console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
+
+        if sandbox_type:
+            working_dir = get_default_working_dir(sandbox_type)
+            console.print(f"  [dim]Local CLI directory: {Path.cwd()}[/dim]")
+            console.print(f"  [dim]Code execution: Remote sandbox ({working_dir})[/dim]")
+        else:
+            console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
+
         console.print()
 
-    # Display model info
-    if settings.model_name and settings.model_provider:
-        provider_display = {
-            "openai": "OpenAI",
-            "anthropic": "Anthropic",
-            "google": "Google",
-        }.get(settings.model_provider, settings.model_provider)
-        console.print(
-            f"[green]✓ Model:[/green] {provider_display} → '{settings.model_name}'",
-            style=COLORS["dim"],
-        )
+        if session_state.auto_approve:
+            console.print(
+                "  [yellow]⚡ Auto-approve: ON[/yellow] [dim](tools run without confirmation)[/dim]"
+            )
+            console.print()
+
+        # Localize modifier names and show key symbols (macOS vs others)
+        if sys.platform == "darwin":
+            tips = (
+                "  Tips: ⏎ Enter to submit, ⌥ Option + ⏎ Enter for newline (or Esc+Enter), "
+                "⌃E to open editor, ⌃T to toggle auto-approve, ⌃C to interrupt"
+            )
+        else:
+            tips = (
+                "  Tips: Enter to submit, Alt+Enter (or Esc+Enter) for newline, "
+                "Ctrl+E to open editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt"
+            )
+        console.print(tips, style=f"dim {COLORS['dim']}")
+
         console.print()
-
-    if not settings.has_tavily:
-        console.print(
-            "[yellow]⚠ Web search disabled:[/yellow] TAVILY_API_KEY not found.",
-            style=COLORS["dim"],
-        )
-        console.print("  To enable web search, set your Tavily API key:", style=COLORS["dim"])
-        console.print("    export TAVILY_API_KEY=your_api_key_here", style=COLORS["dim"])
-        console.print(
-            "  Or add it to your .env file. Get your key at: https://tavily.com",
-            style=COLORS["dim"],
-        )
-        console.print()
-
-    if settings.has_deepagents_langchain_project:
-        console.print(
-            f"[green]✓ LangSmith tracing enabled:[/green] Deepagents → '{settings.deepagents_langchain_project}'",
-            style=COLORS["dim"],
-        )
-        if settings.user_langchain_project:
-            console.print(f"  [dim]User code (shell) → '{settings.user_langchain_project}'[/dim]")
-        console.print()
-
-    console.print("... Ready to code! What would you like to build?", style=COLORS["agent"])
-
-    if sandbox_type:
-        working_dir = get_default_working_dir(sandbox_type)
-        console.print(f"  [dim]Local CLI directory: {Path.cwd()}[/dim]")
-        console.print(f"  [dim]Code execution: Remote sandbox ({working_dir})[/dim]")
-    else:
-        console.print(f"  [dim]Working directory: {Path.cwd()}[/dim]")
-
-    console.print()
-
-    if session_state.auto_approve:
-        console.print(
-            "  [yellow]⚡ Auto-approve: ON[/yellow] [dim](tools run without confirmation)[/dim]"
-        )
-        console.print()
-
-    # Localize modifier names and show key symbols (macOS vs others)
-    if sys.platform == "darwin":
-        tips = (
-            "  Tips: ⏎ Enter to submit, ⌥ Option + ⏎ Enter for newline (or Esc+Enter), "
-            "⌃E to open editor, ⌃T to toggle auto-approve, ⌃C to interrupt"
-        )
-    else:
-        tips = (
-            "  Tips: Enter to submit, Alt+Enter (or Esc+Enter) for newline, "
-            "Ctrl+E to open editor, Ctrl+T to toggle auto-approve, Ctrl+C to interrupt"
-        )
-    console.print(tips, style=f"dim {COLORS['dim']}")
-
-    console.print()
 
     # Create prompt session, image tracker, and token tracker
     image_tracker = ImageTracker()
@@ -279,7 +287,14 @@ async def simple_cli(
             if result == "exit":
                 console.print("\nGoodbye!", style=COLORS["primary"])
                 break
-            if result:
+            if isinstance(result, tuple) and result[0] == "switch_agent":
+                # Switch to a different agent profile
+                return result[1]  # Return new agent name to trigger reload
+            if isinstance(result, tuple) and result[0] == "prefill_prompt":
+                # Prefill the prompt with the provided message
+                user_input = result[1]
+                # Continue to execute_task with the prefilled message
+            elif result:
                 # Command was handled, continue to next input
                 continue
 
@@ -315,6 +330,7 @@ async def _run_agent_session(
     """Helper to create agent and run CLI session.
 
     Extracted to avoid duplication between sandbox and local modes.
+    Handles agent switching by looping when user switches profiles.
 
     Args:
         model: LLM model to use
@@ -324,38 +340,90 @@ async def _run_agent_session(
         sandbox_type: Type of sandbox being used
         setup_script_path: Path to setup script that was run (if any)
     """
-    # Create agent with conditional tools
-    tools = [http_request, fetch_url]
-    if settings.has_tavily:
-        tools.append(web_search)
+    current_assistant_id = assistant_id
+    first_run = True
+    agent = None
+    shared_checkpointer = None
 
-    agent, composite_backend = create_cli_agent(
-        model=model,
-        assistant_id=assistant_id,
-        tools=tools,
-        sandbox=sandbox_backend,
-        sandbox_type=sandbox_type,
-        auto_approve=session_state.auto_approve,
-    )
+    while True:
+        # Create agent with conditional tools
+        tools = [http_request, fetch_url]
+        if settings.has_tavily:
+            tools.append(web_search)
 
-    # Calculate baseline token count for accurate token tracking
-    from .agent import get_system_prompt
-    from .token_utils import calculate_baseline_tokens
+        agent, composite_backend = create_cli_agent(
+            model=model,
+            assistant_id=current_assistant_id,
+            tools=tools,
+            sandbox=sandbox_backend,
+            sandbox_type=sandbox_type,
+            auto_approve=session_state.auto_approve,
+        )
 
-    agent_dir = settings.get_agent_dir(assistant_id)
-    system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
-    baseline_tokens = calculate_baseline_tokens(model, agent_dir, system_prompt, assistant_id)
+        # On first run, save the checkpointer; on subsequent runs, reuse it
+        if shared_checkpointer is None:
+            shared_checkpointer = agent.checkpointer
+        else:
+            agent.checkpointer = shared_checkpointer
 
-    await simple_cli(
-        agent,
-        assistant_id,
-        session_state,
-        baseline_tokens,
-        backend=composite_backend,
-        sandbox_type=sandbox_type,
-        setup_script_path=setup_script_path,
-        no_splash=session_state.no_splash,
-    )
+        # Calculate baseline token count for accurate token tracking
+        from .agent import get_system_prompt
+        from .token_utils import calculate_baseline_tokens
+
+        agent_dir = settings.get_agent_dir(current_assistant_id)
+        system_prompt = get_system_prompt(
+            assistant_id=current_assistant_id, sandbox_type=sandbox_type
+        )
+        baseline_tokens = calculate_baseline_tokens(
+            model, agent_dir, system_prompt, current_assistant_id
+        )
+
+        # Run the CLI loop
+        result = await simple_cli(
+            agent,
+            current_assistant_id,
+            session_state,
+            baseline_tokens,
+            backend=composite_backend,
+            sandbox_type=sandbox_type,
+            setup_script_path=setup_script_path,
+            no_splash=(not first_run) or session_state.no_splash,
+        )
+
+        # Check if we should switch agent
+        if result is None:
+            # Normal exit
+            break
+        else:
+            # Switch to new agent profile
+            current_assistant_id = result
+            first_run = False
+
+            # Clear cached memory and skills from state so they reload from new profile
+            # The middleware checks "if key not in state" before loading, so we clear those keys
+            # to force reload from the new agent profile
+            config_for_state = {"configurable": {"thread_id": session_state.thread_id}}
+            checkpoint = shared_checkpointer.get(config_for_state)
+            if checkpoint:
+                # Checkpoint is a dict with 'channel_values' key containing the state
+                channel_values = checkpoint.get("channel_values", {})
+                if channel_values:
+                    # Clear memory fields (from AgentMemoryMiddleware)
+                    channel_values.pop("user_memory", None)
+                    channel_values.pop("project_memory", None)
+                    # Clear skills fields (from SkillsMiddleware)
+                    channel_values.pop("skills_metadata", None)
+                    # Since channel_values is mutable, the changes persist in the checkpoint
+
+            # Show agent switch message (without clearing screen)
+            console.print()
+            console.print(
+                f"✓ Switched to agent profile: [bold]{current_assistant_id}[/bold]",
+                style=COLORS["agent"],
+            )
+            console.print(f"  [dim]~/.deepagents/{current_assistant_id}/[/dim]")
+            console.print()
+            continue
 
 
 async def main(

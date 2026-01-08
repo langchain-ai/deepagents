@@ -974,35 +974,117 @@ class FilesystemMiddleware(AgentMiddleware):
 
         return await handler(request)
 
+    def _is_text_content_block(self, block: dict) -> bool:
+        """Check if a dict is a text content block with type='text' and 'text' key."""
+        return isinstance(block, dict) and block.get("type") == "text" and "text" in block
+
+    def _get_evictable_content(self, content) -> tuple[str, bool] | tuple[None, bool]:
+        """Extract evictable text content and whether it's a content block.
+        
+        Returns:
+            (text_content, is_content_block) tuple, or (None, False) if not evictable
+        """
+        # String content
+        if isinstance(content, str):
+            return (content, False)
+        
+        # List of content blocks
+        if isinstance(content, list) and len(content) > 0:
+            first_block = content[0]
+            if self._is_text_content_block(first_block):
+                text_content = first_block["text"]
+                if isinstance(text_content, str):
+                    return (text_content, True)
+        
+        return (None, False)
+
+    def _should_evict_content(self, content) -> bool:
+        """Check if content should be evicted based on size."""
+        if not self.tool_token_limit_before_evict:
+            return False
+        
+        text_content, _ = self._get_evictable_content(content)
+        if text_content is None:
+            return False
+        
+        return len(text_content) > 4 * self.tool_token_limit_before_evict
+
+    def _create_evicted_message(
+        self,
+        original_message: ToolMessage,
+        text_content: str,
+        is_content_block: bool,
+        resolved_backend: BackendProtocol,
+    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+        """Create a message with evicted content and write to backend.
+        
+        Args:
+            original_message: Original ToolMessage
+            text_content: The text content to evict
+            is_content_block: Whether this is from a content block (vs plain string)
+            resolved_backend: Backend to write the file to
+            
+        Returns:
+            (processed_message, files_update) tuple
+        """
+        sanitized_id = sanitize_tool_call_id(original_message.tool_call_id)
+        file_path = f"/large_tool_results/{sanitized_id}"
+        result = resolved_backend.write(file_path, text_content)
+        if result.error:
+            return original_message, None
+        
+        content_sample = format_content_with_line_numbers(
+            [line[:1000] for line in text_content.splitlines()[:10]], 
+            start_line=1
+        )
+        replacement_text = TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=original_message.tool_call_id,
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+        
+        # Create new content based on type
+        if is_content_block:
+            # Preserve content block structure
+            original_content = original_message.content
+            first_block = original_content[0]
+            new_first_block = {**first_block, "text": replacement_text}
+            new_content = [new_first_block] + original_content[1:]
+        else:
+            # String content
+            new_content = replacement_text
+        
+        processed_message = ToolMessage(
+            content=new_content,
+            tool_call_id=original_message.tool_call_id,
+        )
+        return processed_message, result.files_update
+
     def _process_large_message(
         self,
         message: ToolMessage,
         resolved_backend: BackendProtocol,
     ) -> tuple[ToolMessage, dict[str, FileData] | None]:
-        content = message.content
-        if not isinstance(content, str) or len(content) <= 4 * self.tool_token_limit_before_evict:
+        """Process a large ToolMessage by evicting its content to filesystem."""
+        if not self._should_evict_content(message.content):
             return message, None
-
-        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
-        file_path = f"/large_tool_results/{sanitized_id}"
-        result = resolved_backend.write(file_path, content)
-        if result.error:
+        
+        text_content, is_content_block = self._get_evictable_content(message.content)
+        if text_content is None:
             return message, None
-        content_sample = format_content_with_line_numbers([line[:1000] for line in content.splitlines()[:10]], start_line=1)
-        processed_message = ToolMessage(
-            TOO_LARGE_TOOL_MSG.format(
-                tool_call_id=message.tool_call_id,
-                file_path=file_path,
-                content_sample=content_sample,
-            ),
-            tool_call_id=message.tool_call_id,
+        
+        return self._create_evicted_message(
+            message, 
+            text_content, 
+            is_content_block, 
+            resolved_backend
         )
-        return processed_message, result.files_update
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
-        if isinstance(tool_result, ToolMessage) and isinstance(tool_result.content, str):
-            if not (self.tool_token_limit_before_evict and len(tool_result.content) > 4 * self.tool_token_limit_before_evict):
+        if isinstance(tool_result, ToolMessage):
+            if not self._should_evict_content(tool_result.content):
                 return tool_result
+            
             resolved_backend = self._get_backend(runtime)
             processed_message, files_update = self._process_large_message(
                 tool_result,
@@ -1028,14 +1110,14 @@ class FilesystemMiddleware(AgentMiddleware):
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
-                if not (
-                    self.tool_token_limit_before_evict
-                    and isinstance(message, ToolMessage)
-                    and isinstance(message.content, str)
-                    and len(message.content) > 4 * self.tool_token_limit_before_evict
-                ):
+                if not (self.tool_token_limit_before_evict and isinstance(message, ToolMessage)):
                     processed_messages.append(message)
                     continue
+                
+                if not self._should_evict_content(message.content):
+                    processed_messages.append(message)
+                    continue
+                
                 processed_message, files_update = self._process_large_message(
                     message,
                     resolved_backend,

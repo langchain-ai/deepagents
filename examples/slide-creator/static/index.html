@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Slide Creator - Deep Agents Demo</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🎨</span>
+                <h1>AI Slide Creator</h1>
+                <span class="badge">Deep Agents Demo</span>
+            </div>
+            <div class="header-actions">
+                <button id="newBtn" class="btn btn-secondary">
+                    <span>+</span> New
+                </button>
+                <button id="exportBtn" class="btn btn-primary" disabled>
+                    <span>↓</span> Export
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Chat Panel -->
+            <aside class="chat-panel">
+                <div class="chat-header">
+                    <h2>💬 Chat</h2>
+                    <span class="status-indicator" id="statusIndicator">Ready</span>
+                </div>
+
+                <div class="chat-messages" id="chatMessages">
+                    <div class="message assistant">
+                        <div class="message-content">
+                            <p>Hi! I'm your AI slide creator. Tell me what slideshow you'd like to create, and I'll help you design beautiful, consistent slides.</p>
+                            <p><strong>Try something like:</strong></p>
+                            <ul>
+                                <li>"Create a slideshow about renewable energy"</li>
+                                <li>"Make a presentation on the future of AI"</li>
+                                <li>"Design slides about space exploration"</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chat-input-container">
+                    <div class="chat-input-wrapper">
+                        <textarea
+                            id="chatInput"
+                            placeholder="Describe your slideshow idea..."
+                            rows="1"
+                        ></textarea>
+                        <button id="sendBtn" class="send-btn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <p class="input-hint">Press Enter to send, Shift+Enter for new line</p>
+                </div>
+            </aside>
+
+            <!-- Slideshow Panel -->
+            <section class="slideshow-panel">
+                <!-- Empty State -->
+                <div class="empty-state" id="emptyState">
+                    <div class="empty-icon">📽️</div>
+                    <h3>No Slideshow Yet</h3>
+                    <p>Start a conversation to create your first AI-generated slideshow</p>
+                </div>
+
+                <!-- Slideshow Viewer -->
+                <div class="slideshow-viewer" id="slideshowViewer" style="display: none;">
+                    <div class="slide-display">
+                        <div class="slide-image-container">
+                            <img id="currentSlideImage" src="" alt="Current slide">
+                            <div class="slide-loading" id="slideLoading">
+                                <div class="spinner"></div>
+                                <span>Generating...</span>
+                            </div>
+                            <div class="slide-placeholder" id="slidePlaceholder">
+                                <span>🖼️</span>
+                                <p>Slide not yet generated</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="slide-controls">
+                        <button class="nav-btn" id="prevBtn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M15 18l-6-6 6-6"/>
+                            </svg>
+                        </button>
+                        <div class="slide-counter">
+                            <span id="currentSlideNum">1</span>
+                            <span class="separator">/</span>
+                            <span id="totalSlides">1</span>
+                        </div>
+                        <button class="nav-btn" id="nextBtn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M9 18l6-6-6-6"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div class="slide-dots" id="slideDots"></div>
+
+                    <div class="slide-info">
+                        <h3 id="slideTitle">Slide Title</h3>
+                        <p id="slideDescription">Slide description will appear here</p>
+                    </div>
+
+                    <div class="edit-panel">
+                        <h4>Edit This Slide</h4>
+                        <div class="edit-input-wrapper">
+                            <input
+                                type="text"
+                                id="editInput"
+                                placeholder="e.g., Add more dramatic lighting..."
+                            >
+                            <button id="editBtn" class="btn btn-secondary">Regenerate</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Progress Panel -->
+                <div class="progress-panel" id="progressPanel" style="display: none;">
+                    <h4>Generation Progress</h4>
+                    <div class="progress-list" id="progressList"></div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Tool Activity Toast -->
+    <div class="tool-toast" id="toolToast">
+        <div class="tool-toast-icon">⚡</div>
+        <div class="tool-toast-content">
+            <span class="tool-toast-title" id="toolToastTitle">Running tool...</span>
+            <span class="tool-toast-subtitle" id="toolToastSubtitle"></span>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

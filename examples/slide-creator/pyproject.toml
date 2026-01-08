@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slide-creator"
+version = "0.1.0"
+description = "AI-powered slideshow generation using Deep Agents + Nano Banana Pro"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents",
+    "google-genai>=1.0.0",
+    "pillow>=10.0.0",
+    "jinja2>=3.0.0",
+    "python-dotenv>=1.0.0",
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["slide_creator*"]

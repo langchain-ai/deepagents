@@ -282,10 +282,47 @@ See the [agent harness documentation](https://docs.langchain.com/oss/python/deep
 | **TodoListMiddleware** | Task planning and progress tracking |
 | **FilesystemMiddleware** | File operations and context offloading (auto-saves large results) |
 | **SubAgentMiddleware** | Delegate tasks to isolated sub-agents |
-| **SummarizationMiddleware** | Auto-summarizes when context exceeds 170k tokens |
+| **SummarizationMiddleware** | Auto-summarizes when context approaches limit (see [Context Management](#context-management)) |
 | **AnthropicPromptCachingMiddleware** | Caches system prompts to reduce costs (Anthropic only) |
 | **PatchToolCallsMiddleware** | Fixes dangling tool calls from interruptions |
 | **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
+
+### Context Management
+
+The `SummarizationMiddleware` automatically manages conversation context to prevent token overflow errors. It determines the context limit through:
+
+1. **Environment variable** (`DEEPAGENTS_MAX_CONTEXT_TOKENS`) - highest priority
+2. **Model profile** (`model.profile["max_input_tokens"]`)
+3. **Model name inference** (for known models)
+
+Summarization triggers at **85%** of the context limit, keeping **10%** of the context after summarization.
+
+#### Supported Models (Auto-Detection)
+
+| Model Family | Context Limit | Examples |
+|-------------|---------------|----------|
+| **OpenAI GPT-4.1** | 1M tokens | gpt-4.1, gpt-4.1-mini, gpt-4.1-nano |
+| **OpenAI GPT-4o** | 128K tokens | gpt-4o, gpt-4o-mini |
+| **OpenAI o-series** | 128K-200K tokens | o1, o3, o3-mini, o4-mini |
+| **Claude 3/4** | 200K tokens | claude-sonnet-4, claude-opus-4, claude-3-sonnet |
+| **Gemini 1.5/2.0/2.5** | 1M tokens | gemini-2.5-pro, gemini-2.0-flash |
+| **DeepSeek** | 128K tokens | deepseek-chat, deepseek-coder |
+| **Mistral** | 128K tokens | mistral-large, mistral-medium |
+| **Llama** | 128K tokens | llama-3.1-70b, llama-3.2 |
+
+#### Custom Models (OpenRouter, etc.)
+
+When using custom models where the context limit cannot be automatically detected, set the `DEEPAGENTS_MAX_CONTEXT_TOKENS` environment variable:
+
+```bash
+# For a 262K context model
+export DEEPAGENTS_MAX_CONTEXT_TOKENS=262144
+
+# For a 128K context model
+export DEEPAGENTS_MAX_CONTEXT_TOKENS=128000
+```
+
+This prevents `BadRequestError: maximum context length exceeded` errors during long conversations.
 
 ## Built-in prompts
 

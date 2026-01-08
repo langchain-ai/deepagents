@@ -5,6 +5,13 @@ from __future__ import annotations
 import difflib
 from typing import TYPE_CHECKING, Any
 
+from deepagents_cli.widgets.tool_widgets import (
+    BashApprovalWidget,
+    EditFileApprovalWidget,
+    GenericApprovalWidget,
+    WriteFileApprovalWidget,
+)
+
 if TYPE_CHECKING:
     from deepagents_cli.widgets.tool_widgets import ToolApprovalWidget
 
@@ -23,8 +30,6 @@ class ToolRenderer:
         Returns:
             Tuple of (widget_class, data_dict)
         """
-        from deepagents_cli.widgets.tool_widgets import GenericApprovalWidget
-
         return GenericApprovalWidget, tool_args
 
 
@@ -34,8 +39,6 @@ class WriteFileRenderer(ToolRenderer):
     def get_approval_widget(
         self, tool_args: dict[str, Any]
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
-        from deepagents_cli.widgets.tool_widgets import WriteFileApprovalWidget
-
         # Extract file extension for syntax highlighting
         file_path = tool_args.get("file_path", "")
         content = tool_args.get("content", "")
@@ -59,8 +62,6 @@ class EditFileRenderer(ToolRenderer):
     def get_approval_widget(
         self, tool_args: dict[str, Any]
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
-        from deepagents_cli.widgets.tool_widgets import EditFileApprovalWidget
-
         file_path = tool_args.get("file_path", "")
         old_string = tool_args.get("old_string", "")
         new_string = tool_args.get("new_string", "")
@@ -105,8 +106,6 @@ class BashRenderer(ToolRenderer):
     def get_approval_widget(
         self, tool_args: dict[str, Any]
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
-        from deepagents_cli.widgets.tool_widgets import BashApprovalWidget
-
         data = {
             "command": tool_args.get("command", ""),
             "description": tool_args.get("description", ""),

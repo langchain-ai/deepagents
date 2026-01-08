@@ -17,12 +17,15 @@ from textual.events import MouseUp  # noqa: TC002 - used in type annotation
 from textual.widgets import Static  # noqa: TC002 - used at runtime
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
+from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
+from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.messages import (
     AssistantMessage,
     ErrorMessage,
     SystemMessage,
+    ToolCallMessage,
     UserMessage,
 )
 from deepagents_cli.widgets.status import StatusBar
@@ -32,8 +35,6 @@ if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.worker import Worker
-
-    from deepagents_cli.textual_adapter import TextualUIAdapter
 
 
 class TextualTokenTracker:
@@ -188,8 +189,6 @@ class DeepAgentsApp(App):
 
         # Create UI adapter if agent is provided
         if self._agent:
-            from deepagents_cli.textual_adapter import TextualUIAdapter
-
             self._ui_adapter = TextualUIAdapter(
                 mount_message=self._mount_message,
                 update_status=self._update_status,
@@ -239,10 +238,6 @@ class DeepAgentsApp(App):
 
         If another approval is already pending, queue this one.
         """
-        import uuid
-
-        from deepagents_cli.widgets.approval import ApprovalMenu
-
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
@@ -361,11 +356,15 @@ class DeepAgentsApp(App):
                 # Display output as assistant message (uses markdown for code blocks)
                 msg = AssistantMessage(f"```\n{output}\n```")
                 await self._mount_message(msg)
+                await msg.write_initial_content()
             else:
                 await self._mount_message(SystemMessage("Command completed (no output)"))
 
             if result.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {result.returncode}"))
+
+            # Scroll to show the output
+            self._scroll_chat_to_bottom()
 
         except subprocess.TimeoutExpired:
             await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
@@ -454,8 +453,6 @@ class DeepAgentsApp(App):
 
         This runs in a worker thread so the main event loop stays responsive.
         """
-        from deepagents_cli.textual_adapter import execute_task_textual
-
         try:
             await execute_task_textual(
                 user_input=message,
@@ -566,8 +563,6 @@ class DeepAgentsApp(App):
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output."""
-        from deepagents_cli.widgets.messages import ToolCallMessage
-
         # Find all tool messages with output, get the most recent one
         try:
             tool_messages = list(self.query(ToolCallMessage))

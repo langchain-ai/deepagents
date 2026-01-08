@@ -409,6 +409,16 @@ class ChatInput(Vertical):
                     self.post_message(self.Submitted(value, self.mode))
                     self._text_area.clear_text()
                     self.mode = "normal"
+            case CompletionResult.IGNORED if event.key == "enter":
+                # Handle Enter when completion is not active (bash/normal modes)
+                value = self._text_area.text.strip()
+                if value:
+                    event.prevent_default()
+                    event.stop()
+                    self._history.add(value)
+                    self.post_message(self.Submitted(value, self.mode))
+                    self._text_area.clear_text()
+                    self.mode = "normal"
 
     def _get_cursor_offset(self) -> int:
         """Get the cursor offset as a single integer."""

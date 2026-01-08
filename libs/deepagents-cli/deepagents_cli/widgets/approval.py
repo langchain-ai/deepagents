@@ -12,6 +12,8 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
 
+from deepagents_cli.widgets.tool_renderers import get_renderer
+
 
 class ApprovalMenu(Container):
     """Approval menu using standard Textual patterns.
@@ -117,8 +119,6 @@ class ApprovalMenu(Container):
         """Mount the tool-specific approval widget."""
         if not self._tool_info_container:
             return
-
-        from deepagents_cli.widgets.tool_renderers import get_renderer
 
         # Get the appropriate renderer for this tool
         renderer = get_renderer(self._tool_name)

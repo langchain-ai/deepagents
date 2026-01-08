@@ -22,11 +22,16 @@ from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
 from deepagents_cli.ui import format_tool_display, format_tool_message_content
+from deepagents_cli.widgets.messages import (
+    AssistantMessage,
+    DiffMessage,
+    ErrorMessage,
+    SystemMessage,
+    ToolCallMessage,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from deepagents_cli.widgets.messages import AssistantMessage, ToolCallMessage
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 
@@ -269,8 +274,6 @@ async def execute_task_textual(
                                 )
                                 pending_text_by_namespace[ns_key] = ""
                             if tool_content:
-                                from deepagents_cli.widgets.messages import ErrorMessage
-
                                 await adapter._mount_message(ErrorMessage(str(tool_content)))
 
                         # Show file operation results - always show diffs in chat
@@ -282,8 +285,6 @@ async def execute_task_textual(
                                 )
                                 pending_text_by_namespace[ns_key] = ""
                             if record.diff:
-                                from deepagents_cli.widgets.messages import DiffMessage
-
                                 await adapter._mount_message(
                                     DiffMessage(record.diff, record.display_path)
                                 )
@@ -318,8 +319,6 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
-                                    from deepagents_cli.widgets.messages import AssistantMessage
-
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
@@ -401,8 +400,6 @@ async def execute_task_textual(
                                 file_op_tracker.start_operation(buffer_name, parsed_args, buffer_id)
 
                                 # Mount tool call message
-                                from deepagents_cli.widgets.messages import ToolCallMessage
-
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
@@ -512,8 +509,6 @@ async def execute_task_textual(
 
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:
-                    from deepagents_cli.widgets.messages import SystemMessage
-
                     await adapter._mount_message(
                         SystemMessage("Command rejected. Tell the agent what you'd like instead.")
                     )
@@ -525,7 +520,6 @@ async def execute_task_textual(
 
     except asyncio.CancelledError:
         adapter._update_status("Interrupted")
-        from deepagents_cli.widgets.messages import SystemMessage
 
         # Mark any pending tools as rejected
         for tool_msg in list(adapter._current_tool_messages.values()):
@@ -547,7 +541,6 @@ async def execute_task_textual(
 
     except KeyboardInterrupt:
         adapter._update_status("Interrupted")
-        from deepagents_cli.widgets.messages import SystemMessage
 
         # Mark any pending tools as rejected
         for tool_msg in list(adapter._current_tool_messages.values()):
@@ -590,8 +583,6 @@ async def _flush_assistant_text_ns(
     current_msg = assistant_message_by_namespace.get(ns_key)
     if current_msg is None:
         # No message was created during streaming - create one with full content
-        from deepagents_cli.widgets.messages import AssistantMessage
-
         current_msg = AssistantMessage(text)
         await adapter._mount_message(current_msg)
         await current_msg.write_initial_content()

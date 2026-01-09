@@ -5,7 +5,6 @@ This module contains async versions of memory middleware tests.
 
 from pathlib import Path
 
-import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -116,9 +115,11 @@ async def test_load_memory_handles_missing_file_async(tmp_path: Path) -> None:
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
-    # Test abefore_agent raises error for missing file
-    with pytest.raises(ValueError, match="Failed to download.*file_not_found"):
-        await middleware.abefore_agent({}, None, {})  # type: ignore
+    # Test abefore_agent loads only existing memory
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore
+    assert result is not None
+    assert missing_path not in result["memory_contents"]
+    assert user_path in result["memory_contents"]
 
 
 async def test_before_agent_skips_if_already_loaded_async(tmp_path: Path) -> None:
@@ -273,11 +274,14 @@ async def test_agent_with_memory_middleware_multiple_sources_async(tmp_path: Pat
     assert "messages" in result
     assert len(result["messages"]) > 0
 
-    # Verify both memory sources are in system prompt
+    # Verify both memory sources are in system prompt with new format
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
+    assert "<agent_memory>" in content
+    assert user_path in content
+    assert project_path in content
     assert "Python 3.11" in content
     assert "FastAPI" in content
 
@@ -301,13 +305,13 @@ async def test_agent_with_memory_middleware_empty_sources_async(tmp_path: Path) 
     assert "messages" in result
     assert len(result["messages"]) > 0
 
-    # Verify system prompt still contains Agent Memory section
+    # Verify system prompt still contains Agent Memory section with empty agent_memory
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    assert "Agent Memory" in content
-    assert "No memory loaded" in content or "None configured" in content
+    assert "<agent_memory>" in content
+    assert "No memory loaded" in content
 
 
 async def test_memory_middleware_order_matters_async(tmp_path: Path) -> None:
@@ -344,12 +348,16 @@ async def test_memory_middleware_order_matters_async(tmp_path: Path) -> None:
     # Invoke asynchronously
     result = await agent.ainvoke({"messages": [HumanMessage(content="Test")]})
 
-    # Verify order in system prompt
+    # Verify order in system prompt with new format
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    # First should appear before second
+    assert "<agent_memory>" in content
+    assert first_path in content
+    assert second_path in content
+
+    # First should appear before second (both path and content)
     first_pos = content.find("First memory content")
     second_pos = content.find("Second memory content")
     assert first_pos > 0

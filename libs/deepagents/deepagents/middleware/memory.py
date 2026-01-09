@@ -89,21 +89,65 @@ class MemoryStateUpdate(TypedDict):
     memory_contents: dict[str, str]
 
 
-# Default system prompt template for memory
-MEMORY_SYSTEM_PROMPT = """
-## Agent Memory
+MEMORY_SYSTEM_PROMPT = """<agent_memory>
+{agent_memory}
+</agent_memory>
 
-You have access to persistent memory that provides context and instructions.
+<memory_guidelines>
+    The above <agent_memory> was loaded in from files in your filesystem. As you learn from your interactions with the user, you can save new knowledge by calling the `edit_file` tool.
 
-{memory_locations}
+    **Learning from feedback:**
+    - One of your MAIN PRIORITIES is to learn from your interactions with the user. These learnings can be implicit or explicit. This means that in the future, you will remember this important information.
+    - When you need to remember something, updating memory must be your FIRST, IMMEDIATE action - before responding to the user, before calling other tools, before doing anything else. Just update memory immediately.
+    - When user says something is better/worse, capture WHY and encode it as a pattern.
+    - Each correction is a chance to improve permanently - don't just fix the immediate issue, update your instructions.
+    - A great opportunity to update your memories is when the user interrupts a tool call and provides feedback. You should update your memories immediately before revising the tool call.
+    - Look for the underlying principle behind corrections, not just the specific mistake.
+    - The user might not explicitly ask you to remember something, but if they provide information that is useful for future use, you should update your memories immediately.
 
-{memory_contents}
+    **Asking for information:**
+    - If you lack context to perform an action (e.g. send a Slack DM, requires a user ID/email) you should explicitly ask the user for this information.
+    - It is preferred for you to ask for information, don't assume anything that you do not know!
+    - When the user provides information that is useful for future use, you should update your memories immediately.
 
-**Memory Guidelines:**
-- Memory content above provides project-specific context and instructions
-- Follow any guidelines, conventions, or patterns described in memory
-- Memory is read-only during this session (loaded at startup)
-- If you need to update memory, use the appropriate file editing tools
+    **When to update memories:**
+    - When the user explicitly asks you to remember something (e.g., "remember my email", "save this preference")
+    - When the user describes your role or how you should behave (e.g., "you are a web researcher", "always do X")
+    - When the user gives feedback on your work - capture what was wrong and how to improve
+    - When the user provides information required for tool use (e.g., slack channel ID, email addresses)
+    - When the user provides context useful for future tasks, such as how to use tools, or which actions to take in a particular situation
+    - When you discover new patterns or preferences (coding styles, conventions, workflows)
+
+    **When to NOT update memories:**
+    - When the information is temporary or transient (e.g., "I'm running late", "I'm on my phone right now")
+    - When the information is a one-time task request (e.g., "Find me a recipe", "What's 25 * 4?")
+    - When the information is a simple question that doesn't reveal lasting preferences (e.g., "What day is it?", "Can you explain X?")
+    - When the information is an acknowledgment or small talk (e.g., "Sounds good!", "Hello", "Thanks for that")
+    - When the information is stale or irrelevant in future conversations
+    - Never store API keys, access tokens, passwords, or any other credentials in any file, memory, or system prompt.
+    - If the user asks where to put API keys or provides an API key, do NOT echo or save it.
+
+    **Examples:**
+    Example 1 (remembering user information):
+    User: Can you connect to my google account?
+    Agent: Sure, I'll connect to your google account, what's your google account email?
+    User: john@example.com
+    Agent: Let me save this to my memory.
+    Tool Call: edit_file(...) -> remembers that the user's google account email is john@example.com
+
+    Example 2 (remembering implicit user preferences):
+    User: Can you write me an example for creating a deep agent in LangChain?
+    Agent: Sure, I'll write you an example for creating a deep agent in LangChain <example code in Python>
+    User: Can you do this in JavaScript
+    Agent: Let me save this to my memory.
+    Tool Call: edit_file(...) -> remembers that the user prefers to get LangChaincode examples in JavaScript
+    Agent: Sure, here is the JavaScript example<example code in JavaScript>
+
+    Example 3 (do not remember transient information):
+    User: I'm going to play basketball tonight so I will be offline for a few hours.
+    Agent: Okay I'll add a black to your calendar.
+    Tool Call: create_calendar_event(...) -> just calls a tool, does not commit anything to memory, as it is transient information
+</memory_guidelines>
 """
 
 
@@ -137,7 +181,6 @@ class MemoryMiddleware(AgentMiddleware):
         """
         self._backend = backend
         self.sources = sources
-        self.system_prompt_template = MEMORY_SYSTEM_PROMPT
 
     def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -163,37 +206,28 @@ class MemoryMiddleware(AgentMiddleware):
             return self._backend(tool_runtime)
         return self._backend
 
-    def _format_memory_locations(self) -> str:
-        """Format memory source locations for display."""
-        if not self.sources:
-            return "**Memory Sources:** None configured"
-
-        lines = ["**Memory Sources:**"]
-        for path in self.sources:
-            lines.append(f"- `{path}`")
-        return "\n".join(lines)
-
-    def _format_memory_contents(self, contents: dict[str, str]) -> str:
-        """Format loaded memory contents for injection into prompt.
+    def _format_agent_memory(self, contents: dict[str, str]) -> str:
+        """Format memory with locations and contents paired together.
 
         Args:
             contents: Dict mapping source paths to content.
 
         Returns:
-            Formatted string with all memory contents concatenated.
+            Formatted string with location+content pairs wrapped in <agent_memory> tags.
         """
         if not contents:
-            return "(No memory loaded)"
+            return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
 
         sections = []
         for path in self.sources:
             if contents.get(path):
-                sections.append(contents[path])
+                sections.append(f"{path}\n{contents[path]}")
 
         if not sections:
-            return "(No memory loaded)"
+            return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
 
-        return "\n\n".join(sections)
+        memory_body = "\n\n".join(sections)
+        return MEMORY_SYSTEM_PROMPT.format(agent_memory=memory_body)
 
     async def _load_memory_from_backend(
         self,
@@ -216,6 +250,11 @@ class MemoryMiddleware(AgentMiddleware):
         response = results[0]
 
         if response.error is not None:
+            # For now, memory files are treated as optional. file_not_found is expected
+            # and we skip silently to allow graceful degradation.
+            if response.error == "file_not_found":
+                return None
+            # Other errors should be raised
             raise ValueError(f"Failed to download {path}: {response.error}")
 
         if response.content is not None:
@@ -244,6 +283,11 @@ class MemoryMiddleware(AgentMiddleware):
         response = results[0]
 
         if response.error is not None:
+            # For now, memory files are treated as optional. file_not_found is expected
+            # and we skip silently to allow graceful degradation.
+            if response.error == "file_not_found":
+                return None
+            # Other errors should be raised
             raise ValueError(f"Failed to download {path}: {response.error}")
 
         if response.content is not None:
@@ -298,6 +342,7 @@ class MemoryMiddleware(AgentMiddleware):
         if "memory_contents" in state:
             return None
 
+        print("HI")
         backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 
@@ -319,18 +364,12 @@ class MemoryMiddleware(AgentMiddleware):
             Modified request with memory injected into system prompt.
         """
         contents = request.state.get("memory_contents", {})
-        memory_locations = self._format_memory_locations()
-        memory_contents = self._format_memory_contents(contents)
-
-        memory_section = self.system_prompt_template.format(
-            memory_locations=memory_locations,
-            memory_contents=memory_contents,
-        )
+        agent_memory = self._format_agent_memory(contents)
 
         if request.system_prompt:
-            system_prompt = memory_section + "\n\n" + request.system_prompt
+            system_prompt = agent_memory + "\n\n" + request.system_prompt
         else:
-            system_prompt = memory_section
+            system_prompt = agent_memory
 
         return request.override(system_message=SystemMessage(system_prompt))
 

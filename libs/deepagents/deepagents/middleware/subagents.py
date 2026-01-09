@@ -1,5 +1,6 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
+import langsmith as ls
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -352,9 +353,10 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        config = dict(runtime.config) if runtime.config else {}
-        config["tags"] = [*config.get("tags", []), f"subagent_name:{subagent_type}"]
-        result = subagent.invoke(subagent_state, config)
+        rt = ls.get_current_run_tree()
+        if rt:
+            rt.add_tags([f"subagent_name:{subagent_type}"])
+        result = subagent.invoke(subagent_state, runtime.config)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -369,9 +371,10 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        config = dict(runtime.config) if runtime.config else {}
-        config["tags"] = [*config.get("tags", []), f"subagent_name:{subagent_type}"]
-        result = await subagent.ainvoke(subagent_state, config)
+        rt = ls.get_current_run_tree()
+        if rt:
+            rt.add_tags([f"subagent_name:{subagent_type}"])
+        result = await subagent.ainvoke(subagent_state, runtime.config)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)

@@ -424,6 +424,13 @@ class DeepAgentsApp(App):
         Args:
             message: The user's message
         """
+        # Remove welcome banner on first message
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            await banner.remove()
+        except NoMatches:
+            pass
+
         # Mount the user message
         await self._mount_message(UserMessage(message))
 

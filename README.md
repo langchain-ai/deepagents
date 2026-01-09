@@ -1,8 +1,8 @@
 # 🚀🧠 Deep Agents
 
-Agents can increasingly tackle long-horizon tasks, [with agent task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)! But, long horizon tasks often span dozens of tool calls, which present cost and reliability challenges. Popular agents such as [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8) use some common principles to address these challenges, including **planning** (prior to task execution), **computer access** (giving the agent access to a shell and a filesystem), and **sub-agent delegation** (isolated task execution). `deepagents` is a simple agent harness that implements these tools, but is open source and easily extendable with your own custom tools and instructions.
+Agents can increasingly tackle long-horizon tasks, [with agent task length doubling every 7 months](https://metr.org/blog/2025-03-19-measuring-ai-ability-to-complete-long-tasks/)! But, long horizon tasks often span dozens of tool calls, which present cost and reliability challenges. Popular agents such as [Claude Code](https://code.claude.com/docs) and [Manus](https://www.youtube.com/watch?v=6_BcCthVvb8) use some common principles to address these challenges, including **planning** (prior to task execution), **computer access** (giving the agent access to a shell and a filesystem), and **sub-agent delegation** (isolated task execution). `deepagents` is a simple, open-source agent harness that implements these tools and is easily extensible with your own custom tools, instructions, and choice of LLM.
 
-<img src=".github/images/deepagents_banner.png" alt="deep agent" width="100%"/>
+<img src=".github/images/deepagents-banner.png" alt="deep agent" width="100%"/>
 
 ## 📚 Resources
 
@@ -12,16 +12,21 @@ Agents can increasingly tackle long-horizon tasks, [with agent task length doubl
 
 ## 🚀 Quickstart
 
-You can give `deepagents` custom tools. Below, we'll optionally provide the `tavily` tool to search the web. This tool will be added to the `deepagents` build-in tools (see below).
+`deepagents` supports custom tools alongside its built-in tools (listed below). In this example, we'll add the optional `tavily` tool for web search.
 
 ```bash
 pip install deepagents tavily-python
+
+# using uv
+uv init
+uv add deepagents tavily-python
 ```
 
 Set `TAVILY_API_KEY` in your environment ([get one here](https://www.tavily.com/)):
 
 ```python
 import os
+
 from deepagents import create_deep_agent
 from tavily import TavilyClient
 
@@ -39,15 +44,15 @@ agent = create_deep_agent(
 result = agent.invoke({"messages": [{"role": "user", "content": "What is LangGraph?"}]})
 ```
 
-The agent created with `create_deep_agent` is compiled [LangGraph StateGraph](https://docs.langchain.com/oss/python/langgraph/overview), so it can be used with streaming, human-in-the-loop, memory, or Studio just like any LangGraph agent. See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
+The agent created with `create_deep_agent` is compiled [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview) `StateGraph`, so it can be used with streaming, human-in-the-loop, memory, or Studio just like any LangGraph agent. See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
 
 ## Customizing Deep Agents
 
-There are several parameters you can pass to `create_deep_agent`.
+There are several parameters you can pass to [`create_deep_agent`](https://reference.langchain.com/python/deepagents/#deepagents.create_deep_agent).
 
 ### `model`
 
-By default, `deepagents` uses `"claude-sonnet-4-5-20250929"`. You can customize this by passing any [LangChain model object](https://python.langchain.com/docs/integrations/chat/).
+By default, `deepagents` uses `claude-sonnet-4-5-20250929`. You can customize this by passing any [LangChain model object](https://python.langchain.com/docs/integrations/chat/).
 
 ```python
 from langchain.chat_models import init_chat_model
@@ -79,6 +84,7 @@ When writing a custom system prompt, you should:
 
 ```python
 from deepagents import create_deep_agent
+
 research_instructions = """your custom system prompt"""
 agent = create_deep_agent(
     system_prompt=research_instructions,
@@ -101,7 +107,7 @@ def internet_search(query: str) -> str:
 agent = create_deep_agent(tools=[internet_search])
 ```
 
-You can also connect MCP tools via [langchain-mcp-adapters](https://github.com/langchain-ai/langchain-mcp-adapters):
+You can also connect MCP tools via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters):
 
 ```python
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -215,10 +221,10 @@ agent = create_deep_agent(
 
 Available backends include:
 
-- **StateBackend** (default): Ephemeral files stored in agent state
-- **FilesystemBackend**: Real disk operations under a root directory
-- **StoreBackend**: Persistent storage using LangGraph Store
-- **CompositeBackend**: Route different paths to different backends
+- **`StateBackend`** (default): Ephemeral files stored in agent state
+- **`FilesystemBackend`**: Real disk operations under a root directory
+- **`StoreBackend`**: Persistent storage using LangGraph Store
+- **`CompositeBackend`**: Route different paths to different backends
 
 See the [backends documentation](https://docs.langchain.com/oss/python/deepagents/backends) for more details.
 
@@ -258,16 +264,16 @@ Every deep agent created with `create_deep_agent` comes with a standard set of t
 
 | Tool Name | Description | Provided By |
 |-----------|-------------|-------------|
-| `write_todos` | Create and manage structured task lists for tracking progress through complex workflows | TodoListMiddleware |
-| `read_todos` | Read the current todo list state | TodoListMiddleware |
-| `ls` | List all files in a directory (requires absolute path) | FilesystemMiddleware |
-| `read_file` | Read content from a file with optional pagination (offset/limit parameters) | FilesystemMiddleware |
-| `write_file` | Create a new file or completely overwrite an existing file | FilesystemMiddleware |
-| `edit_file` | Perform exact string replacements in files | FilesystemMiddleware |
-| `glob` | Find files matching a pattern (e.g., `**/*.py`) | FilesystemMiddleware |
-| `grep` | Search for text patterns within files | FilesystemMiddleware |
-| `execute`* | Run shell commands in a sandboxed environment | FilesystemMiddleware |
-| `task` | Delegate tasks to specialized sub-agents with isolated context windows | SubAgentMiddleware |
+| `write_todos` | Create and manage structured task lists for tracking progress through complex workflows | `TodoListMiddleware` |
+| `read_todos` | Read the current todo list state | `TodoListMiddleware` |
+| `ls` | List all files in a directory (requires absolute path) | `FilesystemMiddleware` |
+| `read_file` | Read content from a file with optional pagination (offset/limit parameters) | `FilesystemMiddleware` |
+| `write_file` | Create a new file or completely overwrite an existing file | `FilesystemMiddleware` |
+| `edit_file` | Perform exact string replacements in files | `FilesystemMiddleware` |
+| `glob` | Find files matching a pattern (e.g., `**/*.py`) | `FilesystemMiddleware` |
+| `grep` | Search for text patterns within files | `FilesystemMiddleware` |
+| `execute`* | Run shell commands in a sandboxed environment | `FilesystemMiddleware` |
+| `task` | Delegate tasks to specialized sub-agents with isolated context windows | `SubAgentMiddleware` |
 
 The `execute` tool is only available if the backend implements `SandboxBackendProtocol`. By default, it uses the in-memory state backend which does not support command execution. As shown, these tools (along with other capabilities) are provided by default middleware:
 
@@ -279,41 +285,41 @@ See the [agent harness documentation](https://docs.langchain.com/oss/python/deep
 
 | Middleware | Purpose |
 |------------|---------|
-| **TodoListMiddleware** | Task planning and progress tracking |
-| **FilesystemMiddleware** | File operations and context offloading (auto-saves large results) |
-| **SubAgentMiddleware** | Delegate tasks to isolated sub-agents |
-| **SummarizationMiddleware** | Auto-summarizes when context exceeds 170k tokens |
-| **AnthropicPromptCachingMiddleware** | Caches system prompts to reduce costs (Anthropic only) |
-| **PatchToolCallsMiddleware** | Fixes dangling tool calls from interruptions |
-| **HumanInTheLoopMiddleware** | Pauses execution for human approval (requires `interrupt_on` config) |
+| **`TodoListMiddleware`** | Task planning and progress tracking |
+| **`FilesystemMiddleware`** | File operations and context offloading (auto-saves large results) |
+| **`SubAgentMiddleware`** | Delegate tasks to isolated sub-agents |
+| **`SummarizationMiddleware`** | Auto-summarizes when context exceeds 170k tokens |
+| **`AnthropicPromptCachingMiddleware`** | Caches system prompts to reduce costs (Anthropic only) |
+| **`PatchToolCallsMiddleware`** | Fixes dangling tool calls from interruptions |
+| **`HumanInTheLoopMiddleware`** | Pauses execution for human approval (requires `interrupt_on` config) |
 
 ## Built-in prompts
 
 The middleware automatically adds instructions about the standard tools. Your custom instructions should **complement, not duplicate** these defaults:
 
-#### From [TodoListMiddleware](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)
+#### From [`TodoListMiddleware`](https://github.com/langchain-ai/langchain/blob/master/libs/langchain/langchain/agents/middleware/todo.py)
 
 - Explains when to use `write_todos` and `read_todos`
 - Guidance on marking tasks completed
 - Best practices for todo list management
 - When NOT to use todos (simple tasks)
 
-#### From [FilesystemMiddleware](libs/deepagents/deepagents/middleware/filesystem.py)
+#### From [`FilesystemMiddleware`](libs/deepagents/deepagents/middleware/filesystem.py)
 
 - Lists all filesystem tools (`ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`*)
 - Explains that file paths must start with `/`
 - Describes each tool's purpose and parameters
 - Notes about context offloading for large tool results
 
-#### From [SubAgentMiddleware](libs/deepagents/deepagents/middleware/subagents.py)
+#### From [`SubAgentMiddleware`](libs/deepagents/deepagents/middleware/subagents.py)
 
 - Explains the `task()` tool for delegating to sub-agents
 - When to use sub-agents vs when NOT to use them
 - Guidance on parallel execution
 - Subagent lifecycle (spawn → run → return → reconcile)
 
-## Security Considerations
+## Security considerations
 
-### Trust Model
+### Trust model
 
 Deepagents follows a "trust the LLM" model similar to Claude Code. The agent can perform any action the underlying tools allow. Security boundaries should be enforced at the tool/sandbox level, not by expecting the LLM to self-police.

@@ -213,3 +213,8 @@ __marimo__/
 .claude
 
 .idea
+TEXTUAL_REFACTOR_PLAN.md
+libs/deepagents-cli/TEXTUAL_PROGRESS.md
+
+/tmp/
+*/tmp/

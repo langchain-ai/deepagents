@@ -21,6 +21,7 @@ from langgraph.types import Checkpointer
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
@@ -32,7 +33,7 @@ def get_default_model() -> ChatAnthropic:
     """Get the default model for deep agents.
 
     Returns:
-        ChatAnthropic instance configured with Claude Sonnet 4.
+        `ChatAnthropic` instance configured with Claude Sonnet 4.5.
     """
     return ChatAnthropic(
         model_name="claude-sonnet-4-5-20250929",
@@ -48,6 +49,7 @@ def create_deep_agent(
     middleware: Sequence[AgentMiddleware] = (),
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     skills: list[str] | None = None,
+    memory: list[str] | None = None,
     response_format: ResponseFormat | None = None,
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
@@ -60,47 +62,51 @@ def create_deep_agent(
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
-    This agent will by default have access to a tool to write todos (write_todos),
-    seven file and execution tools: ls, read_file, write_file, edit_file, glob, grep, execute,
+    This agent will by default have access to a tool to write todos (`write_todos`),
+    seven file and execution tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`,
     and a tool to call subagents.
 
-    The execute tool allows running shell commands if the backend implements SandboxBackendProtocol.
-    For non-sandbox backends, the execute tool will return an error message.
+    The `execute` tool allows running shell commands if the backend implements `SandboxBackendProtocol`.
+    For non-sandbox backends, the `execute` tool will return an error message.
 
     Args:
-        model: The model to use. Defaults to Claude Sonnet 4.
+        model: The model to use. Defaults to `claude-sonnet-4-5-20250929`.
         tools: The tools the agent should have access to.
         system_prompt: The additional instructions the agent should have. Will go in
             the system prompt.
         middleware: Additional middleware to apply after standard middleware.
-        subagents: The subagents to use. Each subagent should be a dictionary with the
-            following keys:
-                - `name`
-                - `description` (used by the main agent to decide whether to call the
-                  sub agent)
-                - `prompt` (used as the system prompt in the subagent)
-                - (optional) `tools`
-                - (optional) `model` (either a LanguageModelLike instance or dict
-                  settings)
-                - (optional) `middleware` (list of AgentMiddleware)
-        skills: Optional list of skill source paths (e.g., ["/skills/user/", "/skills/project/"]).
+        subagents: The subagents to use.
+
+            Each subagent should be a `dict` with the following keys:
+
+            - `name`
+            - `description` (used by the main agent to decide whether to call the sub agent)
+            - `prompt` (used as the system prompt in the subagent)
+            - (optional) `tools`
+            - (optional) `model` (either a `LanguageModelLike` instance or `dict` settings)
+            - (optional) `middleware` (list of `AgentMiddleware`)
+        skills: Optional list of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
+
             Paths must be specified using POSIX conventions (forward slashes) and are relative
-            to the backend's root. When using StateBackend (default), provide skill files via
-            `invoke(files={...})`. With FilesystemBackend, skills are loaded from disk relative
-            to the backend's root_dir. Later sources override earlier ones for skills with the
+            to the backend's root. When using `StateBackend` (default), provide skill files via
+            `invoke(files={...})`. With `FilesystemBackend`, skills are loaded from disk relative
+            to the backend's `root_dir`. Later sources override earlier ones for skills with the
             same name (last one wins).
+        memory: Optional list of memory file paths (`AGENTS.md` files) to load
+            (e.g., `["/memory/AGENTS.md"]`). Display names are automatically derived from paths.
+            Memory is loaded at agent startup and added into the system prompt.
         response_format: A structured output response format to use for the agent.
         context_schema: The schema of the deep agent.
-        checkpointer: Optional checkpointer for persisting agent state between runs.
-        store: Optional store for persistent storage (required if backend uses StoreBackend).
-        backend: Optional backend for file storage and execution. Pass either a Backend instance
-            or a callable factory like `lambda rt: StateBackend(rt)`. For execution support,
-            use a backend that implements SandboxBackendProtocol.
-        interrupt_on: Optional Dict[str, bool | InterruptOnConfig] mapping tool names to
-            interrupt configs.
-        debug: Whether to enable debug mode. Passed through to create_agent.
-        name: The name of the agent. Passed through to create_agent.
-        cache: The cache to use for the agent. Passed through to create_agent.
+        checkpointer: Optional `Checkpointer` for persisting agent state between runs.
+        store: Optional store for persistent storage (required if backend uses `StoreBackend`).
+        backend: Optional backend for file storage and execution.
+
+            Pass either a `Backend` instance or a callable factory like `lambda rt: StateBackend(rt)`.
+            For execution support, use a backend that implements `SandboxBackendProtocol`.
+        interrupt_on: Mapping of tool names to interrupt configs.
+        debug: Whether to enable debug mode. Passed through to `create_agent`.
+        name: The name of the agent. Passed through to `create_agent`.
+        cache: The cache to use for the agent. Passed through to `create_agent`.
 
     Returns:
         A configured deep agent.
@@ -149,6 +155,8 @@ def create_deep_agent(
     deepagent_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
     ]
+    if memory is not None:
+        deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(

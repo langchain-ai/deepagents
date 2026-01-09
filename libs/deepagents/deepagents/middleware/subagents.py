@@ -1,9 +1,9 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
-import langsmith as ls
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
+import langsmith as ls
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse

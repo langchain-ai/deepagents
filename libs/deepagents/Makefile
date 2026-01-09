@@ -7,11 +7,7 @@ lint_tests: PYTHON_FILES=tests
 
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
-	@if [ "$(LINT)" != "minimal" ]; then \
-		if [ "$(PYTHON_FILES)" != "" ]; then \
-			uv run --all-groups ruff check $(PYTHON_FILES); \
-		fi; \
-	fi
+	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	@if [ "$(LINT)" != "minimal" ]; then \
 		if [ "$(PYTHON_FILES)" != "" ]; then \
 			mkdir -p $(MYPY_CACHE) && uv run --all-groups mypy $(PYTHON_FILES) --cache-dir $(MYPY_CACHE); \

@@ -142,7 +142,8 @@ class DeepAgentsApp(App):
         self._backend = backend
         self._auto_approve = auto_approve
         self._cwd = str(cwd) if cwd else str(Path.cwd())
-        self._thread_id = thread_id
+        # Avoid collision with App._thread_id
+        self._lc_thread_id = thread_id
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -183,7 +184,7 @@ class DeepAgentsApp(App):
         # Create session state
         self._session_state = TextualSessionState(
             auto_approve=self._auto_approve,
-            thread_id=self._thread_id,
+            thread_id=self._lc_thread_id,
         )
 
         # Create token tracker that updates status bar

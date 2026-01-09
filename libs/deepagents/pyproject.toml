@@ -10,7 +10,7 @@ dependencies = [
     "langchain-google-genai",
     "langchain-core>=1.2.5,<2.0.0",
     "wcmatch",
-    "langchain>=1.2.2",
+    "langchain>=1.2.2,<2",
 ]
 
 
@@ -98,6 +98,3 @@ warn_return_any = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-[tool.uv.sources]
-langchain = { path = "../../../../langchain/libs/langchain_v1" }

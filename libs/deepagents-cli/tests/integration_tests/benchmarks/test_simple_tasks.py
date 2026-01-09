@@ -230,7 +230,6 @@ class TestAgentBehavior:
             patch("deepagents_cli.agent.settings", mock_settings),
             patch("deepagents_cli.file_ops.settings", mock_settings),
             patch("deepagents_cli.tools.settings", mock_settings),
-            patch("deepagents_cli.token_utils.settings", mock_settings),
         ]
 
         # Apply all patches using ExitStack for cleaner nesting

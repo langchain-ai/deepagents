@@ -8,7 +8,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
-from deepagents.middleware import SkillsMiddleware
+from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 from langchain.agents.middleware import (
     InterruptOnConfig,
 )
@@ -21,7 +21,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
-from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.shell import ShellMiddleware
@@ -44,7 +43,7 @@ def list_agents() -> None:
     for agent_path in sorted(agents_dir.iterdir()):
         if agent_path.is_dir():
             agent_name = agent_path.name
-            agent_md = agent_path / "agent.md"
+            agent_md = agent_path / "AGENTS.md"
 
             if agent_md.exists():
                 console.print(f"  • [bold]{agent_name}[/bold]", style=COLORS["primary"])
@@ -65,12 +64,12 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 
     if source_agent:
         source_dir = agents_dir / source_agent
-        source_md = source_dir / "agent.md"
+        source_md = source_dir / "AGENTS.md"
 
         if not source_md.exists():
             console.print(
                 f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
-                "or has no agent.md"
+                "or has no AGENTS.md"
             )
             return
 
@@ -85,7 +84,7 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
         console.print(f"Removed existing agent directory: {agent_dir}", style=COLORS["tool"])
 
     agent_dir.mkdir(parents=True, exist_ok=True)
-    agent_md = agent_dir / "agent.md"
+    agent_md = agent_dir / "AGENTS.md"
     agent_md.write_text(source_content)
 
     console.print(f"✓ Agent '{agent_name}' reset to {action_desc}", style=COLORS["primary"])
@@ -101,7 +100,7 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
                      If None, agent is operating in local mode.
 
     Returns:
-        The system prompt string (without agent.md content)
+        The system prompt string (without AGENTS.md content)
     """
     agent_dir_path = f"~/.deepagents/{assistant_id}"
 
@@ -355,7 +354,7 @@ def create_cli_agent(
                       based on sandbox_type and assistant_id.
         auto_approve: If True, automatically approves all tool calls without human
                      confirmation. Useful for automated workflows.
-        enable_memory: Enable AgentMemoryMiddleware for persistent memory
+        enable_memory: Enable MemoryMiddleware for persistent memory
         enable_skills: Enable SkillsMiddleware for custom agent skills
         enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
         checkpointer: Optional checkpointer for session persistence. If None, uses
@@ -371,7 +370,7 @@ def create_cli_agent(
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
         agent_dir = settings.ensure_agent_dir(assistant_id)
-        agent_md = agent_dir / "agent.md"
+        agent_md = agent_dir / "AGENTS.md"
         if not agent_md.exists():
             source_content = get_default_coding_instructions()
             agent_md.write_text(source_content)
@@ -388,9 +387,19 @@ def create_cli_agent(
 
     # Add memory middleware
     if enable_memory:
-        agent_middleware.append(AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id))
+        memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
+        project_agent_md = settings.get_project_agent_md_path()
+        if project_agent_md:
+            memory_sources.append(str(project_agent_md))
 
-    # Add skills middleware (uses local filesystem in both local and sandbox modes)
+        agent_middleware.append(
+            MemoryMiddleware(
+                backend=FilesystemBackend(),
+                sources=memory_sources,
+            )
+        )
+
+    # Add skills middleware
     if enable_skills:
         sources = [str(skills_dir)]
         if project_skills_dir:
@@ -398,7 +407,7 @@ def create_cli_agent(
 
         agent_middleware.append(
             SkillsMiddleware(
-                backend=FilesystemBackend(),  # Always uses local filesystem
+                backend=FilesystemBackend(),
                 sources=sources,
             )
         )

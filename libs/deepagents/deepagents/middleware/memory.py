@@ -342,7 +342,6 @@ class MemoryMiddleware(AgentMiddleware):
         if "memory_contents" in state:
             return None
 
-        print("HI")
         backend = self._get_backend(state, runtime, config)
         contents: dict[str, str] = {}
 

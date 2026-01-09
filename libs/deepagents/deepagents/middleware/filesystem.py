@@ -994,14 +994,30 @@ class FilesystemMiddleware(AgentMiddleware):
             The entire content is converted to string, written to /large_tool_results/{tool_call_id},
             and replaced with a truncated preview plus file reference. The replacement is always
             returned as a plain string for consistency, regardless of original content type.
+
+            ToolMessage supports multimodal content blocks (images, audio, etc.), but these are
+            uncommon in tool results. For simplicity, all content is stringified and evicted.
+            The model can recover by reading the offloaded file from the backend.
         """
         # Early exit if eviction not configured
         if not self.tool_token_limit_before_evict:
             return message, None
 
         # Convert content to string once for both size check and eviction
-        # For strings, use as-is; for lists (content blocks), convert to string
-        content_str = message.content if isinstance(message.content, str) else str(message.content)
+        # Special case: single text block - extract text directly for readability
+        if (
+            isinstance(message.content, list)
+            and len(message.content) == 1
+            and isinstance(message.content[0], dict)
+            and message.content[0].get("type") == "text"
+            and "text" in message.content[0]
+        ):
+            content_str = str(message.content[0]["text"])
+        elif isinstance(message.content, str):
+            content_str = message.content
+        else:
+            # Multiple blocks or non-text content - stringify entire structure
+            content_str = str(message.content)
 
         # Check if content exceeds eviction threshold
         # Using 4 chars per token as a conservative approximation (actual ratio varies by content)

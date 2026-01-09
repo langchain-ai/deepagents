@@ -1026,6 +1026,75 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         assert "/large_tool_results/test_list" in result.update["files"]
 
+    def test_single_text_block_extracts_text_directly(self):
+        """Test that single text block extracts text content directly, not stringified structure."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_single", store=None, stream_writer=lambda _: None, config={})
+
+        # Create single text block with large text
+        content_blocks = [{"type": "text", "text": "Hello world! " * 1000}]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_single")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        # Check that the file contains actual text, not stringified dict
+        file_content = result.update["files"]["/large_tool_results/test_single"]["content"]
+        file_text = "\n".join(file_content)
+        # Should start with the actual text, not with "[{" which would indicate stringified dict
+        assert file_text.startswith("Hello world!")
+        assert not file_text.startswith("[{")
+
+    def test_multiple_text_blocks_stringifies_structure(self):
+        """Test that multiple text blocks stringify entire structure."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_multi", store=None, stream_writer=lambda _: None, config={})
+
+        # Create multiple text blocks
+        content_blocks = [
+            {"type": "text", "text": "First block " * 500},
+            {"type": "text", "text": "Second block " * 500},
+        ]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_multi")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        # Check that the file contains stringified structure (starts with "[")
+        file_content = result.update["files"]["/large_tool_results/test_multi"]["content"]
+        file_text = "\n".join(file_content)
+        # Should be stringified list of dicts
+        assert file_text.startswith("[{")
+
+    def test_mixed_content_blocks_stringifies_all(self):
+        """Test that mixed content block types (text + image) stringify entire structure."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_mixed", store=None, stream_writer=lambda _: None, config={})
+
+        # Create mixed content blocks
+        content_blocks = [
+            {"type": "text", "text": "Some text " * 200},
+            {"type": "image", "url": "https://example.com/image.png"},
+        ]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_mixed")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        # Check that the file contains stringified structure
+        file_content = result.update["files"]["/large_tool_results/test_mixed"]["content"]
+        file_text = "\n".join(file_content)
+        assert file_text.startswith("[{")
+        # Should contain both blocks in the stringified output
+        assert "'type': 'text'" in file_text
+        assert "'type': 'image'" in file_text
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})

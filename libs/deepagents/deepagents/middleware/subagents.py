@@ -356,7 +356,7 @@ def _create_task_tool(
         if rt := ls.get_current_run_tree():
             if not rt.tags:
                 rt.tags = []
-            rt.tags.insert(0, f"subagent_name:{subagent_type}")
+            rt.tags.insert(0, f"subagent:{subagent_type}")
         result = subagent.invoke(subagent_state, runtime.config)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
@@ -375,7 +375,7 @@ def _create_task_tool(
         if rt := ls.get_current_run_tree():
             if not rt.tags:
                 rt.tags = []
-            rt.tags.insert(0, f"subagent_name:{subagent_type}")
+            rt.tags.insert(0, f"subagent:{subagent_type}")
         result = await subagent.ainvoke(subagent_state, runtime.config)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"

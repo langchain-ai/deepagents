@@ -353,8 +353,7 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        rt = ls.get_current_run_tree()
-        if rt:
+        if rt := ls.get_current_run_tree():
             rt.add_tags([f"subagent_name:{subagent_type}"])
         result = subagent.invoke(subagent_state, runtime.config)
         if not runtime.tool_call_id:
@@ -371,8 +370,7 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        rt = ls.get_current_run_tree()
-        if rt:
+        if rt := ls.get_current_run_tree():
             rt.add_tags([f"subagent_name:{subagent_type}"])
         result = await subagent.ainvoke(subagent_state, runtime.config)
         if not runtime.tool_call_id:

@@ -147,27 +147,22 @@ def update_file_data(file_data: dict[str, Any], content: str) -> dict[str, Any]:
     }
 
 
-def format_read_response(
-    file_data: dict[str, Any],
+def format_lines_with_truncation(
+    lines: list[str],
     offset: int,
     limit: int,
 ) -> str:
-    """Format file data for read response with line numbers.
+    """Format lines with line numbers and character-based truncation.
 
     Args:
-        file_data: FileData dict
+        lines: List of file lines
         offset: Line offset (0-indexed)
         limit: Maximum number of lines
 
     Returns:
-        Formatted content or error message
+        Formatted content with line numbers, or error message.
+        Results are truncated if total character count exceeds TOOL_RESULT_TOKEN_LIMIT * 4.
     """
-    content = file_data_to_string(file_data)
-    empty_msg = check_empty_content(content)
-    if empty_msg:
-        return empty_msg
-
-    lines = content.splitlines()
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
 
@@ -175,7 +170,55 @@ def format_read_response(
         return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
 
     selected_lines = lines[start_idx:end_idx]
+
+    # Character-based truncation to prevent context overflow
+    # Using 4 chars/token approximation (same as TOOL_RESULT_TOKEN_LIMIT)
+    max_chars = TOOL_RESULT_TOKEN_LIMIT * 4
+    total_chars = sum(len(line) for line in selected_lines)
+
+    if total_chars > max_chars:
+        # Truncate lines to fit within character limit
+        truncated_lines = []
+        char_count = 0
+        for line in selected_lines:
+            if char_count + len(line) > max_chars:
+                break
+            truncated_lines.append(line)
+            char_count += len(line)
+
+        result = format_content_with_line_numbers(truncated_lines, start_line=start_idx + 1)
+        truncation_msg = (
+            f"\n\n[Result truncated: showing {len(truncated_lines)}/{len(selected_lines)} lines "
+            f"({char_count}/{total_chars} chars). Use smaller limit or offset to read more.]"
+        )
+        return result + truncation_msg
+
     return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
+
+
+def format_read_response(
+    file_data: dict[str, Any],
+    offset: int,
+    limit: int,
+) -> str:
+    """Format file data for read response with line numbers and character-based truncation.
+
+    Args:
+        file_data: FileData dict
+        offset: Line offset (0-indexed)
+        limit: Maximum number of lines
+
+    Returns:
+        Formatted content with line numbers, or error message.
+        Results are truncated if total character count exceeds TOOL_RESULT_TOKEN_LIMIT * 4.
+    """
+    content = file_data_to_string(file_data)
+    empty_msg = check_empty_content(content)
+    if empty_msg:
+        return empty_msg
+
+    lines = content.splitlines()
+    return format_lines_with_truncation(lines, offset, limit)
 
 
 def perform_string_replacement(

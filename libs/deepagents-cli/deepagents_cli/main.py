@@ -1,6 +1,11 @@
 """Main entry point and CLI loop for deepagents."""
 # ruff: noqa: T201
 
+# Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
+import warnings
+
+warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
+
 import argparse
 import asyncio
 import contextlib

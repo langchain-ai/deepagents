@@ -40,9 +40,12 @@ if TYPE_CHECKING:
 class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 
-    def __init__(self, update_callback: callable) -> None:
-        """Initialize with a callback to update the display."""
+    def __init__(
+        self, update_callback: callable, hide_callback: callable | None = None
+    ) -> None:
+        """Initialize with callbacks to update the display."""
         self._update_callback = update_callback
+        self._hide_callback = hide_callback
         self.current_context = 0
 
     def add(self, input_tokens: int, output_tokens: int) -> None:  # noqa: ARG002
@@ -54,6 +57,11 @@ class TextualTokenTracker:
         """Reset token count."""
         self.current_context = 0
         self._update_callback(0)
+
+    def hide(self) -> None:
+        """Hide the token display (e.g., during streaming)."""
+        if self._hide_callback:
+            self._hide_callback()
 
 
 class TextualSessionState:
@@ -188,7 +196,9 @@ class DeepAgentsApp(App):
         )
 
         # Create token tracker that updates status bar
-        self._token_tracker = TextualTokenTracker(self._update_tokens)
+        self._token_tracker = TextualTokenTracker(
+            self._update_tokens, self._hide_tokens
+        )
 
         # Create UI adapter if agent is provided
         if self._agent:
@@ -213,6 +223,11 @@ class DeepAgentsApp(App):
         """Update the token count in status bar."""
         if self._status_bar:
             self._status_bar.set_tokens(count)
+
+    def _hide_tokens(self) -> None:
+        """Hide the token display during streaming."""
+        if self._status_bar:
+            self._status_bar.hide_tokens()
 
     def _scroll_chat_to_bottom(self) -> None:
         """Scroll the chat area to the bottom.
@@ -391,6 +406,8 @@ class DeepAgentsApp(App):
             )
         elif cmd == "/clear":
             await self._clear_messages()
+            if self._token_tracker:
+                self._token_tracker.reset()
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()

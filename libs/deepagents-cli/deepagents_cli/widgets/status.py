@@ -231,3 +231,11 @@ class StatusBar(Horizontal):
             count: Current context token count
         """
         self.tokens = count
+
+    def hide_tokens(self) -> None:
+        """Hide the token display (e.g., during streaming)."""
+        try:
+            display = self.query_one("#tokens-display", Static)
+            display.update("")
+        except NoMatches:
+            pass

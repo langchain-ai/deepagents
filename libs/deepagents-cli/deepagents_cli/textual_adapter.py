@@ -158,6 +158,10 @@ async def execute_task_textual(
     # Update status to show thinking
     adapter._update_status("Agent is thinking...")
 
+    # Hide token display during streaming (will be shown with accurate count at end)
+    if adapter._token_tracker:
+        adapter._token_tracker.hide()
+
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[str | int, dict] = {}
@@ -539,6 +543,9 @@ async def execute_task_textual(
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
         except Exception:  # noqa: S110
             pass  # State update is best-effort
+        # Report tokens even on interrupt
+        if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
+            adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
         return
 
     except KeyboardInterrupt:
@@ -559,6 +566,9 @@ async def execute_task_textual(
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
         except Exception:  # noqa: S110
             pass  # State update is best-effort
+        # Report tokens even on interrupt
+        if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
+            adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
         return
 
     adapter._update_status("Ready")

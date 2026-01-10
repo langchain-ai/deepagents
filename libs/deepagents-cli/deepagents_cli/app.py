@@ -48,7 +48,7 @@ class TextualTokenTracker:
         self._hide_callback = hide_callback
         self.current_context = 0
 
-    def add(self, total_tokens: int, _output_tokens: int = 0) -> None:  # noqa: ARG002
+    def add(self, total_tokens: int, _output_tokens: int = 0) -> None:
         """Update token count from a response.
 
         Args:

@@ -30,7 +30,7 @@ class TestTextualTokenTracker:
         """Token hide() should call the hide callback."""
         hide_called = []
         tracker = TextualTokenTracker(
-            lambda x: None, hide_callback=lambda: hide_called.append(True)
+            lambda _: None, hide_callback=lambda: hide_called.append(True)
         )
 
         tracker.hide()
@@ -39,7 +39,7 @@ class TestTextualTokenTracker:
 
     def test_hide_without_callback_is_noop(self):
         """Token hide() should be safe when no hide callback provided."""
-        tracker = TextualTokenTracker(lambda x: None)
+        tracker = TextualTokenTracker(lambda _: None)
         tracker.hide()  # Should not raise
 
     def test_show_restores_current_value(self):

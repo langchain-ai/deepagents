@@ -307,7 +307,8 @@ async def execute_task_textual(
                                 input_toks = usage.get("input_tokens", 0)
                                 output_toks = usage.get("output_tokens", 0)
                                 if input_toks or output_toks:
-                                    captured_input_tokens = max(captured_input_tokens, input_toks + output_toks)
+                                    total = input_toks + output_toks
+                                    captured_input_tokens = max(captured_input_tokens, total)
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):

@@ -6,6 +6,8 @@ import base64
 import os
 from typing import TYPE_CHECKING
 
+import pyperclip
+
 if TYPE_CHECKING:
     from textual.app import App
 
@@ -63,16 +65,12 @@ def copy_selection_to_clipboard(app: App) -> None:
 
     combined_text = "\n".join(selected_texts)
 
-    # Try multiple clipboard methods
-    copy_methods = [_copy_osc52, app.copy_to_clipboard]
-
-    # Try pyperclip if available
-    try:
-        import pyperclip
-
-        copy_methods.insert(1, pyperclip.copy)
-    except ImportError:
-        pass
+    # Try multiple clipboard methods (prefer pyperclip, fall back to OSC52 for SSH/tmux)
+    copy_methods = [
+        pyperclip.copy,  # Works on macOS Terminal, iTerm2, etc.
+        app.copy_to_clipboard,  # Textual's OSC52 method
+        _copy_osc52,  # Direct OSC52 fallback for SSH/tmux
+    ]
 
     for copy_fn in copy_methods:
         try:

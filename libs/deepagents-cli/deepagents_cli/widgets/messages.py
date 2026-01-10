@@ -19,8 +19,16 @@ if TYPE_CHECKING:
 _MAX_INLINE_ARGS = 3
 
 
+class SelectableStatic(Static):
+    """Static widget with text selection enabled."""
+
+    ALLOW_SELECT = True
+
+
 class UserMessage(Static):
     """Widget displaying a user message."""
+
+    ALLOW_SELECT = True
 
     DEFAULT_CSS = """
     UserMessage {
@@ -29,15 +37,6 @@ class UserMessage(Static):
         margin: 1 0;
         background: $surface;
         border-left: thick $primary;
-    }
-
-    UserMessage .user-prefix {
-        color: $primary;
-        text-style: bold;
-    }
-
-    UserMessage .user-content {
-        margin-left: 1;
     }
     """
 
@@ -48,12 +47,8 @@ class UserMessage(Static):
             content: The message content
             **kwargs: Additional arguments passed to parent
         """
-        super().__init__(**kwargs)
+        super().__init__(f"[bold cyan]>[/bold cyan] {content}", **kwargs)
         self._content = content
-
-    def compose(self) -> ComposeResult:
-        """Compose the user message layout."""
-        yield Static("[bold cyan]>[/bold cyan] " + self._content)
 
 
 class AssistantMessage(Vertical):
@@ -260,9 +255,10 @@ class ToolCallMessage(Vertical):
             id="status",
         )
         # Output area - hidden initially, shown when output is set
-        yield Static("", classes="tool-output-preview", id="output-preview")
+        # Use SelectableStatic for output so users can select and copy
+        yield SelectableStatic("", classes="tool-output-preview", id="output-preview")
         yield Static("", classes="tool-output-hint", id="output-hint")
-        yield Static("", classes="tool-output", id="output-full")
+        yield SelectableStatic("", classes="tool-output", id="output-full")
 
     def on_mount(self) -> None:
         """Hide output areas initially."""
@@ -404,6 +400,8 @@ class ToolCallMessage(Vertical):
 class DiffMessage(Static):
     """Widget displaying a diff with syntax highlighting."""
 
+    ALLOW_SELECT = True
+
     DEFAULT_CSS = """
     DiffMessage {
         height: auto;
@@ -457,11 +455,13 @@ class DiffMessage(Static):
 
         # Render the diff with enhanced formatting
         rendered = format_diff_textual(self._diff_content, max_lines=100)
-        yield Static(rendered)
+        yield SelectableStatic(rendered)
 
 
 class ErrorMessage(Static):
     """Widget displaying an error message."""
+
+    ALLOW_SELECT = True
 
     DEFAULT_CSS = """
     ErrorMessage {
@@ -486,6 +486,8 @@ class ErrorMessage(Static):
 
 class SystemMessage(Static):
     """Widget displaying a system message."""
+
+    ALLOW_SELECT = True
 
     DEFAULT_CSS = """
     SystemMessage {

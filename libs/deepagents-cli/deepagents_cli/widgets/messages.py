@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from rich.text import Text
 from textual.containers import Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Markdown, Static
@@ -53,7 +54,11 @@ class UserMessage(Static):
 
     def compose(self) -> ComposeResult:
         """Compose the user message layout."""
-        yield Static("[bold cyan]>[/bold cyan] " + self._content)
+        # Use Text object to combine styled prefix with unstyled user content
+        text = Text()
+        text.append("> ", style="bold #10b981")
+        text.append(self._content)
+        yield Static(text)
 
 
 class AssistantMessage(Vertical):
@@ -260,9 +265,10 @@ class ToolCallMessage(Vertical):
             id="status",
         )
         # Output area - hidden initially, shown when output is set
-        yield Static("", classes="tool-output-preview", id="output-preview")
-        yield Static("", classes="tool-output-hint", id="output-hint")
-        yield Static("", classes="tool-output", id="output-full")
+        # Use markup=False for output content to prevent Rich markup injection
+        yield Static("", classes="tool-output-preview", id="output-preview", markup=False)
+        yield Static("", classes="tool-output-hint", id="output-hint")  # hint uses our markup
+        yield Static("", classes="tool-output", id="output-full", markup=False)
 
     def on_mount(self) -> None:
         """Hide output areas initially."""
@@ -481,7 +487,10 @@ class ErrorMessage(Static):
             error: The error message
             **kwargs: Additional arguments passed to parent
         """
-        super().__init__(f"[bold red]Error:[/bold red] {error}", **kwargs)
+        # Use Text object to combine styled prefix with unstyled error content
+        text = Text("Error: ", style="bold red")
+        text.append(error)
+        super().__init__(text, **kwargs)
 
 
 class SystemMessage(Static):
@@ -504,4 +513,5 @@ class SystemMessage(Static):
             message: The system message
             **kwargs: Additional arguments passed to parent
         """
-        super().__init__(f"[dim]{message}[/dim]", **kwargs)
+        # Use Text object to safely render message without markup parsing
+        super().__init__(Text(message, style="dim italic"), **kwargs)

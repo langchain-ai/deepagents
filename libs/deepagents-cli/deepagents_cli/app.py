@@ -40,9 +40,7 @@ if TYPE_CHECKING:
 class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 
-    def __init__(
-        self, update_callback: callable, hide_callback: callable | None = None
-    ) -> None:
+    def __init__(self, update_callback: callable, hide_callback: callable | None = None) -> None:
         """Initialize with callbacks to update the display."""
         self._update_callback = update_callback
         self._hide_callback = hide_callback
@@ -205,9 +203,7 @@ class DeepAgentsApp(App):
         )
 
         # Create token tracker that updates status bar
-        self._token_tracker = TextualTokenTracker(
-            self._update_tokens, self._hide_tokens
-        )
+        self._token_tracker = TextualTokenTracker(self._update_tokens, self._hide_tokens)
 
         # Create UI adapter if agent is provided
         if self._agent:

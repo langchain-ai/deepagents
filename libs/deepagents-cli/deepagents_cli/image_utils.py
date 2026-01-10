@@ -2,6 +2,7 @@
 
 import base64
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -9,6 +10,8 @@ import tempfile
 from dataclasses import dataclass
 
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,8 +74,8 @@ def _get_macos_clipboard_image() -> ImageData | None:
                     format="png",  # 'pngpaste -' always outputs PNG
                     placeholder="[image]",
                 )
-            except Exception:
-                pass  # Invalid image data
+            except (OSError, ValueError, IOError) as e:
+                logger.debug("Invalid image data from pngpaste: %s", e)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass  # pngpaste not installed or timed out
 
@@ -161,7 +164,8 @@ def _get_clipboard_via_osascript() -> ImageData | None:
                 format="png",
                 placeholder="[image]",
             )
-        except Exception:
+        except (OSError, ValueError, IOError) as e:
+            logger.debug("Failed to process clipboard image via osascript: %s", e)
             return None
 
     except (subprocess.TimeoutExpired, OSError):

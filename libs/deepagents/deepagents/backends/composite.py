@@ -18,7 +18,10 @@ Examples:
     ```
 """
 
+import logging
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -382,8 +385,8 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except Exception:
-                pass
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.debug("Failed to merge state after write to %s: %s", file_path, e)
         return res
 
     async def awrite(
@@ -403,8 +406,8 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except Exception:
-                pass
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.debug("Failed to merge state after async write to %s: %s", file_path, e)
         return res
 
     def edit(
@@ -435,8 +438,8 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except Exception:
-                pass
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.debug("Failed to merge state after edit to %s: %s", file_path, e)
         return res
 
     async def aedit(
@@ -457,8 +460,8 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except Exception:
-                pass
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.debug("Failed to merge state after async edit to %s: %s", file_path, e)
         return res
 
     def execute(

@@ -408,6 +408,8 @@ class DeepAgentsApp(App):
             await self._clear_messages()
             if self._token_tracker:
                 self._token_tracker.reset()
+            # Clear status message (e.g., "Interrupted" from previous session)
+            self._update_status("")
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()

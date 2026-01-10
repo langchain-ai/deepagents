@@ -234,8 +234,4 @@ class StatusBar(Horizontal):
 
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
-        try:
-            display = self.query_one("#tokens-display", Static)
-            display.update("")
-        except NoMatches:
-            pass
+        self.query_one("#tokens-display", Static).update("")

@@ -48,10 +48,15 @@ class TextualTokenTracker:
         self._hide_callback = hide_callback
         self.current_context = 0
 
-    def add(self, input_tokens: int, output_tokens: int) -> None:  # noqa: ARG002
-        """Update token count from a response."""
-        self.current_context = input_tokens
-        self._update_callback(input_tokens)
+    def add(self, total_tokens: int, _output_tokens: int = 0) -> None:  # noqa: ARG002
+        """Update token count from a response.
+
+        Args:
+            total_tokens: Total context tokens (input + output from usage_metadata)
+            _output_tokens: Unused, kept for backwards compatibility
+        """
+        self.current_context = total_tokens
+        self._update_callback(self.current_context)
 
     def reset(self) -> None:
         """Reset token count."""
@@ -62,6 +67,10 @@ class TextualTokenTracker:
         """Hide the token display (e.g., during streaming)."""
         if self._hide_callback:
             self._hide_callback()
+
+    def show(self) -> None:
+        """Show the token display with current value (e.g., after interrupt)."""
+        self._update_callback(self.current_context)
 
 
 class TextualSessionState:
@@ -502,6 +511,10 @@ class DeepAgentsApp(App):
         # Re-enable cursor blink now that agent is done
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+
+        # Ensure token display is restored (in case of early cancellation)
+        if self._token_tracker:
+            self._token_tracker.show()
 
     async def _mount_message(self, widget: Static) -> None:
         """Mount a message widget to the messages area.

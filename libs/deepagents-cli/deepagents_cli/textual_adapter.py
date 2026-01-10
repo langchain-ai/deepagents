@@ -294,19 +294,24 @@ async def execute_task_textual(
                                 )
                         continue
 
-                    # Check if this is an AIMessageChunk
-                    if not hasattr(message, "content_blocks"):
-                        continue
-
-                    # Extract token usage
+                    # Extract token usage (before content_blocks check - usage may be on any chunk)
                     if adapter._token_tracker and hasattr(message, "usage_metadata"):
                         usage = message.usage_metadata
                         if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            if input_toks or output_toks:
-                                captured_input_tokens = max(captured_input_tokens, input_toks)
-                                captured_output_tokens = max(captured_output_tokens, output_toks)
+                            # Use total_tokens which includes input + output
+                            total_toks = usage.get("total_tokens", 0)
+                            if total_toks:
+                                captured_input_tokens = max(captured_input_tokens, total_toks)
+                            else:
+                                # Fallback to input + output if total not provided
+                                input_toks = usage.get("input_tokens", 0)
+                                output_toks = usage.get("output_tokens", 0)
+                                if input_toks or output_toks:
+                                    captured_input_tokens = max(captured_input_tokens, input_toks + output_toks)
+
+                    # Check if this is an AIMessageChunk with content
+                    if not hasattr(message, "content_blocks"):
+                        continue
 
                     # Process content blocks
                     for block in message.content_blocks:
@@ -543,9 +548,12 @@ async def execute_task_textual(
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
         except Exception:  # noqa: S110
             pass  # State update is best-effort
-        # Report tokens even on interrupt
-        if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
-            adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+        # Report tokens even on interrupt (or restore display if none captured)
+        if adapter._token_tracker:
+            if captured_input_tokens or captured_output_tokens:
+                adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+            else:
+                adapter._token_tracker.show()  # Restore previous value
         return
 
     except KeyboardInterrupt:
@@ -566,9 +574,12 @@ async def execute_task_textual(
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
         except Exception:  # noqa: S110
             pass  # State update is best-effort
-        # Report tokens even on interrupt
-        if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):
-            adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+        # Report tokens even on interrupt (or restore display if none captured)
+        if adapter._token_tracker:
+            if captured_input_tokens or captured_output_tokens:
+                adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+            else:
+                adapter._token_tracker.show()  # Restore previous value
         return
 
     adapter._update_status("Ready")

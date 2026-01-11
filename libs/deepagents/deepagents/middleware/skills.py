@@ -340,7 +340,9 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
             continue
 
         # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
+        # Normalize Windows paths (backslashes) to POSIX (forward slashes) first
+        normalized_path = skill_dir_path.replace("\\", "/")
+        directory_name = PurePosixPath(normalized_path).name
 
         # Parse metadata
         skill_metadata = _parse_skill_metadata(
@@ -415,7 +417,9 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
             continue
 
         # Extract directory name from path using PurePosixPath
-        directory_name = PurePosixPath(skill_dir_path).name
+        # Normalize Windows paths (backslashes) to POSIX (forward slashes) first
+        normalized_path = skill_dir_path.replace("\\", "/")
+        directory_name = PurePosixPath(normalized_path).name
 
         # Parse metadata
         skill_metadata = _parse_skill_metadata(

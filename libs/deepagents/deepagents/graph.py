@@ -11,6 +11,7 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.graph.state import CompiledStateGraph
@@ -23,6 +24,25 @@ from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
+
+
+def _merge_system_prompt(system_prompt: str | SystemMessage | None) -> SystemMessage:
+    """Merge a system prompt with BASE_AGENT_PROMPT, preserving SystemMessage metadata."""
+    if system_prompt is None:
+        return SystemMessage(content=BASE_AGENT_PROMPT)
+
+    if isinstance(system_prompt, str):
+        return SystemMessage(content=f"{system_prompt}\n\n{BASE_AGENT_PROMPT}")
+
+    content = system_prompt.content
+    if isinstance(content, str):
+        new_content = f"{content}\n\n{BASE_AGENT_PROMPT}"
+    elif isinstance(content, list):
+        new_content = content + [{"type": "text", "text": BASE_AGENT_PROMPT}]
+    else:
+        new_content = f"{content}\n\n{BASE_AGENT_PROMPT}"
+
+    return system_prompt.model_copy(update={"content": new_content})
 
 
 def get_default_model() -> ChatAnthropic:
@@ -41,7 +61,7 @@ def create_deep_agent(
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
-    system_prompt: str | None = None,
+    system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     response_format: ResponseFormat | None = None,
@@ -66,8 +86,7 @@ def create_deep_agent(
     Args:
         model: The model to use. Defaults to Claude Sonnet 4.
         tools: The tools the agent should have access to.
-        system_prompt: The additional instructions the agent should have. Will go in
-            the system prompt.
+        system_prompt: Additional instructions for the agent (str or SystemMessage).
         middleware: Additional middleware to apply after standard middleware.
         subagents: The subagents to use. Each subagent should be a dictionary with the
             following keys:
@@ -148,7 +167,7 @@ def create_deep_agent(
 
     return create_agent(
         model,
-        system_prompt=system_prompt + "\n\n" + BASE_AGENT_PROMPT if system_prompt else BASE_AGENT_PROMPT,
+        system_prompt=_merge_system_prompt(system_prompt),
         tools=tools,
         middleware=deepagent_middleware,
         response_format=response_format,

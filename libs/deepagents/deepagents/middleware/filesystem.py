@@ -4,6 +4,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
@@ -20,6 +21,8 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
+from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
 
 # Re-export type here for backwards compatibility
 from deepagents.backends.protocol import BACKEND_TYPES as BACKEND_TYPES
@@ -92,36 +95,101 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     return result
 
 
-def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
+def _convert_windows_path_to_virtual(path: str, backend: BackendProtocol | None) -> str:
+    """Convert Windows absolute path to virtual path if backend supports it.
+    
+    Only converts when backend has virtual_mode=True. When virtual_mode=False,
+    Windows absolute paths are allowed to pass through to the backend.
+    
+    Args:
+        path: The path to convert (may be a Windows absolute path).
+        backend: Optional backend to check for conversion support.
+        
+    Returns:
+        Virtual path if conversion was possible, otherwise original path.
+    """
+    # Check if path is a Windows absolute path (e.g., C:\..., F:/...)
+    if not re.match(r"^[a-zA-Z]:", path):
+        return path
+    
+    # Handle CompositeBackend by checking its default backend
+    if isinstance(backend, CompositeBackend):
+        backend = backend.default
+    
+    # Only convert if backend is FilesystemBackend WITH virtual_mode=True
+    # When virtual_mode=False, Windows absolute paths are allowed and handled by the backend
+    if isinstance(backend, FilesystemBackend) and backend.virtual_mode:
+        try:
+            # Resolve both paths to handle symlinks, case differences, etc.
+            windows_path = Path(path).resolve()
+            backend_root = Path(backend.cwd).resolve()
+            
+            # Check if paths are on the same drive
+            windows_drive = windows_path.drive.upper()
+            backend_drive = backend_root.drive.upper()
+            
+            if windows_drive != backend_drive:
+                # Different drives - can't convert safely, return original to get proper error
+                return path
+            
+            # Try to make path relative to backend root
+            # This will work if the path is actually under the backend root
+            try:
+                # Use relative_to which will raise ValueError if path is not under backend root
+                # This is the most reliable way to check if path is actually under the root
+                relative_path = windows_path.relative_to(backend_root)
+                # Convert to virtual path format
+                virtual_path = "/" + str(relative_path).replace("\\", "/")
+                return virtual_path
+            except ValueError:
+                # Path is not under backend root - relative_to raised ValueError
+                # Don't convert - return original path so user gets a clear error
+                # This prevents files from being written to wrong locations
+                return path
+            except OSError:
+                # Path operations failed (e.g., one of the paths doesn't exist)
+                # Don't convert - return original path so user gets a clear error
+                return path
+        except Exception:
+            # If conversion fails, return original path (will be rejected by _validate_path)
+            return path
+    
+    # If virtual_mode=False, return original path - backend will handle Windows absolute paths
+    return path
+
+
+def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None, backend: BackendProtocol | None = None) -> str:
     r"""Validate and normalize file path for security.
 
     Ensures paths are safe to use by preventing directory traversal attacks
     and enforcing consistent formatting. All paths are normalized to use
     forward slashes and start with a leading slash.
 
-    This function is designed for virtual filesystem paths and rejects
-    Windows absolute paths (e.g., C:/..., F:/...) to maintain consistency
-    and prevent path format ambiguity.
+    This function is designed for virtual filesystem paths. If a Windows absolute
+    path is provided and the backend supports virtual_mode, it will be converted
+    to a virtual path. Otherwise, Windows absolute paths are rejected.
 
     Args:
         path: The path to validate and normalize.
         allowed_prefixes: Optional list of allowed path prefixes. If provided,
             the normalized path must start with one of these prefixes.
+        backend: Optional backend instance. If provided and it's a FilesystemBackend
+            with virtual_mode, Windows absolute paths will be converted to virtual paths.
 
     Returns:
         Normalized canonical path starting with `/` and using forward slashes.
 
     Raises:
         ValueError: If path contains traversal sequences (`..` or `~`), is a
-            Windows absolute path (e.g., C:/...), or does not start with an
-            allowed prefix when `allowed_prefixes` is specified.
+            Windows absolute path that couldn't be converted (e.g., C:/...), or does
+            not start with an allowed prefix when `allowed_prefixes` is specified.
 
     Example:
         ```python
         validate_path("foo/bar")  # Returns: "/foo/bar"
         validate_path("/./foo//bar")  # Returns: "/foo/bar"
         validate_path("../etc/passwd")  # Raises ValueError
-        validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
+        validate_path(r"C:\\Users\\file.txt", backend=fs_backend)  # Converts to virtual path if backend supports it
         validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
         validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
         ```
@@ -130,12 +198,28 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)
 
-    # Reject Windows absolute paths (e.g., C:\..., D:/...)
-    # This maintains consistency in virtual filesystem paths
-    if re.match(r"^[a-zA-Z]:", path):
-        msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
-        raise ValueError(msg)
+    # Try to convert Windows absolute paths to virtual paths (only when virtual_mode=True)
+    path = _convert_windows_path_to_virtual(path, backend)
+    
+    # Check if this is a Windows absolute path
+    is_windows_absolute = bool(re.match(r"^[a-zA-Z]:", path))
+    
+    # Reject Windows absolute paths only when backend uses virtual_mode
+    # When virtual_mode=False, Windows absolute paths are allowed and handled by the backend
+    if is_windows_absolute:
+        # Check if backend is FilesystemBackend with virtual_mode
+        backend_to_check = backend
+        if isinstance(backend, CompositeBackend):
+            backend_to_check = backend.default
+        
+        if isinstance(backend_to_check, FilesystemBackend) and backend_to_check.virtual_mode:
+            msg = f"Windows absolute paths are not supported in virtual_mode: {path}. Please use virtual paths starting with / (e.g., /workspace/filename.txt)"
+            raise ValueError(msg)
+        # If virtual_mode=False, allow Windows absolute paths to pass through unchanged
+        # Don't normalize them - return as-is so backend can handle them
+        return path
 
+    # For non-Windows paths, normalize to virtual path format
     normalized = os.path.normpath(path)
     normalized = normalized.replace("\\", "/")
 
@@ -328,7 +412,7 @@ def _ls_tool_generator(
     def sync_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
         """Synchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
-        validated_path = _validate_path(path)
+        validated_path = _validate_path(path, backend=resolved_backend)
         infos = resolved_backend.ls_info(validated_path)
         paths = [fi.get("path", "") for fi in infos]
         result = truncate_if_too_long(paths)
@@ -337,7 +421,7 @@ def _ls_tool_generator(
     async def async_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
         """Asynchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
-        validated_path = _validate_path(path)
+        validated_path = _validate_path(path, backend=resolved_backend)
         infos = await resolved_backend.als_info(validated_path)
         paths = [fi.get("path", "") for fi in infos]
         result = truncate_if_too_long(paths)
@@ -374,7 +458,7 @@ def _read_file_tool_generator(
     ) -> str:
         """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        file_path = _validate_path(file_path, backend=resolved_backend)
         return resolved_backend.read(file_path, offset=offset, limit=limit)
 
     async def async_read_file(
@@ -385,7 +469,7 @@ def _read_file_tool_generator(
     ) -> str:
         """Asynchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        file_path = _validate_path(file_path, backend=resolved_backend)
         return await resolved_backend.aread(file_path, offset=offset, limit=limit)
 
     return StructuredTool.from_function(
@@ -418,7 +502,7 @@ def _write_file_tool_generator(
     ) -> Command | str:
         """Synchronous wrapper for write_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        file_path = _validate_path(file_path, backend=resolved_backend)
         res: WriteResult = resolved_backend.write(file_path, content)
         if res.error:
             return res.error
@@ -444,7 +528,7 @@ def _write_file_tool_generator(
     ) -> Command | str:
         """Asynchronous wrapper for write_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        file_path = _validate_path(file_path, backend=resolved_backend)
         res: WriteResult = await resolved_backend.awrite(file_path, content)
         if res.error:
             return res.error
@@ -496,7 +580,7 @@ def _edit_file_tool_generator(
     ) -> Command | str:
         """Synchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        file_path = _validate_path(file_path, backend=resolved_backend)
         res: EditResult = resolved_backend.edit(file_path, old_string, new_string, replace_all=replace_all)
         if res.error:
             return res.error
@@ -524,7 +608,7 @@ def _edit_file_tool_generator(
     ) -> Command | str:
         """Asynchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        file_path = _validate_path(file_path, backend=resolved_backend)
         res: EditResult = await resolved_backend.aedit(file_path, old_string, new_string, replace_all=replace_all)
         if res.error:
             return res.error

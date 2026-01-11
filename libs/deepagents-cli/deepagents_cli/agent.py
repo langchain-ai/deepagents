@@ -387,27 +387,112 @@ def create_cli_agent(
 
     # Add memory middleware
     if enable_memory:
-        memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
+        # Convert Windows absolute paths to virtual paths for cross-platform compatibility.
+        # Use virtual_mode=True to ensure all paths are virtual paths starting with /.
+        # Create separate backends for user and project memory files since they may not share
+        # a common parent directory.
+        
+        memory_sources = []
+        backends = []
+        routes = {}
+        
+        user_agent_md = settings.get_user_agent_md_path(assistant_id)
+        if user_agent_md:
+            # User memory: use parent directory as root, filename as virtual path
+            user_root = user_agent_md.parent
+            user_virtual = "/" + user_agent_md.name
+            user_backend = FilesystemBackend(
+                root_dir=str(user_root),
+                virtual_mode=True,
+            )
+            memory_sources.append(user_virtual)
+            backends.append(user_backend)
+            # Use a route prefix based on the parent directory name for routing
+            routes["/" + user_root.name + "/"] = user_backend
+        
         project_agent_md = settings.get_project_agent_md_path()
         if project_agent_md:
-            memory_sources.append(str(project_agent_md))
-
+            # Project memory: use parent directory as root, filename as virtual path
+            project_root = project_agent_md.parent
+            project_virtual = "/" + project_agent_md.name
+            project_backend = FilesystemBackend(
+                root_dir=str(project_root),
+                virtual_mode=True,
+            )
+            memory_sources.append(project_virtual)
+            backends.append(project_backend)
+            # Use a route prefix based on the parent directory name for routing
+            routes["/" + project_root.name + "/"] = project_backend
+        
+        # Use CompositeBackend if we have multiple backends, otherwise use single backend
+        if len(backends) > 1:
+            memory_backend = CompositeBackend(
+                default=backends[0],
+                routes=routes,
+            )
+        elif backends:
+            memory_backend = backends[0]
+        else:
+            # No memory files (shouldn't happen if enable_memory is True, but handle gracefully)
+            memory_backend = FilesystemBackend(virtual_mode=True)
+        
         agent_middleware.append(
             MemoryMiddleware(
-                backend=FilesystemBackend(),
+                backend=memory_backend,
                 sources=memory_sources,
             )
         )
 
     # Add skills middleware
     if enable_skills:
-        sources = [str(skills_dir)]
+        # Convert Windows absolute paths to virtual paths for cross-platform compatibility.
+        # Use virtual_mode=True to ensure all paths are virtual paths starting with /.
+        # Create separate backends for user and project skills since they may not share
+        # a common parent directory (e.g., user skills in ~/.deepagents vs project in ./.deepagents).
+        
+        sources = []
+        backends = []
+        routes = {}
+        
+        if skills_dir:
+            # User skills: use parent directory as root, skills dir name as virtual path
+            user_root = skills_dir.parent
+            user_virtual = "/" + skills_dir.name + "/"
+            user_backend = FilesystemBackend(
+                root_dir=str(user_root),
+                virtual_mode=True,
+            )
+            sources.append(user_virtual)
+            backends.append(user_backend)
+            routes[user_virtual] = user_backend
+        
         if project_skills_dir:
-            sources.append(str(project_skills_dir))
-
+            # Project skills: use parent directory as root, skills dir name as virtual path
+            project_root = project_skills_dir.parent
+            project_virtual = "/" + project_skills_dir.name + "/"
+            project_backend = FilesystemBackend(
+                root_dir=str(project_root),
+                virtual_mode=True,
+            )
+            sources.append(project_virtual)
+            backends.append(project_backend)
+            routes[project_virtual] = project_backend
+        
+        # Use CompositeBackend if we have multiple backends, otherwise use single backend
+        if len(backends) > 1:
+            skills_backend = CompositeBackend(
+                default=backends[0],
+                routes=routes,
+            )
+        elif backends:
+            skills_backend = backends[0]
+        else:
+            # No skills directories (shouldn't happen if enable_skills is True, but handle gracefully)
+            skills_backend = FilesystemBackend(virtual_mode=True)
+        
         agent_middleware.append(
             SkillsMiddleware(
-                backend=FilesystemBackend(),
+                backend=skills_backend,
                 sources=sources,
             )
         )

@@ -104,6 +104,9 @@ def create_deep_agent(
             Pass either a `Backend` instance or a callable factory like `lambda rt: StateBackend(rt)`.
             For execution support, use a backend that implements `SandboxBackendProtocol`.
         interrupt_on: Mapping of tool names to interrupt configs.
+
+            Example: `{"execute": True}` or `{"execute": InterruptOnConfig(...)}`.
+            Requires `checkpointer` to be set for interrupts to work.
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.

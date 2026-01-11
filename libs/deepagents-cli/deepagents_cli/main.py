@@ -10,6 +10,7 @@ from pathlib import Path
 
 # Now safe to import agent (which imports LangChain modules)
 from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
+from deepagents_cli.cli_config import CLIConfig, create_example_config
 
 # CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import (
@@ -93,6 +94,33 @@ def parse_args() -> argparse.Namespace:
 
     # Skills command - setup delegated to skills module
     setup_skills_parser(subparsers)
+    
+    # Config command
+    config_parser = subparsers.add_parser("config", help="Manage CLI configuration")
+    config_subparsers = config_parser.add_subparsers(dest="config_command")
+    
+    # config init
+    init_parser = config_subparsers.add_parser("init", help="Create example config file")
+    init_parser.add_argument(
+        "--global",
+        dest="is_global",
+        action="store_true",
+        help="Create global config (~/.deepagents/deepagentscli.json)",
+    )
+    init_parser.add_argument(
+        "--mode",
+        choices=["safe", "permissive", "strict", "custom"],
+        default="safe",
+        help="Shell approval mode (default: safe)",
+    )
+    
+    # config show
+    show_parser = config_subparsers.add_parser("show", help="Show current configuration")
+    show_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON",
+    )
 
     # Threads command
     threads_parser = subparsers.add_parser("threads", help="Manage conversation threads")
@@ -237,6 +265,89 @@ async def run_textual_cli_async(
                     sandbox_cm.__exit__(None, None, None)
 
 
+def _handle_config_init(args: argparse.Namespace) -> None:
+    """Handle 'deepagents config init' command."""
+    if args.is_global:
+        # Create global config
+        config_path = Path.home() / ".deepagents" / "deepagentscli.json"
+        location_desc = "global"
+    else:
+        # Create project config
+        project_root = settings.project_root
+        if project_root is None:
+            console.print("[red]Not in a git project. Use --global for global config.[/red]")
+            sys.exit(1)
+        config_path = project_root / ".deepagentscli.json"
+        location_desc = "project"
+    
+    if config_path.exists():
+        console.print(f"[yellow]Config already exists: {config_path}[/yellow]")
+        response = input("Overwrite? (y/N): ")
+        if response.lower() != "y":
+            console.print("Cancelled.")
+            return
+    
+    try:
+        create_example_config(config_path, mode=args.mode)
+        console.print(f"[green]✓[/green] Created {location_desc} config: {config_path}")
+        console.print(f"\nShell approval mode: [bold]{args.mode}[/bold]")
+        console.print(f"\nEdit {config_path} to customize settings.")
+    except Exception as e:
+        console.print(f"[red]Failed to create config: {e}[/red]")
+        sys.exit(1)
+
+
+def _handle_config_show(args: argparse.Namespace) -> None:
+    """Handle 'deepagents config show' command."""
+    try:
+        cli_config = CLIConfig.load(project_root=settings.project_root)
+        
+        if args.json:
+            # Output as JSON
+            import json
+            output = {}
+            if cli_config.shell_approval:
+                output["shellApproval"] = {"mode": "custom"}  # Simplified
+            print(json.dumps(output, indent=2))
+        else:
+            # Human-readable output
+            console.print("\n[bold]DeepAgents CLI Configuration[/bold]\n")
+            
+            # Show config file locations
+            console.print("[dim]Config file locations (in order of precedence):[/dim]")
+            if settings.project_root:
+                console.print(f"  1. {settings.project_root}/.deepagentscli.json")
+                console.print(f"  2. {settings.project_root}/.deepagents/deepagentscli.json")
+            console.print(f"  3. ~/.deepagents/deepagentscli.json")
+            console.print()
+            
+            # Shell approval config
+            console.print("[bold]Shell Approval:[/bold]")
+            if cli_config.shell_approval:
+                console.print("  [green]✓[/green] Configured")
+                
+                # Test some common commands
+                console.print("\n  Example commands:")
+                test_commands = [
+                    "ls -la",
+                    "git status",
+                    "rm file.txt",
+                    "rm -rf /",
+                ]
+                for cmd in test_commands:
+                    action = cli_config.shell_approval.should_approve(cmd)
+                    emoji = {"allow": "✅", "ask": "❓", "deny": "🚫"}[action]
+                    console.print(f"    {emoji} {cmd:<20} -> {action}")
+            else:
+                console.print("  [yellow]Not configured[/yellow] (using default HITL)")
+            
+            console.print()
+            console.print("[dim]Run 'deepagents config init' to create a config file[/dim]")
+    except Exception as e:
+        console.print(f"[red]Failed to load config: {e}[/red]")
+        sys.exit(1)
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -262,6 +373,13 @@ def cli_main() -> None:
             reset_agent(args.agent, args.source_agent)
         elif args.command == "skills":
             execute_skills_command(args)
+        elif args.command == "config":
+            if args.config_command == "init":
+                _handle_config_init(args)
+            elif args.config_command == "show":
+                _handle_config_show(args)
+            else:
+                console.print("[yellow]Usage: deepagents config <init|show>[/yellow]")
         elif args.command == "threads":
             if args.threads_command == "list":
                 asyncio.run(

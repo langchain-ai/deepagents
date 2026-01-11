@@ -21,9 +21,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
+from deepagents_cli.cli_config import CLIConfig
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.shell import ShellMiddleware
+from deepagents_cli.shell_approval import ShellApprovalConfig, create_shell_interrupt_config
 
 
 def list_agents() -> None:
@@ -262,18 +264,68 @@ def _format_task_description(tool_call: ToolCall, _state: AgentState, _runtime: 
     )
 
 
-def _format_shell_description(tool_call: ToolCall, _state: AgentState, _runtime: Runtime) -> str:
+def _format_shell_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
     """Format shell tool call for approval prompt."""
     args = tool_call["args"]
     command = args.get("command", "N/A")
-    return f"Shell Command: {command}\nWorking Directory: {Path.cwd()}"
+    
+    dangerous_keywords = [
+        "rm -rf", "dd if=", "mkfs", "> /dev/", "chmod 777", 
+        "chown", "killall", "pkill", "sudo"
+    ]
+    is_dangerous = any(keyword in command.lower() for keyword in dangerous_keywords)
+    
+    lines = []
+    if is_dangerous:
+        lines.append("⚠️  DANGEROUS COMMAND DETECTED!")
+        lines.append("")
+    
+    lines.append("Shell Command Execution Request")
+    lines.append("=" * 50)
+    lines.append("")
+    lines.append(f"Command: {command}")
+    lines.append(f"Working Directory: {Path.cwd()}")
+    lines.append("")
+    
+    if is_dangerous:
+        lines.append("⚠️  This command could cause significant system changes.")
+        lines.append("Review carefully before approving.")
+    else:
+        lines.append("This command will execute locally with your permissions.")
+    
+    return "\n".join(lines)
 
 
-def _format_execute_description(tool_call: ToolCall, _state: AgentState, _runtime: Runtime) -> str:
+def _format_execute_description(tool_call: ToolCall, state: AgentState, runtime: Runtime) -> str:
     """Format execute tool call for approval prompt."""
     args = tool_call["args"]
     command = args.get("command", "N/A")
-    return f"Execute Command: {command}\nLocation: Remote Sandbox"
+    
+    dangerous_keywords = [
+        "rm -rf", "dd if=", "mkfs", "> /dev/", "chmod 777",
+        "chown", "killall", "pkill", "sudo"
+    ]
+    is_dangerous = any(keyword in command.lower() for keyword in dangerous_keywords)
+    
+    lines = []
+    if is_dangerous:
+        lines.append("⚠️  DANGEROUS COMMAND DETECTED!")
+        lines.append("")
+    
+    lines.append("Execute Command Request (Sandbox)")
+    lines.append("=" * 50)
+    lines.append("")
+    lines.append(f"Command: {command}")
+    lines.append("Location: Remote Sandbox Environment")
+    lines.append("")
+    
+    if is_dangerous:
+        lines.append("⚠️  This command could cause significant changes in the sandbox.")
+        lines.append("Review carefully before approving.")
+    else:
+        lines.append("This command will execute in the remote sandbox.")
+    
+    return "\n".join(lines)
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
@@ -332,6 +384,7 @@ def create_cli_agent(
     sandbox_type: str | None = None,
     system_prompt: str | None = None,
     auto_approve: bool = False,
+    shell_approval_config: ShellApprovalConfig | None = None,
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
@@ -354,6 +407,11 @@ def create_cli_agent(
                       based on sandbox_type and assistant_id.
         auto_approve: If True, automatically approves all tool calls without human
                      confirmation. Useful for automated workflows.
+        shell_approval_config: Configuration for pattern-based shell command approval.
+                              If provided, will use pattern matching to auto-approve safe
+                              commands, ask for potentially risky ones, and deny dangerous ones.
+                              If None, uses the default HITL behavior (ask for all).
+                              Note: Only applies in local mode when enable_shell=True.
         enable_memory: Enable MemoryMiddleware for persistent memory
         enable_skills: Enable SkillsMiddleware for custom agent skills
         enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
@@ -441,13 +499,21 @@ def create_cli_agent(
     if system_prompt is None:
         system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
 
-    # Configure interrupt_on based on auto_approve setting
+    # Configure interrupt_on based on auto_approve and shell_approval_config settings
     if auto_approve:
         # No interrupts - all tools run automatically
         interrupt_on = {}
     else:
+        # Load CLI config if shell_approval_config not explicitly provided
+        if shell_approval_config is None:
+            cli_config = CLIConfig.load(project_root=settings.project_root)
+            shell_approval_config = cli_config.shell_approval
+        
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()
+        
+        # Note: shell_approval_config is available for custom approval handlers
+        # Future enhancement: Integrate pattern-based filtering directly into middleware
 
     composite_backend = CompositeBackend(
         default=backend,

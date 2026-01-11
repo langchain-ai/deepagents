@@ -74,7 +74,9 @@ def create_deep_agent(
         tools: The tools the agent should have access to.
         system_prompt: The additional instructions the agent should have. Will go in
             the system prompt.
-        middleware: Additional middleware to apply after standard middleware.
+        middleware: Additional middleware to apply.
+            If you provide middleware that duplicates a default type (e.g., `TodoListMiddleware`),
+            the default instance will be replaced by your provided instance.
         subagents: The subagents to use.
 
             Each subagent should be a `dict` with the following keys:
@@ -128,6 +130,9 @@ def create_deep_agent(
         trigger = ("tokens", 170000)
         keep = ("messages", 6)
 
+    # Check if user has provided TodoListMiddleware in the middleware list
+    has_user_todo_middleware = any(isinstance(m, TodoListMiddleware) for m in middleware)
+
     # Build middleware stack for subagents (includes skills if provided)
     subagent_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
@@ -152,9 +157,10 @@ def create_deep_agent(
     )
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware] = [
-        TodoListMiddleware(),
-    ]
+    deepagent_middleware: list[AgentMiddleware] = []
+    # Only add default TodoListMiddleware if user hasn't provided their own
+    if not has_user_todo_middleware:
+        deepagent_middleware.append(TodoListMiddleware())
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:

@@ -2,6 +2,7 @@
 
 import pytest
 
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.filesystem import _validate_path
 
 
@@ -36,21 +37,37 @@ class TestValidatePath:
         with pytest.raises(ValueError, match="Path traversal not allowed"):
             _validate_path("~/secret.txt")
 
-    def test_windows_absolute_path_rejected_backslash(self):
-        """Test that Windows absolute paths with backslashes are rejected."""
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
-            _validate_path("C:\\Users\\Documents\\file.txt")
+    def test_windows_absolute_path_allowed_when_virtual_mode_false(self):
+        """Test that Windows absolute paths are allowed when virtual_mode=False."""
+        backend = FilesystemBackend(virtual_mode=False)
+        # Windows paths should pass through unchanged when virtual_mode=False
+        assert _validate_path("C:\\Users\\Documents\\file.txt", backend=backend) == "C:\\Users\\Documents\\file.txt"
+        assert _validate_path("F:\\git\\project\\file.txt", backend=backend) == "F:\\git\\project\\file.txt"
+        assert _validate_path("C:/Users/Documents/file.txt", backend=backend) == "C:/Users/Documents/file.txt"
+        assert _validate_path("D:/data/output.csv", backend=backend) == "D:/data/output.csv"
 
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
-            _validate_path("F:\\git\\project\\file.txt")
+    def test_windows_absolute_path_allowed_when_no_backend(self):
+        """Test that Windows absolute paths are allowed when no backend is provided (default behavior)."""
+        # When no backend is provided, Windows paths should pass through (treated as virtual_mode=False)
+        assert _validate_path("C:\\Users\\Documents\\file.txt") == "C:\\Users\\Documents\\file.txt"
+        assert _validate_path("F:\\git\\project\\file.txt") == "F:\\git\\project\\file.txt"
+        assert _validate_path("C:/Users/Documents/file.txt") == "C:/Users/Documents/file.txt"
+        assert _validate_path("D:/data/output.csv") == "D:/data/output.csv"
 
-    def test_windows_absolute_path_rejected_forward_slash(self):
-        """Test that Windows absolute paths with forward slashes are rejected."""
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
-            _validate_path("C:/Users/Documents/file.txt")
+    def test_windows_absolute_path_rejected_when_virtual_mode_true(self):
+        """Test that Windows absolute paths are rejected when virtual_mode=True."""
+        backend = FilesystemBackend(virtual_mode=True)
+        with pytest.raises(ValueError, match="Windows absolute paths are not supported in virtual_mode"):
+            _validate_path("C:\\Users\\Documents\\file.txt", backend=backend)
 
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
-            _validate_path("D:/data/output.csv")
+        with pytest.raises(ValueError, match="Windows absolute paths are not supported in virtual_mode"):
+            _validate_path("F:\\git\\project\\file.txt", backend=backend)
+
+        with pytest.raises(ValueError, match="Windows absolute paths are not supported in virtual_mode"):
+            _validate_path("C:/Users/Documents/file.txt", backend=backend)
+
+        with pytest.raises(ValueError, match="Windows absolute paths are not supported in virtual_mode"):
+            _validate_path("D:/data/output.csv", backend=backend)
 
     def test_allowed_prefixes_enforcement(self):
         """Test that allowed_prefixes parameter is enforced."""

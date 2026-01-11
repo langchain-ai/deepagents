@@ -539,6 +539,7 @@ async def execute_task_textual(
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
         except Exception:  # noqa: S110
             pass  # State update is best-effort
+        adapter._update_status("Ready")
         return
 
     except KeyboardInterrupt:
@@ -559,6 +560,7 @@ async def execute_task_textual(
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
         except Exception:  # noqa: S110
             pass  # State update is best-effort
+        adapter._update_status("Ready")
         return
 
     adapter._update_status("Ready")

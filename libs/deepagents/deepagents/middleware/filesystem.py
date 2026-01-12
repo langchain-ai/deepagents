@@ -1,10 +1,12 @@
 """Middleware for providing filesystem tools to an agent."""
+
 # ruff: noqa: E501
+from __future__ import annotations
 
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from typing import TYPE_CHECKING, Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -35,6 +37,13 @@ from deepagents.backends.utils import (
     sanitize_tool_call_id,
     truncate_if_too_long,
 )
+
+# Keep runtime-visible for pydantic/StructuredTool annotation resolution.
+_TYPE_RESOLUTION_DEPS = (ToolRuntime, ToolCallRequest, Awaitable, Callable, Sequence)
+
+if TYPE_CHECKING:
+    from langchain.types import Runtime
+
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 2000
@@ -867,7 +876,7 @@ class FilesystemMiddleware(AgentMiddleware):
 
         self.tools = _get_filesystem_tools(self.backend, custom_tool_descriptions)
 
-    def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
+    def _get_backend(self, runtime: Runtime) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
 
         Args:

@@ -686,3 +686,76 @@ class TestSubAgentsWithStructuredOutput:
         assert population_tool_message.content == expected_population_content, (
             f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
         )
+
+
+class TestCompiledSubAgentValidation:
+    """Tests for CompiledSubAgent validation and error handling."""
+
+    def test_compiled_subagent_without_messages_raises_error(self) -> None:
+        """Test that a CompiledSubAgent without 'messages' in state raises a clear error.
+
+        This test verifies that when a custom StateGraph is used with CompiledSubAgent
+        and doesn't include a 'messages' key in its state, a helpful ValueError is raised
+        explaining the requirement.
+        """
+        from typing import TypedDict
+
+        import pytest
+        from langgraph.graph import END, START, StateGraph
+
+        # Define a custom state without 'messages' key
+        class CustomState(TypedDict):
+            custom_field: str
+
+        def custom_node(_state: CustomState) -> CustomState:
+            return {"custom_field": "processed"}
+
+        # Build a custom graph that doesn't use messages
+        graph_builder = StateGraph(CustomState)
+        graph_builder.add_node("process", custom_node)
+        graph_builder.add_edge(START, "process")
+        graph_builder.add_edge("process", END)
+        custom_graph = graph_builder.compile()
+
+        # Create parent agent with this custom subagent
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Process something",
+                                    "subagent_type": "custom-processor",
+                                },
+                                "id": "call_custom",
+                            }
+                        ],
+                    ),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="custom-processor",
+                    description="A custom processor",
+                    runnable=custom_graph,
+                )
+            ],
+        )
+
+        # Attempting to invoke should raise a clear error about missing 'messages' key
+        with pytest.raises(
+            ValueError,
+            match="CompiledSubAgent must return a state containing a 'messages' key",
+        ):
+            parent_agent.invoke(
+                {"messages": [HumanMessage(content="Process this")]},
+                config={"configurable": {"thread_id": "test_thread_no_messages"}},
+            )

@@ -46,7 +46,13 @@ class SubAgent(TypedDict):
 
 
 class CompiledSubAgent(TypedDict):
-    """A pre-compiled agent spec."""
+    """A pre-compiled agent spec.
+
+    Important: The runnable's state schema must include a 'messages' key.
+    This is required for the subagent to communicate results back to the main agent.
+    When the subagent completes, the final message in the 'messages' list will be
+    extracted and returned as a ToolMessage to the parent agent.
+    """
 
     name: str
     """The name of the agent."""
@@ -55,7 +61,7 @@ class CompiledSubAgent(TypedDict):
     """The description of the agent."""
 
     runnable: Runnable
-    """The Runnable to use for the agent."""
+    """The Runnable to use for the agent. Must return a state with a 'messages' key."""
 
 
 DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
@@ -318,6 +324,15 @@ def _create_task_tool(
     subagent_description_str = "\n".join(subagent_descriptions)
 
     def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+        # Validate that the result contains a 'messages' key
+        if "messages" not in result:
+            error_msg = (
+                "CompiledSubAgent must return a state containing a 'messages' key. "
+                "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
+                "in their state schema to communicate results back to the main agent."
+            )
+            raise ValueError(error_msg)
+
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
         # Strip trailing whitespace to prevent API errors with Anthropic
         message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""

@@ -77,10 +77,12 @@ def copy_selection_to_clipboard(app: App) -> None:
     for copy_fn in copy_methods:
         try:
             copy_fn(combined_text)
+            # Use markup=False to prevent copied text from being parsed as Rich markup
             app.notify(
                 f'"{_shorten_preview(selected_texts)}" copied',
                 severity="information",
                 timeout=2,
+                markup=False,
             )
             return
         except Exception:

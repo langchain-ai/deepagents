@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+from deepagents_cli._version import __version__
+
 # Now safe to import agent (which imports LangChain modules)
 from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
 
@@ -74,6 +76,11 @@ def parse_args() -> argparse.Namespace:
         description="DeepAgents - AI Coding Assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"deepagents {__version__}",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")

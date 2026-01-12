@@ -209,6 +209,14 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/help" in s[0] for s in suggestions)
 
+    def test_filters_version_command_by_prefix(self, controller, mock_view):
+        """Filters /version command based on typed prefix."""
+        controller.on_text_changed("/ver", 4)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/version" in s[0] for s in suggestions)
+
     def test_shows_all_commands_on_slash_only(self, controller, mock_view):
         """Shows all commands when just / is typed."""
         controller.on_text_changed("/", 1)

@@ -176,6 +176,7 @@ def show_help() -> None:
         "  deepagents reset --agent AGENT --target SOURCE Reset agent to copy of another agent"
     )
     console.print("  deepagents help                                Show this help message")
+    console.print("  deepagents --version                           Show deepagents version")
     console.print()
 
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])

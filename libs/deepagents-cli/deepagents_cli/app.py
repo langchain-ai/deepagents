@@ -389,6 +389,16 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 SystemMessage("Commands: /quit, /clear, /tokens, /threads, /help")
             )
+
+        elif cmd == "/version":
+            await self._mount_message(UserMessage(command))
+            # Show CLI package version
+            try:
+                from deepagents_cli._version import __version__
+
+                await self._mount_message(SystemMessage(f"deepagents version: {__version__}"))
+            except Exception:
+                await self._mount_message(SystemMessage("deepagents version: unknown"))
         elif cmd == "/clear":
             await self._clear_messages()
             # Reset thread to start fresh conversation

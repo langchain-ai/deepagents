@@ -9,9 +9,19 @@ class TestValidatePath:
     """Test cases for path validation and normalization."""
 
     def test_relative_path_normalization(self):
-        """Test that relative paths get normalized with leading slash."""
+        """Test that relative paths are normalized based on virtual_mode."""
+        # When virtual_mode is None (default), convert relative paths to absolute virtual paths
+        # (for backward compatibility with StateBackend and other virtual backends)
         assert _validate_path("foo/bar") == "/foo/bar"
         assert _validate_path("relative/path.txt") == "/relative/path.txt"
+        
+        # When virtual_mode is False, preserve relative paths as relative
+        assert _validate_path("foo/bar", virtual_mode=False) == "foo/bar"
+        assert _validate_path("relative/path.txt", virtual_mode=False) == "relative/path.txt"
+        
+        # When virtual_mode is True, convert relative paths to absolute virtual paths
+        assert _validate_path("foo/bar", virtual_mode=True) == "/foo/bar"
+        assert _validate_path("relative/path.txt", virtual_mode=True) == "/relative/path.txt"
 
     def test_absolute_path_normalization(self):
         """Test that absolute virtual paths are preserved."""
@@ -21,7 +31,11 @@ class TestValidatePath:
     def test_path_normalization_removes_redundant_separators(self):
         """Test that redundant path separators are normalized."""
         assert _validate_path("/./foo//bar") == "/foo/bar"
+        # Relative paths are converted to absolute virtual paths by default
         assert _validate_path("foo/./bar") == "/foo/bar"
+        # But preserved as relative when virtual_mode=False
+        assert _validate_path("foo/./bar", virtual_mode=False) == "foo/bar"
+        assert _validate_path("foo/./bar", virtual_mode=True) == "/foo/bar"
 
     def test_path_traversal_rejected(self):
         """Test that path traversal attempts are rejected."""
@@ -65,4 +79,9 @@ class TestValidatePath:
     def test_backslash_normalization(self):
         """Test that backslashes in relative paths are normalized to forward slashes."""
         # Relative paths with backslashes should be normalized
+        # Default behavior (virtual_mode=None) converts to absolute virtual path
         assert _validate_path("foo\\bar\\baz") == "/foo/bar/baz"
+        # When virtual_mode=False, preserve as relative
+        assert _validate_path("foo\\bar\\baz", virtual_mode=False) == "foo/bar/baz"
+        # When virtual_mode=True, convert to absolute virtual path
+        assert _validate_path("foo\\bar\\baz", virtual_mode=True) == "/foo/bar/baz"

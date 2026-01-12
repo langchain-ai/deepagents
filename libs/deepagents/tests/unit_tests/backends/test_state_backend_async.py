@@ -77,7 +77,11 @@ async def test_state_backend_async_errors():
     assert isinstance(res, WriteResult) and res.files_update is not None
     rt.state["files"].update(res.files_update)
     dup_err = await be.awrite("/dup.txt", "y")
-    assert isinstance(dup_err, WriteResult) and dup_err.error and "already exists" in dup_err.error
+    assert (
+        isinstance(dup_err, WriteResult)
+        and dup_err.error
+        and "already exists" in dup_err.error
+    )
 
 
 async def test_state_backend_als_nested_directories():
@@ -262,7 +266,9 @@ async def test_state_backend_intercept_large_tool_result_async():
     from deepagents.middleware.filesystem import FilesystemMiddleware
 
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StateBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=lambda r: StateBackend(r), tool_token_limit_before_evict=1000
+    )
 
     large_content = "x" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -270,5 +276,7 @@ async def test_state_backend_intercept_large_tool_result_async():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_123" in result.update["files"]
-    assert result.update["files"]["/large_tool_results/test_123"]["content"] == [large_content]
+    assert result.update["files"]["/large_tool_results/test_123"]["content"] == [
+        large_content
+    ]
     assert "Tool result too large" in result.update["messages"][0].content

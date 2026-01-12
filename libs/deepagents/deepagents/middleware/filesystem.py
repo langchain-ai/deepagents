@@ -1,4 +1,5 @@
 """Middleware for providing filesystem tools to an agent."""
+
 # ruff: noqa: E501
 
 import os
@@ -56,7 +57,9 @@ class FileData(TypedDict):
     """ISO 8601 timestamp of last modification."""
 
 
-def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
+def _file_data_reducer(
+    left: dict[str, FileData] | None, right: dict[str, FileData | None]
+) -> dict[str, FileData]:
     """Merge file updates with support for deletions.
 
     This reducer enables file deletion by treating `None` values in the right
@@ -142,7 +145,9 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
     if not normalized.startswith("/"):
         normalized = f"/{normalized}"
 
-    if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
+    if allowed_prefixes is not None and not any(
+        normalized.startswith(prefix) for prefix in allowed_prefixes
+    ):
         msg = f"Path must start with one of {allowed_prefixes}: {path}"
         raise ValueError(msg)
 
@@ -497,7 +502,9 @@ def _edit_file_tool_generator(
         """Synchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        res: EditResult = resolved_backend.edit(file_path, old_string, new_string, replace_all=replace_all)
+        res: EditResult = resolved_backend.edit(
+            file_path, old_string, new_string, replace_all=replace_all
+        )
         if res.error:
             return res.error
         if res.files_update is not None:
@@ -525,7 +532,9 @@ def _edit_file_tool_generator(
         """Asynchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        res: EditResult = await resolved_backend.aedit(file_path, old_string, new_string, replace_all=replace_all)
+        res: EditResult = await resolved_backend.aedit(
+            file_path, old_string, new_string, replace_all=replace_all
+        )
         if res.error:
             return res.error
         if res.files_update is not None:
@@ -565,7 +574,9 @@ def _glob_tool_generator(
     """
     tool_description = custom_description or GLOB_TOOL_DESCRIPTION
 
-    def sync_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+    def sync_glob(
+        pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/"
+    ) -> str:
         """Synchronous wrapper for glob tool."""
         resolved_backend = _get_backend(backend, runtime)
         infos = resolved_backend.glob_info(pattern, path=path)
@@ -573,7 +584,9 @@ def _glob_tool_generator(
         result = truncate_if_too_long(paths)
         return str(result)
 
-    async def async_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+    async def async_glob(
+        pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/"
+    ) -> str:
         """Asynchronous wrapper for glob tool."""
         resolved_backend = _get_backend(backend, runtime)
         infos = await resolved_backend.aglob_info(pattern, path=path)
@@ -609,7 +622,9 @@ def _grep_tool_generator(
         runtime: ToolRuntime[None, FilesystemState],
         path: str | None = None,
         glob: str | None = None,
-        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+        output_mode: Literal[
+            "files_with_matches", "content", "count"
+        ] = "files_with_matches",
     ) -> str:
         """Synchronous wrapper for grep tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -624,7 +639,9 @@ def _grep_tool_generator(
         runtime: ToolRuntime[None, FilesystemState],
         path: str | None = None,
         glob: str | None = None,
-        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+        output_mode: Literal[
+            "files_with_matches", "content", "count"
+        ] = "files_with_matches",
     ) -> str:
         """Asynchronous wrapper for grep tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -895,7 +912,10 @@ class FilesystemMiddleware(AgentMiddleware):
             The model response from the handler.
         """
         # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+        has_execute_tool = any(
+            (tool.name if hasattr(tool, "name") else tool.get("name")) == "execute"
+            for tool in request.tools
+        )
 
         backend_supports_execution = False
         if has_execute_tool:
@@ -905,7 +925,12 @@ class FilesystemMiddleware(AgentMiddleware):
 
             # If execute tool exists but backend doesn't support it, filter it out
             if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
+                filtered_tools = [
+                    tool
+                    for tool in request.tools
+                    if (tool.name if hasattr(tool, "name") else tool.get("name"))
+                    != "execute"
+                ]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
@@ -923,7 +948,13 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+            request = request.override(
+                system_prompt=(
+                    request.system_prompt + "\n\n" + system_prompt
+                    if request.system_prompt
+                    else system_prompt
+                )
+            )
 
         return handler(request)
 
@@ -942,7 +973,10 @@ class FilesystemMiddleware(AgentMiddleware):
             The model response from the handler.
         """
         # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+        has_execute_tool = any(
+            (tool.name if hasattr(tool, "name") else tool.get("name")) == "execute"
+            for tool in request.tools
+        )
 
         backend_supports_execution = False
         if has_execute_tool:
@@ -952,7 +986,12 @@ class FilesystemMiddleware(AgentMiddleware):
 
             # If execute tool exists but backend doesn't support it, filter it out
             if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
+                filtered_tools = [
+                    tool
+                    for tool in request.tools
+                    if (tool.name if hasattr(tool, "name") else tool.get("name"))
+                    != "execute"
+                ]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
@@ -970,7 +1009,13 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+            request = request.override(
+                system_prompt=(
+                    request.system_prompt + "\n\n" + system_prompt
+                    if request.system_prompt
+                    else system_prompt
+                )
+            )
 
         return await handler(request)
 
@@ -1033,7 +1078,9 @@ class FilesystemMiddleware(AgentMiddleware):
             return message, None
 
         # Create truncated preview for the replacement message
-        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
+        content_sample = format_content_with_line_numbers(
+            [line[:1000] for line in content_str.splitlines()[:10]], start_line=1
+        )
         replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
             file_path=file_path,
@@ -1047,7 +1094,9 @@ class FilesystemMiddleware(AgentMiddleware):
         )
         return processed_message, result.files_update
 
-    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+    def _intercept_large_tool_result(
+        self, tool_result: ToolMessage | Command, runtime: ToolRuntime
+    ) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
 
         Args:
@@ -1100,8 +1149,16 @@ class FilesystemMiddleware(AgentMiddleware):
                 processed_messages.append(processed_message)
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
-            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
-        raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
+            return Command(
+                update={
+                    **update,
+                    "messages": processed_messages,
+                    "files": accumulated_file_updates,
+                }
+            )
+        raise AssertionError(
+            f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
+        )
 
     def wrap_tool_call(
         self,
@@ -1117,7 +1174,10 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if (
+            self.tool_token_limit_before_evict is None
+            or request.tool_call["name"] in TOOL_GENERATORS
+        ):
             return handler(request)
 
         tool_result = handler(request)
@@ -1137,7 +1197,10 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if (
+            self.tool_token_limit_before_evict is None
+            or request.tool_call["name"] in TOOL_GENERATORS
+        ):
             return await handler(request)
 
         tool_result = await handler(request)

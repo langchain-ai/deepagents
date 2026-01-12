@@ -40,7 +40,9 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
 def test_composite_state_backend_routes_and_search(tmp_path: Path):
     rt = make_runtime("t3")
     # route /memories/ to store
-    be = build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+    be = build_composite_state_backend(
+        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+    )
 
     # write to default (state)
     res = be.write("/file.txt", "alpha")
@@ -48,7 +50,9 @@ def test_composite_state_backend_routes_and_search(tmp_path: Path):
 
     # write to routed (store)
     msg = be.write("/memories/readme.md", "beta")
-    assert isinstance(msg, WriteResult) and msg.error is None and msg.files_update is None
+    assert (
+        isinstance(msg, WriteResult) and msg.error is None and msg.files_update is None
+    )
 
     # ls_info at root returns both
     infos = be.ls_info("/")
@@ -105,15 +109,25 @@ def test_composite_backend_store_to_store():
     default_store = StoreBackend(rt)
     memories_store = StoreBackend(rt)
 
-    comp = CompositeBackend(default=default_store, routes={"/memories/": memories_store})
+    comp = CompositeBackend(
+        default=default_store, routes={"/memories/": memories_store}
+    )
 
     # Write to default store
     res1 = comp.write("/notes.txt", "default store content")
-    assert isinstance(res1, WriteResult) and res1.error is None and res1.path == "/notes.txt"
+    assert (
+        isinstance(res1, WriteResult)
+        and res1.error is None
+        and res1.path == "/notes.txt"
+    )
 
     # Write to routed store
     res2 = comp.write("/memories/important.txt", "routed store content")
-    assert isinstance(res2, WriteResult) and res2.error is None and res2.path == "/important.txt"
+    assert (
+        isinstance(res2, WriteResult)
+        and res2.error is None
+        and res2.path == "/important.txt"
+    )
 
     # Read from both
     content1 = comp.read("/notes.txt")
@@ -198,7 +212,9 @@ def test_composite_backend_multiple_routes():
     assert any(i["path"] == "/memories/important.md" for i in glob_results)
 
     # Edit in routed backend
-    edit_res = comp.edit("/memories/important.md", "long-term", "persistent", replace_all=False)
+    edit_res = comp.edit(
+        "/memories/important.md", "long-term", "persistent", replace_all=False
+    )
     assert edit_res.error is None
     assert edit_res.occurrences == 1
 
@@ -233,7 +249,9 @@ def test_composite_backend_grep_path_isolation():
     assert any("/tools/saw.txt" in p for p in match_paths)
 
     # Should NOT find results in /memories (this is the bug)
-    assert not any("/memories/" in p for p in match_paths), f"grep path=/tools should not return /memories results, but got: {match_paths}"
+    assert not any(
+        "/memories/" in p for p in match_paths
+    ), f"grep path=/tools should not return /memories results, but got: {match_paths}"
 
 
 def test_composite_backend_ls_nested_directories(tmp_path: Path):
@@ -388,7 +406,10 @@ def test_composite_backend_intercept_large_tool_result():
     rt = make_runtime("t10")
 
     middleware = FilesystemMiddleware(
-        backend=lambda r: build_composite_state_backend(r, routes={"/memories/": (lambda x: StoreBackend(x))}), tool_token_limit_before_evict=1000
+        backend=lambda r: build_composite_state_backend(
+            r, routes={"/memories/": (lambda x: StoreBackend(x))}
+        ),
+        tool_token_limit_before_evict=1000,
     )
     large_content = "z" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_789")
@@ -396,7 +417,9 @@ def test_composite_backend_intercept_large_tool_result():
 
     assert isinstance(result, Command)
     assert "/large_tool_results/test_789" in result.update["files"]
-    assert result.update["files"]["/large_tool_results/test_789"]["content"] == [large_content]
+    assert result.update["files"]["/large_tool_results/test_789"]["content"] == [
+        large_content
+    ]
     assert "Tool result too large" in result.update["messages"][0].content
 
 
@@ -409,7 +432,9 @@ def test_composite_backend_intercept_large_tool_result_routed_to_store():
     rt = make_runtime("t11")
 
     middleware = FilesystemMiddleware(
-        backend=lambda r: build_composite_state_backend(r, routes={"/large_tool_results/": (lambda x: StoreBackend(x))}),
+        backend=lambda r: build_composite_state_backend(
+            r, routes={"/large_tool_results/": (lambda x: StoreBackend(x))}
+        ),
         tool_token_limit_before_evict=1000,
     )
 
@@ -462,7 +487,9 @@ def test_composite_backend_execute_with_sandbox_default():
 def test_composite_backend_execute_without_sandbox_default():
     """Test that CompositeBackend.execute() fails when default doesn't support execution."""
     rt = make_runtime("t_exec2")
-    state_backend = StateBackend(rt)  # StateBackend doesn't implement SandboxBackendProtocol
+    state_backend = StateBackend(
+        rt
+    )  # StateBackend doesn't implement SandboxBackendProtocol
     store = StoreBackend(rt)
 
     comp = CompositeBackend(default=state_backend, routes={"/memories/": store})
@@ -663,7 +690,9 @@ def test_composite_upload_download_multiple_routes(tmp_path: Path):
     store1 = StoreBackend(rt)
     store2 = StoreBackend(rt)
 
-    comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
+    comp = CompositeBackend(
+        default=fs, routes={"/memories/": store1, "/archive/": store2}
+    )
 
     # Upload to different backends
     files = [
@@ -967,7 +996,9 @@ def test_composite_grep_multiple_routes_aggregation(tmp_path: Path) -> None:
     store1 = StoreBackend(rt)
     store2 = StoreBackend(rt)
 
-    comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
+    comp = CompositeBackend(
+        default=fs, routes={"/memories/": store1, "/archive/": store2}
+    )
 
     # Write to each route
     comp.write("/memories/mem.txt", "memory findme")
@@ -995,7 +1026,9 @@ def test_composite_grep_error_in_routed_backend() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep_raw(
+            self, pattern: str, path: str | None = None, glob: str | None = None
+        ):
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend(rt)
@@ -1014,7 +1047,9 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep_raw(
+            self, pattern: str, path: str | None = None, glob: str | None = None
+        ):
             return "Backend error occurred"
 
     error_backend = ErrorBackend(rt)
@@ -1033,7 +1068,9 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StateBackend):
-        def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep_raw(
+            self, pattern: str, path: str | None = None, glob: str | None = None
+        ):
             return "Default backend error"
 
     error_default = ErrorDefaultBackend(rt)

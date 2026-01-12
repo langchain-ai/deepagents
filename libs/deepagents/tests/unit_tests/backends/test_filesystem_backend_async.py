@@ -36,11 +36,17 @@ async def test_filesystem_backend_async_normal_mode(tmp_path: Path):
     msg = await be.aedit(str(f1), "fs", "filesystem", replace_all=False)
     assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
     msg2 = await be.awrite(str(root / "new.txt"), "new content")
-    assert isinstance(msg2, WriteResult) and msg2.error is None and msg2.path.endswith("new.txt")
+    assert (
+        isinstance(msg2, WriteResult)
+        and msg2.error is None
+        and msg2.path.endswith("new.txt")
+    )
 
     # agrep_raw
     matches = await be.agrep_raw("hello", path=str(root))
-    assert isinstance(matches, list) and any(m["path"].endswith("a.txt") for m in matches)
+    assert isinstance(matches, list) and any(
+        m["path"].endswith("a.txt") for m in matches
+    )
 
     # aglob_info
     g = await be.aglob_info("*.py", path=str(root))
@@ -210,7 +216,10 @@ async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Pa
         config={},
     )
 
-    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")

@@ -36,10 +36,16 @@ def assert_expected_subgraph_actions(expected_tool_calls, agent, inputs):
             for tool_call in tool_calls:
                 if tool_call["name"] == expected_tool_calls[current_idx]["name"]:
                     if "model" in expected_tool_calls[current_idx]:
-                        assert ai_message.response_metadata["model_name"] == expected_tool_calls[current_idx]["model"]
+                        assert (
+                            ai_message.response_metadata["model_name"]
+                            == expected_tool_calls[current_idx]["model"]
+                        )
                     for arg in expected_tool_calls[current_idx]["args"]:
                         assert arg in tool_call["args"]
-                        assert tool_call["args"][arg] == expected_tool_calls[current_idx]["args"][arg]
+                        assert (
+                            tool_call["args"][arg]
+                            == expected_tool_calls[current_idx]["args"][arg]
+                        )
                     current_idx += 1
     assert current_idx == len(expected_tool_calls)
 
@@ -60,9 +66,14 @@ class TestSubagentMiddleware:
             ],
         )
         assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
-        response = agent.invoke({"messages": [HumanMessage(content="What is the weather in Tokyo?")]})
+        response = agent.invoke(
+            {"messages": [HumanMessage(content="What is the weather in Tokyo?")]}
+        )
         assert response["messages"][1].tool_calls[0]["name"] == "task"
-        assert response["messages"][1].tool_calls[0]["args"]["subagent_type"] == "general-purpose"
+        assert (
+            response["messages"][1].tool_calls[0]["args"]["subagent_type"]
+            == "general-purpose"
+        )
 
     def test_defined_subagent(self):
         agent = create_agent(
@@ -84,9 +95,13 @@ class TestSubagentMiddleware:
             ],
         )
         assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
-        response = agent.invoke({"messages": [HumanMessage(content="What is the weather in Tokyo?")]})
+        response = agent.invoke(
+            {"messages": [HumanMessage(content="What is the weather in Tokyo?")]}
+        )
         assert response["messages"][1].tool_calls[0]["name"] == "task"
-        assert response["messages"][1].tool_calls[0]["args"]["subagent_type"] == "weather"
+        assert (
+            response["messages"][1].tool_calls[0]["args"]["subagent_type"] == "weather"
+        )
 
     def test_defined_subagent_tool_calls(self):
         agent = create_agent(
@@ -262,7 +277,9 @@ class TestSubagentMiddleware:
         assert middleware.system_prompt is TASK_SYSTEM_PROMPT
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
-        expected_desc = TASK_TOOL_DESCRIPTION.format(available_agents=f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
+        expected_desc = TASK_TOOL_DESCRIPTION.format(
+            available_agents=f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}"
+        )
         assert middleware.tools[0].description == expected_desc
 
     def test_default_subagent_with_tools(self):

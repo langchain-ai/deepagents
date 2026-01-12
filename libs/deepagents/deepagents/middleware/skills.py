@@ -211,7 +211,9 @@ def _parse_skill_metadata(
         SkillMetadata if parsing succeeds, None if parsing fails or validation errors occur
     """
     if len(content) > MAX_SKILL_FILE_SIZE:
-        logger.warning("Skipping %s: content too large (%d bytes)", skill_path, len(content))
+        logger.warning(
+            "Skipping %s: content too large (%d bytes)", skill_path, len(content)
+        )
         return None
 
     # Match YAML frontmatter between --- delimiters
@@ -240,7 +242,9 @@ def _parse_skill_metadata(
     description = frontmatter_data.get("description")
 
     if not name or not description:
-        logger.warning("Skipping %s: missing required 'name' or 'description'", skill_path)
+        logger.warning(
+            "Skipping %s: missing required 'name' or 'description'", skill_path
+        )
         return None
 
     # Validate name format per spec (warn but continue loading for backwards compatibility)
@@ -324,7 +328,9 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     responses = backend.download_files(paths_to_download)
 
     # Parse each downloaded SKILL.md
-    for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
+    for (skill_dir_path, skill_md_path), response in zip(
+        skill_md_paths, responses, strict=True
+    ):
         if response.error:
             # Skill doesn't have a SKILL.md, skip it
             continue
@@ -354,7 +360,9 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     return skills
 
 
-async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetadata]:
+async def _alist_skills(
+    backend: BackendProtocol, source_path: str
+) -> list[SkillMetadata]:
     """List all skills from a backend source (async version).
 
     Scans backend for subdirectories containing SKILL.md files, downloads their content,
@@ -399,7 +407,9 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     responses = await backend.adownload_files(paths_to_download)
 
     # Parse each downloaded SKILL.md
-    for (skill_dir_path, skill_md_path), response in zip(skill_md_paths, responses, strict=True):
+    for (skill_dir_path, skill_md_path), response in zip(
+        skill_md_paths, responses, strict=True
+    ):
         if response.error:
             # Skill doesn't have a SKILL.md, skip it
             continue
@@ -512,7 +522,9 @@ class SkillsMiddleware(AgentMiddleware):
         self.sources = sources
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
 
-    def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
+    def _get_backend(
+        self, state: SkillsState, runtime: Runtime, config: RunnableConfig
+    ) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:
@@ -535,7 +547,9 @@ class SkillsMiddleware(AgentMiddleware):
             )
             backend = self._backend(tool_runtime)
             if backend is None:
-                raise AssertionError("SkillsMiddleware requires a valid backend instance")
+                raise AssertionError(
+                    "SkillsMiddleware requires a valid backend instance"
+                )
             return backend
 
         return self._backend
@@ -587,7 +601,9 @@ class SkillsMiddleware(AgentMiddleware):
 
         return request.override(system_prompt=system_prompt)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    def before_agent(
+        self, state: SkillsState, runtime: Runtime, config: RunnableConfig
+    ) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution (synchronous).
 
         Runs before each agent interaction to discover available skills from all
@@ -622,7 +638,9 @@ class SkillsMiddleware(AgentMiddleware):
         skills = list(all_skills.values())
         return SkillsStateUpdate(skills_metadata=skills)
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    async def abefore_agent(
+        self, state: SkillsState, runtime: Runtime, config: RunnableConfig
+    ) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution (async).
 
         Runs before each agent interaction to discover available skills from all

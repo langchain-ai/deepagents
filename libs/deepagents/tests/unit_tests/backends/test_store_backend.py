@@ -22,7 +22,11 @@ def test_store_backend_crud_and_search():
 
     # write new file
     msg = be.write("/docs/readme.md", "hello store")
-    assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
+    assert (
+        isinstance(msg, WriteResult)
+        and msg.error is None
+        and msg.path == "/docs/readme.md"
+    )
 
     # read
     txt = be.read("/docs/readme.md")
@@ -38,7 +42,9 @@ def test_store_backend_crud_and_search():
 
     # grep_raw
     matches = be.grep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
+    assert isinstance(matches, list) and any(
+        m["path"] == "/docs/readme.md" for m in matches
+    )
 
     # glob_info
     g = be.glob_info("*.md", path="/")
@@ -120,7 +126,9 @@ def test_store_backend_intercept_large_tool_result():
     from deepagents.middleware.filesystem import FilesystemMiddleware
 
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")

@@ -97,11 +97,15 @@ class TestSubAgentInvocation:
 
         # Find the ToolMessage that contains the subagent's response
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) > 0, "Should have at least one ToolMessage from subagent"
+        assert (
+            len(tool_messages) > 0
+        ), "Should have at least one ToolMessage from subagent"
 
         # Verify the ToolMessage contains the subagent's final response
         subagent_tool_message = tool_messages[0]
-        assert "The sum of 2 and 3 is 5." in subagent_tool_message.content, "ToolMessage should contain subagent's final message content"
+        assert (
+            "The sum of 2 and 3 is 5." in subagent_tool_message.content
+        ), "ToolMessage should contain subagent's final message content"
 
     def test_multiple_subagents_invoked_in_parallel(self) -> None:
         """Test that multiple different subagents can be launched in parallel.
@@ -202,25 +206,31 @@ class TestSubAgentInvocation:
 
         # Find all ToolMessages - should have one for each subagent invocation
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) == 2, f"Should have exactly 2 ToolMessages (one per subagent), but got {len(tool_messages)}"
+        assert (
+            len(tool_messages) == 2
+        ), f"Should have exactly 2 ToolMessages (one per subagent), but got {len(tool_messages)}"
 
         # Create a lookup map from tool_call_id to ToolMessage for precise verification
         tool_messages_by_id = {msg.tool_call_id: msg for msg in tool_messages}
 
         # Verify we have both expected tool call IDs
-        assert "call_addition" in tool_messages_by_id, "Should have response from addition subagent"
-        assert "call_multiplication" in tool_messages_by_id, "Should have response from multiplication subagent"
+        assert (
+            "call_addition" in tool_messages_by_id
+        ), "Should have response from addition subagent"
+        assert (
+            "call_multiplication" in tool_messages_by_id
+        ), "Should have response from multiplication subagent"
 
         # Verify the exact content of each response by looking up the specific tool message
         addition_tool_message = tool_messages_by_id["call_addition"]
-        assert addition_tool_message.content == "The sum of 5 and 7 is 12.", (
-            f"Addition subagent should return exact message, got: {addition_tool_message.content}"
-        )
+        assert (
+            addition_tool_message.content == "The sum of 5 and 7 is 12."
+        ), f"Addition subagent should return exact message, got: {addition_tool_message.content}"
 
         multiplication_tool_message = tool_messages_by_id["call_multiplication"]
-        assert multiplication_tool_message.content == "The product of 4 and 6 is 24.", (
-            f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
-        )
+        assert (
+            multiplication_tool_message.content == "The product of 4 and 6 is 24."
+        ), f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
 
 
 class TestStructuredOutput:
@@ -244,7 +254,9 @@ class TestStructuredOutput:
         class WeatherReport(BaseModel):
             """Structured weather information."""
 
-            location: str = Field(description="The city or location for the weather report")
+            location: str = Field(
+                description="The city or location for the weather report"
+            )
             temperature: float = Field(description="Temperature in Celsius")
             condition: str = Field(description="Weather condition (e.g., sunny, rainy)")
 
@@ -279,18 +291,28 @@ class TestStructuredOutput:
         )
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content="What's the weather in San Francisco?")]})
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="What's the weather in San Francisco?")]}
+        )
 
         # Verify the structured_response key exists in the result
-        assert "structured_response" in result, "Result should contain structured_response key"
+        assert (
+            "structured_response" in result
+        ), "Result should contain structured_response key"
 
         # Verify the structured response is the correct type
         structured_response = result["structured_response"]
-        assert isinstance(structured_response, WeatherReport), f"Expected WeatherReport instance, got {type(structured_response)}"
+        assert isinstance(
+            structured_response, WeatherReport
+        ), f"Expected WeatherReport instance, got {type(structured_response)}"
 
         # Verify the structured response has the correct values
-        expected_response = WeatherReport(location="San Francisco", temperature=18.5, condition="sunny")
-        assert structured_response == expected_response, f"Expected {expected_response}, got {structured_response}"
+        expected_response = WeatherReport(
+            location="San Francisco", temperature=18.5, condition="sunny"
+        )
+        assert (
+            structured_response == expected_response
+        ), f"Expected {expected_response}, got {structured_response}"
 
 
 class TestSubAgentTodoList:
@@ -359,7 +381,11 @@ class TestSubAgentTodoList:
                                             "status": "in_progress",
                                             "activeForm": "Searching for Python history",
                                         },
-                                        {"content": "Summarize findings", "status": "pending", "activeForm": "Summarizing findings"},
+                                        {
+                                            "content": "Summarize findings",
+                                            "status": "pending",
+                                            "activeForm": "Summarizing findings",
+                                        },
                                     ]
                                 },
                                 "id": "call_write_todos_python_1",
@@ -375,8 +401,16 @@ class TestSubAgentTodoList:
                                 "name": "write_todos",
                                 "args": {
                                     "todos": [
-                                        {"content": "Search for Python history", "status": "completed", "activeForm": "Searching for Python history"},
-                                        {"content": "Summarize findings", "status": "completed", "activeForm": "Summarizing findings"},
+                                        {
+                                            "content": "Search for Python history",
+                                            "status": "completed",
+                                            "activeForm": "Searching for Python history",
+                                        },
+                                        {
+                                            "content": "Summarize findings",
+                                            "status": "completed",
+                                            "activeForm": "Summarizing findings",
+                                        },
                                     ]
                                 },
                                 "id": "call_write_todos_python_2",
@@ -385,7 +419,9 @@ class TestSubAgentTodoList:
                         ],
                     ),
                     # Final result message
-                    AIMessage(content="Python was created by Guido van Rossum and released in 1991."),
+                    AIMessage(
+                        content="Python was created by Guido van Rossum and released in 1991."
+                    ),
                 ]
             )
         )
@@ -407,7 +443,11 @@ class TestSubAgentTodoList:
                                             "status": "in_progress",
                                             "activeForm": "Searching for JavaScript history",
                                         },
-                                        {"content": "Compile summary", "status": "pending", "activeForm": "Compiling summary"},
+                                        {
+                                            "content": "Compile summary",
+                                            "status": "pending",
+                                            "activeForm": "Compiling summary",
+                                        },
                                     ]
                                 },
                                 "id": "call_write_todos_js_1",
@@ -428,7 +468,11 @@ class TestSubAgentTodoList:
                                             "status": "completed",
                                             "activeForm": "Searching for JavaScript history",
                                         },
-                                        {"content": "Compile summary", "status": "completed", "activeForm": "Compiling summary"},
+                                        {
+                                            "content": "Compile summary",
+                                            "status": "completed",
+                                            "activeForm": "Compiling summary",
+                                        },
                                     ]
                                 },
                                 "id": "call_write_todos_js_2",
@@ -437,7 +481,9 @@ class TestSubAgentTodoList:
                         ],
                     ),
                     # Final result message
-                    AIMessage(content="JavaScript was created by Brendan Eich at Netscape in 1995."),
+                    AIMessage(
+                        content="JavaScript was created by Brendan Eich at Netscape in 1995."
+                    ),
                 ]
             )
         )
@@ -472,7 +518,11 @@ class TestSubAgentTodoList:
 
         # Invoke the parent agent
         result = parent_agent.invoke(
-            {"messages": [HumanMessage(content="Research Python and JavaScript history")]},
+            {
+                "messages": [
+                    HumanMessage(content="Research Python and JavaScript history")
+                ]
+            },
             config={"configurable": {"thread_id": "test_thread_todos"}},
         )
 
@@ -481,29 +531,37 @@ class TestSubAgentTodoList:
 
         # Find all ToolMessages from the subagents
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) == 2, f"Should have exactly 2 ToolMessages, got {len(tool_messages)}"
+        assert (
+            len(tool_messages) == 2
+        ), f"Should have exactly 2 ToolMessages, got {len(tool_messages)}"
 
         # Create lookup map by tool_call_id
         tool_messages_by_id = {msg.tool_call_id: msg for msg in tool_messages}
 
         # Verify both expected tool call IDs are present
-        assert "call_research_python" in tool_messages_by_id, "Should have response from Python researcher"
-        assert "call_research_javascript" in tool_messages_by_id, "Should have response from JavaScript researcher"
+        assert (
+            "call_research_python" in tool_messages_by_id
+        ), "Should have response from Python researcher"
+        assert (
+            "call_research_javascript" in tool_messages_by_id
+        ), "Should have response from JavaScript researcher"
 
         # Verify that todos are NOT in the parent agent's final state
         # (they should be excluded per _EXCLUDED_STATE_KEYS)
-        assert "todos" not in result, "Parent agent state should not contain todos key (it should be excluded per _EXCLUDED_STATE_KEYS)"
+        assert (
+            "todos" not in result
+        ), "Parent agent state should not contain todos key (it should be excluded per _EXCLUDED_STATE_KEYS)"
 
         # Verify the final messages contain the research results
         python_tool_message = tool_messages_by_id["call_research_python"]
-        assert "Python was created by Guido van Rossum" in python_tool_message.content, (
-            f"Expected Python research result in message, got: {python_tool_message.content}"
-        )
+        assert (
+            "Python was created by Guido van Rossum" in python_tool_message.content
+        ), f"Expected Python research result in message, got: {python_tool_message.content}"
 
         javascript_tool_message = tool_messages_by_id["call_research_javascript"]
-        assert "JavaScript was created by Brendan Eich" in javascript_tool_message.content, (
-            f"Expected JavaScript research result in message, got: {javascript_tool_message.content}"
-        )
+        assert (
+            "JavaScript was created by Brendan Eich" in javascript_tool_message.content
+        ), f"Expected JavaScript research result in message, got: {javascript_tool_message.content}"
 
 
 class TestSubAgentsWithStructuredOutput:
@@ -536,7 +594,9 @@ class TestSubAgentsWithStructuredOutput:
 
             city: str = Field(description="Name of the city")
             population: int = Field(description="Total population")
-            metro_area_population: int = Field(description="Metropolitan area population")
+            metro_area_population: int = Field(
+                description="Metropolitan area population"
+            )
 
         # Create parent agent's chat model that calls both subagents in parallel
         parent_chat_model = GenericFakeChatModel(
@@ -567,7 +627,9 @@ class TestSubAgentsWithStructuredOutput:
                         ],
                     ),
                     # Second response: acknowledge both results
-                    AIMessage(content="I've gathered weather and population data for Tokyo."),
+                    AIMessage(
+                        content="I've gathered weather and population data for Tokyo."
+                    ),
                 ]
             )
         )
@@ -648,7 +710,11 @@ class TestSubAgentsWithStructuredOutput:
 
         # Invoke the parent agent
         result = parent_agent.invoke(
-            {"messages": [HumanMessage(content="Tell me about Tokyo's weather and population")]},
+            {
+                "messages": [
+                    HumanMessage(content="Tell me about Tokyo's weather and population")
+                ]
+            },
             config={"configurable": {"thread_id": "test_thread_structured"}},
         )
 
@@ -657,32 +723,38 @@ class TestSubAgentsWithStructuredOutput:
 
         # Find all ToolMessages from the subagents
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) == 2, f"Should have exactly 2 ToolMessages, got {len(tool_messages)}"
+        assert (
+            len(tool_messages) == 2
+        ), f"Should have exactly 2 ToolMessages, got {len(tool_messages)}"
 
         # Create lookup map by tool_call_id
         tool_messages_by_id = {msg.tool_call_id: msg for msg in tool_messages}
 
         # Verify both expected tool call IDs are present
-        assert "call_weather" in tool_messages_by_id, "Should have response from weather subagent"
-        assert "call_population" in tool_messages_by_id, "Should have response from population subagent"
+        assert (
+            "call_weather" in tool_messages_by_id
+        ), "Should have response from weather subagent"
+        assert (
+            "call_population" in tool_messages_by_id
+        ), "Should have response from population subagent"
 
         # Verify that structured_response is NOT in the parent agent's final state
         # (it should be excluded per _EXCLUDED_STATE_KEYS)
-        assert "structured_response" not in result, (
-            "Parent agent state should not contain structured_response key (it should be excluded per _EXCLUDED_STATE_KEYS)"
-        )
+        assert (
+            "structured_response" not in result
+        ), "Parent agent state should not contain structured_response key (it should be excluded per _EXCLUDED_STATE_KEYS)"
 
         # Verify the exact content of the ToolMessages
         # When a subagent uses ToolStrategy for structured output, the default tool message
         # content shows the structured response using the Pydantic model's string representation
         weather_tool_message = tool_messages_by_id["call_weather"]
         expected_weather_content = "Returning structured response: city='Tokyo' temperature_celsius=22.5 humidity_percent=65"
-        assert weather_tool_message.content == expected_weather_content, (
-            f"Expected weather ToolMessage content:\n{expected_weather_content}\nGot:\n{weather_tool_message.content}"
-        )
+        assert (
+            weather_tool_message.content == expected_weather_content
+        ), f"Expected weather ToolMessage content:\n{expected_weather_content}\nGot:\n{weather_tool_message.content}"
 
         population_tool_message = tool_messages_by_id["call_population"]
         expected_population_content = "Returning structured response: city='Tokyo' population=14000000 metro_area_population=37400000"
-        assert population_tool_message.content == expected_population_content, (
-            f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
-        )
+        assert (
+            population_tool_message.content == expected_population_content
+        ), f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"

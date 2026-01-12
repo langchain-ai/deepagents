@@ -38,18 +38,26 @@ class TestValidatePath:
 
     def test_windows_absolute_path_rejected_backslash(self):
         """Test that Windows absolute paths with backslashes are rejected."""
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
+        with pytest.raises(
+            ValueError, match="Windows absolute paths are not supported"
+        ):
             _validate_path("C:\\Users\\Documents\\file.txt")
 
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
+        with pytest.raises(
+            ValueError, match="Windows absolute paths are not supported"
+        ):
             _validate_path("F:\\git\\project\\file.txt")
 
     def test_windows_absolute_path_rejected_forward_slash(self):
         """Test that Windows absolute paths with forward slashes are rejected."""
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
+        with pytest.raises(
+            ValueError, match="Windows absolute paths are not supported"
+        ):
             _validate_path("C:/Users/Documents/file.txt")
 
-        with pytest.raises(ValueError, match="Windows absolute paths are not supported"):
+        with pytest.raises(
+            ValueError, match="Windows absolute paths are not supported"
+        ):
             _validate_path("D:/data/output.csv")
 
     def test_allowed_prefixes_enforcement(self):

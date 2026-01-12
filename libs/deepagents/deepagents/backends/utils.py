@@ -19,7 +19,9 @@ EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 10000
 LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
-TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your parameters]"
+TRUNCATION_GUIDANCE = (
+    "... [results truncated, try being more specific with your parameters]"
+)
 
 # Re-export protocol types for backwards compatibility
 FileInfo = _FileInfo
@@ -76,7 +78,9 @@ def format_content_with_line_numbers(
                 else:
                     # Continuation chunks: use decimal notation (e.g., 5.1, 5.2)
                     continuation_marker = f"{line_num}.{chunk_idx}"
-                    result_lines.append(f"{continuation_marker:>{LINE_NUMBER_WIDTH}}\t{chunk}")
+                    result_lines.append(
+                        f"{continuation_marker:>{LINE_NUMBER_WIDTH}}\t{chunk}"
+                    )
 
     return "\n".join(result_lines)
 
@@ -212,7 +216,9 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     if isinstance(result, list):
         total_chars = sum(len(item) for item in result)
         if total_chars > TOOL_RESULT_TOKEN_LIMIT * 4:
-            return result[: len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars] + [TRUNCATION_GUIDANCE]
+            return result[
+                : len(result) * TOOL_RESULT_TOKEN_LIMIT * 4 // total_chars
+            ] + [TRUNCATION_GUIDANCE]
         return result
     # string
     if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
@@ -286,7 +292,9 @@ def _glob_search_files(
         if not relative:
             relative = file_path.split("/")[-1]
 
-        if wcglob.globmatch(relative, effective_pattern, flags=wcglob.BRACE | wcglob.GLOBSTAR):
+        if wcglob.globmatch(
+            relative, effective_pattern, flags=wcglob.BRACE | wcglob.GLOBSTAR
+        ):
             matches.append((file_path, file_data["modified_at"]))
 
     matches.sort(key=lambda x: x[1], reverse=True)
@@ -331,7 +339,9 @@ def _grep_search_files(
     pattern: str,
     path: str | None = None,
     glob: str | None = None,
-    output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+    output_mode: Literal[
+        "files_with_matches", "content", "count"
+    ] = "files_with_matches",
 ) -> str:
     """Search file contents for regex pattern.
 
@@ -365,7 +375,11 @@ def _grep_search_files(
     filtered = {fp: fd for fp, fd in files.items() if fp.startswith(normalized_path)}
 
     if glob:
-        filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
+        filtered = {
+            fp: fd
+            for fp, fd in filtered.items()
+            if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)
+        }
 
     results: dict[str, list[tuple[int, str]]] = {}
     for file_path, file_data in filtered.items():
@@ -408,7 +422,11 @@ def grep_matches_from_files(
     filtered = {fp: fd for fp, fd in files.items() if fp.startswith(normalized_path)}
 
     if glob:
-        filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
+        filtered = {
+            fp: fd
+            for fp, fd in filtered.items()
+            if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)
+        }
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():
@@ -418,7 +436,9 @@ def grep_matches_from_files(
     return matches
 
 
-def build_grep_results_dict(matches: list[GrepMatch]) -> dict[str, list[tuple[int, str]]]:
+def build_grep_results_dict(
+    matches: list[GrepMatch],
+) -> dict[str, list[tuple[int, str]]]:
     """Group structured matches into the legacy dict form used by formatters."""
     grouped: dict[str, list[tuple[int, str]]] = {}
     for m in matches:

@@ -31,11 +31,17 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     msg = be.edit(str(f1), "fs", "filesystem", replace_all=False)
     assert isinstance(msg, EditResult) and msg.error is None and msg.occurrences == 1
     msg2 = be.write(str(root / "new.txt"), "new content")
-    assert isinstance(msg2, WriteResult) and msg2.error is None and msg2.path.endswith("new.txt")
+    assert (
+        isinstance(msg2, WriteResult)
+        and msg2.error is None
+        and msg2.path.endswith("new.txt")
+    )
 
     # grep_raw
     matches = be.grep_raw("hello", path=str(root))
-    assert isinstance(matches, list) and any(m["path"].endswith("a.txt") for m in matches)
+    assert isinstance(matches, list) and any(
+        m["path"].endswith("a.txt") for m in matches
+    )
 
     # glob_info
     g = be.glob_info("*.py", path=str(root))
@@ -206,7 +212,10 @@ def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
         config={},
     )
 
-    middleware = FilesystemMiddleware(backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=lambda r: FilesystemBackend(root_dir=str(root), virtual_mode=True),
+        tool_token_limit_before_evict=1000,
+    )
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")

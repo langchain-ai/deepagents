@@ -114,7 +114,9 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, tools=[sample_tool])
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content="Use the sample tool")]})
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Use the sample tool")]}
+        )
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -210,7 +212,9 @@ class TestDeepAgentEndToEnd:
         agent = create_deep_agent(model=model, tools=[sample_tool])
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content="Use sample tool twice")]})
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Use sample tool twice")]}
+        )
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -244,7 +248,9 @@ class TestDeepAgentEndToEnd:
 
         with patch("deepagents.graph.init_chat_model", return_value=fake_model):
             # This should not raise AttributeError: 'str' object has no attribute 'profile'
-            agent = create_deep_agent(model="claude-sonnet-4-5-20250929", tools=[sample_tool])
+            agent = create_deep_agent(
+                model="claude-sonnet-4-5-20250929", tools=[sample_tool]
+            )
 
             # Verify agent was created successfully
             assert agent is not None

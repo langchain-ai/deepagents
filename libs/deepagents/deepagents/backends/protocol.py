@@ -352,7 +352,9 @@ class BackendProtocol(abc.ABC):
         replace_all: bool = False,
     ) -> EditResult:
         """Async version of edit."""
-        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
+        return await asyncio.to_thread(
+            self.edit, file_path, old_string, new_string, replace_all
+        )
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
@@ -379,7 +381,9 @@ class BackendProtocol(abc.ABC):
             ```
         """
 
-    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+    async def aupload_files(
+        self, files: list[tuple[str, bytes]]
+    ) -> list[FileUploadResponse]:
         """Async version of upload_files."""
         return await asyncio.to_thread(self.upload_files, files)
 

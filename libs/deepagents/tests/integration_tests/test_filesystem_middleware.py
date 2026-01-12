@@ -16,7 +16,13 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
 )
 
-from ..utils import ResearchMiddleware, get_la_liga_standings, get_nba_standings, get_nfl_standings, get_premier_league_standings
+from ..utils import (
+    ResearchMiddleware,
+    get_la_liga_standings,
+    get_nba_standings,
+    get_nfl_standings,
+    get_premier_league_standings,
+)
 
 
 def build_composite_state_backend(runtime, *, routes):
@@ -42,11 +48,15 @@ class TestFilesystem:
                 )
             ],
         )
-        response = agent.invoke({"messages": [HumanMessage(content="What do you like?")]})
+        response = agent.invoke(
+            {"messages": [HumanMessage(content="What do you like?")]}
+        )
         assert "pokemon" in response["messages"][1].text.lower()
 
     def test_filesystem_system_prompt_override_with_composite_backend(self):
-        backend = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+        backend = lambda rt: build_composite_state_backend(
+            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+        )
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
@@ -57,7 +67,9 @@ class TestFilesystem:
             ],
             store=InMemoryStore(),
         )
-        response = agent.invoke({"messages": [HumanMessage(content="What do you like?")]})
+        response = agent.invoke(
+            {"messages": [HumanMessage(content="What do you like?")]}
+        )
         assert "pizza" in response["messages"][1].text.lower()
 
     def test_filesystem_tool_prompt_override(self):
@@ -89,7 +101,11 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})),
+                    backend=(
+                        lambda rt: build_composite_state_backend(
+                            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                        )
+                    ),
                     custom_tool_descriptions={
                         "ls": "Charmander",
                         "read_file": "Bulbasaur",
@@ -134,7 +150,11 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})),
+                    backend=(
+                        lambda rt: build_composite_state_backend(
+                            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                        )
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -160,7 +180,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        ls_message = next(message for message in messages if message.type == "tool" and message.name == "ls")
+        ls_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "ls"
+        )
         assert "/pizza.txt" in ls_message.text
         assert "/pokemon/squirtle.txt" not in ls_message.text
         assert "/memories/test.txt" not in ls_message.text
@@ -194,7 +218,11 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})),
+                    backend=(
+                        lambda rt: build_composite_state_backend(
+                            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                        )
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -203,7 +231,11 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="List all of your files in the /pokemon directory")],
+                "messages": [
+                    HumanMessage(
+                        content="List all of your files in the /pokemon directory"
+                    )
+                ],
                 "files": {
                     "/pizza.txt": FileData(
                         content=["Hello world"],
@@ -220,7 +252,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        ls_message = next(message for message in messages if message.type == "tool" and message.name == "ls")
+        ls_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "ls"
+        )
         assert "/pokemon/squirtle.txt" in ls_message.text
         assert "/memories/pokemon/charmander.txt" not in ls_message.text
 
@@ -240,7 +276,11 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})),
+                    backend=(
+                        lambda rt: build_composite_state_backend(
+                            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                        )
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -249,7 +289,9 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Read test.txt from the local filesystem")],
+                "messages": [
+                    HumanMessage(content="Read test.txt from the local filesystem")
+                ],
                 "files": {
                     "/test.txt": FileData(
                         content=["Goodbye world"],
@@ -261,7 +303,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        read_file_message = next(message for message in messages if message.type == "tool" and message.name == "read_file")
+        read_file_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "read_file"
+        )
         assert read_file_message is not None
         assert "Goodbye world" in read_file_message.content
 
@@ -281,7 +327,11 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})),
+                    backend=(
+                        lambda rt: build_composite_state_backend(
+                            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                        )
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -290,7 +340,9 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Read test.txt from the memories directory")],
+                "messages": [
+                    HumanMessage(content="Read test.txt from the memories directory")
+                ],
                 "files": {
                     "/test.txt": FileData(
                         content=["Goodbye world"],
@@ -302,7 +354,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        read_file_message = next(message for message in messages if message.type == "tool" and message.name == "read_file")
+        read_file_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "read_file"
+        )
         assert read_file_message is not None
         assert "Hello world" in read_file_message.content
 
@@ -331,7 +387,11 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=(lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})),
+                    backend=(
+                        lambda rt: build_composite_state_backend(
+                            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                        )
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -340,7 +400,11 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Read the contents of the file about charmander from the memories directory.")],
+                "messages": [
+                    HumanMessage(
+                        content="Read the contents of the file about charmander from the memories directory."
+                    )
+                ],
                 "files": {},
             },
             config=config,
@@ -350,7 +414,11 @@ class TestFilesystem:
             message
             for message in messages
             if message.type == "ai"
-            and any(tc["name"] == "read_file" and tc["args"]["file_path"] == "/memories/pokemon/charmander.txt" for tc in message.tool_calls)
+            and any(
+                tc["name"] == "read_file"
+                and tc["args"]["file_path"] == "/memories/pokemon/charmander.txt"
+                for tc in message.tool_calls
+            )
         )
         assert ai_msg_w_toolcall is not None
 
@@ -361,7 +429,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -371,18 +441,26 @@ class TestFilesystem:
         response = agent.invoke(
             {
                 "messages": [
-                    HumanMessage(content="Write a haiku about Charmander to the memories directory in /charmander.txt, use the word 'fiery'")
+                    HumanMessage(
+                        content="Write a haiku about Charmander to the memories directory in /charmander.txt, use the word 'fiery'"
+                    )
                 ],
                 "files": {},
             },
             config=config,
         )
         messages = response["messages"]
-        write_file_message = next(message for message in messages if message.type == "tool" and message.name == "write_file")
+        write_file_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "write_file"
+        )
         assert write_file_message is not None
         file_item = store.get(("filesystem",), "/charmander.txt")
         assert file_item is not None
-        assert any("fiery" in c for c in file_item.value["content"]) or any("Fiery" in c for c in file_item.value["content"])
+        assert any("fiery" in c for c in file_item.value["content"]) or any(
+            "Fiery" in c for c in file_item.value["content"]
+        )
 
     def test_write_file_fail_already_exists_in_store(self):
         checkpointer = MemorySaver()
@@ -400,7 +478,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -409,13 +489,21 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Write a haiku about Charmander to /memories/charmander.txt, use the word 'fiery'")],
+                "messages": [
+                    HumanMessage(
+                        content="Write a haiku about Charmander to /memories/charmander.txt, use the word 'fiery'"
+                    )
+                ],
                 "files": {},
             },
             config=config,
         )
         messages = response["messages"]
-        write_file_message = next(message for message in messages if message.type == "tool" and message.name == "write_file")
+        write_file_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "write_file"
+        )
         assert write_file_message is not None
         assert "Cannot write" in write_file_message.content
 
@@ -426,7 +514,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -435,7 +525,11 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Write a haiku about Charmander to /charmander.txt, use the word 'fiery'")],
+                "messages": [
+                    HumanMessage(
+                        content="Write a haiku about Charmander to /charmander.txt, use the word 'fiery'"
+                    )
+                ],
                 "files": {
                     "/charmander.txt": FileData(
                         content=["Hello world"],
@@ -447,7 +541,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        write_file_message = next(message for message in messages if message.type == "tool" and message.name == "write_file")
+        write_file_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "write_file"
+        )
         assert write_file_message is not None
         assert "Cannot write" in write_file_message.content
 
@@ -467,7 +565,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -486,9 +586,15 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        edit_file_message = next(message for message in messages if message.type == "tool" and message.name == "edit_file")
+        edit_file_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "edit_file"
+        )
         assert edit_file_message is not None
-        assert store.get(("filesystem",), "/charmander.txt").value["content"] == ["The embers burns brightly. The embers burns hot."]
+        assert store.get(("filesystem",), "/charmander.txt").value["content"] == [
+            "The embers burns brightly. The embers burns hot."
+        ]
 
     def test_longterm_memory_multiple_tools(self):
         checkpointer = MemorySaver()
@@ -497,7 +603,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -508,14 +616,20 @@ class TestFilesystem:
     def test_longterm_memory_multiple_tools_deepagent(self):
         checkpointer = MemorySaver()
         store = InMemoryStore()
-        backend = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
-        agent = create_deep_agent(backend=backend, checkpointer=checkpointer, store=store)
+        backend = lambda rt: build_composite_state_backend(
+            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+        )
+        agent = create_deep_agent(
+            backend=backend, checkpointer=checkpointer, store=store
+        )
         assert_longterm_mem_tools(agent, store)
 
     def test_shortterm_memory_multiple_tools_deepagent(self):
         checkpointer = MemorySaver()
         store = InMemoryStore()
-        agent = create_deep_agent(backend=lambda rt: StateBackend(rt), checkpointer=checkpointer, store=store)
+        agent = create_deep_agent(
+            backend=lambda rt: StateBackend(rt), checkpointer=checkpointer, store=store
+        )
         assert_shortterm_mem_tools(agent)
 
     def test_tool_call_with_tokens_exceeding_limit(self):
@@ -529,7 +643,13 @@ class TestFilesystem:
             ],
         )
         response = agent.invoke(
-            {"messages": [HumanMessage(content="Get the NBA standings using your tool. If the tool returns bad results, tell the user.")]}
+            {
+                "messages": [
+                    HumanMessage(
+                        content="Get the NBA standings using your tool. If the tool returns bad results, tell the user."
+                    )
+                ]
+            }
         )
         assert response["messages"][2].type == "tool"
         assert len(response["messages"][2].content) < 10000
@@ -548,7 +668,13 @@ class TestFilesystem:
             ],
         )
         response = agent.invoke(
-            {"messages": [HumanMessage(content="Get the NFL standings using your tool. If the tool returns bad results, tell the user.")]}
+            {
+                "messages": [
+                    HumanMessage(
+                        content="Get the NFL standings using your tool. If the tool returns bad results, tell the user."
+                    )
+                ]
+            }
         )
         assert response["messages"][2].type == "tool"
         assert len(response["messages"][2].content) < 1500
@@ -567,7 +693,13 @@ class TestFilesystem:
             ],
         )
         response = agent.invoke(
-            {"messages": [HumanMessage(content="Get the la liga standings using your tool. If the tool returns bad results, tell the user.")]}
+            {
+                "messages": [
+                    HumanMessage(
+                        content="Get the la liga standings using your tool. If the tool returns bad results, tell the user."
+                    )
+                ]
+            }
         )
         assert response["messages"][2].type == "tool"
         assert len(response["messages"][2].content) < 1500
@@ -589,7 +721,9 @@ class TestFilesystem:
         response = agent.invoke(
             {
                 "messages": [
-                    HumanMessage(content="Get the premier league standings using your tool. If the tool returns bad results, tell the user.")
+                    HumanMessage(
+                        content="Get the premier league standings using your tool. If the tool returns bad results, tell the user."
+                    )
                 ],
             }
         )
@@ -636,7 +770,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        glob_message = next(message for message in messages if message.type == "tool" and message.name == "glob")
+        glob_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "glob"
+        )
         assert "/test.py" in glob_message.content
         assert "/main.py" in glob_message.content
         assert "/readme.txt" not in glob_message.content
@@ -675,7 +813,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -684,13 +824,21 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Use glob to find all Python files in /memories")],
+                "messages": [
+                    HumanMessage(
+                        content="Use glob to find all Python files in /memories"
+                    )
+                ],
                 "files": {},
             },
             config=config,
         )
         messages = response["messages"]
-        glob_message = next(message for message in messages if message.type == "tool" and message.name == "glob")
+        glob_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "glob"
+        )
         assert "/memories/config.py" in glob_message.content
         assert "/memories/settings.py" in glob_message.content
         assert "/memories/notes.txt" not in glob_message.content
@@ -720,7 +868,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -746,7 +896,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        glob_message = next(message for message in messages if message.type == "tool" and message.name == "glob")
+        glob_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "glob"
+        )
         assert "/shortterm.py" in glob_message.content
         assert "/memories/longterm.py" in glob_message.content
         assert "/shortterm.txt" not in glob_message.content
@@ -766,7 +920,11 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Use grep to find all files containing the word 'import'")],
+                "messages": [
+                    HumanMessage(
+                        content="Use grep to find all files containing the word 'import'"
+                    )
+                ],
                 "files": {
                     "/test.py": FileData(
                         content=["import os", "import sys"],
@@ -788,7 +946,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        grep_message = next(message for message in messages if message.type == "tool" and message.name == "grep")
+        grep_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "grep"
+        )
         assert "/test.py" in grep_message.content
         assert "/helper.py" in grep_message.content
         assert "/main.py" not in grep_message.content
@@ -827,7 +989,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -836,13 +1000,21 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Use grep to find all files in the memories directory containing the word 'fire'")],
+                "messages": [
+                    HumanMessage(
+                        content="Use grep to find all files in the memories directory containing the word 'fire'"
+                    )
+                ],
                 "files": {},
             },
             config=config,
         )
         messages = response["messages"]
-        grep_message = next(message for message in messages if message.type == "tool" and message.name == "grep")
+        grep_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "grep"
+        )
         assert "/memories/pokemon/charmander.txt" in grep_message.content
         assert "/memories/pokemon/squirtle.txt" not in grep_message.content
         assert "/memories/pokemon/bulbasaur.txt" not in grep_message.content
@@ -872,7 +1044,9 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))}),
+                    backend=lambda rt: build_composite_state_backend(
+                        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+                    ),
                 )
             ],
             checkpointer=checkpointer,
@@ -881,7 +1055,11 @@ class TestFilesystem:
         config = {"configurable": {"thread_id": uuid.uuid4()}}
         response = agent.invoke(
             {
-                "messages": [HumanMessage(content="Use grep to find all files containing 'DEBUG'")],
+                "messages": [
+                    HumanMessage(
+                        content="Use grep to find all files containing 'DEBUG'"
+                    )
+                ],
                 "files": {
                     "/shortterm_config.py": FileData(
                         content=["DEBUG = False", "VERBOSE = True"],
@@ -898,7 +1076,11 @@ class TestFilesystem:
             config=config,
         )
         messages = response["messages"]
-        grep_message = next(message for message in messages if message.type == "tool" and message.name == "grep")
+        grep_message = next(
+            message
+            for message in messages
+            if message.type == "tool" and message.name == "grep"
+        )
         print(grep_message.content)
         assert "/shortterm_config.py" in grep_message.content
         assert "/memories/longterm_config.py" in grep_message.content
@@ -909,9 +1091,7 @@ class TestFilesystem:
         checkpointer = MemorySaver()
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-20250514"),
-            middleware=[
-                FilesystemMiddleware()  # No backend specified
-            ],
+            middleware=[FilesystemMiddleware()],  # No backend specified
             checkpointer=checkpointer,
         )
         config = {"configurable": {"thread_id": uuid.uuid4()}}
@@ -922,14 +1102,18 @@ class TestFilesystem:
         )
 
         assert "/test.txt" in response["files"]
-        assert any("Hello World" in line for line in response["files"]["/test.txt"]["content"])
+        assert any(
+            "Hello World" in line for line in response["files"]["/test.txt"]["content"]
+        )
 
         response = agent.invoke(
             {"messages": [HumanMessage(content="Read /test.txt")]},
             config=config,
         )
         messages = response["messages"]
-        read_message = next(msg for msg in messages if msg.type == "tool" and msg.name == "read_file")
+        read_message = next(
+            msg for msg in messages if msg.type == "tool" and msg.name == "read_file"
+        )
         assert "Hello World" in read_message.content
 
     def test_execute_tool_filtered_for_non_sandbox_backend(self):
@@ -945,7 +1129,12 @@ class TestFilesystem:
             def wrap_model_call(self, request, handler):
                 # Capture tool names
                 captured_tools.clear()
-                captured_tools.extend([tool.name if hasattr(tool, "name") else tool.get("name") for tool in request.tools])
+                captured_tools.extend(
+                    [
+                        tool.name if hasattr(tool, "name") else tool.get("name")
+                        for tool in request.tools
+                    ]
+                )
                 return handler(request)
 
         # Test with StateBackend (no execution support)
@@ -1078,7 +1267,13 @@ def assert_longterm_mem_tools(agent, store):
     # Write a longterm memory file
     config = {"configurable": {"thread_id": uuid.uuid4()}}
     agent.invoke(
-        {"messages": [HumanMessage(content="Write a haiku about Charmander to /memories/charmander.txt, use the word 'fiery'")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="Write a haiku about Charmander to /memories/charmander.txt, use the word 'fiery'"
+                )
+            ]
+        },
         config=config,
     )
     namespaces = store.list_namespaces()
@@ -1091,42 +1286,80 @@ def assert_longterm_mem_tools(agent, store):
     # Read the longterm memory file
     config2 = {"configurable": {"thread_id": uuid.uuid4()}}
     response = agent.invoke(
-        {"messages": [HumanMessage(content="Read the haiku about Charmander from /memories/charmander.txt")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="Read the haiku about Charmander from /memories/charmander.txt"
+                )
+            ]
+        },
         config=config2,
     )
     messages = response["messages"]
-    read_file_message = next(message for message in messages if message.type == "tool" and message.name == "read_file")
+    read_file_message = next(
+        message
+        for message in messages
+        if message.type == "tool" and message.name == "read_file"
+    )
     assert "fiery" in read_file_message.content or "Fiery" in read_file_message.content
 
     # List all of the files in longterm memory
     config3 = {"configurable": {"thread_id": uuid.uuid4()}}
     response = agent.invoke(
-        {"messages": [HumanMessage(content="List all of the files in the memories directory at /memories")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="List all of the files in the memories directory at /memories"
+                )
+            ]
+        },
         config=config3,
     )
     messages = response["messages"]
-    ls_message = next(message for message in messages if message.type == "tool" and message.name == "ls")
+    ls_message = next(
+        message
+        for message in messages
+        if message.type == "tool" and message.name == "ls"
+    )
     assert "/memories/charmander.txt" in ls_message.content
 
     # Edit the longterm memory file
     config4 = {"configurable": {"thread_id": uuid.uuid4()}}
     response = agent.invoke(
-        {"messages": [HumanMessage(content="Edit the haiku about Charmander at /memories/charmander.txt to use the word 'ember'")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="Edit the haiku about Charmander at /memories/charmander.txt to use the word 'ember'"
+                )
+            ]
+        },
         config=config4,
     )
     file_item = store.get(("filesystem",), "/charmander.txt")
     assert file_item is not None
     assert file_item.key == "/charmander.txt"
-    assert any("ember" in c for c in file_item.value["content"]) or any("Ember" in c for c in file_item.value["content"])
+    assert any("ember" in c for c in file_item.value["content"]) or any(
+        "Ember" in c for c in file_item.value["content"]
+    )
 
     # Read the longterm memory file
     config5 = {"configurable": {"thread_id": uuid.uuid4()}}
     response = agent.invoke(
-        {"messages": [HumanMessage(content="Read the haiku about Charmander at /memories/charmander.txt")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="Read the haiku about Charmander at /memories/charmander.txt"
+                )
+            ]
+        },
         config=config5,
     )
     messages = response["messages"]
-    read_file_message = next(message for message in messages if message.type == "tool" and message.name == "read_file")
+    read_file_message = next(
+        message
+        for message in messages
+        if message.type == "tool" and message.name == "read_file"
+    )
     assert "ember" in read_file_message.content or "Ember" in read_file_message.content
 
 
@@ -1134,7 +1367,13 @@ def assert_shortterm_mem_tools(agent):
     # Write a shortterm memory file
     config = {"configurable": {"thread_id": uuid.uuid4()}}
     response = agent.invoke(
-        {"messages": [HumanMessage(content="Write a haiku about Charmander to /charmander.txt, use the word 'fiery'")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="Write a haiku about Charmander to /charmander.txt, use the word 'fiery'"
+                )
+            ]
+        },
         config=config,
     )
     files = response["files"]
@@ -1142,36 +1381,72 @@ def assert_shortterm_mem_tools(agent):
 
     # Read the shortterm memory file
     response = agent.invoke(
-        {"messages": [HumanMessage(content="Read the haiku about Charmander from /charmander.txt")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="Read the haiku about Charmander from /charmander.txt"
+                )
+            ]
+        },
         config=config,
     )
     messages = response["messages"]
-    read_file_message = next(message for message in reversed(messages) if message.type == "tool" and message.name == "read_file")
+    read_file_message = next(
+        message
+        for message in reversed(messages)
+        if message.type == "tool" and message.name == "read_file"
+    )
     assert "fiery" in read_file_message.content or "Fiery" in read_file_message.content
 
     # List all of the files in shortterm memory
     response = agent.invoke(
-        {"messages": [HumanMessage(content="List all of the files in your filesystem")]},
+        {
+            "messages": [
+                HumanMessage(content="List all of the files in your filesystem")
+            ]
+        },
         config=config,
     )
     messages = response["messages"]
-    ls_message = next(message for message in messages if message.type == "tool" and message.name == "ls")
+    ls_message = next(
+        message
+        for message in messages
+        if message.type == "tool" and message.name == "ls"
+    )
     assert "/charmander.txt" in ls_message.content
 
     # Edit the shortterm memory file
     response = agent.invoke(
-        {"messages": [HumanMessage(content="Edit the haiku about Charmander to use the word 'ember'")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="Edit the haiku about Charmander to use the word 'ember'"
+                )
+            ]
+        },
         config=config,
     )
     files = response["files"]
     assert "/charmander.txt" in files
-    assert any("ember" in c for c in files["/charmander.txt"]["content"]) or any("Ember" in c for c in files["/charmander.txt"]["content"])
+    assert any("ember" in c for c in files["/charmander.txt"]["content"]) or any(
+        "Ember" in c for c in files["/charmander.txt"]["content"]
+    )
 
     # Read the shortterm memory file
     response = agent.invoke(
-        {"messages": [HumanMessage(content="Read the haiku about Charmander at /charmander.txt")]},
+        {
+            "messages": [
+                HumanMessage(
+                    content="Read the haiku about Charmander at /charmander.txt"
+                )
+            ]
+        },
         config=config,
     )
     messages = response["messages"]
-    read_file_message = next(message for message in reversed(messages) if message.type == "tool" and message.name == "read_file")
+    read_file_message = next(
+        message
+        for message in reversed(messages)
+        if message.type == "tool" and message.name == "read_file"
+    )
     assert "ember" in read_file_message.content or "Ember" in read_file_message.content

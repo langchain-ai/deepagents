@@ -12,8 +12,16 @@ from langgraph.types import Overwrite
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
-from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
-from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
+from deepagents.backends.utils import (
+    create_file_data,
+    truncate_if_too_long,
+    update_file_data,
+)
+from deepagents.middleware.filesystem import (
+    FileData,
+    FilesystemMiddleware,
+    FilesystemState,
+)
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 
@@ -32,7 +40,9 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
 class TestAddMiddleware:
     def test_filesystem_middleware(self):
         middleware = [FilesystemMiddleware()]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        agent = create_agent(
+            model="claude-sonnet-4-20250514", middleware=middleware, tools=[]
+        )
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
@@ -43,13 +53,26 @@ class TestAddMiddleware:
         assert "grep" in agent_tools
 
     def test_subagent_middleware(self):
-        middleware = [SubAgentMiddleware(default_tools=[], subagents=[], default_model="claude-sonnet-4-20250514")]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        middleware = [
+            SubAgentMiddleware(
+                default_tools=[], subagents=[], default_model="claude-sonnet-4-20250514"
+            )
+        ]
+        agent = create_agent(
+            model="claude-sonnet-4-20250514", middleware=middleware, tools=[]
+        )
         assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
 
     def test_multiple_middleware(self):
-        middleware = [FilesystemMiddleware(), SubAgentMiddleware(default_tools=[], subagents=[], default_model="claude-sonnet-4-20250514")]
-        agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
+        middleware = [
+            FilesystemMiddleware(),
+            SubAgentMiddleware(
+                default_tools=[], subagents=[], default_model="claude-sonnet-4-20250514"
+            ),
+        ]
+        agent = create_agent(
+            model="claude-sonnet-4-20250514", middleware=middleware, tools=[]
+        )
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
@@ -69,7 +92,9 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_with_composite_backend(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+        backend_factory = lambda rt: build_composite_state_backend(
+            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+        )
         middleware = FilesystemMiddleware(backend=backend_factory)
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
@@ -82,22 +107,33 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_custom_system_prompt_with_composite(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
-        middleware = FilesystemMiddleware(backend=backend_factory, system_prompt="Custom system prompt")
+        backend_factory = lambda rt: build_composite_state_backend(
+            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+        )
+        middleware = FilesystemMiddleware(
+            backend=backend_factory, system_prompt="Custom system prompt"
+        )
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt == "Custom system prompt"
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_custom_tool_descriptions_default(self):
-        middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
+        middleware = FilesystemMiddleware(
+            custom_tool_descriptions={"ls": "Custom ls tool description"}
+        )
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         assert ls_tool.description == "Custom ls tool description"
 
     def test_init_custom_tool_descriptions_with_composite(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
-        middleware = FilesystemMiddleware(backend=backend_factory, custom_tool_descriptions={"ls": "Custom ls tool description"})
+        backend_factory = lambda rt: build_composite_state_backend(
+            rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+        )
+        middleware = FilesystemMiddleware(
+            backend=backend_factory,
+            custom_tool_descriptions={"ls": "Custom ls tool description"},
+        )
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
@@ -122,7 +158,17 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = ls_tool.invoke(
-            {"runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}), "path": "/"}
+            {
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
+                "path": "/",
+            }
         )
         assert result == str(["/test.txt", "/test2.txt"])
 
@@ -157,14 +203,23 @@ class TestFilesystemMiddleware:
         result_raw = ls_tool.invoke(
             {
                 "path": "/pokemon/",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         result = result_raw
         # ls should only return files directly in /pokemon/, not in subdirectories
         assert "/pokemon/test2.txt" in result
         assert "/pokemon/charmander.txt" in result
-        assert "/pokemon/water/squirtle.txt" not in result  # In subdirectory, should NOT be listed
+        assert (
+            "/pokemon/water/squirtle.txt" not in result
+        )  # In subdirectory, should NOT be listed
         # ls should also list subdirectories with trailing /
         assert "/pokemon/water/" in result
 
@@ -200,7 +255,14 @@ class TestFilesystemMiddleware:
         result_raw = ls_tool.invoke(
             {
                 "path": "/",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         result = result_raw
@@ -239,12 +301,21 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         print(glob_search_tool)
         result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         result = result_raw
@@ -273,11 +344,20 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result_raw = glob_search_tool.invoke(
             {
                 "pattern": "**/*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         result = result_raw
@@ -307,12 +387,21 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.py",
                 "path": "/src",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         result = result_raw
@@ -342,11 +431,20 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.{py,pyi}",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         result = result_raw
@@ -366,11 +464,20 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result = glob_search_tool.invoke(
             {
                 "pattern": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         print(glob_search_tool)
@@ -393,11 +500,20 @@ class TestFilesystemMiddleware:
 
         state = FilesystemState(messages=[], files=files)
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result_raw = glob_search_tool.invoke(
             {
                 "pattern": "*.txt",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
 
@@ -433,11 +549,20 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = grep_search_tool.invoke(
             {
                 "pattern": "import",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/test.py" in result
@@ -456,12 +581,21 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = grep_search_tool.invoke(
             {
                 "pattern": "import",
                 "output_mode": "content",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "1: import os" in result
@@ -485,12 +619,21 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = grep_search_tool.invoke(
             {
                 "pattern": "import",
                 "output_mode": "count",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/test.py:2" in result or "/test.py: 2" in result
@@ -513,12 +656,21 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = grep_search_tool.invoke(
             {
                 "pattern": "import",
                 "glob": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/test.py" in result
@@ -541,12 +693,21 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = grep_search_tool.invoke(
             {
                 "pattern": "import",
                 "path": "/src",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/src/main.py" in result
@@ -564,12 +725,21 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = grep_search_tool.invoke(
             {
                 "pattern": r"def \w+\(",
                 "output_mode": "content",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         print(result)
@@ -589,11 +759,20 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = grep_search_tool.invoke(
             {
                 "pattern": "import",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert result == "No matches found"
@@ -610,11 +789,20 @@ class TestFilesystemMiddleware:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = grep_search_tool.invoke(
             {
                 "pattern": "[invalid",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "Invalid regex pattern" in result
@@ -639,7 +827,9 @@ class TestFilesystemMiddleware:
                 },
             )
 
-        result = StoreBackend._search_store_paginated(self, store, ("filesystem",), page_size=10)
+        result = StoreBackend._search_store_paginated(
+            self, store, ("filesystem",), page_size=10
+        )
         assert len(result) == 5
         # Check that all files are present (order may vary)
         keys = {item.key for item in result}
@@ -659,7 +849,9 @@ class TestFilesystemMiddleware:
                 },
             )
 
-        result = StoreBackend._search_store_paginated(self, store, ("filesystem",), page_size=10)
+        result = StoreBackend._search_store_paginated(
+            self, store, ("filesystem",), page_size=10
+        )
         assert len(result) == 10
         keys = {item.key for item in result}
         assert keys == {f"/file{i}.txt" for i in range(10)}
@@ -678,7 +870,9 @@ class TestFilesystemMiddleware:
                 },
             )
 
-        result = StoreBackend._search_store_paginated(self, store, ("filesystem",), page_size=100)
+        result = StoreBackend._search_store_paginated(
+            self, store, ("filesystem",), page_size=100
+        )
         assert len(result) == 250
         keys = {item.key for item in result}
         assert keys == {f"/file{i}.txt" for i in range(250)}
@@ -699,7 +893,9 @@ class TestFilesystemMiddleware:
             )
 
         # Filter for type="test" (every other item, so 10 items)
-        result = StoreBackend._search_store_paginated(self, store, ("filesystem",), filter={"type": "test"}, page_size=5)
+        result = StoreBackend._search_store_paginated(
+            self, store, ("filesystem",), filter={"type": "test"}, page_size=5
+        )
         assert len(result) == 10
         # Verify all returned items have type="test"
         for item in result:
@@ -720,7 +916,9 @@ class TestFilesystemMiddleware:
                 },
             )
 
-        result = StoreBackend._search_store_paginated(self, store, ("filesystem",), page_size=20)
+        result = StoreBackend._search_store_paginated(
+            self, store, ("filesystem",), page_size=20
+        )
         # Should make 3 calls: 20, 20, 15
         assert len(result) == 55
         keys = {item.key for item in result}
@@ -858,7 +1056,14 @@ class TestFilesystemMiddleware:
         """Test that small ToolMessages pass through unchanged."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_123",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
@@ -872,7 +1077,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_123",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -888,7 +1100,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_123",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         small_content = "x" * 1000
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
@@ -904,7 +1123,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_123",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
@@ -921,12 +1147,27 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_123",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         large_content = "z" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        existing_file = FileData(content=["existing"], created_at="2021-01-01", modified_at="2021-01-01")
-        command = Command(update={"messages": [tool_message], "files": {"/existing.txt": existing_file}, "custom_key": "custom_value"})
+        existing_file = FileData(
+            content=["existing"], created_at="2021-01-01", modified_at="2021-01-01"
+        )
+        command = Command(
+            update={
+                "messages": [tool_message],
+                "files": {"/existing.txt": existing_file},
+                "custom_key": "custom_value",
+            }
+        )
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
@@ -948,7 +1189,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_123",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         large_content = "x" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test/call.id")
@@ -963,7 +1211,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_cb", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_cb",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         # Create list with content block with large text
         content_blocks = [{"type": "text", "text": "x" * 5000}]
@@ -981,7 +1236,14 @@ class TestFilesystemMiddleware:
         """Test that content blocks with small text are not evicted."""
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_small_cb", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_small_cb",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         # Create list with content block with small text
         content_blocks = [{"type": "text", "text": "small text"}]
@@ -998,7 +1260,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_other", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_other",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         # Create list with content block with different type that's large when stringified
         content_blocks = [{"type": "image", "data": "x" * 5000}]
@@ -1015,7 +1284,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_list", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_list",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         # Create list content that's large when stringified
         list_content = [{"key": "x" * 1000} for _ in range(50)]
@@ -1032,7 +1308,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_single", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_single",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         # Create single text block with large text
         content_blocks = [{"type": "text", "text": "Hello world! " * 1000}]
@@ -1041,7 +1324,9 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         # Check that the file contains actual text, not stringified dict
-        file_content = result.update["files"]["/large_tool_results/test_single"]["content"]
+        file_content = result.update["files"]["/large_tool_results/test_single"][
+            "content"
+        ]
         file_text = "\n".join(file_content)
         # Should start with the actual text, not with "[{" which would indicate stringified dict
         assert file_text.startswith("Hello world!")
@@ -1053,7 +1338,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_multi", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_multi",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         # Create multiple text blocks
         content_blocks = [
@@ -1065,7 +1357,9 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         # Check that the file contains stringified structure (starts with "[")
-        file_content = result.update["files"]["/large_tool_results/test_multi"]["content"]
+        file_content = result.update["files"]["/large_tool_results/test_multi"][
+            "content"
+        ]
         file_text = "\n".join(file_content)
         # Should be stringified list of dicts
         assert file_text.startswith("[{")
@@ -1076,7 +1370,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_mixed", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_mixed",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         # Create mixed content blocks
         content_blocks = [
@@ -1088,7 +1389,9 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, Command)
         # Check that the file contains stringified structure
-        file_content = result.update["files"]["/large_tool_results/test_mixed"]["content"]
+        file_content = result.update["files"]["/large_tool_results/test_mixed"][
+            "content"
+        ]
         file_text = "\n".join(file_content)
         assert file_text.startswith("[{")
         # Should contain both blocks in the stringified output
@@ -1098,7 +1401,9 @@ class TestFilesystemMiddleware:
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})
-        middleware = FilesystemMiddleware()  # Default StateBackend doesn't support execution
+        middleware = (
+            FilesystemMiddleware()
+        )  # Default StateBackend doesn't support execution
 
         # Find the execute tool
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
@@ -1272,7 +1577,14 @@ class TestFilesystemMiddleware:
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_123",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
 
         # Create content with multiple lines, some longer than 1000 chars
         line1 = "short line"
@@ -1309,7 +1621,9 @@ class TestFilesystemMiddleware:
         for i in range(sample_start_idx, len(lines)):
             line = lines[i]
             if line.strip():  # Skip empty lines
-                assert len(line) <= 1010, f"Line {i} exceeds 1000 chars: {len(line)} chars"
+                assert (
+                    len(line) <= 1010
+                ), f"Line {i} exceeds 1000 chars: {len(line)} chars"
 
 
 class TestPatchToolCallsMiddleware:
@@ -1336,7 +1650,13 @@ class TestPatchToolCallsMiddleware:
             HumanMessage(content="Hello, how are you?", id="2"),
             AIMessage(
                 content="I'm doing well, thank you!",
-                tool_calls=[ToolCall(id="123", name="get_events_for_days", args={"date_str": "2025-01-01"})],
+                tool_calls=[
+                    ToolCall(
+                        id="123",
+                        name="get_events_for_days",
+                        args={"date_str": "2025-01-01"},
+                    )
+                ],
                 id="3",
             ),
             HumanMessage(content="What is the weather in Tokyo?", id="4"),
@@ -1368,10 +1688,18 @@ class TestPatchToolCallsMiddleware:
             HumanMessage(content="Hello, how are you?", id="2"),
             AIMessage(
                 content="I'm doing well, thank you!",
-                tool_calls=[ToolCall(id="123", name="get_events_for_days", args={"date_str": "2025-01-01"})],
+                tool_calls=[
+                    ToolCall(
+                        id="123",
+                        name="get_events_for_days",
+                        args={"date_str": "2025-01-01"},
+                    )
+                ],
                 id="3",
             ),
-            ToolMessage(content="I have no events for that date.", tool_call_id="123", id="4"),
+            ToolMessage(
+                content="I have no events for that date.", tool_call_id="123", id="4"
+            ),
             HumanMessage(content="What is the weather in Tokyo?", id="5"),
         ]
         middleware = PatchToolCallsMiddleware()
@@ -1400,13 +1728,25 @@ class TestPatchToolCallsMiddleware:
             HumanMessage(content="Hello, how are you?", id="2"),
             AIMessage(
                 content="I'm doing well, thank you!",
-                tool_calls=[ToolCall(id="123", name="get_events_for_days", args={"date_str": "2025-01-01"})],
+                tool_calls=[
+                    ToolCall(
+                        id="123",
+                        name="get_events_for_days",
+                        args={"date_str": "2025-01-01"},
+                    )
+                ],
                 id="3",
             ),
             HumanMessage(content="What is the weather in Tokyo?", id="4"),
             AIMessage(
                 content="I'm doing well, thank you!",
-                tool_calls=[ToolCall(id="456", name="get_events_for_days", args={"date_str": "2025-01-01"})],
+                tool_calls=[
+                    ToolCall(
+                        id="456",
+                        name="get_events_for_days",
+                        args={"date_str": "2025-01-01"},
+                    )
+                ],
                 id="5",
             ),
             HumanMessage(content="What is the weather in Tokyo?", id="6"),

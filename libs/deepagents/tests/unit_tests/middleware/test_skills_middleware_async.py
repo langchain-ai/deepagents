@@ -321,7 +321,9 @@ async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -
     assert result is None
 
 
-async def test_agent_with_skills_middleware_multiple_sources_async(tmp_path: Path) -> None:
+async def test_agent_with_skills_middleware_multiple_sources_async(
+    tmp_path: Path,
+) -> None:
     """Test agent with skills from multiple sources (async)."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
@@ -344,7 +346,9 @@ async def test_agent_with_skills_middleware_multiple_sources_async(tmp_path: Pat
     assert all(r.error is None for r in responses)
 
     # Create fake model
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I see both skills.")]))
+    fake_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="I see both skills.")])
+    )
 
     # Create middleware with multiple sources
     sources = [
@@ -383,7 +387,9 @@ async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) 
     skills_dir.mkdir()
 
     # Create fake model
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Working without skills.")]))
+    fake_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="Working without skills.")])
+    )
 
     # Create middleware with empty directory
     middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])

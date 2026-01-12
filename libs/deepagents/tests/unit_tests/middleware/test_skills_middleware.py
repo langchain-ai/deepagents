@@ -155,7 +155,9 @@ description: Minimal skill
 # Minimal Skill
 """
 
-    result = _parse_skill_metadata(content, "/skills/minimal-skill/SKILL.md", "minimal-skill")
+    result = _parse_skill_metadata(
+        content, "/skills/minimal-skill/SKILL.md", "minimal-skill"
+    )
 
     assert result == {
         "name": "minimal-skill",
@@ -240,7 +242,9 @@ name: test-skill
 description: Test
 ---
 
-""" + ("X" * MAX_SKILL_FILE_SIZE)
+""" + (
+        "X" * MAX_SKILL_FILE_SIZE
+    )
 
     result = _parse_skill_metadata(large_content, "/skills/test/SKILL.md", "test-skill")
     assert result is None
@@ -706,7 +710,9 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     fake_model = GenericFakeChatModel(
         messages=iter(
             [
-                AIMessage(content="I have processed your request using the test-skill."),
+                AIMessage(
+                    content="I have processed your request using the test-skill."
+                ),
             ]
         )
     )
@@ -725,14 +731,18 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     )
 
     # Invoke the agent
-    result = agent.invoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Hello, please help me.")]}
+    )
 
     # Verify the agent was invoked
     assert "messages" in result
     assert len(result["messages"]) > 0
 
     # Inspect the call history to verify system prompt was injected
-    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+    assert (
+        len(fake_model.call_history) > 0
+    ), "Model should have been called at least once"
 
     # Get the first call
     first_call = fake_model.call_history[0]
@@ -741,7 +751,9 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     system_message = messages[0]
     assert system_message.type == "system", "First message should be system prompt"
     content = system_message.text
-    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert (
+        "Skills System" in content
+    ), "System prompt should contain 'Skills System' section"
     assert "test-skill" in content, "System prompt should mention the skill name"
 
 
@@ -821,7 +833,9 @@ async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
     fake_model = GenericFakeChatModel(
         messages=iter(
             [
-                AIMessage(content="I have processed your async request using the async-skill."),
+                AIMessage(
+                    content="I have processed your async request using the async-skill."
+                ),
             ]
         )
     )
@@ -840,17 +854,23 @@ async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
     )
 
     # Invoke the agent asynchronously
-    result = await agent.ainvoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="Hello, please help me.")]}
+    )
 
     # Verify the agent was invoked
     assert "messages" in result
     assert len(result["messages"]) > 0
 
     # Verify skills_metadata is NOT in final state (it's a PrivateStateAttr)
-    assert "skills_metadata" not in result, "skills_metadata should be private and not in final state"
+    assert (
+        "skills_metadata" not in result
+    ), "skills_metadata should be private and not in final state"
 
     # Inspect the call history to verify system prompt was injected
-    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+    assert (
+        len(fake_model.call_history) > 0
+    ), "Model should have been called at least once"
 
     # Get the first call
     first_call = fake_model.call_history[0]
@@ -859,11 +879,15 @@ async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
     system_message = messages[0]
     assert system_message.type == "system", "First message should be system prompt"
     content = system_message.text
-    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert (
+        "Skills System" in content
+    ), "System prompt should contain 'Skills System' section"
     assert "async-skill" in content, "System prompt should mention the skill name"
 
 
-def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Path) -> None:
+def test_agent_with_skills_middleware_multiple_registries_override(
+    tmp_path: Path,
+) -> None:
     """Test skills middleware with multiple sources where later sources override earlier ones."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
@@ -875,7 +899,9 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     user_skill_path = str(user_dir / "shared-skill" / "SKILL.md")
 
     base_content = make_skill_content("shared-skill", "Base registry description")
-    user_content = make_skill_content("shared-skill", "User registry description - should win")
+    user_content = make_skill_content(
+        "shared-skill", "User registry description - should win"
+    )
 
     responses = backend.upload_files(
         [
@@ -911,17 +937,23 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     )
 
     # Invoke the agent
-    result = agent.invoke({"messages": [HumanMessage(content="Hello, please help me.")]})
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Hello, please help me.")]}
+    )
 
     # Verify the agent was invoked
     assert "messages" in result
     assert len(result["messages"]) > 0
 
     # Verify skills_metadata is NOT in final state (it's a PrivateStateAttr)
-    assert "skills_metadata" not in result, "skills_metadata should be private and not in final state"
+    assert (
+        "skills_metadata" not in result
+    ), "skills_metadata should be private and not in final state"
 
     # Inspect the call history to verify system prompt was injected with USER version
-    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+    assert (
+        len(fake_model.call_history) > 0
+    ), "Model should have been called at least once"
 
     # Get the first call
     first_call = fake_model.call_history[0]
@@ -930,10 +962,16 @@ def test_agent_with_skills_middleware_multiple_registries_override(tmp_path: Pat
     system_message = messages[0]
     assert system_message.type == "system", "First message should be system prompt"
     content = system_message.text
-    assert "Skills System" in content, "System prompt should contain 'Skills System' section"
+    assert (
+        "Skills System" in content
+    ), "System prompt should contain 'Skills System' section"
     assert "shared-skill" in content, "System prompt should mention the skill name"
-    assert "User registry description - should win" in content, "Should use user source description"
-    assert "Base registry description" not in content, "Should not contain base source description"
+    assert (
+        "User registry description - should win" in content
+    ), "Should use user source description"
+    assert (
+        "Base registry description" not in content
+    ), "Should not contain base source description"
 
 
 def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
@@ -1003,11 +1041,17 @@ def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) ->
     agent = create_deep_agent(
         backend=backend,
         skills=[str(skills_dir)],
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="I see the test-skill in the system prompt.")])),
+        model=GenericFakeChatModel(
+            messages=iter(
+                [AIMessage(content="I see the test-skill in the system prompt.")]
+            )
+        ),
     )
 
     # Invoke agent
-    result = agent.invoke({"messages": [HumanMessage(content="What skills are available?")]})
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="What skills are available?")]}
+    )
 
     # Verify invocation succeeded
     assert "messages" in result
@@ -1025,11 +1069,15 @@ def test_create_deep_agent_with_skills_empty_directory(tmp_path: Path) -> None:
     agent = create_deep_agent(
         backend=backend,
         skills=[str(skills_dir)],
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="No skills found, but that's okay.")])),
+        model=GenericFakeChatModel(
+            messages=iter([AIMessage(content="No skills found, but that's okay.")])
+        ),
     )
 
     # Invoke agent
-    result = agent.invoke({"messages": [HumanMessage(content="What skills are available?")]})
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="What skills are available?")]}
+    )
 
     # Verify invocation succeeded even without skills
     assert "messages" in result
@@ -1047,7 +1095,9 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
     checkpointer = InMemorySaver()
     agent = create_deep_agent(
         skills=["/skills/user"],
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="Working with default backend.")])),
+        model=GenericFakeChatModel(
+            messages=iter([AIMessage(content="Working with default backend.")])
+        ),
         checkpointer=checkpointer,
     )
 
@@ -1143,7 +1193,9 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore
 
     assert result_2 is not None
-    assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
+    assert (
+        len(result_2["skills_metadata"]) == 0
+    )  # No skills in assistant-456's namespace yet
 
     # Add skill for assistant-456 with namespace (assistant-456, filesystem)
     assistant_2_skill = make_skill_content("skill-two", "Skill for assistant 2")
@@ -1215,7 +1267,9 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
 
     # Add skill for assistant-123 with namespace (assistant-123, filesystem)
-    assistant_1_skill = make_skill_content("async-skill-one", "Async skill for assistant 1")
+    assistant_1_skill = make_skill_content(
+        "async-skill-one", "Async skill for assistant 1"
+    )
     store.put(
         ("assistant-123", "filesystem"),
         "/skills/user/async-skill-one/SKILL.md",
@@ -1229,17 +1283,23 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
     assert result_1["skills_metadata"][0]["name"] == "async-skill-one"
-    assert result_1["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+    assert (
+        result_1["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+    )
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
     config_2 = {"metadata": {"assistant_id": "assistant-456"}}
     result_2 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore
 
     assert result_2 is not None
-    assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
+    assert (
+        len(result_2["skills_metadata"]) == 0
+    )  # No skills in assistant-456's namespace yet
 
     # Add skill for assistant-456 with namespace (assistant-456, filesystem)
-    assistant_2_skill = make_skill_content("async-skill-two", "Async skill for assistant 2")
+    assistant_2_skill = make_skill_content(
+        "async-skill-two", "Async skill for assistant 2"
+    )
     store.put(
         ("assistant-456", "filesystem"),
         "/skills/user/async-skill-two/SKILL.md",
@@ -1252,7 +1312,9 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
     assert result_3["skills_metadata"][0]["name"] == "async-skill-two"
-    assert result_3["skills_metadata"][0]["description"] == "Async skill for assistant 2"
+    assert (
+        result_3["skills_metadata"][0]["description"] == "Async skill for assistant 2"
+    )
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
     result_4 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore
@@ -1260,4 +1322,6 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1
     assert result_4["skills_metadata"][0]["name"] == "async-skill-one"
-    assert result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+    assert (
+        result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+    )

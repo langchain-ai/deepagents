@@ -67,7 +67,9 @@ class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
 async def test_composite_state_backend_routes_and_search_async(tmp_path: Path):
     """Test async operations with composite backend routing."""
     rt = make_runtime("t3")
-    be = build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+    be = build_composite_state_backend(
+        rt, routes={"/memories/": (lambda r: StoreBackend(r))}
+    )
 
     # write to default (state)
     res = await be.awrite("/file.txt", "alpha")
@@ -75,7 +77,9 @@ async def test_composite_state_backend_routes_and_search_async(tmp_path: Path):
 
     # write to routed (store)
     msg = await be.awrite("/memories/readme.md", "beta")
-    assert isinstance(msg, WriteResult) and msg.error is None and msg.files_update is None
+    assert (
+        isinstance(msg, WriteResult) and msg.error is None and msg.files_update is None
+    )
 
     # als_info at root returns both
     infos = await be.als_info("/")
@@ -132,15 +136,25 @@ async def test_composite_backend_store_to_store_async():
     default_store = StoreBackend(rt)
     memories_store = StoreBackend(rt)
 
-    comp = CompositeBackend(default=default_store, routes={"/memories/": memories_store})
+    comp = CompositeBackend(
+        default=default_store, routes={"/memories/": memories_store}
+    )
 
     # Write to default store
     res1 = await comp.awrite("/notes.txt", "default store content")
-    assert isinstance(res1, WriteResult) and res1.error is None and res1.path == "/notes.txt"
+    assert (
+        isinstance(res1, WriteResult)
+        and res1.error is None
+        and res1.path == "/notes.txt"
+    )
 
     # Write to routed store
     res2 = await comp.awrite("/memories/important.txt", "routed store content")
-    assert isinstance(res2, WriteResult) and res2.error is None and res2.path == "/important.txt"
+    assert (
+        isinstance(res2, WriteResult)
+        and res2.error is None
+        and res2.path == "/important.txt"
+    )
 
     # Read from both
     content1 = await comp.aread("/notes.txt")
@@ -224,7 +238,9 @@ async def test_composite_backend_multiple_routes_async():
     assert any(i["path"] == "/memories/important.md" for i in glob_results)
 
     # Edit in routed backend
-    edit_res = await comp.aedit("/memories/important.md", "long-term", "persistent", replace_all=False)
+    edit_res = await comp.aedit(
+        "/memories/important.md", "long-term", "persistent", replace_all=False
+    )
     assert edit_res.error is None
     assert edit_res.occurrences == 1
 
@@ -544,7 +560,9 @@ async def test_composite_aupload_download_multiple_routes_async(tmp_path: Path):
     store1 = StoreBackend(rt)
     store2 = StoreBackend(rt)
 
-    comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
+    comp = CompositeBackend(
+        default=fs, routes={"/memories/": store1, "/archive/": store2}
+    )
 
     # Upload to different backends
     files = [
@@ -646,7 +664,9 @@ async def test_composite_agrep_with_glob_filter_async(tmp_path: Path) -> None:
     assert not any(".md" in p for p in match_paths)
 
 
-async def test_composite_agrep_with_glob_in_specific_route_async(tmp_path: Path) -> None:
+async def test_composite_agrep_with_glob_in_specific_route_async(
+    tmp_path: Path,
+) -> None:
     """Test async grep with glob parameter targeting a specific route."""
     rt = make_runtime("t_agrep3")
     root = tmp_path
@@ -832,7 +852,9 @@ async def test_composite_agrep_multiple_matches_per_file_async(tmp_path: Path) -
     "causing files written to one route to appear in all routes that use the same backend instance. "
     "This violates the expected isolation between routes."
 )
-async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path) -> None:
+async def test_composite_agrep_multiple_routes_aggregation_async(
+    tmp_path: Path,
+) -> None:
     """Test async grep aggregates results from multiple routed backends with expected isolation.
 
     This test represents the intuitive expected behavior: files written to /memories/
@@ -848,7 +870,9 @@ async def test_composite_agrep_multiple_routes_aggregation_async(tmp_path: Path)
     store1 = StoreBackend(rt)
     store2 = StoreBackend(rt)
 
-    comp = CompositeBackend(default=fs, routes={"/memories/": store1, "/archive/": store2})
+    comp = CompositeBackend(
+        default=fs, routes={"/memories/": store1, "/archive/": store2}
+    )
 
     # Write to each route
     await comp.awrite("/memories/mem.txt", "memory findme")
@@ -876,7 +900,9 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep_raw(
+            self, pattern: str, path: str | None = None, glob: str | None = None
+        ):
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend(rt)
@@ -895,7 +921,9 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep_raw(
+            self, pattern: str, path: str | None = None, glob: str | None = None
+        ):
             return "Backend error occurred"
 
     error_backend = ErrorBackend(rt)
@@ -914,7 +942,9 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StateBackend):
-        async def agrep_raw(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep_raw(
+            self, pattern: str, path: str | None = None, glob: str | None = None
+        ):
             return "Default backend error"
 
     error_default = ErrorDefaultBackend(rt)
@@ -927,7 +957,9 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
     assert result == "Default backend error"
 
 
-async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: Path) -> None:
+async def test_composite_agrep_non_root_path_on_default_backend_async(
+    tmp_path: Path,
+) -> None:
     """Test async grep with non-root path on default backend."""
     rt = make_runtime("t_agrep_default")
     root = tmp_path

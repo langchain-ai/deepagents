@@ -6,7 +6,11 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
-from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
+from deepagents.middleware.filesystem import (
+    FileData,
+    FilesystemMiddleware,
+    FilesystemState,
+)
 
 
 def build_composite_state_backend(runtime: ToolRuntime, *, routes):
@@ -44,7 +48,17 @@ class TestFilesystemMiddlewareAsync:
         middleware = FilesystemMiddleware()
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = await ls_tool.ainvoke(
-            {"runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}), "path": "/"}
+            {
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
+                "path": "/",
+            }
         )
         assert result == str(["/test.txt", "/test2.txt"])
 
@@ -81,7 +95,14 @@ class TestFilesystemMiddlewareAsync:
         result = await ls_tool.ainvoke(
             {
                 "path": "/pokemon/",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         # ls should only return files directly in /pokemon/, not in subdirectories
@@ -123,7 +144,14 @@ class TestFilesystemMiddlewareAsync:
         result = await ls_tool.ainvoke(
             {
                 "path": "/",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         # ls should list both files and directories at root level
@@ -163,11 +191,20 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result = await glob_search_tool.ainvoke(
             {
                 "pattern": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         # Standard glob: *.py only matches files in root directory, not subdirectories
@@ -197,11 +234,20 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result = await glob_search_tool.ainvoke(
             {
                 "pattern": "**/*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/src/main.py" in result
@@ -232,12 +278,21 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result = await glob_search_tool.ainvoke(
             {
                 "pattern": "*.py",
                 "path": "/src",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/src/main.py" in result
@@ -268,11 +323,20 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result = await glob_search_tool.ainvoke(
             {
                 "pattern": "*.{py,pyi}",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/test.py" in result
@@ -293,11 +357,20 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        glob_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "glob"
+        )
         result = await glob_search_tool.ainvoke(
             {
                 "pattern": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert result == str([])
@@ -326,11 +399,20 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": "import",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/test.py" in result
@@ -351,12 +433,21 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": "import",
                 "output_mode": "content",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "1: import os" in result
@@ -382,12 +473,21 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": "import",
                 "output_mode": "count",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/test.py:2" in result or "/test.py: 2" in result
@@ -412,12 +512,21 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": "import",
                 "glob": "*.py",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/test.py" in result
@@ -442,12 +551,21 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": "import",
                 "path": "/src",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "/src/main.py" in result
@@ -467,12 +585,21 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": r"def \w+\(",
                 "output_mode": "content",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "1: def hello():" in result
@@ -493,11 +620,20 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": "import",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert result == "No matches found"
@@ -516,11 +652,20 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        grep_search_tool = next(
+            tool for tool in middleware.tools if tool.name == "grep"
+        )
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": "[invalid",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "Invalid regex pattern" in result
@@ -539,11 +684,20 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        read_file_tool = next(
+            tool for tool in middleware.tools if tool.name == "read_file"
+        )
         result = await read_file_tool.ainvoke(
             {
                 "file_path": "/test.txt",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "Hello world" in result
@@ -564,13 +718,22 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        read_file_tool = next(
+            tool for tool in middleware.tools if tool.name == "read_file"
+        )
         result = await read_file_tool.ainvoke(
             {
                 "file_path": "/test.txt",
                 "offset": 1,
                 "limit": 2,
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert "Line 2" in result
@@ -585,12 +748,21 @@ class TestFilesystemMiddlewareAsync:
 
         state = FilesystemState(messages=[], files={})
         middleware = FilesystemMiddleware()
-        write_file_tool = next(tool for tool in middleware.tools if tool.name == "write_file")
+        write_file_tool = next(
+            tool for tool in middleware.tools if tool.name == "write_file"
+        )
         result = await write_file_tool.ainvoke(
             {
                 "file_path": "/test.txt",
                 "content": "Hello world",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="tc1",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         # StateBackend returns a Command with files_update
@@ -613,13 +785,22 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        edit_file_tool = next(tool for tool in middleware.tools if tool.name == "edit_file")
+        edit_file_tool = next(
+            tool for tool in middleware.tools if tool.name == "edit_file"
+        )
         result = await edit_file_tool.ainvoke(
             {
                 "file_path": "/test.txt",
                 "old_string": "Hello",
                 "new_string": "Hi",
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="tc2",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         # StateBackend returns a Command with files_update
@@ -642,14 +823,23 @@ class TestFilesystemMiddlewareAsync:
             },
         )
         middleware = FilesystemMiddleware()
-        edit_file_tool = next(tool for tool in middleware.tools if tool.name == "edit_file")
+        edit_file_tool = next(
+            tool for tool in middleware.tools if tool.name == "edit_file"
+        )
         result = await edit_file_tool.ainvoke(
             {
                 "file_path": "/test.txt",
                 "old_string": "Hello",
                 "new_string": "Hi",
                 "replace_all": True,
-                "runtime": ToolRuntime(state=state, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(
+                    state=state,
+                    context=None,
+                    tool_call_id="tc3",
+                    store=None,
+                    stream_writer=lambda _: None,
+                    config={},
+                ),
             }
         )
         assert isinstance(result, Command)
@@ -659,7 +849,9 @@ class TestFilesystemMiddlewareAsync:
     async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):
         """Test async execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})
-        middleware = FilesystemMiddleware()  # Default StateBackend doesn't support execution
+        middleware = (
+            FilesystemMiddleware()
+        )  # Default StateBackend doesn't support execution
 
         # Find the execute tool
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
@@ -807,7 +999,9 @@ class TestFilesystemMiddlewareAsync:
         middleware = FilesystemMiddleware(backend=backend)
 
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
-        result = await execute_tool.ainvoke({"command": "cat large_file", "runtime": rt})
+        result = await execute_tool.ainvoke(
+            {"command": "cat large_file", "runtime": rt}
+        )
 
         assert "Async Very long output..." in result
         assert "truncated" in result

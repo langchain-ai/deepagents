@@ -136,7 +136,10 @@ def test_format_agent_memory_preserves_order() -> None:
         ],
     )
     # Dict order doesn't match sources order
-    contents = {"/second/AGENTS.md": "Second content", "/first/AGENTS.md": "First content"}
+    contents = {
+        "/second/AGENTS.md": "Second content",
+        "/first/AGENTS.md": "First content",
+    }
     result = middleware._format_agent_memory(contents)
 
     # First should appear before second (based on sources order, not dict order)
@@ -231,8 +234,12 @@ def test_load_memory_from_backend_multiple_sources(tmp_path: Path) -> None:
     user_path = str(tmp_path / "user" / "AGENTS.md")
     project_path = str(tmp_path / "project" / "AGENTS.md")
 
-    user_content = make_memory_content("User Preferences", "- Use Python 3.11+\n- Follow PEP 8")
-    project_content = make_memory_content("Project Guidelines", "## Architecture\nThis is a FastAPI project.")
+    user_content = make_memory_content(
+        "User Preferences", "- Use Python 3.11+\n- Follow PEP 8"
+    )
+    project_content = make_memory_content(
+        "Project Guidelines", "## Architecture\nThis is a FastAPI project."
+    )
 
     responses = backend.upload_files(
         [
@@ -415,7 +422,9 @@ def test_agent_with_memory_middleware_system_prompt(tmp_path: Path) -> None:
     assert responses[0].error is None
 
     # Create a fake chat model that we can inspect
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I understand your preferences.")]))
+    fake_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="I understand your preferences.")])
+    )
 
     # Create middleware
     sources: list[str] = [memory_path]
@@ -435,7 +444,9 @@ def test_agent_with_memory_middleware_system_prompt(tmp_path: Path) -> None:
     assert len(result["messages"]) > 0
 
     # Inspect the call history to verify system prompt was injected
-    assert len(fake_model.call_history) > 0, "Model should have been called at least once"
+    assert (
+        len(fake_model.call_history) > 0
+    ), "Model should have been called at least once"
 
     # Get the first call
     first_call = fake_model.call_history[0]
@@ -444,7 +455,9 @@ def test_agent_with_memory_middleware_system_prompt(tmp_path: Path) -> None:
     system_message = messages[0]
     assert system_message.type == "system", "First message should be system prompt"
     content = system_message.text
-    assert "<agent_memory>" in content, "System prompt should contain <agent_memory> tags"
+    assert (
+        "<agent_memory>" in content
+    ), "System prompt should contain <agent_memory> tags"
     assert memory_path in content, "System prompt should contain memory path"
     assert "type hints" in content, "System prompt should mention memory content"
     assert "functional programming" in content
@@ -470,7 +483,9 @@ def test_agent_with_memory_middleware_multiple_sources(tmp_path: Path) -> None:
     assert all(r.error is None for r in responses)
 
     # Create fake model
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I see both user and project preferences.")]))
+    fake_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="I see both user and project preferences.")])
+    )
 
     # Create middleware with multiple sources
     sources: list[str] = [
@@ -505,7 +520,9 @@ def test_agent_with_memory_middleware_empty_sources(tmp_path: Path) -> None:
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create fake model
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Working without memory.")]))
+    fake_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="Working without memory.")])
+    )
 
     # Create middleware with empty sources
     middleware = MemoryMiddleware(backend=backend, sources=[])
@@ -539,7 +556,9 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
     assert responses[0].error is None
 
     # Create fake model
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Async invocation successful.")]))
+    fake_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="Async invocation successful.")])
+    )
 
     # Create middleware
     sources: list[str] = [memory_path]
@@ -631,7 +650,9 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
 
     # Add memory for assistant-123 with namespace (assistant-123, filesystem)
-    assistant_1_content = make_memory_content("Assistant 1", "- Context for assistant 1")
+    assistant_1_content = make_memory_content(
+        "Assistant 1", "- Context for assistant 1"
+    )
     store.put(
         ("assistant-123", "filesystem"),
         "/memory/AGENTS.md",
@@ -653,7 +674,9 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     assert len(result_2["memory_contents"]) == 0
 
     # Add memory for assistant-456 with namespace (assistant-456, filesystem)
-    assistant_2_content = make_memory_content("Assistant 2", "- Context for assistant 2")
+    assistant_2_content = make_memory_content(
+        "Assistant 2", "- Context for assistant 2"
+    )
     store.put(
         ("assistant-456", "filesystem"),
         "/memory/AGENTS.md",
@@ -666,7 +689,10 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     assert result_3 is not None
     assert "/memory/AGENTS.md" in result_3["memory_contents"]
     assert "Context for assistant 2" in result_3["memory_contents"]["/memory/AGENTS.md"]
-    assert "Context for assistant 1" not in result_3["memory_contents"]["/memory/AGENTS.md"]
+    assert (
+        "Context for assistant 1"
+        not in result_3["memory_contents"]["/memory/AGENTS.md"]
+    )
 
     # Test: assistant-123 still only sees its own memory (no cross-contamination)
     result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore
@@ -674,7 +700,10 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     assert result_4 is not None
     assert "/memory/AGENTS.md" in result_4["memory_contents"]
     assert "Context for assistant 1" in result_4["memory_contents"]["/memory/AGENTS.md"]
-    assert "Context for assistant 2" not in result_4["memory_contents"]["/memory/AGENTS.md"]
+    assert (
+        "Context for assistant 2"
+        not in result_4["memory_contents"]["/memory/AGENTS.md"]
+    )
 
 
 def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
@@ -700,7 +729,9 @@ def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
 
     assert result_1 is not None
     assert "/memory/AGENTS.md" in result_1["memory_contents"]
-    assert "Default namespace context" in result_1["memory_contents"]["/memory/AGENTS.md"]
+    assert (
+        "Default namespace context" in result_1["memory_contents"]["/memory/AGENTS.md"]
+    )
 
     # Test: config with metadata but no assistant_id also uses default namespace
     config_with_other_metadata = {"metadata": {"some_other_key": "value"}}
@@ -708,7 +739,9 @@ def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
 
     assert result_2 is not None
     assert "/memory/AGENTS.md" in result_2["memory_contents"]
-    assert "Default namespace context" in result_2["memory_contents"]["/memory/AGENTS.md"]
+    assert (
+        "Default namespace context" in result_2["memory_contents"]["/memory/AGENTS.md"]
+    )
 
 
 def test_create_deep_agent_with_memory_and_filesystem_backend(tmp_path: Path) -> None:
@@ -724,7 +757,9 @@ def test_create_deep_agent_with_memory_and_filesystem_backend(tmp_path: Path) ->
     agent = create_deep_agent(
         backend=backend,
         memory=[memory_path],
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="Memory loaded successfully.")])),
+        model=GenericFakeChatModel(
+            messages=iter([AIMessage(content="Memory loaded successfully.")])
+        ),
     )
 
     # Invoke agent
@@ -743,7 +778,9 @@ def test_create_deep_agent_with_memory_missing_files(tmp_path: Path) -> None:
     agent = create_deep_agent(
         backend=backend,
         memory=[str(tmp_path / "nonexistent" / "AGENTS.md")],
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="No memory, but that's okay.")])),
+        model=GenericFakeChatModel(
+            messages=iter([AIMessage(content="No memory, but that's okay.")])
+        ),
     )
 
     # Invoke agent - should succeed even without memory file
@@ -760,7 +797,9 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
     checkpointer = InMemorySaver()
     agent = create_deep_agent(
         memory=["/user/.deepagents/AGENTS.md"],
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="Working with default backend.")])),
+        model=GenericFakeChatModel(
+            messages=iter([AIMessage(content="Working with default backend.")])
+        ),
         checkpointer=checkpointer,
     )
 
@@ -794,7 +833,9 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
     checkpoint = agent.checkpointer.get(config)
     assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["files"]
     assert "memory_contents" in checkpoint["channel_values"]
-    assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["memory_contents"]
+    assert (
+        "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["memory_contents"]
+    )
 
 
 def test_memory_middleware_order_matters(tmp_path: Path) -> None:

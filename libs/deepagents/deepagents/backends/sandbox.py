@@ -204,7 +204,9 @@ except PermissionError:
     ) -> str:
         """Read file content with line numbers using a single shell command."""
         # Use template for reading file with offset and limit
-        cmd = _READ_COMMAND_TEMPLATE.format(file_path=file_path, offset=offset, limit=limit)
+        cmd = _READ_COMMAND_TEMPLATE.format(
+            file_path=file_path, offset=offset, limit=limit
+        )
         result = self.execute(cmd)
 
         output = result.output.rstrip()
@@ -225,7 +227,9 @@ except PermissionError:
         content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
 
         # Single atomic check + write command
-        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content_b64=content_b64)
+        cmd = _WRITE_COMMAND_TEMPLATE.format(
+            file_path=file_path, content_b64=content_b64
+        )
         result = self.execute(cmd)
 
         # Check for errors (exit code or error message in output)
@@ -249,7 +253,12 @@ except PermissionError:
         new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
 
         # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_b64=old_b64, new_b64=new_b64, replace_all=replace_all)
+        cmd = _EDIT_COMMAND_TEMPLATE.format(
+            file_path=file_path,
+            old_b64=old_b64,
+            new_b64=new_b64,
+            replace_all=replace_all,
+        )
         result = self.execute(cmd)
 
         exit_code = result.exit_code
@@ -258,7 +267,9 @@ except PermissionError:
         if exit_code == 1:
             return EditResult(error=f"Error: String not found in file: '{old_string}'")
         if exit_code == 2:
-            return EditResult(error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.")
+            return EditResult(
+                error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."
+            )
         if exit_code != 0:
             return EditResult(error=f"Error: File '{file_path}' not found")
 

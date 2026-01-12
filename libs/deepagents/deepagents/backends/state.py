@@ -133,7 +133,9 @@ class StateBackend(BackendProtocol):
         files = self.runtime.state.get("files", {})
 
         if file_path in files:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+            return WriteResult(
+                error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
+            )
 
         new_file_data = create_file_data(content)
         return WriteResult(path=file_path, files_update={file_path: new_file_data})
@@ -155,14 +157,20 @@ class StateBackend(BackendProtocol):
             return EditResult(error=f"Error: File '{file_path}' not found")
 
         content = file_data_to_string(file_data)
-        result = perform_string_replacement(content, old_string, new_string, replace_all)
+        result = perform_string_replacement(
+            content, old_string, new_string, replace_all
+        )
 
         if isinstance(result, str):
             return EditResult(error=result)
 
         new_content, occurrences = result
         new_file_data = update_file_data(file_data, new_content)
-        return EditResult(path=file_path, files_update={file_path: new_file_data}, occurrences=int(occurrences))
+        return EditResult(
+            path=file_path,
+            files_update={file_path: new_file_data},
+            occurrences=int(occurrences),
+        )
 
     def grep_raw(
         self,
@@ -224,13 +232,19 @@ class StateBackend(BackendProtocol):
             file_data = state_files.get(path)
 
             if file_data is None:
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                responses.append(
+                    FileDownloadResponse(
+                        path=path, content=None, error="file_not_found"
+                    )
+                )
                 continue
 
             # Convert file data to bytes
             content_str = file_data_to_string(file_data)
             content_bytes = content_str.encode("utf-8")
 
-            responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
+            responses.append(
+                FileDownloadResponse(path=path, content=content_bytes, error=None)
+            )
 
         return responses

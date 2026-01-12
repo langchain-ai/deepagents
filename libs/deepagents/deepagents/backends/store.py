@@ -106,13 +106,19 @@ class StoreBackend(BackendProtocol):
         Raises:
             ValueError: If required fields are missing or have incorrect types.
         """
-        if "content" not in store_item.value or not isinstance(store_item.value["content"], list):
+        if "content" not in store_item.value or not isinstance(
+            store_item.value["content"], list
+        ):
             msg = f"Store item does not contain valid content field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
-        if "created_at" not in store_item.value or not isinstance(store_item.value["created_at"], str):
+        if "created_at" not in store_item.value or not isinstance(
+            store_item.value["created_at"], str
+        ):
             msg = f"Store item does not contain valid created_at field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
-        if "modified_at" not in store_item.value or not isinstance(store_item.value["modified_at"], str):
+        if "modified_at" not in store_item.value or not isinstance(
+            store_item.value["modified_at"], str
+        ):
             msg = f"Store item does not contain valid modified_at field. Got: {store_item.value.keys()}"
             raise ValueError(msg)
         return {
@@ -121,7 +127,9 @@ class StoreBackend(BackendProtocol):
             "modified_at": store_item.value["modified_at"],
         }
 
-    def _convert_file_data_to_store_value(self, file_data: dict[str, Any]) -> dict[str, Any]:
+    def _convert_file_data_to_store_value(
+        self, file_data: dict[str, Any]
+    ) -> dict[str, Any]:
         """Convert FileData to a dict suitable for store.put().
 
         Args:
@@ -293,7 +301,9 @@ class StoreBackend(BackendProtocol):
         # Check if file exists
         existing = store.get(namespace, file_path)
         if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+            return WriteResult(
+                error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
+            )
 
         # Create new file
         file_data = create_file_data(content)
@@ -325,7 +335,9 @@ class StoreBackend(BackendProtocol):
             return EditResult(error=f"Error: {e}")
 
         content = file_data_to_string(file_data)
-        result = perform_string_replacement(content, old_string, new_string, replace_all)
+        result = perform_string_replacement(
+            content, old_string, new_string, replace_all
+        )
 
         if isinstance(result, str):
             return EditResult(error=result)
@@ -336,7 +348,9 @@ class StoreBackend(BackendProtocol):
         # Update file in store
         store_value = self._convert_file_data_to_store_value(new_file_data)
         store.put(namespace, file_path, store_value)
-        return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+        return EditResult(
+            path=file_path, files_update=None, occurrences=int(occurrences)
+        )
 
     # Removed legacy grep() convenience to keep lean surface
 
@@ -429,7 +443,11 @@ class StoreBackend(BackendProtocol):
             item = store.get(namespace, path)
 
             if item is None:
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                responses.append(
+                    FileDownloadResponse(
+                        path=path, content=None, error="file_not_found"
+                    )
+                )
                 continue
 
             file_data = self._convert_store_item_to_file_data(item)
@@ -437,6 +455,8 @@ class StoreBackend(BackendProtocol):
             content_str = file_data_to_string(file_data)
             content_bytes = content_str.encode("utf-8")
 
-            responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
+            responses.append(
+                FileDownloadResponse(path=path, content=content_bytes, error=None)
+            )
 
         return responses

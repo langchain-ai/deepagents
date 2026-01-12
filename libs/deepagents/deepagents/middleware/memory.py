@@ -182,7 +182,9 @@ class MemoryMiddleware(AgentMiddleware):
         self._backend = backend
         self.sources = sources
 
-    def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
+    def _get_backend(
+        self, state: MemoryState, runtime: Runtime, config: RunnableConfig
+    ) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:
@@ -246,7 +248,9 @@ class MemoryMiddleware(AgentMiddleware):
         results = await backend.adownload_files([path])
         # Should get exactly one response for one path
         if len(results) != 1:
-            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+            raise AssertionError(
+                f"Expected 1 response for path {path}, got {len(results)}"
+            )
         response = results[0]
 
         if response.error is not None:
@@ -279,7 +283,9 @@ class MemoryMiddleware(AgentMiddleware):
         results = backend.download_files([path])
         # Should get exactly one response for one path
         if len(results) != 1:
-            raise AssertionError(f"Expected 1 response for path {path}, got {len(results)}")
+            raise AssertionError(
+                f"Expected 1 response for path {path}, got {len(results)}"
+            )
         response = results[0]
 
         if response.error is not None:
@@ -295,7 +301,9 @@ class MemoryMiddleware(AgentMiddleware):
 
         return None
 
-    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
+    def before_agent(
+        self, state: MemoryState, runtime: Runtime, config: RunnableConfig
+    ) -> MemoryStateUpdate | None:
         """Load memory content before agent execution (synchronous).
 
         Loads memory from all configured sources and stores in state.
@@ -324,7 +332,9 @@ class MemoryMiddleware(AgentMiddleware):
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:
+    async def abefore_agent(
+        self, state: MemoryState, runtime: Runtime, config: RunnableConfig
+    ) -> MemoryStateUpdate | None:
         """Load memory content before agent execution.
 
         Loads memory from all configured sources and stores in state.

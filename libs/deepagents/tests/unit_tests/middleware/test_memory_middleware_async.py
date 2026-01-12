@@ -68,8 +68,12 @@ async def test_load_memory_from_backend_multiple_sources_async(tmp_path: Path) -
     user_path = str(tmp_path / "user" / "AGENTS.md")
     project_path = str(tmp_path / "project" / "AGENTS.md")
 
-    user_content = make_memory_content("User Preferences", "- Use Python 3.11+\n- Follow PEP 8")
-    project_content = make_memory_content("Project Guidelines", "## Architecture\nThis is a FastAPI project.")
+    user_content = make_memory_content(
+        "User Preferences", "- Use Python 3.11+\n- Follow PEP 8"
+    )
+    project_content = make_memory_content(
+        "Project Guidelines", "## Architecture\nThis is a FastAPI project."
+    )
 
     responses = backend.upload_files(
         [
@@ -236,7 +240,9 @@ async def test_memory_content_with_large_file_async(tmp_path: Path) -> None:
     assert content.count("Line of content") == 500
 
 
-async def test_agent_with_memory_middleware_multiple_sources_async(tmp_path: Path) -> None:
+async def test_agent_with_memory_middleware_multiple_sources_async(
+    tmp_path: Path,
+) -> None:
     """Test agent with memory from multiple sources (async)."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
@@ -256,7 +262,9 @@ async def test_agent_with_memory_middleware_multiple_sources_async(tmp_path: Pat
     assert all(r.error is None for r in responses)
 
     # Create fake model
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="I see both user and project preferences.")]))
+    fake_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="I see both user and project preferences.")])
+    )
 
     # Create middleware with multiple sources
     sources: list[str] = [
@@ -291,7 +299,9 @@ async def test_agent_with_memory_middleware_empty_sources_async(tmp_path: Path) 
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create fake model
-    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Working without memory.")]))
+    fake_model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="Working without memory.")])
+    )
 
     # Create middleware with empty sources
     middleware = MemoryMiddleware(backend=backend, sources=[])

@@ -25,7 +25,11 @@ async def test_store_backend_async_crud_and_search():
 
     # awrite new file
     msg = await be.awrite("/docs/readme.md", "hello store")
-    assert isinstance(msg, WriteResult) and msg.error is None and msg.path == "/docs/readme.md"
+    assert (
+        isinstance(msg, WriteResult)
+        and msg.error is None
+        and msg.path == "/docs/readme.md"
+    )
 
     # aread
     txt = await be.aread("/docs/readme.md")
@@ -41,7 +45,9 @@ async def test_store_backend_async_crud_and_search():
 
     # agrep_raw
     matches = await be.agrep_raw("hi", path="/")
-    assert isinstance(matches, list) and any(m["path"] == "/docs/readme.md" for m in matches)
+    assert isinstance(matches, list) and any(
+        m["path"] == "/docs/readme.md" for m in matches
+    )
 
     # aglob_info
     g = await be.aglob_info("*.md", path="/")
@@ -281,7 +287,9 @@ async def test_store_backend_intercept_large_tool_result_async():
     from deepagents.middleware.filesystem import FilesystemMiddleware
 
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(
+        backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000
+    )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")

@@ -392,7 +392,10 @@ class FilesystemBackend(BackendProtocol):
         root = base_full if base_full.is_dir() else base_full.parent
 
         for fp in root.rglob("*"):
-            if not fp.is_file():
+            try:
+                if not fp.is_file():
+                    continue
+            except (PermissionError, OSError):
                 continue
             if include_glob and not wcglob.globmatch(fp.name, include_glob, flags=wcglob.BRACE):
                 continue
@@ -432,7 +435,7 @@ class FilesystemBackend(BackendProtocol):
             for matched_path in search_path.rglob(pattern):
                 try:
                     is_file = matched_path.is_file()
-                except OSError:
+                except (PermissionError, OSError):
                     continue
                 if not is_file:
                     continue

@@ -21,41 +21,72 @@ class SubAgent(TypedDict):
     will be applied first, followed by any `middleware` specified in this spec.
     To use only custom middleware without the defaults, pass `default_middleware=[]`
     to `SubAgentMiddleware`.
+
+    Required fields:
+        name: Unique identifier for the subagent.
+
+            The main agent uses this name when calling the `task()` tool.
+        description: What this subagent does.
+
+            Be specific and action-oriented. The main agent uses this to decide when to delegate.
+        system_prompt: Instructions for the subagent.
+
+            Include tool usage guidance and output format requirements.
+        tools: Tools the subagent can use.
+
+            Keep this minimal and include only what's needed.
+
+    Optional fields:
+        model: Override the main agent's model.
+
+            Use the format `'provider:model-name'` (e.g., `'openai:gpt-4o'`).
+        middleware: Additional middleware for custom behavior, logging, or rate limiting.
+        interrupt_on: Configure human-in-the-loop for specific tools.
+
+            Requires a checkpointer.
     """
 
     name: str
-    """The name of the agent."""
+    """Unique identifier for the subagent."""
 
     description: str
-    """The description of the agent."""
+    """What this subagent does. The main agent uses this to decide when to delegate."""
 
     system_prompt: str
-    """The system prompt to use for the agent."""
+    """Instructions for the subagent."""
 
     tools: Sequence[BaseTool | Callable | dict[str, Any]]
-    """The tools to use for the agent."""
+    """Tools the subagent can use."""
 
     model: NotRequired[str | BaseChatModel]
-    """The model for the agent. Defaults to `default_model`."""
+    """Override the main agent's model. Use `'provider:model-name'` format."""
 
     middleware: NotRequired[list[AgentMiddleware]]
-    """Additional middleware to append after `default_middleware`."""
+    """Additional middleware for custom behavior."""
 
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
-    """The tool configs to use for the agent."""
+    """Configure human-in-the-loop for specific tools."""
 
 
 class CompiledSubAgent(TypedDict):
-    """A pre-compiled agent spec."""
+    """A pre-compiled agent spec for complex workflows.
+
+    Use this when you need a pre-built LangGraph graph as a subagent.
+
+    Fields:
+        name: Unique identifier for the subagent.
+        description: What this subagent does.
+        runnable: A compiled LangGraph graph (must call `.compile()` first).
+    """
 
     name: str
-    """The name of the agent."""
+    """Unique identifier for the subagent."""
 
     description: str
-    """The description of the agent."""
+    """What this subagent does."""
 
     runnable: Runnable
-    """The Runnable to use for the agent."""
+    """A compiled LangGraph graph."""
 
 
 DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."

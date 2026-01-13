@@ -801,21 +801,33 @@ Here are the first 10 lines of the result:
 class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
-    This middleware adds filesystem tools to the agent: ls, read_file, write_file,
-    edit_file, glob, and grep. Files can be stored using any backend that implements
-    the BackendProtocol.
+    This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
+    `edit_file`, `glob`, and `grep`. Files can be stored using any backend that implements
+    the `BackendProtocol`.
 
-    If the backend implements SandboxBackendProtocol, an execute tool is also added
+    If the backend implements `SandboxBackendProtocol`, an `execute` tool is also added
     for running shell commands.
 
+    This middleware also automatically evicts large tool results to the file system when
+    they exceed a token threshold, preventing context window saturation.
+
     Args:
-        backend: Backend for file storage and optional execution. If not provided, defaults to StateBackend
-            (ephemeral storage in agent state). For persistent storage or hybrid setups,
-            use CompositeBackend with custom routes. For execution support, use a backend
-            that implements SandboxBackendProtocol.
+        backend: Backend for file storage and optional execution.
+
+            If not provided, defaults to `StateBackend` (ephemeral storage in agent state).
+
+            For persistent storage or hybrid setups, use `CompositeBackend` with custom routes.
+
+            For execution support, use a backend that implements `SandboxBackendProtocol`.
         system_prompt: Optional custom system prompt override.
         custom_tool_descriptions: Optional custom tool descriptions override.
-        tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+        tool_token_limit_before_evict: Token limit before evicting a tool result to the
+            filesystem.
+
+            Defaults to 20,000 tokens.
+
+            When exceeded, writes the result using the configured backend and replaces it
+            with a truncated preview and file reference.
 
     Example:
         ```python

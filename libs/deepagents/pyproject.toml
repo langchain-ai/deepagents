@@ -18,7 +18,7 @@ dependencies = [
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
 Source = "https://github.com/langchain-ai/deepagents"
-Twitter = "https://x.com/LangChainAI"
+Twitter = "https://x.com/LangChain"
 Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 

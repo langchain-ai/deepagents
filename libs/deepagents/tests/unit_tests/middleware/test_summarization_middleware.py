@@ -1,11 +1,10 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
 import json
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
@@ -18,6 +17,7 @@ from deepagents.middleware.summarization import SummarizationMiddleware
 def make_conversation_messages(
     num_old: int = 6,
     num_recent: int = 3,
+    *,
     include_previous_summary: bool = False,
 ) -> list:
     """Create a realistic conversation message sequence.
@@ -74,7 +74,12 @@ def make_conversation_messages(
 class MockBackend(BackendProtocol):
     """Mock backend that records write calls and can simulate failures."""
 
-    def __init__(self, should_fail: bool = False, error_message: str | None = None):
+    def __init__(
+        self,
+        *,
+        should_fail: bool = False,
+        error_message: str | None = None,
+    ) -> None:
         self.write_calls: list[tuple[str, str]] = []
         self.should_fail = should_fail
         self.error_message = error_message

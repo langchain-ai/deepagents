@@ -50,9 +50,11 @@ from langchain.agents.middleware.summarization import (
     _DEFAULT_TRIM_TOKEN_LIMIT,
     DEFAULT_SUMMARY_PROMPT,
     ContextSize,
-    SummarizationMiddleware as BaseSummarizationMiddleware,
     TokenCounter,
     count_tokens_approximately,
+)
+from langchain.agents.middleware.summarization import (
+    SummarizationMiddleware as BaseSummarizationMiddleware,
 )
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage
@@ -270,7 +272,7 @@ A condensed summary follows:
                 else:
                     # Fallback to dict() for older versions
                     serialized.append(msg.dict())
-            except Exception:
+            except (TypeError, ValueError, AttributeError):
                 # Last resort: use string representation
                 serialized.append(
                     {
@@ -316,14 +318,15 @@ A condensed summary follows:
         try:
             result = backend.write(path, json.dumps(payload, indent=2, default=str))
             if result.error:
-                logger.warning(f"Failed to offload conversation history: {result.error}")
+                logger.warning("Failed to offload conversation history: %s", result.error)
                 return None
-            logger.debug(f"Offloaded {len(filtered_messages)} messages to {path}")
-            return path
-        except Exception as e:
+        except (OSError, ValueError) as e:
             # Don't fail summarization if offloading fails
-            logger.warning(f"Exception offloading conversation history: {e}")
+            logger.warning("Exception offloading conversation history: %s", e)
             return None
+        else:
+            logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
+            return path
 
     async def _aoffload_to_backend(
         self,
@@ -361,14 +364,15 @@ A condensed summary follows:
         try:
             result = await backend.awrite(path, json.dumps(payload, indent=2, default=str))
             if result.error:
-                logger.warning(f"Failed to offload conversation history: {result.error}")
+                logger.warning("Failed to offload conversation history: %s", result.error)
                 return None
-            logger.debug(f"Offloaded {len(filtered_messages)} messages to {path}")
-            return path
-        except Exception as e:
+        except (OSError, ValueError) as e:
             # Don't fail summarization if offloading fails
-            logger.warning(f"Exception offloading conversation history: {e}")
+            logger.warning("Exception offloading conversation history: %s", e)
             return None
+        else:
+            logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
+            return path
 
     @override
     def before_model(

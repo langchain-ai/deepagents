@@ -167,6 +167,7 @@ class DeepAgentsApp(App):
         # Bottom app container - holds either ChatInput OR ApprovalMenu (swapped)
         # This is OUTSIDE VerticalScroll so arrow keys work in approval
         with Container(id="bottom-app-container"):
+            yield Static("", id="agent-status-display")
             yield ChatInput(cwd=self._cwd, id="input-area")
 
         # Status bar at bottom
@@ -205,9 +206,21 @@ class DeepAgentsApp(App):
         self._chat_input.focus_input()
 
     def _update_status(self, message: str) -> None:
-        """Update the status bar with a message."""
-        if self._status_bar:
-            self._status_bar.set_status_message(message)
+        """Update the status display with a message."""
+        try:
+            status_display = self.query_one("#agent-status-display", Static)
+            if message:
+                status_display.update(message)
+                status_display.styles.display = "block"
+                if "thinking" in message.lower() or "waiting" in message.lower():
+                    status_display.add_class("thinking")
+                else:
+                    status_display.remove_class("thinking")
+            else:
+                status_display.update("")
+                status_display.styles.display = "none"
+        except NoMatches:
+            pass
 
     def _update_tokens(self, count: int) -> None:
         """Update the token count in status bar."""

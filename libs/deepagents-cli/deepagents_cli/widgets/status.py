@@ -84,7 +84,6 @@ class StatusBar(Horizontal):
     """
 
     mode: reactive[str] = reactive("normal", init=False)
-    status_message: reactive[str] = reactive("", init=False)
     auto_approve: reactive[bool] = reactive(default=False, init=False)
     cwd: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
@@ -108,7 +107,6 @@ class StatusBar(Horizontal):
             classes="status-auto-approve off",
             id="auto-approve-indicator",
         )
-        yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-tokens", id="tokens-display")
         # CWD shown in welcome banner, not pinned in status bar
 
@@ -157,21 +155,6 @@ class StatusBar(Horizontal):
             return
         display.update(self._format_cwd(new_value))
 
-    def watch_status_message(self, new_value: str) -> None:
-        """Update status message display."""
-        try:
-            msg_widget = self.query_one("#status-message", Static)
-        except NoMatches:
-            return
-
-        msg_widget.remove_class("thinking")
-        if new_value:
-            msg_widget.update(new_value)
-            if "thinking" in new_value.lower() or "executing" in new_value.lower():
-                msg_widget.add_class("thinking")
-        else:
-            msg_widget.update("")
-
     def _format_cwd(self, cwd_path: str = "") -> str:
         """Format the current working directory for display."""
         path = Path(cwd_path or self.cwd or self._initial_cwd)
@@ -199,14 +182,6 @@ class StatusBar(Horizontal):
             enabled: Whether auto-approve is enabled
         """
         self.auto_approve = enabled
-
-    def set_status_message(self, message: str) -> None:
-        """Set the status message.
-
-        Args:
-            message: Status message to display (empty string to clear)
-        """
-        self.status_message = message
 
     def watch_tokens(self, new_value: int) -> None:
         """Update token display when count changes."""

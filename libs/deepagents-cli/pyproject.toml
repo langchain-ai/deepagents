@@ -95,6 +95,11 @@ keep-runtime-typing = true
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
 
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_cli", "deepagents"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"  # Google-style docstrings
 ignore-var-parameters = true

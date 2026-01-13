@@ -6,6 +6,7 @@ backend before summarization, enabling retrieval of full context when needed by 
 ## Usage
 
 ```python
+from deepagents import create_deep_agent
 from deepagents.middleware.summarization import SummarizationMiddleware
 from deepagents.backends import FilesystemBackend
 
@@ -96,7 +97,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         middleware = SummarizationMiddleware(
             model="gpt-4o-mini",
-            backend=lambda rt: StateBackend(rt),
+            backend=lambda tool_runtime: StateBackend(tool_runtime),
             trigger=("tokens", 100000),
             keep=("messages", 20),
         )
@@ -175,8 +176,10 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             if thread_id is not None:
                 return str(thread_id)
 
-        # Fall back to generated ID
-        return f"session_{uuid.uuid4().hex[:8]}"
+        # Fall back to generated ID - log this since it affects file organization
+        generated_id = f"session_{uuid.uuid4().hex[:8]}"
+        logger.debug("No thread_id in runtime config, using generated session ID: %s", generated_id)
+        return generated_id
 
     def _get_history_path(self, runtime: Runtime) -> str:
         """Generate path for storing conversation history.
@@ -272,8 +275,13 @@ A condensed summary follows:
                 else:
                     # Fallback to dict() for older versions
                     serialized.append(msg.dict())
-            except (TypeError, ValueError, AttributeError):
-                # Last resort: use string representation
+            except (TypeError, ValueError, AttributeError) as e:
+                # Last resort: use string representation (may lose metadata like tool calls)
+                logger.warning(
+                    "Message serialization failed for %s, using minimal representation: %s",
+                    type(msg).__name__,
+                    e,
+                )
                 serialized.append(
                     {
                         "type": type(msg).__name__,
@@ -317,12 +325,26 @@ A condensed summary follows:
 
         try:
             result = backend.write(path, json.dumps(payload, indent=2, default=str))
-            if result.error:
-                logger.warning("Failed to offload conversation history: %s", result.error)
+            if result is None or getattr(result, "error", None):
+                error_msg = getattr(result, "error", "backend returned None") if result else "backend returned None"
+                logger.warning(
+                    "Failed to offload conversation history to %s (thread: %s, %d messages): %s",
+                    path,
+                    thread_id,
+                    len(filtered_messages),
+                    error_msg,
+                )
                 return None
-        except (OSError, ValueError) as e:
-            # Don't fail summarization if offloading fails
-            logger.warning("Exception offloading conversation history: %s", e)
+        except Exception as e:  # noqa: BLE001
+            # Don't fail summarization if offloading fails - this is optional functionality
+            logger.warning(
+                "Exception offloading conversation history to %s (thread: %s, %d messages): %s: %s",
+                path,
+                thread_id,
+                len(filtered_messages),
+                type(e).__name__,
+                e,
+            )
             return None
         else:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
@@ -345,7 +367,7 @@ A condensed summary follows:
             runtime: Runtime context.
 
         Returns:
-            The file path where history was stored, or None if write failed.
+            The file path where history was stored, or `None` if write failed.
         """
         path = self._get_history_path(runtime)
         thread_id = self._get_thread_id(runtime)
@@ -363,12 +385,26 @@ A condensed summary follows:
 
         try:
             result = await backend.awrite(path, json.dumps(payload, indent=2, default=str))
-            if result.error:
-                logger.warning("Failed to offload conversation history: %s", result.error)
+            if result is None or getattr(result, "error", None):
+                error_msg = getattr(result, "error", "backend returned None") if result else "backend returned None"
+                logger.warning(
+                    "Failed to offload conversation history to %s (thread: %s, %d messages): %s",
+                    path,
+                    thread_id,
+                    len(filtered_messages),
+                    error_msg,
+                )
                 return None
-        except (OSError, ValueError) as e:
-            # Don't fail summarization if offloading fails
-            logger.warning("Exception offloading conversation history: %s", e)
+        except Exception as e:  # noqa: BLE001
+            # Don't fail summarization if offloading fails - this is optional functionality
+            logger.warning(
+                "Exception offloading conversation history to %s (thread: %s, %d messages): %s: %s",
+                path,
+                thread_id,
+                len(filtered_messages),
+                type(e).__name__,
+                e,
+            )
             return None
         else:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)

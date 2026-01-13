@@ -728,3 +728,108 @@ class TestAsyncBehavior:
         result = await middleware.abefore_model(state, runtime)
 
         assert result is not None
+
+
+class TestBackendFactoryInvocation:
+    """Tests for backend factory invocation during summarization."""
+
+    def test_backend_factory_invoked_during_summarization(self) -> None:
+        """Test that backend factory is called with `ToolRuntime` during summarization."""
+        backend = MockBackend()
+        factory_called_with: list = []
+
+        def factory(tool_runtime: object) -> MockBackend:
+            factory_called_with.append(tool_runtime)
+            return backend
+
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=factory,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = {"messages": messages}
+        runtime = make_mock_runtime()
+
+        middleware.before_model(state, runtime)
+
+        # Factory should have been called once
+        assert len(factory_called_with) == 1
+        # Backend should have received write call
+        assert len(backend.write_calls) == 1
+
+
+class TestSerializationFallback:
+    """Tests for message serialization fallback behavior."""
+
+    def test_serialize_messages_fallback_on_serialization_error(self) -> None:
+        """Test that message serialization falls back gracefully when `model_dump` fails."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        # Create a message that will fail normal serialization
+        class UnserializableMessage(HumanMessage):
+            def model_dump(self) -> None:  # type: ignore[override]
+                msg = "Cannot serialize"
+                raise TypeError(msg)
+
+            def dict(self) -> None:  # type: ignore[override]
+                msg = "Cannot serialize"
+                raise TypeError(msg)
+
+        messages = [UnserializableMessage(content="test content", id="u1")]
+        # Add more messages to trigger summarization
+        messages.extend(make_conversation_messages(num_old=5, num_recent=2))
+
+        state = {"messages": messages}
+        runtime = make_mock_runtime()
+
+        # Should not raise, should fall back to string representation
+        result = middleware.before_model(state, runtime)
+        assert result is not None
+
+        # Verify the offloaded content still contains the message
+        _, content = backend.write_calls[0]
+        payload = json.loads(content)
+        # The unserializable message should be in fallback format
+        messages_data = payload["messages"]
+        # Find the fallback message (has type and content keys only)
+        fallback_msgs = [m for m in messages_data if m.get("type") == "UnserializableMessage"]
+        assert len(fallback_msgs) == 1
+        assert fallback_msgs[0]["content"] == "test content"
+
+
+class TestCustomHistoryPathPrefix:
+    """Tests for custom `history_path_prefix` configuration."""
+
+    def test_custom_history_path_prefix(self) -> None:
+        """Test that custom `history_path_prefix` is used in file paths."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+            history_path_prefix="/custom/path",
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = {"messages": messages}
+        runtime = make_mock_runtime(thread_id="test-thread")
+
+        middleware.before_model(state, runtime)
+
+        path, _ = backend.write_calls[0]
+        assert path.startswith("/custom/path/test-thread/")
+        assert path.endswith(".json")

@@ -266,10 +266,83 @@ def create_daytona_sandbox(
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
+@contextmanager
+def create_agentcore_sandbox(
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
+    """Create AgentCore Code Interpreter sandbox.
+
+    Args:
+        sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        AgentCoreBackend instance
+
+    Note:
+        Connecting to existing AgentCore session by ID is not yet supported.
+        If sandbox_id is provided, this will raise NotImplementedError.
+    """
+    from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
+
+    from deepagents_cli.integrations.bedrock_agentcore import AgentCoreBackend
+
+    # AgentCore uses AWS credentials (resolved by boto3)
+    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
+
+    if sandbox_id:
+        msg = (
+            "Connecting to existing AgentCore session by ID not yet supported. "
+            "Create a new session by omitting --sandbox-id."
+        )
+        raise NotImplementedError(msg)
+
+    console.print("[yellow]Starting AgentCore Code Interpreter...[/yellow]")
+
+    interpreter = CodeInterpreter(region=region)
+    interpreter.start()
+    sandbox_id = interpreter.session_id
+
+    # Poll until running (AgentCore requires this)
+    for _ in range(90):  # 180s timeout (90 * 2s)
+        # Check if sandbox is ready by attempting a simple command
+        try:
+            response = interpreter.invoke(method="executeCommand", params={"command": "echo ready"})
+            if response and "stream" in response:
+                break
+        except Exception:
+            pass
+        time.sleep(2)
+    else:
+        try:
+            interpreter.stop()
+        except Exception:
+            pass
+        msg = "AgentCore Code Interpreter failed to start within 180 seconds"
+        raise RuntimeError(msg)
+
+    backend = AgentCoreBackend(interpreter)
+    console.print(f"[green]✓ AgentCore Code Interpreter ready: {backend.id}[/green]")
+
+    # Run setup script if provided
+    if setup_script_path:
+        _run_sandbox_setup(backend, setup_script_path)
+    try:
+        yield backend
+    finally:
+        console.print(f"[dim]Stopping AgentCore session {sandbox_id}...[/dim]")
+        try:
+            interpreter.stop()
+            console.print(f"[dim]✓ AgentCore session {sandbox_id} stopped[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+
+
 _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
+    "agentcore": "/tmp",
 }
 
 
@@ -278,6 +351,7 @@ _SANDBOX_PROVIDERS = {
     "modal": create_modal_sandbox,
     "runloop": create_runloop_sandbox,
     "daytona": create_daytona_sandbox,
+    "agentcore": create_agentcore_sandbox,
 }
 
 
@@ -294,7 +368,7 @@ def create_sandbox(
     the appropriate provider-specific context manager.
 
     Args:
-        provider: Sandbox provider ("modal", "runloop", "daytona")
+        provider: Sandbox provider ("modal", "runloop", "daytona", "agentcore")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 
@@ -318,7 +392,7 @@ def get_available_sandbox_types() -> list[str]:
     """Get list of available sandbox provider types.
 
     Returns:
-        List of sandbox type names (e.g., ["modal", "runloop", "daytona"])
+        List of sandbox type names (e.g., ["modal", "runloop", "daytona", "agentcore"])
     """
     return list(_SANDBOX_PROVIDERS.keys())
 
@@ -327,7 +401,7 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name ("modal", "runloop", "daytona")
+        provider: Sandbox provider name ("modal", "runloop", "daytona", "agentcore")
 
     Returns:
         Default working directory path as string

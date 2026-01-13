@@ -57,7 +57,7 @@ deepagents --model gpt-4o
 deepagents --auto-approve
 
 # Execute code in a remote sandbox
-deepagents --sandbox modal        # or runloop, daytona
+deepagents --sandbox modal        # or runloop, daytona, agentcore
 deepagents --sandbox-id dbx_123   # reuse existing sandbox
 ```
 
@@ -202,6 +202,28 @@ When both are configured, the CLI displays:
 
 **Backwards Compatibility:**
 If `DEEPAGENTS_LANGSMITH_PROJECT` is not set, both agent and user code trace to the same project specified by `LANGSMITH_PROJECT`.
+
+#### Sandbox Providers
+
+Remote sandboxes require provider-specific configuration:
+
+```bash
+# AgentCore (uses AWS credentials)
+aws configure
+# Or set environment variables:
+export AWS_ACCESS_KEY_ID="your-key"
+export AWS_SECRET_ACCESS_KEY="your-secret"
+export AWS_REGION="us-west-2"  # optional, defaults to us-west-2
+
+# Modal
+modal setup
+
+# Runloop
+export RUNLOOP_API_KEY="your-key"
+
+# Daytona
+export DAYTONA_API_KEY="your-key"
+```
 
 ## Customization
 

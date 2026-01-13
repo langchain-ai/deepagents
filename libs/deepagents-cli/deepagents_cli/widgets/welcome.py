@@ -27,9 +27,7 @@ class WelcomeBanner(Static):
         banner_text = f"[bold #10b981]{DEEP_AGENTS_ASCII}[/bold #10b981]\n"
 
         # Show LangSmith status if tracing is enabled
-        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
-            "LANGCHAIN_API_KEY"
-        )
+        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY")
         langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
             "LANGCHAIN_TRACING_V2"
         )

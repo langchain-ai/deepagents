@@ -15,6 +15,24 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.runtime import Runtime
 
+# Directories to ignore in file listings and tree views
+IGNORE_PATTERNS = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".coverage",
+        ".eggs",
+        "dist",
+        "build",
+    }
+)
+
 
 class LocalContextState(AgentState):
     """State for local context middleware."""
@@ -103,22 +121,6 @@ class LocalContextMiddleware(AgentMiddleware):
         """
         cwd = Path.cwd()
 
-        # Ignore patterns
-        ignore_patterns = {
-            ".git",
-            "node_modules",
-            ".venv",
-            "__pycache__",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".ruff_cache",
-            ".tox",
-            ".coverage",
-            ".eggs",
-            "dist",
-            "build",
-        }
-
         files = []
         try:
             for item in sorted(cwd.iterdir()):
@@ -127,7 +129,7 @@ class LocalContextMiddleware(AgentMiddleware):
                     continue
 
                 # Skip ignored patterns
-                if item.name in ignore_patterns:
+                if item.name in IGNORE_PATTERNS:
                     continue
 
                 # Add files and dirs
@@ -156,23 +158,16 @@ class LocalContextMiddleware(AgentMiddleware):
         """
         cwd = Path.cwd()
 
-        ignore_patterns = {
-            ".git",
-            "node_modules",
-            ".venv",
-            "__pycache__",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".ruff_cache",
-            ".tox",
-            ".coverage",
-            ".eggs",
-            "dist",
-            "build",
-        }
-
-        lines = []
+        lines: list[str] = []
         entry_count = [0]  # Mutable for closure
+
+        def _should_include(item: Path) -> bool:
+            """Check if item should be included in tree."""
+            # Skip hidden files (except .deepagents)
+            if item.name.startswith(".") and item.name != ".deepagents":
+                return False
+            # Skip ignored patterns
+            return item.name not in IGNORE_PATTERNS
 
         def _build_tree(path: Path, prefix: str = "", depth: int = 0) -> None:
             """Recursive tree builder."""
@@ -180,7 +175,9 @@ class LocalContextMiddleware(AgentMiddleware):
                 return
 
             try:
-                items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
+                all_items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
+                # Pre-filter to get correct is_last determination
+                items = [item for item in all_items if _should_include(item)]
             except (OSError, PermissionError):
                 return
 
@@ -188,12 +185,6 @@ class LocalContextMiddleware(AgentMiddleware):
                 if entry_count[0] >= max_entries:
                     lines.append(f"{prefix}... (truncated)")
                     return
-
-                # Skip hidden and ignored
-                if item.name.startswith(".") and item.name != ".deepagents":
-                    continue
-                if item.name in ignore_patterns:
-                    continue
 
                 is_last = i == len(items) - 1
                 connector = "└── " if is_last else "├── "
@@ -210,7 +201,7 @@ class LocalContextMiddleware(AgentMiddleware):
         try:
             lines.append(f"{cwd.name}/")
             _build_tree(cwd)
-        except Exception:
+        except (OSError, PermissionError):
             return ""
 
         return "\n".join(lines)
@@ -251,7 +242,7 @@ class LocalContextMiddleware(AgentMiddleware):
                     return "poetry"
                 # Has pyproject.toml but no specific tool - likely pip/setuptools
                 return "pip"
-            except (OSError, PermissionError):
+            except (OSError, PermissionError, UnicodeDecodeError):
                 pass
 
         # Check for requirements.txt
@@ -305,7 +296,7 @@ class LocalContextMiddleware(AgentMiddleware):
             if len(content.split("\n")) > max_lines:
                 preview += "\n... (truncated)"
             return preview
-        except (OSError, PermissionError):
+        except (OSError, PermissionError, UnicodeDecodeError):
             return None
 
     def _detect_project_info(self) -> dict[str, str | bool | None]:
@@ -382,7 +373,7 @@ class LocalContextMiddleware(AgentMiddleware):
                 content = makefile.read_text()
                 if "test:" in content or "tests:" in content:
                     return "make test"
-            except (OSError, PermissionError):
+            except (OSError, PermissionError, UnicodeDecodeError):
                 pass
 
         # Python projects
@@ -392,7 +383,7 @@ class LocalContextMiddleware(AgentMiddleware):
                 content = pyproject.read_text()
                 if "[tool.pytest" in content or (cwd / "pytest.ini").exists():
                     return "pytest"
-            except (OSError, PermissionError):
+            except (OSError, PermissionError, UnicodeDecodeError):
                 pass
             if (cwd / "tests").is_dir() or (cwd / "test").is_dir():
                 return "pytest"
@@ -405,7 +396,7 @@ class LocalContextMiddleware(AgentMiddleware):
                 pkg = json.loads((cwd / "package.json").read_text())
                 if "scripts" in pkg and "test" in pkg["scripts"]:
                     return "npm test"
-            except (OSError, PermissionError, json.JSONDecodeError):
+            except (OSError, PermissionError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
 
         return None

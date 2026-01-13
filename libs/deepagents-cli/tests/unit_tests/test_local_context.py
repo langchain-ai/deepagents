@@ -1,6 +1,8 @@
 """Tests for local context middleware."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 
 from deepagents_cli.local_context import LocalContextMiddleware
 
@@ -103,17 +105,33 @@ class TestLocalContextMiddleware:
         assert git_info["main_branches"] == []
 
     @patch("deepagents_cli.local_context.subprocess.run")
-    def test_before_agent_with_git_repo(self, mock_run) -> None:
+    def test_before_agent_with_git_repo(
+        self, mock_run: Mock, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Test before_agent returns git context when in git repo."""
-        mock_branch_result = Mock()
-        mock_branch_result.returncode = 0
-        mock_branch_result.stdout = "main\n"
+        monkeypatch.chdir(tmp_path)
 
-        mock_branches_result = Mock()
-        mock_branches_result.returncode = 0
-        mock_branches_result.stdout = "* main\n  master\n"
+        # Create a file so the directory isn't empty
+        (tmp_path / "test_file.py").write_text("# test")
 
-        mock_run.side_effect = [mock_branch_result, mock_branches_result]
+        def mock_subprocess_run(cmd: list[str], **_kwargs: object) -> Mock:
+            """Mock subprocess.run based on command."""
+            result = Mock()
+            result.returncode = 0
+
+            if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+                result.stdout = "main\n"
+            elif cmd == ["git", "branch"]:
+                result.stdout = "* main\n  master\n"
+            elif cmd == ["git", "rev-parse", "--show-toplevel"]:
+                result.stdout = str(tmp_path) + "\n"
+            else:
+                result.returncode = 1
+                result.stdout = ""
+
+            return result
+
+        mock_run.side_effect = mock_subprocess_run
 
         middleware = LocalContextMiddleware()
         state = {}
@@ -128,20 +146,21 @@ class TestLocalContextMiddleware:
         assert "`main`" in result["local_context"]
         assert "`master`" in result["local_context"]
 
-    @patch("deepagents_cli.local_context.Path")
     @patch("deepagents_cli.local_context.subprocess.run")
-    def test_before_agent_not_in_git_repo(self, mock_run, mock_path) -> None:
+    def test_before_agent_not_in_git_repo(
+        self, mock_run: Mock, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Test before_agent returns local context without git info when not in git repo."""
+        monkeypatch.chdir(tmp_path)
+
+        # Create a file so the directory isn't empty
+        (tmp_path / "test_file.py").write_text("# test")
+
         # Mock git command failure (not in repo)
         mock_result = Mock()
         mock_result.returncode = 128
+        mock_result.stdout = ""
         mock_run.return_value = mock_result
-
-        # Mock Path.cwd() and iterdir() to return empty
-        mock_cwd = Mock()
-        mock_cwd.name = "test-dir"
-        mock_cwd.iterdir.return_value = []
-        mock_path.cwd.return_value = mock_cwd
 
         middleware = LocalContextMiddleware()
         state = {}
@@ -153,7 +172,7 @@ class TestLocalContextMiddleware:
         assert result is not None
         assert "local_context" in result
         assert "Current Directory" in result["local_context"]
-        assert "Git:" not in result["local_context"]
+        assert "**Git**:" not in result["local_context"]
 
     def test_wrap_model_call_with_local_context(self) -> None:
         """Test that wrap_model_call appends local context to system prompt."""
@@ -163,7 +182,7 @@ class TestLocalContextMiddleware:
         request = Mock()
         request.system_prompt = "Base system prompt"
         request.state = {
-            "local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"
+            "local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"  # noqa: E501
         }
 
         # Mock the override method to return a new request
@@ -208,3 +227,57 @@ class TestLocalContextMiddleware:
         # Verify handler was called with original request
         handler.assert_called_once_with(request)
         assert result == "response"
+
+    @pytest.mark.asyncio
+    async def test_awrap_model_call_with_local_context(self) -> None:
+        """Test that `awrap_model_call` appends local context to system prompt."""
+        middleware = LocalContextMiddleware()
+
+        # Create mock request with local context in state
+        request = Mock()
+        request.system_prompt = "Base system prompt"
+        request.state = {
+            "local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"  # noqa: E501
+        }
+
+        # Mock the override method to return a new request
+        overridden_request = Mock()
+        request.override.return_value = overridden_request
+
+        # Mock async handler
+        handler = AsyncMock(return_value="async response")
+
+        result = await middleware.awrap_model_call(request, handler)
+
+        # Verify override was called with appended git context
+        request.override.assert_called_once()
+        call_args = request.override.call_args[1]
+        assert "system_prompt" in call_args
+        assert "Base system prompt" in call_args["system_prompt"]
+        assert "Current branch: `main`" in call_args["system_prompt"]
+
+        # Verify handler was called with overridden request
+        handler.assert_called_once_with(overridden_request)
+        assert result == "async response"
+
+    @pytest.mark.asyncio
+    async def test_awrap_model_call_without_local_context(self) -> None:
+        """Test that `awrap_model_call` passes through when no local context."""
+        middleware = LocalContextMiddleware()
+
+        # Create mock request without local context
+        request = Mock()
+        request.system_prompt = "Base system prompt"
+        request.state = {}
+
+        # Mock async handler
+        handler = AsyncMock(return_value="async response")
+
+        result = await middleware.awrap_model_call(request, handler)
+
+        # Verify override was NOT called
+        request.override.assert_not_called()
+
+        # Verify handler was called with original request
+        handler.assert_called_once_with(request)
+        assert result == "async response"

@@ -5,7 +5,6 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.structured_output import ResponseFormat
 from langchain.chat_models import init_chat_model
@@ -25,6 +24,7 @@ from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
@@ -159,6 +159,7 @@ def create_deep_agent(
             FilesystemMiddleware(backend=backend),
             SummarizationMiddleware(
                 model=model,
+                backend=backend,
                 trigger=trigger,
                 keep=keep,
                 trim_tokens_to_summarize=None,
@@ -189,6 +190,7 @@ def create_deep_agent(
             ),
             SummarizationMiddleware(
                 model=model,
+                backend=backend,
                 trigger=trigger,
                 keep=keep,
                 trim_tokens_to_summarize=None,

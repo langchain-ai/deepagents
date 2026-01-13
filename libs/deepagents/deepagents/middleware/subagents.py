@@ -3,7 +3,6 @@
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
-import langsmith as ls
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
@@ -13,7 +12,6 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
-from langchain_core.runnables.config import merge_configs
 
 
 class SubAgent(TypedDict):

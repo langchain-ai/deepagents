@@ -1,12 +1,19 @@
 """Main entry point and CLI loop for deepagents."""
-# ruff: noqa: T201
+# ruff: noqa: T201, E402
 
 import argparse
 import asyncio
 import contextlib
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
+warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
+
+from rich.text import Text
+from deepagents_cli._version import __version__
 
 # Now safe to import agent (which imports LangChain modules)
 from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
@@ -74,6 +81,11 @@ def parse_args() -> argparse.Namespace:
         description="DeepAgents - AI Coding Assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"deepagents {__version__}",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -204,7 +216,7 @@ async def run_textual_cli_async(
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
                 console.print("[red]❌ Sandbox creation failed[/red]")
-                console.print(f"[dim]{e}[/dim]")
+                console.print(Text(str(e), style="dim"))
                 sys.exit(1)
 
         try:
@@ -228,7 +240,9 @@ async def run_textual_cli_async(
                 thread_id=thread_id,
             )
         except Exception as e:
-            console.print(f"[red]❌ Failed to create agent: {e}[/red]")
+            error_text = Text("❌ Failed to create agent: ", style="red")
+            error_text.append(str(e))
+            console.print(error_text)
             sys.exit(1)
         finally:
             # Clean up sandbox if we created one
@@ -290,12 +304,13 @@ def cli_main() -> None:
                     if agent_name:
                         args.agent = agent_name
                 else:
-                    msg = (
-                        f"No previous thread for '{args.agent}'"
-                        if agent_filter
-                        else "No previous threads"
-                    )
-                    console.print(f"[yellow]{msg}, starting new.[/yellow]")
+                    if agent_filter:
+                        msg = Text("No previous thread for '", style="yellow")
+                        msg.append(args.agent)
+                        msg.append("', starting new.", style="yellow")
+                    else:
+                        msg = Text("No previous threads, starting new.", style="yellow")
+                    console.print(msg)
 
             elif args.resume_thread:
                 # -r <ID>: Resume specific thread
@@ -307,7 +322,10 @@ def cli_main() -> None:
                         if agent_name:
                             args.agent = agent_name
                 else:
-                    console.print(f"[red]Thread '{args.resume_thread}' not found.[/red]")
+                    error_msg = Text("Thread '", style="red")
+                    error_msg.append(args.resume_thread)
+                    error_msg.append("' not found.", style="red")
+                    console.print(error_msg)
                     console.print(
                         "[dim]Use 'deepagents threads list' to see available threads.[/dim]"
                     )

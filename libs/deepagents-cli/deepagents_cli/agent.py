@@ -414,26 +414,22 @@ def create_cli_agent(
         # ========== LOCAL MODE ==========
         backend = FilesystemBackend()  # Current working directory
 
+        # Local context middleware (git info, directory tree, etc.)
+        agent_middleware.append(LocalContextMiddleware())
+
         # Create environment for shell commands
         # Restore user's original LANGSMITH_PROJECT so their code traces separately
         shell_env = os.environ.copy()
         if settings.user_langchain_project:
             shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-        # Middleware: AgentMemoryMiddleware, LocalContextMiddleware, SkillsMiddleware, ShellToolMiddleware
-        agent_middleware = [
-            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
-            LocalContextMiddleware(),
-            SkillsMiddleware(
-                skills_dir=skills_dir,
-                assistant_id=assistant_id,
-                project_skills_dir=project_skills_dir,
-            ),
+        # Local execution
+        agent_middleware.append(
             ShellMiddleware(
                 workspace_root=str(Path.cwd()),
                 env=shell_env,
-            ),
-        ]
+            )
+        )
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)

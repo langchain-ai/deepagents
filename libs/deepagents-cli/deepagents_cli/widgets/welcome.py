@@ -27,11 +27,19 @@ class WelcomeBanner(Static):
         banner_text = f"[bold #10b981]{DEEP_AGENTS_ASCII}[/bold #10b981]\n"
 
         # Show LangSmith status if tracing is enabled
-        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY")
-        langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get("LANGCHAIN_TRACING_V2")
+        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
+            "LANGCHAIN_API_KEY"
+        )
+        langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
+            "LANGCHAIN_TRACING_V2"
+        )
 
         if langsmith_key and langsmith_tracing:
-            project = settings.deepagents_langchain_project or os.environ.get("LANGSMITH_PROJECT") or "default"
+            project = (
+                settings.deepagents_langchain_project
+                or os.environ.get("LANGSMITH_PROJECT")
+                or "default"
+            )
             banner_text += f"[green]✓[/green] LangSmith tracing: [cyan]'{project}'[/cyan]\n"
 
         banner_text += "[#10b981]Ready to code! What would you like to build?[/#10b981]\n"

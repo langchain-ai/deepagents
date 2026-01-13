@@ -215,6 +215,201 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return "\n".join(lines)
 
+    def _detect_package_manager(self) -> str | None:
+        """Detect Python package manager in use.
+
+        Checks for lock files and config files to determine the package manager.
+
+        Uses priority order: `uv > poetry > pipenv > pip`. First match wins if multiple
+        indicators are present.
+
+        Returns:
+            Package manager name (uv, poetry, pipenv, pip) or `None` if not detected.
+        """
+        cwd = Path.cwd()
+
+        # Check for uv (uv.lock or pyproject.toml with [tool.uv])
+        if (cwd / "uv.lock").exists():
+            return "uv"
+
+        # Check for poetry (poetry.lock or pyproject.toml with [tool.poetry])
+        if (cwd / "poetry.lock").exists():
+            return "poetry"
+
+        # Check for pipenv
+        if (cwd / "Pipfile.lock").exists() or (cwd / "Pipfile").exists():
+            return "pipenv"
+
+        # Check pyproject.toml for tool sections
+        pyproject = cwd / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                content = pyproject.read_text()
+                if "[tool.uv]" in content:
+                    return "uv"
+                if "[tool.poetry]" in content:
+                    return "poetry"
+                # Has pyproject.toml but no specific tool - likely pip/setuptools
+                return "pip"
+            except (OSError, PermissionError):
+                pass
+
+        # Check for requirements.txt
+        if (cwd / "requirements.txt").exists():
+            return "pip"
+
+        return None
+
+    def _detect_node_package_manager(self) -> str | None:
+        """Detect Node.js package manager in use.
+
+        Uses priority order: `bun > pnpm > yarn > npm`.
+
+        First match wins if multiple lock files are present.
+
+        Returns:
+            Package manager name (bun, pnpm, yarn, npm) or `None` if not detected.
+        """
+        cwd = Path.cwd()
+
+        if (cwd / "bun.lockb").exists() or (cwd / "bun.lock").exists():
+            return "bun"
+        if (cwd / "pnpm-lock.yaml").exists():
+            return "pnpm"
+        if (cwd / "yarn.lock").exists():
+            return "yarn"
+        if (cwd / "package-lock.json").exists() or (cwd / "package.json").exists():
+            return "npm"
+
+        return None
+
+    def _get_makefile_preview(self, max_lines: int = 20) -> str | None:
+        """Get first N lines of `Makefile` if present.
+
+        Args:
+            max_lines: Maximum lines to show.
+
+        Returns:
+            `Makefile` preview or `None` if not found.
+        """
+        cwd = Path.cwd()
+        makefile = cwd / "Makefile"
+
+        if not makefile.exists():
+            return None
+
+        try:
+            content = makefile.read_text()
+            lines = content.split("\n")[:max_lines]
+            preview = "\n".join(lines)
+            if len(content.split("\n")) > max_lines:
+                preview += "\n... (truncated)"
+            return preview
+        except (OSError, PermissionError):
+            return None
+
+    def _detect_project_info(self) -> dict[str, str | bool | None]:
+        """Detect project type, language, and structure.
+
+        Returns:
+            Dict with `language`, `is_monorepo`, `project_root`, `has_venv`, `has_node_modules`.
+        """
+        cwd = Path.cwd()
+        info: dict[str, str | bool | None] = {
+            "language": None,
+            "is_monorepo": False,
+            "project_root": None,
+            "has_venv": False,
+            "has_node_modules": False,
+        }
+
+        # Check for virtual environments
+        info["has_venv"] = (cwd / ".venv").exists() or (cwd / "venv").exists()
+        info["has_node_modules"] = (cwd / "node_modules").exists()
+
+        # Detect primary language
+        if (cwd / "pyproject.toml").exists() or (cwd / "setup.py").exists():
+            info["language"] = "python"
+        elif (cwd / "package.json").exists():
+            info["language"] = "javascript/typescript"
+        elif (cwd / "Cargo.toml").exists():
+            info["language"] = "rust"
+        elif (cwd / "go.mod").exists():
+            info["language"] = "go"
+        elif (cwd / "pom.xml").exists() or (cwd / "build.gradle").exists():
+            info["language"] = "java"
+
+        # Detect monorepo patterns
+        # Check for common monorepo indicators
+        monorepo_indicators = [
+            (cwd / "lerna.json").exists(),
+            (cwd / "pnpm-workspace.yaml").exists(),
+            (cwd / "packages").is_dir(),
+            (cwd / "libs").is_dir() and (cwd / "apps").is_dir(),
+            (cwd / "workspaces").is_dir(),
+        ]
+        info["is_monorepo"] = any(monorepo_indicators)
+
+        # Try to find project root (look for .git or pyproject.toml up the tree)
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                cwd=cwd,
+                check=False,
+            )
+            if result.returncode == 0:
+                info["project_root"] = result.stdout.strip()
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+        return info
+
+    def _detect_test_command(self) -> str | None:
+        """Detect how to run tests based on project structure.
+
+        Returns:
+            Suggested test command or `None` if not detected.
+        """
+        cwd = Path.cwd()
+
+        # Check Makefile for test target
+        makefile = cwd / "Makefile"
+        if makefile.exists():
+            try:
+                content = makefile.read_text()
+                if "test:" in content or "tests:" in content:
+                    return "make test"
+            except (OSError, PermissionError):
+                pass
+
+        # Python projects
+        if (cwd / "pyproject.toml").exists():
+            pyproject = cwd / "pyproject.toml"
+            try:
+                content = pyproject.read_text()
+                if "[tool.pytest" in content or (cwd / "pytest.ini").exists():
+                    return "pytest"
+            except (OSError, PermissionError):
+                pass
+            if (cwd / "tests").is_dir() or (cwd / "test").is_dir():
+                return "pytest"
+
+        # Node projects
+        if (cwd / "package.json").exists():
+            try:
+                import json
+
+                pkg = json.loads((cwd / "package.json").read_text())
+                if "scripts" in pkg and "test" in pkg["scripts"]:
+                    return "npm test"
+            except (OSError, PermissionError, json.JSONDecodeError):
+                pass
+
+        return None
+
     def before_agent(
         self,
         state: LocalContextState,
@@ -222,21 +417,58 @@ class LocalContextMiddleware(AgentMiddleware):
     ) -> LocalContextStateUpdate | None:
         """Load local context before agent execution.
 
-        Runs once at session start.
+        Runs once at session start to preserve prompt caching.
 
         Args:
             state: Current agent state.
             runtime: Runtime context.
 
         Returns:
-            Updated state with local_context populated, or None if no context available.
+            Updated state with local_context populated, or None if already set.
         """
+        # Only compute context on first interaction to preserve prompt caching
+        if state.get("local_context"):
+            return None
+
         cwd = Path.cwd()
         sections = ["## Local Context", ""]
 
         # Current directory
         sections.append(f"**Current Directory**: `{cwd}`")
         sections.append("")
+
+        # Project info (language, monorepo, root, environments)
+        project_info = self._detect_project_info()
+        project_lines = []
+        if project_info.get("language"):
+            project_lines.append(f"Language: {project_info['language']}")
+        if project_info.get("project_root") and str(project_info["project_root"]) != str(cwd):
+            project_lines.append(f"Project root: `{project_info['project_root']}`")
+        if project_info.get("is_monorepo"):
+            project_lines.append("Monorepo: yes")
+        env_indicators = []
+        if project_info.get("has_venv"):
+            env_indicators.append(".venv")
+        if project_info.get("has_node_modules"):
+            env_indicators.append("node_modules")
+        if env_indicators:
+            project_lines.append(f"Environments: {', '.join(env_indicators)}")
+        if project_lines:
+            sections.append("**Project**:")
+            sections.extend(f"- {line}" for line in project_lines)
+            sections.append("")
+
+        # Package managers
+        pkg_managers = []
+        python_pkg = self._detect_package_manager()
+        if python_pkg:
+            pkg_managers.append(f"Python: {python_pkg}")
+        node_pkg = self._detect_node_package_manager()
+        if node_pkg:
+            pkg_managers.append(f"Node: {node_pkg}")
+        if pkg_managers:
+            sections.append(f"**Package Manager**: {', '.join(pkg_managers)}")
+            sections.append("")
 
         # Git info
         git_info = self._get_git_info()
@@ -246,6 +478,12 @@ class LocalContextMiddleware(AgentMiddleware):
                 main_branches = ", ".join(f"`{b}`" for b in git_info["main_branches"])
                 git_text += f", main branch available: {main_branches}"
             sections.append(git_text)
+            sections.append("")
+
+        # Test command
+        test_cmd = self._detect_test_command()
+        if test_cmd:
+            sections.append(f"**Run Tests**: `{test_cmd}`")
             sections.append("")
 
         # File list
@@ -265,6 +503,15 @@ class LocalContextMiddleware(AgentMiddleware):
         if tree:
             sections.append("**Tree** (3 levels):")
             sections.append(tree)
+            sections.append("")
+
+        # Makefile preview
+        makefile_preview = self._get_makefile_preview()
+        if makefile_preview:
+            sections.append("**Makefile** (first 20 lines):")
+            sections.append("```makefile")
+            sections.append(makefile_preview)
+            sections.append("```")
 
         local_context = "\n".join(sections)
         return LocalContextStateUpdate(local_context=local_context)

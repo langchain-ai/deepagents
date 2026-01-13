@@ -7,14 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from deepagents import create_deep_agent
+from deepagents_cli.agent import create_cli_agent
 from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
-
-# Load .env file if present
-load_dotenv()
-from deepagents_cli.agent import create_cli_agent
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,
@@ -32,6 +29,9 @@ from langsmith import trace
 
 from deepagents_harbor.backend import HarborSandbox
 from deepagents_harbor.tracing import create_example_id_from_instruction
+
+# Load .env file if present
+load_dotenv()
 
 SYSTEM_MESSAGE = """
 You are an autonomous agent executing tasks in a sandboxed environment. Follow these instructions carefully.
@@ -126,7 +126,6 @@ class DeepAgentsWrapper(BaseAgent):
         # Get first 10 files
         total_files = len(ls_info) if ls_info else 0
         first_10_files = ls_info[:10] if ls_info else []
-        has_more = total_files > 10
 
         # Build file listing header based on actual count
         if total_files == 0:

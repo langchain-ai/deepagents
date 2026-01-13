@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 
-from deepagents_cli.agent import create_agent_with_config
+from deepagents_cli.agent import create_cli_agent
 
 
 @tool(description="Sample tool")
@@ -114,7 +114,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model
-            agent, backend = create_agent_with_config(
+            agent, backend = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
@@ -168,7 +168,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model and sample_tool
-            agent, backend = create_agent_with_config(
+            agent, backend = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
@@ -224,7 +224,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model
-            agent, backend = create_agent_with_config(
+            agent, backend = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
@@ -284,7 +284,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model and sample_tool
-            agent, backend = create_agent_with_config(
+            agent, backend = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
@@ -325,7 +325,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent
-            agent, backend = create_agent_with_config(
+            agent, backend = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],

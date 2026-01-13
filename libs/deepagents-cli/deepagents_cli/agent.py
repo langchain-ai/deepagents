@@ -8,6 +8,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
+from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 from langchain.agents.middleware import (
     InterruptOnConfig,
 )
@@ -15,16 +16,15 @@ from langchain.agents.middleware.types import AgentState
 from langchain.messages import ToolCall
 from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
 
-from deepagents_cli.agent_memory import AgentMemoryMiddleware
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.shell import ShellMiddleware
-from deepagents_cli.skills import SkillsMiddleware
 
 
 def list_agents() -> None:
@@ -44,7 +44,7 @@ def list_agents() -> None:
     for agent_path in sorted(agents_dir.iterdir()):
         if agent_path.is_dir():
             agent_name = agent_path.name
-            agent_md = agent_path / "agent.md"
+            agent_md = agent_path / "AGENTS.md"
 
             if agent_md.exists():
                 console.print(f"  • [bold]{agent_name}[/bold]", style=COLORS["primary"])
@@ -65,12 +65,12 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 
     if source_agent:
         source_dir = agents_dir / source_agent
-        source_md = source_dir / "agent.md"
+        source_md = source_dir / "AGENTS.md"
 
         if not source_md.exists():
             console.print(
                 f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
-                "or has no agent.md"
+                "or has no AGENTS.md"
             )
             return
 
@@ -85,7 +85,7 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
         console.print(f"Removed existing agent directory: {agent_dir}", style=COLORS["tool"])
 
     agent_dir.mkdir(parents=True, exist_ok=True)
-    agent_md = agent_dir / "agent.md"
+    agent_md = agent_dir / "AGENTS.md"
     agent_md.write_text(source_content)
 
     console.print(f"✓ Agent '{agent_name}' reset to {action_desc}", style=COLORS["primary"])
@@ -101,7 +101,7 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
                      If None, agent is operating in local mode.
 
     Returns:
-        The system prompt string (without agent.md content)
+        The system prompt string (without AGENTS.md content)
     """
     agent_dir_path = f"~/.deepagents/{assistant_id}"
 
@@ -320,48 +320,105 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     }
 
 
-def create_agent_with_config(
+def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
-    tools: list[BaseTool],
     *,
+    tools: list[BaseTool] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
+    system_prompt: str | None = None,
+    auto_approve: bool = False,
+    enable_memory: bool = True,
+    enable_skills: bool = True,
+    enable_shell: bool = True,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
-    """Create and configure an agent with the specified model and tools.
+    """Create a CLI-configured agent with flexible options.
+
+    This is the main entry point for creating a deepagents CLI agent, usable both
+    internally and from external code (e.g., benchmarking frameworks, Harbor).
 
     Args:
-        model: LLM model to use
-        assistant_id: Agent identifier for memory storage
+        model: LLM model to use (e.g., "anthropic:claude-sonnet-4-5-20250929")
+        assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
                  If None, uses local filesystem + shell.
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona")
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+                     Used for system prompt generation.
+        system_prompt: Override the default system prompt. If None, generates one
+                      based on sandbox_type and assistant_id.
+        auto_approve: If True, automatically approves all tool calls without human
+                     confirmation. Useful for automated workflows.
+        enable_memory: Enable MemoryMiddleware for persistent memory
+        enable_skills: Enable SkillsMiddleware for custom agent skills
+        enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
+        checkpointer: Optional checkpointer for session persistence. If None, uses
+                     InMemorySaver (no persistence across CLI invocations).
 
     Returns:
-        2-tuple of graph and backend
+        2-tuple of (agent_graph, backend)
+        - agent_graph: Configured LangGraph Pregel instance ready for execution
+        - composite_backend: CompositeBackend for file operations
     """
-    # Setup agent directory for persistent memory (same for both local and remote modes)
-    agent_dir = settings.ensure_agent_dir(assistant_id)
-    agent_md = agent_dir / "agent.md"
-    if not agent_md.exists():
-        source_content = get_default_coding_instructions()
-        agent_md.write_text(source_content)
+    tools = tools or []
 
-    # Skills directory - per-agent (user-level)
-    skills_dir = settings.ensure_user_skills_dir(assistant_id)
+    # Setup agent directory for persistent memory (if enabled)
+    if enable_memory or enable_skills:
+        agent_dir = settings.ensure_agent_dir(assistant_id)
+        agent_md = agent_dir / "AGENTS.md"
+        if not agent_md.exists():
+            source_content = get_default_coding_instructions()
+            agent_md.write_text(source_content)
 
-    # Project-level skills directory (if in a project)
-    project_skills_dir = settings.get_project_skills_dir()
+    # Skills directories (if enabled)
+    skills_dir = None
+    project_skills_dir = None
+    if enable_skills:
+        skills_dir = settings.ensure_user_skills_dir(assistant_id)
+        project_skills_dir = settings.get_project_skills_dir()
+
+    # Build middleware stack based on enabled features
+    agent_middleware = []
+
+    # Add memory middleware
+    if enable_memory:
+        memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
+        project_agent_md = settings.get_project_agent_md_path()
+        if project_agent_md:
+            memory_sources.append(str(project_agent_md))
+
+        agent_middleware.append(
+            MemoryMiddleware(
+                backend=FilesystemBackend(),
+                sources=memory_sources,
+            )
+        )
+
+    # Add skills middleware
+    if enable_skills:
+        sources = [str(skills_dir)]
+        if project_skills_dir:
+            sources.append(str(project_skills_dir))
+
+        agent_middleware.append(
+            SkillsMiddleware(
+                backend=FilesystemBackend(),
+                sources=sources,
+            )
+        )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
-        # Backend: Local filesystem for code (no virtual routes)
-        composite_backend = CompositeBackend(
-            default=FilesystemBackend(),  # Current working directory
-            routes={},  # No virtualization - use real paths
-        )
+        backend = FilesystemBackend()  # Current working directory
+
+        # Create environment for shell commands
+        # Restore user's original LANGSMITH_PROJECT so their code traces separately
+        shell_env = os.environ.copy()
+        if settings.user_langchain_project:
+            shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
         # Middleware: AgentMemoryMiddleware, LocalContextMiddleware, SkillsMiddleware, ShellToolMiddleware
         agent_middleware = [
@@ -374,34 +431,35 @@ def create_agent_with_config(
             ),
             ShellMiddleware(
                 workspace_root=str(Path.cwd()),
-                env=os.environ,
+                env=shell_env,
             ),
         ]
     else:
         # ========== REMOTE SANDBOX MODE ==========
-        # Backend: Remote sandbox for code (no /memories/ route needed with filesystem-based memory)
-        composite_backend = CompositeBackend(
-            default=sandbox,  # Remote sandbox (ModalBackend, etc.)
-            routes={},  # No virtualization
-        )
+        backend = sandbox  # Remote sandbox (ModalBackend, etc.)
+        # Note: Shell middleware not used in sandbox mode
+        # File operations and execute tool are provided by the sandbox backend
 
-        # Middleware: AgentMemoryMiddleware and SkillsMiddleware
-        # NOTE: File operations (ls, read, write, edit, glob, grep) and execute tool
-        # are automatically provided by create_deep_agent when backend is a SandboxBackend.
-        agent_middleware = [
-            AgentMemoryMiddleware(settings=settings, assistant_id=assistant_id),
-            SkillsMiddleware(
-                skills_dir=skills_dir,
-                assistant_id=assistant_id,
-                project_skills_dir=project_skills_dir,
-            ),
-        ]
+    # Get or use custom system prompt
+    if system_prompt is None:
+        system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
 
-    # Get the system prompt (sandbox-aware and with skills)
-    system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
+    # Configure interrupt_on based on auto_approve setting
+    if auto_approve:
+        # No interrupts - all tools run automatically
+        interrupt_on = {}
+    else:
+        # Full HITL for destructive operations
+        interrupt_on = _add_interrupt_on()
 
-    interrupt_on = _add_interrupt_on()
+    composite_backend = CompositeBackend(
+        default=backend,
+        routes={},
+    )
 
+    # Create the agent
+    # Use provided checkpointer or fallback to InMemorySaver
+    final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
@@ -409,8 +467,6 @@ def create_agent_with_config(
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
+        checkpointer=final_checkpointer,
     ).with_config(config)
-
-    agent.checkpointer = InMemorySaver()
-
     return agent, composite_backend

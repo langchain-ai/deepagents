@@ -21,47 +21,83 @@ class SubAgent(TypedDict):
     will be applied first, followed by any `middleware` specified in this spec.
     To use only custom middleware without the defaults, pass `default_middleware=[]`
     to `SubAgentMiddleware`.
+
+    Required fields:
+        name: Unique identifier for the subagent.
+
+            The main agent uses this name when calling the `task()` tool.
+        description: What this subagent does.
+
+            Be specific and action-oriented. The main agent uses this to decide when to delegate.
+        system_prompt: Instructions for the subagent.
+
+            Include tool usage guidance and output format requirements.
+        tools: Tools the subagent can use.
+
+            Keep this minimal and include only what's needed.
+
+    Optional fields:
+        model: Override the main agent's model.
+
+            Use the format `'provider:model-name'` (e.g., `'openai:gpt-4o'`).
+        middleware: Additional middleware for custom behavior, logging, or rate limiting.
+        interrupt_on: Configure human-in-the-loop for specific tools.
+
+            Requires a checkpointer.
     """
 
     name: str
-    """The name of the agent."""
+    """Unique identifier for the subagent."""
 
     description: str
-    """The description of the agent."""
+    """What this subagent does. The main agent uses this to decide when to delegate."""
 
     system_prompt: str
-    """The system prompt to use for the agent."""
+    """Instructions for the subagent."""
 
     tools: Sequence[BaseTool | Callable | dict[str, Any]]
-    """The tools to use for the agent."""
+    """Tools the subagent can use."""
 
     model: NotRequired[str | BaseChatModel]
-    """The model for the agent. Defaults to `default_model`."""
+    """Override the main agent's model. Use `'provider:model-name'` format."""
 
     middleware: NotRequired[list[AgentMiddleware]]
-    """Additional middleware to append after `default_middleware`."""
+    """Additional middleware for custom behavior."""
 
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
-    """The tool configs to use for the agent."""
+    """Configure human-in-the-loop for specific tools."""
 
 
 class CompiledSubAgent(TypedDict):
-    """A pre-compiled agent spec."""
+    """A pre-compiled agent spec for complex workflows.
+
+    Use this when you need a pre-built LangGraph graph as a subagent.
+
+    Fields:
+        name: Unique identifier for the subagent.
+        description: What this subagent does.
+        runnable: A compiled LangGraph graph (must call `.compile()` first).
+    """
 
     name: str
-    """The name of the agent."""
+    """Unique identifier for the subagent."""
 
     description: str
-    """The description of the agent."""
+    """What this subagent does."""
 
     runnable: Runnable
-    """The Runnable to use for the agent."""
+    """A compiled LangGraph graph."""
 
 
 DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
-# State keys that should be excluded when passing state to subagents
-_EXCLUDED_STATE_KEYS = ("messages", "todos")
+# State keys that are excluded when passing state to subagents and when returning
+# updates from subagents.
+# When returning updates:
+# 1. The messages key is handled explicitly to ensure only the final message is included
+# 2. The todos and structured_response keys are excluded as they do not have a defined reducer
+#    and no clear meaning for returning them from a subagent to the main agent.
+_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response"}
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 
@@ -314,10 +350,12 @@ def _create_task_tool(
 
     def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
+        # Strip trailing whitespace to prevent API errors with Anthropic
+        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(result["messages"][-1].text, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
             }
         )
 
@@ -345,7 +383,7 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state)
+        result = subagent.invoke(subagent_state, runtime.config)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -360,7 +398,7 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state)
+        result = await subagent.ainvoke(subagent_state, runtime.config)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)

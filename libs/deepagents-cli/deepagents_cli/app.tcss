@@ -1,0 +1,167 @@
+/* DeepAgents CLI Textual Stylesheet */
+
+/* Define layers for z-ordering */
+Screen {
+    layout: vertical;
+    layers: base autocomplete;
+}
+
+/* Main content goes on base layer by default */
+
+/* Chat area - main scrollable messages area */
+#chat {
+    height: 1fr;
+    padding: 1 2;
+    background: $background;
+}
+
+/* Welcome banner */
+#welcome-banner {
+    height: auto;
+    margin-bottom: 1;
+}
+
+/* Messages area */
+#messages {
+    height: auto;
+}
+
+/* Bottom app container - holds ChatInput OR ApprovalMenu */
+#bottom-app-container {
+    height: auto;
+    dock: bottom;
+    margin-bottom: 3;
+    padding: 0 1;
+}
+
+/* Input area */
+#input-area {
+    height: auto;
+    min-height: 3;
+    max-height: 12;
+}
+
+/* Approval Menu - inline in messages area */
+.approval-menu {
+    height: auto;
+    margin: 1 0;
+    padding: 1 2;
+    background: $surface;
+    border: solid $warning;
+}
+
+.approval-menu .approval-title {
+    text-style: bold;
+    color: $warning;
+    margin-bottom: 1;
+}
+
+.approval-menu .approval-info {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+.approval-menu .approval-option {
+    height: 1;
+    padding: 0 1;
+}
+
+.approval-menu .approval-option-selected {
+    background: $primary;
+    text-style: bold;
+}
+
+.approval-menu .approval-help {
+    color: $text-muted;
+    text-style: italic;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* Status bar */
+#status-bar {
+    height: 1;
+    dock: bottom;
+    margin-bottom: 1;
+}
+
+/* Tool approval widgets */
+.tool-approval-widget {
+    height: auto;
+    max-height: 20;
+    overflow-y: auto;
+}
+
+.approval-file-path {
+    color: $primary;
+    text-style: bold;
+}
+
+.approval-description {
+    color: $text-muted;
+}
+
+/* Diff styling */
+.diff-header {
+    height: auto;
+    color: $text-muted;
+}
+
+.diff-removed {
+    height: auto;
+    color: #ff6b6b;
+    background: #3d1f1f;
+}
+
+.diff-added {
+    height: auto;
+    color: #69db7c;
+    background: #1f3d1f;
+}
+
+.diff-range {
+    height: auto;
+    color: $primary;
+    text-style: bold;
+}
+
+.diff-context {
+    height: auto;
+    color: $text-muted;
+}
+
+/* Separator line between options and tool details */
+.approval-menu .approval-separator {
+    height: 1;
+    color: $warning;
+    margin: 1 0 0 0;
+}
+
+/* Scrollable tool info area in approval menu - at bottom */
+.approval-menu .tool-info-scroll {
+    height: auto;
+    max-height: 15;
+    overflow-y: auto;
+    margin-top: 0;
+}
+
+/* Options container with background */
+.approval-menu .approval-options-container {
+    height: auto;
+    background: $surface-darken-1;
+    padding: 1;
+    margin-top: 0;
+}
+
+/* Completion popup styling (used by ChatInput) - appears BELOW input */
+#completion-popup {
+    height: auto;
+    max-height: 12;
+    width: 100%;
+    margin-left: 3;
+    margin-top: 0;
+    padding: 0;
+    background: $background;
+    color: $text;
+}

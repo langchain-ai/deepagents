@@ -275,8 +275,7 @@ agent = create_deep_agent(
 For complex workflows, use a pre-built LangGraph graph:
 
 ```python
-# Create a custom agent graph using create_agent
-# (create_agent automatically includes 'messages' in the state)
+# Create a custom agent graph
 custom_graph = create_agent(
     model=your_model,
     tools=specialized_tools,

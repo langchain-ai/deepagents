@@ -158,50 +158,30 @@ deepagents create <agent_name>
 
 #### LangSmith Tracing
 
-The CLI supports separate LangSmith project configuration for agent tracing vs user code tracing:
-
-**Agent Tracing** - Traces deepagents operations (tool calls, agent decisions):
+Enable LangSmith tracing to see agent operations in your LangSmith dashboard:
 
 ```bash
-export DEEPAGENTS_LANGSMITH_PROJECT="my-agent-project"
-```
+export LANGSMITH_API_KEY="your-api-key"
+export LANGSMITH_TRACING=true
+export DEEPAGENTS_LANGSMITH_PROJECT="my-project"
 
-**User Code Tracing** - Traces code executed via shell commands:
-
-```bash
-export LANGSMITH_PROJECT="my-user-code-project"
-```
-
-**Complete Setup Example:**
-
-```bash
-# Enable LangSmith tracing
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY="your-api-key"
-
-# Configure separate projects
-export DEEPAGENTS_LANGSMITH_PROJECT="agent-traces"
-export LANGSMITH_PROJECT="user-code-traces"
-
-# Run deepagents
 deepagents
 ```
 
-When both are configured, the CLI displays:
+When configured, the CLI displays:
 
 ```
-✓ LangSmith tracing enabled: Deepagents → 'agent-traces'
-  User code (shell) → 'user-code-traces'
+✓ LangSmith tracing: 'my-project'
 ```
 
-**Why separate projects?**
+**Advanced: Separate Projects**
 
-- Keep agent operations separate from your application code traces
-- Easier debugging by isolating agent vs user code behavior
-- Different retention policies or access controls per project
+If you're building a LangChain app with deepagents and want to separate agent traces from your app's traces:
 
-**Backwards Compatibility:**
-If `DEEPAGENTS_LANGSMITH_PROJECT` is not set, both agent and user code trace to the same project specified by `LANGSMITH_PROJECT`.
+```bash
+export DEEPAGENTS_LANGSMITH_PROJECT="agent-traces"  # Deepagents operations
+export LANGSMITH_PROJECT="my-app-traces"            # Your app's LangChain calls
+```
 
 ## Customization
 

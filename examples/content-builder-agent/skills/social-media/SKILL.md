@@ -15,6 +15,58 @@ Use this skill when asked to:
 - Draft social media announcements
 - Repurpose blog content for social
 
+## Research First (Required)
+
+**Before writing any social media content, you MUST delegate research:**
+
+1. Use the `task` tool with `subagent_type: "researcher"`
+2. In the description, specify BOTH the topic AND where to save:
+
+```
+task(
+    subagent_type="researcher",
+    description="Research [TOPIC]. Save findings to research/[slug].md"
+)
+```
+
+Example:
+```
+task(
+    subagent_type="researcher",
+    description="Research renewable energy trends in 2025. Save findings to research/renewable-energy.md"
+)
+```
+
+3. After research completes, read the findings file before writing
+
+## Output Structure (Required)
+
+**Every social media post MUST have both content AND an image:**
+
+**LinkedIn posts:**
+```
+linkedin/
+└── <slug>/
+    ├── post.md        # The post content
+    └── image.png      # REQUIRED: Generated visual
+```
+
+**Twitter/X threads:**
+```
+tweets/
+└── <slug>/
+    ├── thread.md      # The thread content
+    └── image.png      # REQUIRED: Generated visual
+```
+
+Example: A LinkedIn post about "prompt engineering" → `linkedin/prompt-engineering/`
+
+**You MUST complete both steps:**
+1. Write the content to the appropriate path
+2. Generate an image using `generate_image` and save alongside the post
+
+**A social media post is NOT complete without its image.**
+
 ## Platform Guidelines
 
 ### LinkedIn
@@ -56,12 +108,6 @@ Use this skill when asked to:
 - 280 character limit per tweet
 - Threads for longer content (use 1/🧵 format)
 - No more than 2 hashtags per tweet
-- Use emojis sparingly
-
-**Tone:**
-- Concise and punchy
-- Direct statements work well
-- Hot takes encouraged (with substance)
 
 **Thread Structure:**
 ```
@@ -74,6 +120,66 @@ Use this skill when asked to:
 4/ [Example or evidence]
 
 5/ [Conclusion + CTA]
+```
+
+## Image Generation
+
+Every social media post needs an eye-catching image. Use the `generate_social_image` tool:
+
+```
+generate_social_image(
+    prompt="A detailed description of the image...",
+    platform="linkedin",  # or "tweets"
+    slug="your-post-slug"
+)
+```
+
+The tool automatically saves to `<platform>/<slug>/image.png`.
+
+### Social Image Best Practices
+
+Social images need to work at small sizes in crowded feeds:
+- **Bold, simple compositions** - one clear focal point
+- **High contrast** - stands out when scrolling
+- **No text in image** - too small to read, platforms add their own
+- **Square or 4:5 ratio** - works across platforms
+
+### Writing Effective Prompts
+
+Include these elements:
+
+1. **Single focal point**: One clear subject, not a busy scene
+2. **Bold style**: Vibrant colors, strong shapes, high contrast
+3. **Simple background**: Solid color, gradient, or subtle texture
+4. **Mood/energy**: Match the post tone (inspiring, urgent, thoughtful)
+
+### Example Prompts
+
+**For an insight/tip post:**
+```
+generate_social_image(
+    prompt="Single glowing lightbulb floating against a deep purple gradient background, lightbulb made of interconnected golden geometric lines, rays of soft light emanating outward. Minimal, striking, high contrast. Square composition.",
+    platform="linkedin",
+    slug="prompt-engineering-tip"
+)
+```
+
+**For announcements/news:**
+```
+generate_social_image(
+    prompt="Abstract rocket ship made of colorful geometric shapes launching upward with a trail of particles. Bright coral and teal color scheme against clean white background. Energetic, celebratory mood. Bold flat illustration style.",
+    platform="linkedin",
+    slug="product-launch"
+)
+```
+
+**For thought-provoking content:**
+```
+generate_social_image(
+    prompt="Two overlapping translucent circles, one blue one orange, creating a glowing intersection in the center. Represents collaboration or intersection of ideas. Dark charcoal background, soft ethereal glow. Minimalist and contemplative.",
+    platform="tweets",
+    slug="ai-human-collaboration"
+)
 ```
 
 ## Content Types
@@ -93,16 +199,11 @@ Use this skill when asked to:
 - Provide your take first
 - Keep it focused on one topic
 
-## Engagement Tips
-
-1. **Post timing**: Mention if timing matters for the content
-2. **Visuals**: Suggest images or videos when relevant
-3. **Tagging**: Recommend relevant accounts to tag
-4. **Repurposing**: Suggest how content could be adapted across platforms
-
 ## Quality Checklist
 
 Before finishing:
+- [ ] Post saved to `linkedin/<slug>/post.md` or `tweets/<slug>/thread.md`
+- [ ] Image generated alongside the post
 - [ ] First line hooks attention
 - [ ] Content fits platform limits
 - [ ] Tone matches platform norms

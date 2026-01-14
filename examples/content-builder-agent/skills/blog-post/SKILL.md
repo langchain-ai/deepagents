@@ -15,6 +15,49 @@ Use this skill when asked to:
 - Develop educational long-form content
 - Write thought leadership pieces
 
+## Research First (Required)
+
+**Before writing any blog post, you MUST delegate research:**
+
+1. Use the `task` tool with `subagent_type: "researcher"`
+2. In the description, specify BOTH the topic AND where to save:
+
+```
+task(
+    subagent_type="researcher",
+    description="Research [TOPIC]. Save findings to research/[slug].md"
+)
+```
+
+Example:
+```
+task(
+    subagent_type="researcher",
+    description="Research the current state of AI agents in 2025. Save findings to research/ai-agents-2025.md"
+)
+```
+
+3. After research completes, read the findings file before writing
+
+## Output Structure (Required)
+
+**Every blog post MUST have both a post AND a cover image:**
+
+```
+blogs/
+└── <slug>/
+    ├── post.md        # The blog post content
+    └── hero.png       # REQUIRED: Generated cover image
+```
+
+Example: A post about "AI Agents in 2025" → `blogs/ai-agents-2025/`
+
+**You MUST complete both steps:**
+1. Write the post to `blogs/<slug>/post.md`
+2. Generate a cover image using `generate_image` and save to `blogs/<slug>/hero.png`
+
+**A blog post is NOT complete without its cover image.**
+
 ## Blog Post Structure
 
 Every blog post should follow this structure:
@@ -45,34 +88,69 @@ Every blog post should follow this structure:
 - End with a clear call-to-action
 - Link to related resources
 
-## Research Process
+## Cover Image Generation
 
-Before writing:
+After writing the post, generate a cover image using the `generate_cover` tool:
 
-1. **Delegate research** using the `task` tool:
-   ```
-   Use the task tool to spawn the researcher subagent:
-   "Research [TOPIC]. Find 3-5 authoritative sources, key statistics,
-   and recent developments. Save findings to research_[topic].md"
-   ```
+```
+generate_cover(
+    prompt="A detailed description of the image...",
+    slug="your-blog-slug"
+)
+```
 
-2. **Review findings** before writing
+The tool automatically saves to `blogs/<slug>/hero.png`.
 
-3. **Outline first** - Create H2 headers before writing content
+### Writing Effective Image Prompts
+
+Structure your prompt with these elements:
+
+1. **Subject**: What is the main focus? Be specific and concrete.
+2. **Style**: Art direction (minimalist, isometric, flat design, 3D render, watercolor, etc.)
+3. **Composition**: How elements are arranged (centered, rule of thirds, symmetrical)
+4. **Color palette**: Specific colors or mood (warm earth tones, cool blues and purples, high contrast)
+5. **Lighting/Atmosphere**: Soft diffused light, dramatic shadows, golden hour, neon glow
+6. **Technical details**: Aspect ratio considerations, negative space for text overlay
+
+### Example Prompts
+
+**For a technical blog post:**
+```
+generate_cover(
+    prompt="Isometric 3D illustration of interconnected glowing cubes representing AI agents, each cube has subtle circuit patterns. Cubes connected by luminous data streams. Deep navy background (#0a192f) with electric blue (#64ffda) and soft purple (#c792ea) accents. Clean minimal style, lots of negative space at top for title. Professional tech aesthetic.",
+    slug="ai-agents-2025"
+)
+```
+
+**For a tutorial/how-to:**
+```
+generate_cover(
+    prompt="Clean flat illustration of hands typing on a keyboard with abstract code symbols floating upward, transforming into lightbulbs and gears. Warm gradient background from soft coral to light peach. Friendly, approachable style. Centered composition with space for text overlay.",
+    slug="prompt-engineering-guide"
+)
+```
+
+**For thought leadership:**
+```
+generate_cover(
+    prompt="Abstract visualization of a human silhouette profile merging with geometric neural network patterns. Split composition - organic watercolor texture on left transitioning to clean vector lines on right. Muted sage green and warm terracotta color scheme. Contemplative, forward-thinking mood.",
+    slug="future-of-work"
+)
+```
 
 ## SEO Considerations
 
 - Include the main keyword in the title and first paragraph
 - Use the keyword naturally 3-5 times throughout
-- Add descriptive alt text for any images
 - Keep the title under 60 characters
 - Write a meta description (150-160 characters)
 
 ## Quality Checklist
 
 Before finishing:
+- [ ] Post saved to `blogs/<slug>/post.md`
+- [ ] Hero image generated at `blogs/<slug>/hero.png`
 - [ ] Hook grabs attention in first 2 sentences
 - [ ] Each section has a clear purpose
-- [ ] Code examples are tested and correct
 - [ ] Conclusion summarizes key points
 - [ ] CTA tells reader what to do next

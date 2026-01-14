@@ -140,5 +140,5 @@ This agent has filesystem access and can read, write, and delete files on your m
 
 - Python 3.11+
 - `ANTHROPIC_API_KEY` - For the main agent
-- `GOOGLE_API_KEY` - For image generation (Gemini)
+- `GOOGLE_API_KEY` - For image generation (uses Gemini's [Imagen / "nano banana"](https://ai.google.dev/gemini-api/docs/image-generation) via `gemini-2.5-flash-image`)
 - `TAVILY_API_KEY` - For web search (optional, research still works without it)

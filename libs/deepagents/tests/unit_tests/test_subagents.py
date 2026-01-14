@@ -686,3 +686,100 @@ class TestSubAgentsWithStructuredOutput:
         assert population_tool_message.content == expected_population_content, (
             f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
         )
+
+
+class TestSubAgentsWithRunnableLambda:
+    """Tests for subagents that use RunnableLambda as the runnable."""
+
+    def test_runnable_lambda_subagent_with_context_schema_on_main_agent(self) -> None:
+        """Test that a RunnableLambda subagent works when main agent has context_schema.
+
+        This test verifies that:
+        1. A main agent can be created with a context_schema
+        2. A subagent can be a simple RunnableLambda (not a full agent)
+        3. When the main agent invokes the subagent, passing context doesn't break
+        4. The RunnableLambda receives the input and returns a result correctly
+
+        This validates that the recent change to pass context to subagents doesn't
+        break RunnableLambda-based subagents that may not expect or handle context.
+        """
+        from langchain_core.runnables import RunnableLambda
+
+        # Define a context schema for the main agent
+        class AgentContext(BaseModel):
+            """Context information passed to the agent."""
+
+            user_id: str = Field(description="The ID of the user")
+            session_id: str = Field(description="The session ID")
+
+        # Create a simple RunnableLambda that processes input and returns a result
+        # This lambda just takes the input dict and returns a response
+        def simple_processor(input_dict: dict) -> dict:
+            """Simple processor that extracts message content and returns a result."""
+            messages = input_dict.get("messages", [])
+            task_description = messages[0].content if messages else "No task provided"
+            return {
+                "messages": [AIMessage(content=f"Processed task: {task_description}")],
+            }
+
+        lambda_subagent = RunnableLambda(simple_processor)
+
+        # Create parent agent's chat model that calls the lambda subagent
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    # First response: invoke the task tool to launch lambda subagent
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Process this data for me",
+                                    "subagent_type": "lambda-processor",
+                                },
+                                "id": "call_lambda_processor",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    # Second response: acknowledge the result
+                    AIMessage(content="The lambda processor has completed."),
+                ]
+            )
+        )
+
+        # Create the parent agent with context_schema and the lambda subagent
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            context_schema=AgentContext,
+            subagents=[
+                CompiledSubAgent(
+                    name="lambda-processor",
+                    description="A simple lambda-based processor for data tasks.",
+                    runnable=lambda_subagent,
+                )
+            ],
+        )
+
+        # Invoke the parent agent with context
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Please process some data")]},
+            config={"configurable": {"thread_id": "test_thread_lambda_context"}},
+            context=AgentContext(user_id="user_123", session_id="session_456"),
+        )
+
+        # Verify the result contains messages
+        assert "messages" in result, "Result should contain messages key"
+        assert len(result["messages"]) > 0, "Result should have at least one message"
+
+        # Find the ToolMessage that contains the lambda subagent's response
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0, "Should have at least one ToolMessage from lambda subagent"
+
+        # Verify the ToolMessage contains the lambda's processed response
+        lambda_tool_message = tool_messages[0]
+        assert "Processed task: Process this data for me" in lambda_tool_message.content, (
+            f"ToolMessage should contain lambda's response, got: {lambda_tool_message.content}"
+        )

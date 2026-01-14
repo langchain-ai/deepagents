@@ -217,7 +217,7 @@ class CompiledSubAgent(TypedDict):
     runnable: Runnable
 ```
 
-**SubAgent fields:**
+**`SubAgent` fields:**
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
 - **description**: This is the description of the subagent that is shown to the main agent
 - **system_prompt**: This is the system prompt used for the subagent

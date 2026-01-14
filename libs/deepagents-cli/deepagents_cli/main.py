@@ -145,6 +145,14 @@ def parse_args() -> argparse.Namespace:
         help="Resume thread: -r for most recent, -r <ID> for specific thread",
     )
 
+    # Initial prompt - auto-submit when session starts
+    parser.add_argument(
+        "-m",
+        "--message",
+        dest="initial_prompt",
+        help="Initial prompt to auto-submit when session starts",
+    )
+
     parser.add_argument(
         "--model",
         help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5-mini). "
@@ -181,6 +189,7 @@ async def run_textual_cli_async(
     model_name: str | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
+    initial_prompt: str | None = None,
 ) -> None:
     """Run the Textual CLI interface (async version).
 
@@ -192,6 +201,7 @@ async def run_textual_cli_async(
         model_name: Optional model name to use
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
+        initial_prompt: Optional prompt to auto-submit when session starts
     """
     from deepagents_cli.app import run_textual_app
 
@@ -244,6 +254,7 @@ async def run_textual_cli_async(
                 auto_approve=auto_approve,
                 cwd=Path.cwd(),
                 thread_id=thread_id,
+                initial_prompt=initial_prompt,
             )
         except Exception as e:
             error_text = Text("❌ Failed to create agent: ", style="red")
@@ -351,6 +362,7 @@ def cli_main() -> None:
                     model_name=getattr(args, "model", None),
                     thread_id=thread_id,
                     is_resumed=is_resumed,
+                    initial_prompt=getattr(args, "initial_prompt", None),
                 )
             )
     except KeyboardInterrupt:

@@ -1,6 +1,6 @@
 [project]
 name = "deepagents-cli"
-version = "0.0.12"
+version = "0.0.13a1"
 description = "Deepagents CLI"
 readme = "README.md"
 license = { text = "MIT" }
@@ -9,7 +9,7 @@ dependencies = [
   "deepagents==0.2.8,<1.0.0",
   "langchain>=1.2.3,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
-  "langgraph-checkpoint-sqlite>=2.0.0,<3.0.0",
+  "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",

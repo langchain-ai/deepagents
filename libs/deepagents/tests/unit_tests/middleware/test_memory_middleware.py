@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -56,69 +55,55 @@ def create_store_memory_item(content: str) -> dict:
     }
 
 
-def test_format_memory_locations_empty() -> None:
-    """Test formatting with no sources."""
-    middleware = MemoryMiddleware(
-        backend=None,  # type: ignore
-        sources=[],
-    )
-    result = middleware._format_memory_locations()
-    assert "None configured" in result
-
-
-def test_format_memory_locations_single() -> None:
-    """Test formatting with single source."""
-    middleware = MemoryMiddleware(
-        backend=None,  # type: ignore
-        sources=["/home/user/.deepagents/AGENTS.md"],
-    )
-    result = middleware._format_memory_locations()
-
-    assert "**Memory Sources:**" in result
-    assert "`/home/user/.deepagents/AGENTS.md`" in result
-
-
-def test_format_memory_locations_multiple() -> None:
-    """Test formatting with multiple sources."""
-    middleware = MemoryMiddleware(
-        backend=None,  # type: ignore
-        sources=[
-            "~/.deepagents/AGENTS.md",
-            "./.deepagents/AGENTS.md",
-        ],
-    )
-    result = middleware._format_memory_locations()
-
-    assert "**Memory Sources:**" in result
-    assert "`~/.deepagents/AGENTS.md`" in result
-    assert "`./.deepagents/AGENTS.md`" in result
-
-
-def test_format_memory_contents_empty() -> None:
-    """Test formatting with no contents."""
+def test_format_agent_memory_empty() -> None:
+    """Test formatting with no contents shows 'No memory loaded'."""
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
         sources=["/test/AGENTS.md"],
     )
-    result = middleware._format_memory_contents({})
+    result = middleware._format_agent_memory({})
+
+    assert "<agent_memory>" in result
+    assert "</agent_memory>" in result
     assert "No memory loaded" in result
 
 
-def test_format_memory_contents_single() -> None:
-    """Test formatting with single source content."""
+def test_format_agent_memory_empty_sources() -> None:
+    """Test formatting with no sources configured."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore
+        sources=[],
+    )
+    result = middleware._format_agent_memory({})
+
+    assert "<agent_memory>" in result
+    assert "</agent_memory>" in result
+    assert "No memory loaded" in result
+
+
+def test_format_agent_memory_single() -> None:
+    """Test formatting with single source shows location and content paired."""
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
         sources=["/user/AGENTS.md"],
     )
     contents = {"/user/AGENTS.md": "# User Memory\nBe helpful."}
-    result = middleware._format_memory_contents(contents)
+    result = middleware._format_agent_memory(contents)
 
+    assert "<agent_memory>" in result
+    assert "</agent_memory>" in result
+    # Location and content should both be present
+    assert "/user/AGENTS.md" in result
     assert "# User Memory" in result
     assert "Be helpful." in result
+    # Location should appear before its content
+    loc_pos = result.find("/user/AGENTS.md")
+    content_pos = result.find("# User Memory")
+    assert loc_pos < content_pos
 
 
-def test_format_memory_contents_multiple() -> None:
-    """Test formatting with multiple source contents."""
+def test_format_agent_memory_multiple() -> None:
+    """Test formatting with multiple sources shows each location with its content."""
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
         sources=[
@@ -130,13 +115,18 @@ def test_format_memory_contents_multiple() -> None:
         "/user/AGENTS.md": "User preferences here",
         "/project/AGENTS.md": "Project guidelines here",
     }
-    result = middleware._format_memory_contents(contents)
+    result = middleware._format_agent_memory(contents)
 
+    assert "<agent_memory>" in result
+    assert "</agent_memory>" in result
+    # Both locations and contents should be present
+    assert "/user/AGENTS.md" in result
     assert "User preferences here" in result
+    assert "/project/AGENTS.md" in result
     assert "Project guidelines here" in result
 
 
-def test_format_memory_contents_preserves_order() -> None:
+def test_format_agent_memory_preserves_order() -> None:
     """Test that content order matches sources order."""
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
@@ -145,10 +135,11 @@ def test_format_memory_contents_preserves_order() -> None:
             "/second/AGENTS.md",
         ],
     )
+    # Dict order doesn't match sources order
     contents = {"/second/AGENTS.md": "Second content", "/first/AGENTS.md": "First content"}
-    result = middleware._format_memory_contents(contents)
+    result = middleware._format_agent_memory(contents)
 
-    # First should appear before second (based on sources order)
+    # First should appear before second (based on sources order, not dict order)
     first_pos = result.find("First content")
     second_pos = result.find("Second content")
     assert first_pos >= 0  # Found in result
@@ -156,8 +147,8 @@ def test_format_memory_contents_preserves_order() -> None:
     assert first_pos < second_pos  # First appears before second
 
 
-def test_format_memory_contents_skips_missing_sources() -> None:
-    """Test that sources without content are skipped."""
+def test_format_agent_memory_skips_missing_sources() -> None:
+    """Test that sources without content are skipped entirely."""
     middleware = MemoryMiddleware(
         backend=None,  # type: ignore
         sources=[
@@ -167,9 +158,38 @@ def test_format_memory_contents_skips_missing_sources() -> None:
     )
     # Only provide content for user, not project
     contents = {"/user/AGENTS.md": "User content only"}
-    result = middleware._format_memory_contents(contents)
+    result = middleware._format_agent_memory(contents)
 
+    assert "<agent_memory>" in result
+    assert "/user/AGENTS.md" in result
     assert "User content only" in result
+    # Missing source should not appear at all
+    assert "/project/AGENTS.md" not in result
+
+
+def test_format_agent_memory_location_content_pairing() -> None:
+    """Test that each location is immediately followed by its content."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore
+        sources=[
+            "/first/AGENTS.md",
+            "/second/AGENTS.md",
+        ],
+    )
+    contents = {
+        "/first/AGENTS.md": "First content here",
+        "/second/AGENTS.md": "Second content here",
+    }
+    result = middleware._format_agent_memory(contents)
+
+    # Each location should be followed by its own content before the next location
+    first_loc = result.find("/first/AGENTS.md")
+    first_content = result.find("First content here")
+    second_loc = result.find("/second/AGENTS.md")
+    second_content = result.find("Second content here")
+
+    # Order should be: first_loc < first_content < second_loc < second_content
+    assert first_loc < first_content < second_loc < second_content
 
 
 def test_load_memory_from_backend_single_source(tmp_path: Path) -> None:
@@ -258,9 +278,11 @@ def test_load_memory_handles_missing_file(tmp_path: Path) -> None:
     ]
     middleware = MemoryMiddleware(backend=backend, sources=sources)
 
-    # Test before_agent raises error for missing file
-    with pytest.raises(ValueError, match="Failed to download.*file_not_found"):
-        middleware.before_agent({}, None, {})  # type: ignore
+    # Test before_agent loads only existing memory
+    result = middleware.before_agent({}, None, {})  # type: ignore
+    assert result is not None
+    assert missing_path not in result["memory_contents"]
+    assert user_path in result["memory_contents"]
 
 
 def test_before_agent_skips_if_already_loaded(tmp_path: Path) -> None:
@@ -422,7 +444,8 @@ def test_agent_with_memory_middleware_system_prompt(tmp_path: Path) -> None:
     system_message = messages[0]
     assert system_message.type == "system", "First message should be system prompt"
     content = system_message.text
-    assert "Agent Memory" in content, "System prompt should contain 'Agent Memory' section"
+    assert "<agent_memory>" in content, "System prompt should contain <agent_memory> tags"
+    assert memory_path in content, "System prompt should contain memory path"
     assert "type hints" in content, "System prompt should mention memory content"
     assert "functional programming" in content
 
@@ -465,11 +488,14 @@ def test_agent_with_memory_middleware_multiple_sources(tmp_path: Path) -> None:
     assert "messages" in result
     assert len(result["messages"]) > 0
 
-    # Verify both memory sources are in system prompt
+    # Verify both memory sources are in system prompt with new format
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
+    assert "<agent_memory>" in content
+    assert user_path in content
+    assert project_path in content
     assert "Python 3.11" in content
     assert "FastAPI" in content
 
@@ -493,13 +519,13 @@ def test_agent_with_memory_middleware_empty_sources(tmp_path: Path) -> None:
     assert "messages" in result
     assert len(result["messages"]) > 0
 
-    # Verify system prompt still contains Agent Memory section
+    # Verify system prompt still contains Agent Memory section with empty agent_memory
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    assert "Agent Memory" in content
-    assert "No memory loaded" in content or "None configured" in content
+    assert "<agent_memory>" in content
+    assert "No memory loaded" in content
 
 
 async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
@@ -531,12 +557,13 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
     # Verify memory_contents is NOT in final state (it's private)
     assert "memory_contents" not in result
 
-    # Verify memory was injected in system prompt
+    # Verify memory was injected in system prompt with new format
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    assert "Agent Memory" in content
+    assert "<agent_memory>" in content
+    assert memory_path in content
     assert "Test async loading" in content
 
 
@@ -620,10 +647,10 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     assert "Context for assistant 1" in result_1["memory_contents"]["/memory/AGENTS.md"]
 
     # Test: assistant-456 cannot see assistant-123's memory (different namespace)
-    # and raises error because no memory exists yet
     config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    with pytest.raises(ValueError, match="Failed to download.*file_not_found"):
-        middleware.before_agent({}, runtime, config_2)  # type: ignore
+    result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore
+    assert result_2 is not None
+    assert len(result_2["memory_contents"]) == 0
 
     # Add memory for assistant-456 with namespace (assistant-456, filesystem)
     assistant_2_content = make_memory_content("Assistant 2", "- Context for assistant 2")
@@ -709,7 +736,7 @@ def test_create_deep_agent_with_memory_and_filesystem_backend(tmp_path: Path) ->
 
 
 def test_create_deep_agent_with_memory_missing_files(tmp_path: Path) -> None:
-    """Test that memory raises an error when files don't exist."""
+    """Test that memory works gracefully when files don't exist."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create agent with non-existent memory files
@@ -719,9 +746,9 @@ def test_create_deep_agent_with_memory_missing_files(tmp_path: Path) -> None:
         model=GenericFakeChatModel(messages=iter([AIMessage(content="No memory, but that's okay.")])),
     )
 
-    # Invoke agent - should raise error for missing memory file
-    with pytest.raises(ValueError, match="Failed to download.*file_not_found"):
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+    # Invoke agent - should succeed even without memory file
+    result = agent.invoke({"messages": [HumanMessage(content="Hello")]})
+    assert "messages" in result
 
 
 def test_create_deep_agent_with_memory_default_backend() -> None:
@@ -804,12 +831,16 @@ def test_memory_middleware_order_matters(tmp_path: Path) -> None:
     # Invoke
     result = agent.invoke({"messages": [HumanMessage(content="Test")]})
 
-    # Verify order in system prompt
+    # Verify order in system prompt with new format
     first_call = fake_model.call_history[0]
     system_message = first_call["messages"][0]
     content = system_message.text
 
-    # First should appear before second
+    assert "<agent_memory>" in content
+    assert first_path in content
+    assert second_path in content
+
+    # First should appear before second (both path and content)
     first_pos = content.find("First memory content")
     second_pos = content.find("Second memory content")
     assert first_pos > 0

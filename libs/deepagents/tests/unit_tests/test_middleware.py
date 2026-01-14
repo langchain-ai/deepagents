@@ -957,6 +957,144 @@ class TestFilesystemMiddleware:
         assert isinstance(result, Command)
         assert "/large_tool_results/test_call_id" in result.update["files"]
 
+    def test_intercept_content_block_with_large_text(self):
+        """Test that content blocks with large text get evicted and converted to string."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_cb", store=None, stream_writer=lambda _: None, config={})
+
+        # Create list with content block with large text
+        content_blocks = [{"type": "text", "text": "x" * 5000}]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_cb")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_cb" in result.update["files"]
+        # After eviction, content is always converted to plain string
+        returned_content = result.update["messages"][0].content
+        assert isinstance(returned_content, str)
+        assert "Tool result too large" in returned_content
+
+    def test_intercept_content_block_with_small_text(self):
+        """Test that content blocks with small text are not evicted."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_small_cb", store=None, stream_writer=lambda _: None, config={})
+
+        # Create list with content block with small text
+        content_blocks = [{"type": "text", "text": "small text"}]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_small_cb")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        # Should return original message unchanged
+        assert result == tool_message
+        assert result.content == content_blocks
+
+    def test_intercept_content_block_non_text_type(self):
+        """Test that content blocks with non-text type get evicted if large when stringified."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_other", store=None, stream_writer=lambda _: None, config={})
+
+        # Create list with content block with different type that's large when stringified
+        content_blocks = [{"type": "image", "data": "x" * 5000}]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_other")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        # All content types are evicted if large when converted to string
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_other" in result.update["files"]
+
+    def test_intercept_list_content_gets_evicted_if_large(self):
+        """Test that list content gets evicted if large when stringified."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_list", store=None, stream_writer=lambda _: None, config={})
+
+        # Create list content that's large when stringified
+        list_content = [{"key": "x" * 1000} for _ in range(50)]
+        tool_message = ToolMessage(content=list_content, tool_call_id="test_list")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        # List content is evicted if large when converted to string
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_list" in result.update["files"]
+
+    def test_single_text_block_extracts_text_directly(self):
+        """Test that single text block extracts text content directly, not stringified structure."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_single", store=None, stream_writer=lambda _: None, config={})
+
+        # Create single text block with large text
+        content_blocks = [{"type": "text", "text": "Hello world! " * 1000}]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_single")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        # Check that the file contains actual text, not stringified dict
+        file_content = result.update["files"]["/large_tool_results/test_single"]["content"]
+        file_text = "\n".join(file_content)
+        # Should start with the actual text, not with "[{" which would indicate stringified dict
+        assert file_text.startswith("Hello world!")
+        assert not file_text.startswith("[{")
+
+    def test_multiple_text_blocks_stringifies_structure(self):
+        """Test that multiple text blocks stringify entire structure."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_multi", store=None, stream_writer=lambda _: None, config={})
+
+        # Create multiple text blocks
+        content_blocks = [
+            {"type": "text", "text": "First block " * 500},
+            {"type": "text", "text": "Second block " * 500},
+        ]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_multi")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        # Check that the file contains stringified structure (starts with "[")
+        file_content = result.update["files"]["/large_tool_results/test_multi"]["content"]
+        file_text = "\n".join(file_content)
+        # Should be stringified list of dicts
+        assert file_text.startswith("[{")
+
+    def test_mixed_content_blocks_stringifies_all(self):
+        """Test that mixed content block types (text + image) stringify entire structure."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_mixed", store=None, stream_writer=lambda _: None, config={})
+
+        # Create mixed content blocks
+        content_blocks = [
+            {"type": "text", "text": "Some text " * 200},
+            {"type": "image", "url": "https://example.com/image.png"},
+        ]
+        tool_message = ToolMessage(content=content_blocks, tool_call_id="test_mixed")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        # Check that the file contains stringified structure
+        file_content = result.update["files"]["/large_tool_results/test_mixed"]["content"]
+        file_text = "\n".join(file_content)
+        assert file_text.startswith("[{")
+        # Should contain both blocks in the stringified output
+        assert "'type': 'text'" in file_text
+        assert "'type': 'image'" in file_text
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         state = FilesystemState(messages=[], files={})

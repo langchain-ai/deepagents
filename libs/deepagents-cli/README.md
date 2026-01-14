@@ -158,50 +158,30 @@ deepagents create <agent_name>
 
 #### LangSmith Tracing
 
-The CLI supports separate LangSmith project configuration for agent tracing vs user code tracing:
-
-**Agent Tracing** - Traces deepagents operations (tool calls, agent decisions):
+Enable LangSmith tracing to see agent operations in your LangSmith dashboard:
 
 ```bash
-export DEEPAGENTS_LANGSMITH_PROJECT="my-agent-project"
-```
+export LANGSMITH_API_KEY="your-api-key"
+export LANGSMITH_TRACING=true
+export DEEPAGENTS_LANGSMITH_PROJECT="my-project"
 
-**User Code Tracing** - Traces code executed via shell commands:
-
-```bash
-export LANGSMITH_PROJECT="my-user-code-project"
-```
-
-**Complete Setup Example:**
-
-```bash
-# Enable LangSmith tracing
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY="your-api-key"
-
-# Configure separate projects
-export DEEPAGENTS_LANGSMITH_PROJECT="agent-traces"
-export LANGSMITH_PROJECT="user-code-traces"
-
-# Run deepagents
 deepagents
 ```
 
-When both are configured, the CLI displays:
+When configured, the CLI displays:
 
 ```
-✓ LangSmith tracing enabled: Deepagents → 'agent-traces'
-  User code (shell) → 'user-code-traces'
+✓ LangSmith tracing: 'my-project'
 ```
 
-**Why separate projects?**
+**Advanced: Separate Projects**
 
-- Keep agent operations separate from your application code traces
-- Easier debugging by isolating agent vs user code behavior
-- Different retention policies or access controls per project
+If you're building a LangChain app with deepagents and want to separate agent traces from your app's traces:
 
-**Backwards Compatibility:**
-If `DEEPAGENTS_LANGSMITH_PROJECT` is not set, both agent and user code trace to the same project specified by `LANGSMITH_PROJECT`.
+```bash
+export DEEPAGENTS_LANGSMITH_PROJECT="agent-traces"  # Deepagents operations
+export LANGSMITH_PROJECT="my-app-traces"            # Your app's LangChain calls
+```
 
 ## Customization
 
@@ -211,7 +191,7 @@ Each agent has its own global configuration directory at `~/.deepagents/<agent_n
 
 ```
 ~/.deepagents/<agent_name>/
-  ├── agent.md              # Auto-loaded global personality/style
+  ├── AGENTS.md              # Auto-loaded global personality/style
   └── skills/               # Auto-loaded agent-specific skills
       ├── web-research/
       │   └── SKILL.md
@@ -225,7 +205,7 @@ Projects can extend the global configuration with project-specific instructions 
 my-project/
   ├── .git/
   └── .deepagents/
-      ├── agent.md          # Project-specific instructions
+      ├── AGENTS.md          # Project-specific instructions
       └── skills/           # Project-specific skills
           └── custom-tool/
               └── SKILL.md
@@ -233,21 +213,21 @@ my-project/
 
 The CLI automatically detects project roots (via `.git`) and loads:
 
-- Project-specific `agent.md` from `[project-root]/.deepagents/agent.md`
+- Project-specific `AGENTS.md` from `[project-root]/.deepagents/AGENTS.md`
 - Project-specific skills from `[project-root]/.deepagents/skills/`
 
 Both global and project configurations are loaded together, allowing you to:
 
-- Keep general coding style/preferences in global agent.md
-- Add project-specific context, conventions, or guidelines in project agent.md
+- Keep general coding style/preferences in global AGENTS.md
+- Add project-specific context, conventions, or guidelines in project AGENTS.md
 - Share project-specific skills with your team (committed to version control)
 - Override global skills with project-specific versions (when skill names match)
 
-### agent.md files
+### AGENTS.md files
 
-`agent.md` files provide persistent memory that is always loaded at session start. Both global and project-level `agent.md` files are loaded together and injected into the system prompt.
+`AGENTS.md` files provide persistent memory that is always loaded at session start. Both global and project-level `AGENTS.md` files are loaded together and injected into the system prompt.
 
-**Global `agent.md`** (`~/.deepagents/agent/agent.md`)
+**Global `AGENTS.md`** (`~/.deepagents/agent/AGENTS.md`)
 
 - Your personality, style, and universal coding preferences
 - General tone and communication style
@@ -255,7 +235,7 @@ Both global and project configurations are loaded together, allowing you to:
 - Tool usage patterns that apply everywhere
 - Workflows and methodologies that don't change per-project
 
-**Project `agent.md`** (`.deepagents/agent.md` in project root)
+**Project `AGENTS.md`** (`.deepagents/AGENTS.md` in project root)
 
 - Project-specific context and conventions
 - Project architecture and design patterns
@@ -263,10 +243,10 @@ Both global and project configurations are loaded together, allowing you to:
 - Testing strategies and deployment processes
 - Team guidelines and project structure
 
-**How it works (AgentMemoryMiddleware):**
+**How it works:**
 
-- Loads both files at startup and injects into system prompt as `<user_memory>` and `<project_memory>`
-- Appends [memory management instructions](deepagents_cli/agent_memory.py#L44-L158) on when/how to update memory files
+- Loads memory files at startup and injects into system prompt as `<agent_memory>`
+- Includes guidelines on when/how to update memory files via `edit_file`
 
 **When the agent updates memory:**
 
@@ -279,7 +259,7 @@ The agent uses `edit_file` to update memories when learning preferences or recei
 
 ### Project memory files
 
-Beyond `agent.md`, you can create additional memory files in `.deepagents/` for structured project knowledge. These work similarly to [Anthropic's Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool). The agent receives [detailed instructions](deepagents_cli/agent_memory.py#L123-L158) on when to read and update these files.
+Beyond `AGENTS.md`, you can create additional memory files in `.deepagents/` for structured project knowledge. These work similarly to [Anthropic's Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool). The agent receives instructions on when to read and update these files.
 
 **How it works:**
 
@@ -292,7 +272,7 @@ Beyond `agent.md`, you can create additional memory files in `.deepagents/` for 
 ```bash
 # Agent discovers deployment pattern and saves it
 .deepagents/
-├── agent.md           # Always loaded (personality + conventions)
+├── AGENTS.md           # Always loaded (personality + conventions)
 ├── architecture.md    # Loaded on-demand (system design)
 └── deployment.md      # Loaded on-demand (deploy procedures)
 ```

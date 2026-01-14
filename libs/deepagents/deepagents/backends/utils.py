@@ -12,8 +12,7 @@ from typing import Any, Literal
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileInfo as _FileInfo
-from deepagents.backends.protocol import GrepMatch as _GrepMatch
+from deepagents.backends.protocol import FileInfo as _FileInfo, GrepMatch as _GrepMatch
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 10000

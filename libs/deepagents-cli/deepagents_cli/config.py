@@ -99,11 +99,11 @@ def _find_project_root(start_path: Path | None = None) -> Path | None:
 
 
 def _find_project_agent_md(project_root: Path) -> list[Path]:
-    """Find project-specific agent.md file(s).
+    """Find project-specific AGENTS.md file(s).
 
     Checks two locations and returns ALL that exist:
-    1. project_root/.deepagents/agent.md
-    2. project_root/agent.md
+    1. project_root/.deepagents/AGENTS.md
+    2. project_root/AGENTS.md
 
     Both files will be loaded and combined if both exist.
 
@@ -111,17 +111,17 @@ def _find_project_agent_md(project_root: Path) -> list[Path]:
         project_root: Path to the project root directory.
 
     Returns:
-        List of paths to project agent.md files (may contain 0, 1, or 2 paths).
+        List of paths to project AGENTS.md files (may contain 0, 1, or 2 paths).
     """
     paths = []
 
-    # Check .deepagents/agent.md (preferred)
-    deepagents_md = project_root / ".deepagents" / "agent.md"
+    # Check .deepagents/AGENTS.md (preferred)
+    deepagents_md = project_root / ".deepagents" / "AGENTS.md"
     if deepagents_md.exists():
         paths.append(deepagents_md)
 
-    # Check root agent.md (fallback, but also include if both exist)
-    root_md = project_root / "agent.md"
+    # Check root AGENTS.md (fallback, but also include if both exist)
+    root_md = project_root / "AGENTS.md"
     if root_md.exists():
         paths.append(root_md)
 
@@ -242,7 +242,7 @@ class Settings:
         return Path.home() / ".deepagents"
 
     def get_user_agent_md_path(self, agent_name: str) -> Path:
-        """Get user-level agent.md path for a specific agent.
+        """Get user-level AGENTS.md path for a specific agent.
 
         Returns path regardless of whether the file exists.
 
@@ -250,21 +250,21 @@ class Settings:
             agent_name: Name of the agent
 
         Returns:
-            Path to ~/.deepagents/{agent_name}/agent.md
+            Path to ~/.deepagents/{agent_name}/AGENTS.md
         """
-        return Path.home() / ".deepagents" / agent_name / "agent.md"
+        return Path.home() / ".deepagents" / agent_name / "AGENTS.md"
 
     def get_project_agent_md_path(self) -> Path | None:
-        """Get project-level agent.md path.
+        """Get project-level AGENTS.md path.
 
         Returns path regardless of whether the file exists.
 
         Returns:
-            Path to {project_root}/.deepagents/agent.md, or None if not in a project
+            Path to {project_root}/.deepagents/AGENTS.md, or None if not in a project
         """
         if not self.project_root:
             return None
-        return self.project_root / ".deepagents" / "agent.md"
+        return self.project_root / ".deepagents" / "AGENTS.md"
 
     @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:
@@ -394,7 +394,7 @@ def get_default_coding_instructions() -> str:
     """Get the default coding agent instructions.
 
     These are the immutable base instructions that cannot be modified by the agent.
-    Long-term memory (agent.md) is handled separately by the middleware.
+    Long-term memory (AGENTS.md) is handled separately by the middleware.
     """
     default_prompt_path = Path(__file__).parent / "default_agent_prompt.md"
     return default_prompt_path.read_text()

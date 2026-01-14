@@ -56,22 +56,22 @@ class FileData(TypedDict):
     """ISO 8601 timestamp of last modification."""
 
 
-def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
+def _file_data_reducer(
+    left: dict[str, FileData] | list[dict[str, FileData]] | None,
+    right: dict[str, FileData | None],
+) -> dict[str, FileData]:
     """Merge file updates with support for deletions.
-
     This reducer enables file deletion by treating `None` values in the right
     dictionary as deletion markers. It's designed to work with LangGraph's
     state management where annotated reducers control how state updates merge.
-
     Args:
-        left: Existing files dictionary. May be `None` during initialization.
+        left: Existing files dictionary. May be `None` during initialization,
+            or a list of dicts when multiple tool calls update state.
         right: New files dictionary to merge. Files with `None` values are
             treated as deletion markers and removed from the result.
-
     Returns:
         Merged dictionary where right overwrites left for matching keys,
         and `None` values in right trigger deletions.
-
     Example:
         ```python
         existing = {"/file1.txt": FileData(...), "/file2.txt": FileData(...)}
@@ -82,6 +82,13 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     """
     if left is None:
         return {k: v for k, v in right.items() if v is not None}
+
+    # If multiple tool calls update state, `left` may be a list of dicts
+    if isinstance(left, list):
+        left_merged = {}
+        for d in left:
+            left_merged.update(d)
+        left = left_merged
 
     result = {**left}
     for key, value in right.items():

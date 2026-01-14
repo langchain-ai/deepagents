@@ -1,4 +1,5 @@
 """Textual UI application for deepagents-cli."""
+# ruff: noqa: BLE001, PLR0912, PLR2004, S110, SIM108
 
 from __future__ import annotations
 
@@ -301,7 +302,7 @@ class DeepAgentsApp(App):
             self._scroll_chat_to_bottom()
             # Focus approval menu
             self.call_after_refresh(menu.focus)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self._pending_approval_widget = None
             if not result_future.done():
                 result_future.set_exception(e)
@@ -507,7 +508,7 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
         finally:
             # Clean up loading widget and agent state

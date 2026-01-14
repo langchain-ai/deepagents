@@ -1,5 +1,5 @@
 """Main entry point and CLI loop for deepagents."""
-# ruff: noqa: T201, E402
+# ruff: noqa: T201, E402, BLE001, PLR0912, PLR0915
 
 # Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
 # ruff: noqa: E402
@@ -19,6 +19,7 @@ from pathlib import Path
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
 from rich.text import Text
+
 from deepagents_cli._version import __version__
 
 # Now safe to import agent (which imports LangChain modules)

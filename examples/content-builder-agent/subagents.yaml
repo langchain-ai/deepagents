@@ -7,7 +7,7 @@ researcher:
     Searches the web for current information, statistics, and sources.
     When delegating, tell it the topic AND the file path to save results
     (e.g., 'Research renewable energy and save to research/renewable-energy.md').
-  model: anthropic:claude-3-5-haiku-latest
+  model: anthropic:claude-haiku-4-5-20251001
   system_prompt: |
     You are a research assistant. You have access to web_search and write_file tools.
 

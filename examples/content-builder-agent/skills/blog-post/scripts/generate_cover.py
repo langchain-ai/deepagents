@@ -4,42 +4,38 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
+# Resolve paths relative to the example directory
+EXAMPLE_DIR = Path(__file__).parent.parent.parent.parent
+
 
 @tool
 def generate_cover(prompt: str, slug: str) -> str:
     """Generate a cover image for a blog post.
 
     Args:
-        prompt: A detailed description of the image. Describe the scene, style,
-                mood, and composition. Be specific rather than using keywords.
-        slug: The blog post slug (e.g., "ai-agents-2025"). Image will be saved
-              to blogs/<slug>/hero.png
+        prompt: Detailed description of the image to generate.
+        slug: Blog post slug. Image saves to blogs/<slug>/hero.png
 
     Returns:
-        Path to the saved image, or an error message.
+        Success message or error.
     """
     try:
         from google import genai
-        from google.genai import types
 
         client = genai.Client()
-
         response = client.models.generate_content(
-            model="gemini-2.0-flash-exp",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE"],
-            ),
+            model="gemini-2.5-flash-image",
+            contents=[prompt],
         )
 
-        for part in response.candidates[0].content.parts:
+        for part in response.parts:
             if part.inline_data is not None:
-                image_data = part.inline_data.data
-                output_path = Path(f"blogs/{slug}/hero.png")
+                image = part.as_image()
+                output_path = EXAMPLE_DIR / "blogs" / slug / "hero.png"
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_bytes(image_data)
-                return f"Cover image saved to {output_path}"
+                image.save(str(output_path))
+                return f"Image saved to {output_path}"
 
-        return "No image was generated"
+        return "No image generated"
     except Exception as e:
-        return f"Error generating image: {e}"
+        return f"Error: {e}"

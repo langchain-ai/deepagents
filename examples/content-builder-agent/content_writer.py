@@ -71,73 +71,6 @@ def web_search(
         return {"error": f"Search failed: {e}"}
 
 
-@tool
-def generate_cover(prompt: str, slug: str) -> str:
-    """Generate a cover image for a blog post.
-
-    Args:
-        prompt: Detailed description of the image to generate.
-        slug: Blog post slug. Image saves to blogs/<slug>/hero.png
-
-    Returns:
-        Success message or error.
-    """
-    try:
-        from google import genai
-
-        client = genai.Client()
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-image",
-            contents=[prompt],
-        )
-
-        for part in response.parts:
-            if part.inline_data is not None:
-                image = part.as_image()
-                output_path = EXAMPLE_DIR / "blogs" / slug / "hero.png"
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                image.save(str(output_path))
-                return f"Image saved to {output_path}"
-
-        return "No image generated"
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@tool
-def generate_social_image(prompt: str, platform: str, slug: str) -> str:
-    """Generate an image for a social media post.
-
-    Args:
-        prompt: Detailed description of the image to generate.
-        platform: Either "linkedin" or "tweets"
-        slug: Post slug. Image saves to <platform>/<slug>/image.png
-
-    Returns:
-        Success message or error.
-    """
-    try:
-        from google import genai
-
-        client = genai.Client()
-        response = client.models.generate_content(
-            model="gemini-2.5-flash-image",
-            contents=[prompt],
-        )
-
-        for part in response.parts:
-            if part.inline_data is not None:
-                image = part.as_image()
-                output_path = EXAMPLE_DIR / platform / slug / "image.png"
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                image.save(str(output_path))
-                return f"Image saved to {output_path}"
-
-        return "No image generated"
-    except Exception as e:
-        return f"Error: {e}"
-
-
 def load_skill_tools(skills_dir: Path) -> list:
     """Load tools from skill scripts directories."""
     tools = []
@@ -199,6 +132,10 @@ def load_subagents(config_path: Path) -> list:
 
 def create_content_writer():
     """Create a content writer agent configured by filesystem files."""
+    # Load tools from skills/*/scripts/*.py
+    console.print("[dim]Loading skill tools...[/]")
+    skill_tools = load_skill_tools(EXAMPLE_DIR / "skills")
+
     # Load subagents from YAML (see load_subagents() above)
     # Alternatively, define inline:
     #
@@ -206,7 +143,7 @@ def create_content_writer():
     #       {
     #           "name": "researcher",
     #           "description": "Research topics before writing...",
-    #           "model": "anthropic:claude-3-5-haiku-latest",
+    #           "model": "anthropic:claude-haiku-4-5-20251001",
     #           "system_prompt": "You are a research assistant...",
     #           "tools": [web_search],
     #       }
@@ -215,7 +152,7 @@ def create_content_writer():
     return create_deep_agent(
         memory=["./AGENTS.md"],
         skills=["./skills/"],
-        tools=[generate_cover, generate_social_image],
+        tools=skill_tools,
         subagents=load_subagents(EXAMPLE_DIR / "subagents.yaml"),
         backend=FilesystemBackend(root_dir=EXAMPLE_DIR),
     )

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Content Writer - An agent defined by its filesystem configuration
+Content Builder Agent
 
-This example demonstrates how agents can be configured entirely through
-files on disk: AGENTS.md for instructions, skills/ for workflows, and
-subagents for task delegation.
+A content writer agent configured entirely through files on disk:
+- AGENTS.md defines brand voice and style guide
+- skills/ provides specialized workflows (blog posts, social media)
+- subagents handle research and other delegated tasks
 
 Usage:
-    python content_writer.py "Write a blog post about AI agents"
-    python content_writer.py "Create a LinkedIn post about prompt engineering"
+    uv run python content_writer.py "Write a blog post about AI agents"
+    uv run python content_writer.py "Create a LinkedIn post about prompt engineering"
 """
 
 import asyncio

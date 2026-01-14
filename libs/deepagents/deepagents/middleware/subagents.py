@@ -278,7 +278,7 @@ def _get_subagents(
             system_prompt=agent_["system_prompt"],
             tools=_tools,
             middleware=_middleware,
-            name=f"subagent:{agent_['name']}",
+            name=f"{agent_['name']}",
         )
     return agents, subagent_descriptions
 

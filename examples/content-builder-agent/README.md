@@ -1,6 +1,6 @@
 # Content Builder Agent
 
-A content writing agent configured entirely through files on disk—demonstrating how agents can be defined by the files they have access to.
+A content writing agent for writing blog posts, LinkedIn posts, and tweets with cover images included. This example also shows how an agent can be defined entirely through files on a filesystem!
 
 ## Quick Start
 
@@ -10,7 +10,7 @@ export ANTHROPIC_API_KEY="..."
 export GOOGLE_API_KEY="..."      # For image generation
 export TAVILY_API_KEY="..."      # For web search (optional)
 
-# Run
+# Run (uv automatically installs dependencies on first run)
 cd examples/content-builder-agent
 uv run python content_writer.py "Write a blog post about prompt engineering"
 ```

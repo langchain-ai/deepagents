@@ -127,14 +127,10 @@ Example: A LinkedIn post about "prompt engineering" → `linkedin/prompt-enginee
 Every social media post needs an eye-catching image. Use the `generate_social_image` tool:
 
 ```
-generate_social_image(
-    prompt="A detailed description of the image...",
-    platform="linkedin",  # or "tweets"
-    slug="your-post-slug"
-)
+generate_social_image(prompt="A detailed description...", platform="linkedin", slug="your-post-slug")
 ```
 
-The tool automatically saves to `<platform>/<slug>/image.png`.
+The tool saves the image to `<platform>/<slug>/image.png`.
 
 ### Social Image Best Practices
 
@@ -157,29 +153,17 @@ Include these elements:
 
 **For an insight/tip post:**
 ```
-generate_social_image(
-    prompt="Single glowing lightbulb floating against a deep purple gradient background, lightbulb made of interconnected golden geometric lines, rays of soft light emanating outward. Minimal, striking, high contrast. Square composition.",
-    platform="linkedin",
-    slug="prompt-engineering-tip"
-)
+Single glowing lightbulb floating against a deep purple gradient background, lightbulb made of interconnected golden geometric lines, rays of soft light emanating outward. Minimal, striking, high contrast. Square composition.
 ```
 
 **For announcements/news:**
 ```
-generate_social_image(
-    prompt="Abstract rocket ship made of colorful geometric shapes launching upward with a trail of particles. Bright coral and teal color scheme against clean white background. Energetic, celebratory mood. Bold flat illustration style.",
-    platform="linkedin",
-    slug="product-launch"
-)
+Abstract rocket ship made of colorful geometric shapes launching upward with a trail of particles. Bright coral and teal color scheme against clean white background. Energetic, celebratory mood. Bold flat illustration style.
 ```
 
 **For thought-provoking content:**
 ```
-generate_social_image(
-    prompt="Two overlapping translucent circles, one blue one orange, creating a glowing intersection in the center. Represents collaboration or intersection of ideas. Dark charcoal background, soft ethereal glow. Minimalist and contemplative.",
-    platform="tweets",
-    slug="ai-human-collaboration"
-)
+Two overlapping translucent circles, one blue one orange, creating a glowing intersection in the center. Represents collaboration or intersection of ideas. Dark charcoal background, soft ethereal glow. Minimalist and contemplative.
 ```
 
 ## Content Types

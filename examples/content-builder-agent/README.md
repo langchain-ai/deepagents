@@ -38,14 +38,10 @@ content-builder-agent/
 ├── subagents.yaml               # Subagent definitions
 ├── skills/
 │   ├── blog-post/
-│   │   ├── SKILL.md             # Blog writing workflow
-│   │   └── scripts/
-│   │       └── generate_cover.py    # Tool: generate blog cover images
+│   │   └── SKILL.md             # Blog writing workflow
 │   └── social-media/
-│       ├── SKILL.md             # Social media workflow
-│       └── scripts/
-│           └── generate_image.py    # Tool: generate social images
-└── content_writer.py            # Wires it together
+│       └── SKILL.md             # Social media workflow
+└── content_writer.py            # Wires it together (includes tools)
 ```
 
 | File | Purpose | When Loaded |
@@ -53,7 +49,6 @@ content-builder-agent/
 | `AGENTS.md` | Brand voice, tone, writing standards | Always (system prompt) |
 | `subagents.yaml` | Research and other delegated tasks | Always (defines `task` tool) |
 | `skills/*/SKILL.md` | Content-specific workflows | On demand |
-| `skills/*/scripts/*.py` | Tools bundled with each skill | At startup |
 
 **What's in the skills?** Each skill teaches the agent a specific workflow:
 - **Blog posts:** Structure (hook → context → main content → CTA), SEO best practices, research-first approach
@@ -63,19 +58,18 @@ content-builder-agent/
 ## Architecture
 
 ```python
-# Tools are loaded from skills/*/scripts/*.py
-skill_tools = load_skill_tools("./skills")
-
 agent = create_deep_agent(
-    memory=["./AGENTS.md"],                        # ← Always in context
-    skills=["./skills/"],                          # ← Loaded when relevant
-    tools=skill_tools,                             # ← From skill scripts
+    memory=["./AGENTS.md"],                        # ← Middleware loads into system prompt
+    skills=["./skills/"],                          # ← Middleware loads on demand
+    tools=[generate_cover, generate_social_image], # ← Image generation tools
     subagents=load_subagents("./subagents.yaml"),  # ← See note below
     backend=FilesystemBackend(root_dir="./"),
 )
 ```
 
-**Note on loading:** The `load_skill_tools()` and `load_subagents()` helpers are custom utilities for this example. They dynamically load Python tools from `skills/*/scripts/` and subagent configs from YAML. You can also define these inline:
+The `memory` and `skills` parameters are handled natively by deepagents middleware. Tools are defined in the script and passed directly.
+
+**Note on subagents:** Unlike `memory` and `skills`, subagents must be defined in code. We use a small `load_subagents()` helper to externalize config to YAML. You can also define them inline:
 
 ```python
 subagents=[
@@ -136,7 +130,7 @@ editor:
   tools: []
 ```
 
-**Add a tool to a skill:** Create `skills/<name>/scripts/<tool>.py` with a `@tool` decorated function. It will be auto-loaded at startup.
+**Add a tool:** Define it in `content_writer.py` with the `@tool` decorator and add to `tools=[]`.
 
 ## Security Note
 

@@ -17,7 +17,6 @@ Usage:
 """
 
 import asyncio
-import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -71,31 +70,65 @@ def web_search(
         return {"error": f"Search failed: {e}"}
 
 
-def load_skill_tools(skills_dir: Path) -> list:
-    """Load tools from skill scripts directories."""
-    tools = []
-    for skill_path in sorted(skills_dir.iterdir()):
-        if skill_path.is_dir():
-            scripts_dir = skill_path / "scripts"
-            if scripts_dir.exists():
-                for script in sorted(scripts_dir.glob("*.py")):
-                    try:
-                        spec = importlib.util.spec_from_file_location(script.stem, script)
-                        module = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(module)
+@tool
+def generate_cover(prompt: str, slug: str) -> str:
+    """Generate a cover image for a blog post.
 
-                        for name in dir(module):
-                            obj = getattr(module, name)
-                            if hasattr(obj, "invoke") and hasattr(obj, "name"):
-                                tools.append(obj)
-                                console.print(f"  [green]✓[/] Loaded: {obj.name}")
-                    except Exception as e:
-                        console.print(f"  [red]✗[/] Error loading {script.name}: {e}")
+    Args:
+        prompt: Detailed description of the image to generate.
+        slug: Blog post slug. Image saves to blogs/<slug>/hero.png
+    """
+    try:
+        from google import genai
 
-    if not tools:
-        console.print("  [yellow]No tools found in skills/*/scripts/[/]")
+        client = genai.Client()
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=[prompt],
+        )
 
-    return tools
+        for part in response.parts:
+            if part.inline_data is not None:
+                image = part.as_image()
+                output_path = EXAMPLE_DIR / "blogs" / slug / "hero.png"
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                image.save(str(output_path))
+                return f"Image saved to {output_path}"
+
+        return "No image generated"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@tool
+def generate_social_image(prompt: str, platform: str, slug: str) -> str:
+    """Generate an image for a social media post.
+
+    Args:
+        prompt: Detailed description of the image to generate.
+        platform: Either "linkedin" or "tweets"
+        slug: Post slug. Image saves to <platform>/<slug>/image.png
+    """
+    try:
+        from google import genai
+
+        client = genai.Client()
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=[prompt],
+        )
+
+        for part in response.parts:
+            if part.inline_data is not None:
+                image = part.as_image()
+                output_path = EXAMPLE_DIR / platform / slug / "image.png"
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                image.save(str(output_path))
+                return f"Image saved to {output_path}"
+
+        return "No image generated"
+    except Exception as e:
+        return f"Error: {e}"
 
 
 def load_subagents(config_path: Path) -> list:
@@ -132,28 +165,11 @@ def load_subagents(config_path: Path) -> list:
 
 def create_content_writer():
     """Create a content writer agent configured by filesystem files."""
-    # Load tools from skills/*/scripts/*.py
-    console.print("[dim]Loading skill tools...[/]")
-    skill_tools = load_skill_tools(EXAMPLE_DIR / "skills")
-
-    # Load subagents from YAML (see load_subagents() above)
-    # Alternatively, define inline:
-    #
-    #   subagents=[
-    #       {
-    #           "name": "researcher",
-    #           "description": "Research topics before writing...",
-    #           "model": "anthropic:claude-haiku-4-5-20251001",
-    #           "system_prompt": "You are a research assistant...",
-    #           "tools": [web_search],
-    #       }
-    #   ],
-    #
     return create_deep_agent(
-        memory=["./AGENTS.md"],
-        skills=["./skills/"],
-        tools=skill_tools,
-        subagents=load_subagents(EXAMPLE_DIR / "subagents.yaml"),
+        memory=["./AGENTS.md"],           # Loaded by MemoryMiddleware
+        skills=["./skills/"],             # Loaded by SkillsMiddleware
+        tools=[generate_cover, generate_social_image],  # Image generation
+        subagents=load_subagents(EXAMPLE_DIR / "subagents.yaml"),  # Custom helper
         backend=FilesystemBackend(root_dir=EXAMPLE_DIR),
     )
 
@@ -216,7 +232,6 @@ class AgentDisplay:
             elif name == "task":
                 console.print(f"  [green]✓ Research complete[/]")
             elif name == "web_search":
-                # Check if search succeeded
                 if "error" not in msg.content.lower():
                     console.print(f"  [green]✓ Found results[/]")
 

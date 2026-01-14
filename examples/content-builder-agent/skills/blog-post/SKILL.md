@@ -93,13 +93,10 @@ Every blog post should follow this structure:
 After writing the post, generate a cover image using the `generate_cover` tool:
 
 ```
-generate_cover(
-    prompt="A detailed description of the image...",
-    slug="your-blog-slug"
-)
+generate_cover(prompt="A detailed description of the image...", slug="your-blog-slug")
 ```
 
-The tool automatically saves to `blogs/<slug>/hero.png`.
+The tool saves the image to `blogs/<slug>/hero.png`.
 
 ### Writing Effective Image Prompts
 
@@ -116,26 +113,17 @@ Structure your prompt with these elements:
 
 **For a technical blog post:**
 ```
-generate_cover(
-    prompt="Isometric 3D illustration of interconnected glowing cubes representing AI agents, each cube has subtle circuit patterns. Cubes connected by luminous data streams. Deep navy background (#0a192f) with electric blue (#64ffda) and soft purple (#c792ea) accents. Clean minimal style, lots of negative space at top for title. Professional tech aesthetic.",
-    slug="ai-agents-2025"
-)
+Isometric 3D illustration of interconnected glowing cubes representing AI agents, each cube has subtle circuit patterns. Cubes connected by luminous data streams. Deep navy background (#0a192f) with electric blue (#64ffda) and soft purple (#c792ea) accents. Clean minimal style, lots of negative space at top for title. Professional tech aesthetic.
 ```
 
 **For a tutorial/how-to:**
 ```
-generate_cover(
-    prompt="Clean flat illustration of hands typing on a keyboard with abstract code symbols floating upward, transforming into lightbulbs and gears. Warm gradient background from soft coral to light peach. Friendly, approachable style. Centered composition with space for text overlay.",
-    slug="prompt-engineering-guide"
-)
+Clean flat illustration of hands typing on a keyboard with abstract code symbols floating upward, transforming into lightbulbs and gears. Warm gradient background from soft coral to light peach. Friendly, approachable style. Centered composition with space for text overlay.
 ```
 
 **For thought leadership:**
 ```
-generate_cover(
-    prompt="Abstract visualization of a human silhouette profile merging with geometric neural network patterns. Split composition - organic watercolor texture on left transitioning to clean vector lines on right. Muted sage green and warm terracotta color scheme. Contemplative, forward-thinking mood.",
-    slug="future-of-work"
-)
+Abstract visualization of a human silhouette profile merging with geometric neural network patterns. Split composition - organic watercolor texture on left transitioning to clean vector lines on right. Muted sage green and warm terracotta color scheme. Contemplative, forward-thinking mood.
 ```
 
 ## SEO Considerations

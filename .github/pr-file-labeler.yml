@@ -1,0 +1,55 @@
+# Label PRs (config)
+# Automatically applies labels based on changed files and branch patterns
+
+# Core packages
+deepagents:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "libs/deepagents/**/*"
+
+cli:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "libs/deepagents-cli/**/*"
+
+acp:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "libs/acp/**/*"
+
+harbor:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "libs/harbor/**/*"
+
+# Infrastructure and DevOps
+infra:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**/*"
+          - "Makefile"
+          - ".pre-commit-config.yaml"
+          - "scripts/**/*"
+          - "docker/**/*"
+          - "Dockerfile*"
+
+github_actions:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**/*"
+          - ".github/actions/**/*"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/pyproject.toml"
+          - "uv.lock"
+          - "**/requirements*.txt"
+          - "**/poetry.lock"
+
+# Documentation
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "**/README*"

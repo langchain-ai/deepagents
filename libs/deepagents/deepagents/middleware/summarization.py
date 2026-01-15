@@ -319,7 +319,6 @@ A condensed summary follows:
             "thread_id": thread_id,
             "message_count": len(filtered_messages),
             "messages": json.loads(self._serialize_messages(filtered_messages)),
-            "messages_text": get_buffer_string(filtered_messages),
         }
 
         try:
@@ -379,7 +378,6 @@ A condensed summary follows:
             "thread_id": thread_id,
             "message_count": len(filtered_messages),
             "messages": json.loads(self._serialize_messages(filtered_messages)),
-            "messages_text": get_buffer_string(filtered_messages),
         }
 
         try:

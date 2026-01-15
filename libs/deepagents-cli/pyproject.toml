@@ -98,7 +98,7 @@ allow-star-arg-any = true
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
-known-first-party = ["deepagents_cli", "deepagents"]
+known-first-party = ["deepagents_cli"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"  # Google-style docstrings

@@ -9,15 +9,16 @@ from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
 
 
-def _write_file(p: Path, content: str):
+def _write_file(p: Path, content: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
 
 
-def test_summarize_continues_task(tmp_path: Path):
+def test_summarize_continues_task(tmp_path: Path) -> None:
     # Pull sample file
     response = requests.get(
-        "https://raw.githubusercontent.com/langchain-ai/langchain/3356d0555725c3e0bbb9408c2b3f554cad2a6ee2/libs/partners/openai/langchain_openai/chat_models/base.py"
+        "https://raw.githubusercontent.com/langchain-ai/langchain/3356d0555725c3e0bbb9408c2b3f554cad2a6ee2/libs/partners/openai/langchain_openai/chat_models/base.py",
+        timeout=10,
     )
 
     # Populate backend

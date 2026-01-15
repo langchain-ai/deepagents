@@ -5,13 +5,19 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+from langchain.tools import ToolRuntime
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import FilesystemBackend
+from deepagents.backends.protocol import BackendProtocol
+from deepagents.backends.state import StateBackend
+from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import MAX_LINE_LENGTH
 
@@ -20,6 +26,41 @@ from deepagents.middleware.filesystem import MAX_LINE_LENGTH
 def sample_tool(sample_input: str) -> str:
     """A sample tool that returns the input string."""
     return sample_input
+
+
+def make_runtime(tid: str = "tc") -> ToolRuntime:
+    """Create a ToolRuntime for testing."""
+    return ToolRuntime(
+        state={"messages": [], "files": {}},
+        context=None,
+        tool_call_id=tid,
+        store=InMemoryStore(),
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+
+def create_filesystem_backend_virtual(tmp_path: Path) -> BackendProtocol:
+    """Create a FilesystemBackend in virtual mode."""
+    return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+
+def create_state_backend(tmp_path: Path) -> BackendProtocol:
+    """Create a StateBackend."""
+    return StateBackend(make_runtime())
+
+
+def create_store_backend(tmp_path: Path) -> BackendProtocol:
+    """Create a StoreBackend."""
+    return StoreBackend(make_runtime())
+
+
+# Backend factories for parametrization
+BACKEND_FACTORIES = [
+    pytest.param(create_filesystem_backend_virtual, id="filesystem_virtual"),
+    pytest.param(create_state_backend, id="state"),
+    pytest.param(create_store_backend, id="store"),
+]
 
 
 class FixedGenericFakeChatModel(GenericFakeChatModel):
@@ -259,14 +300,14 @@ class TestDeepAgentEndToEnd:
             assert "messages" in result
             assert len(result["messages"]) > 0
 
-    def test_deep_agent_truncate_lines(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test line truncation in read_file tool with mixed short and long lines.
 
         This end-to-end test verifies that the agent properly truncates long lines
-        when reading files through the read_file tool.
+        when reading files through the read_file tool across different backends.
         """
-        # Setup test file with mixed line lengths
-        fp = tmp_path / "my_file"
+        # Setup test file content with mixed line lengths
         line1 = "normal line"
         line2 = "x" * 3000  # Very long
         line3 = "another normal line"
@@ -274,9 +315,13 @@ class TestDeepAgentEndToEnd:
         line5 = "final normal line"
         content = f"{line1}\n{line2}\n{line3}\n{line4}\n{line5}\n"
 
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        fp.write_text(content)
+        # Create backend and write file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/my_file"
+        res = backend.write(file_path, content)
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -287,7 +332,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": "my_file"},
+                                "args": {"file_path": file_path},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -300,11 +345,11 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with filesystem backend
+        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content="Read my_file")]})
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -331,20 +376,24 @@ class TestDeepAgentEndToEnd:
         assert any(line.rstrip().endswith("...") for line in y_lines)
         assert all(len(line) <= MAX_LINE_LENGTH for line in y_lines)
 
-    def test_deep_agent_truncate_lines_preserves_newlines(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_truncate_lines_preserves_newlines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test that read_file preserves newlines correctly with truncation.
 
         This end-to-end test verifies that newlines are preserved when the
-        agent reads files with long lines that need truncation.
+        agent reads files with long lines that need truncation across different backends.
         """
-        # Setup test file with different newline patterns
-        fp = tmp_path / "my_file"
+        # Setup test file content with different newline patterns
         long_line = "b" * 2500
         content = f"line1\n{long_line}\nline3"
 
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        fp.write_text(content)
+        # Create backend and write file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/my_file"
+        res = backend.write(file_path, content)
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -355,7 +404,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": "my_file"},
+                                "args": {"file_path": file_path},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -368,11 +417,11 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with filesystem backend
+        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content="Read my_file")]})
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -392,17 +441,20 @@ class TestDeepAgentEndToEnd:
         assert any("line1" in line for line in lines)
         assert any("line3" in line for line in lines)
 
-    def test_deep_agent_truncate_lines_empty_file(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_truncate_lines_empty_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test reading an empty file through the agent.
 
         This end-to-end test verifies that the agent can successfully read
-        and handle empty files.
+        and handle empty files across different backends.
         """
-        # Setup empty test file
-        fp = tmp_path / "my_file"
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        fp.write_text("")
+        # Create backend and write empty file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/my_file"
+        res = backend.write(file_path, "")
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
 
         # Create a fake model that calls read_file
         model = FixedGenericFakeChatModel(
@@ -413,7 +465,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": "my_file"},
+                                "args": {"file_path": file_path},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -426,11 +478,11 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with filesystem backend
+        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
         # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content="Read my_file")]})
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
 
         # Verify the agent executed correctly
         assert "messages" in result
@@ -442,5 +494,5 @@ class TestDeepAgentEndToEnd:
         file_content = tool_messages[0].content
 
         # Empty file should return empty or minimal content
-        # (FilesystemBackend might add warnings or format)
+        # (Backend might add warnings or format)
         assert isinstance(file_content, str)

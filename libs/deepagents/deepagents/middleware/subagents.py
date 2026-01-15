@@ -84,7 +84,16 @@ class CompiledSubAgent(TypedDict):
     """What this subagent does."""
 
     runnable: Runnable
-    """The Runnable to use for the agent. Must return a state with a 'messages' key."""
+    """A custom agent implementation.
+
+    Create a custom agent using either:
+
+    1. LangChain's `create_agent()`: https://docs.langchain.com/oss/python/langchain/quickstart
+    2. A custom graph using langgraph: https://docs.langchain.com/oss/python/langgraph/quickstart
+
+    If you're creating a custom graph, make sure the state schema includes a 'messages' key.
+    This is required for the subagent to communicate results back to the main agent.
+    """
 
 
 DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."

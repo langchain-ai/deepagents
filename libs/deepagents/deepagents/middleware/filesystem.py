@@ -361,7 +361,7 @@ def _truncate_lines(
 
     - Preserves original newline characters.
     - Safe for Unicode text.
-    - Optionally appends a suffix to truncated lines (e.g., "...").
+    - Optionally appends a suffix to truncated lines (e.g., "...[truncated]").
 
     Args:
         text: Input string (may contain newlines).
@@ -422,7 +422,7 @@ def _read_file_tool_generator(
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
         content = resolved_backend.read(file_path, offset=offset, limit=limit)
-        return _truncate_lines(content, suffix="...")
+        return _truncate_lines(content, suffix="...[truncated]")
 
     async def async_read_file(
         file_path: str,
@@ -434,7 +434,7 @@ def _read_file_tool_generator(
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
         content = await resolved_backend.aread(file_path, offset=offset, limit=limit)
-        return _truncate_lines(content, suffix="...")
+        return _truncate_lines(content, suffix="...[truncated]")
 
     return StructuredTool.from_function(
         name="read_file",

@@ -45,12 +45,12 @@ def create_filesystem_backend_virtual(tmp_path: Path) -> BackendProtocol:
     return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
 
 
-def create_state_backend(tmp_path: Path) -> BackendProtocol:
+def create_state_backend(tmp_path: Path) -> BackendProtocol:  # noqa: ARG001
     """Create a StateBackend."""
     return StateBackend(make_runtime())
 
 
-def create_store_backend(tmp_path: Path) -> BackendProtocol:
+def create_store_backend(tmp_path: Path) -> BackendProtocol:  # noqa: ARG001
     """Create a StoreBackend."""
     return StoreBackend(make_runtime())
 
@@ -365,15 +365,15 @@ class TestDeepAgentEndToEnd:
         assert "another normal line" in file_content
         assert "final normal line" in file_content
 
-        # Long lines should be truncated with "..."
+        # Long lines should be truncated
         x_lines = [line for line in file_content.split("\n") if "xxx" in line]
         assert len(x_lines) > 0
-        assert any(line.rstrip().endswith("...") for line in x_lines)
+        assert any(line.rstrip().endswith("...[truncated]") for line in x_lines)
         assert all(len(line) <= MAX_LINE_LENGTH for line in x_lines)
 
         y_lines = [line for line in file_content.split("\n") if "yyy" in line]
         assert len(y_lines) > 0
-        assert any(line.rstrip().endswith("...") for line in y_lines)
+        assert any(line.rstrip().endswith("...[truncated]") for line in y_lines)
         assert all(len(line) <= MAX_LINE_LENGTH for line in y_lines)
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)

@@ -5,7 +5,7 @@ from pathlib import Path
 from langchain.tools import ToolRuntime
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.filesystem import _read_file_tool_generator
+from deepagents.middleware.filesystem import MAX_LINE_LENGTH, _read_file_tool_generator
 
 
 def _write_file(p: Path, content: str) -> None:
@@ -44,12 +44,12 @@ def test_truncate_lines(tmp_path: Path) -> None:
     x_lines = [line for line in result.split("\n") if "xxx" in line]
     assert len(x_lines) > 0
     assert any(line.rstrip().endswith("...") for line in x_lines)
-    assert all(len(line) <= 2000 for line in x_lines)
+    assert all(len(line) <= MAX_LINE_LENGTH for line in x_lines)
 
     y_lines = [line for line in result.split("\n") if "yyy" in line]
     assert len(y_lines) > 0
     assert any(line.rstrip().endswith("...") for line in y_lines)
-    assert all(len(line) <= 2000 for line in y_lines)
+    assert all(len(line) <= MAX_LINE_LENGTH for line in y_lines)
 
 
 def test_truncate_lines_preserves_newlines(tmp_path: Path) -> None:
@@ -69,8 +69,9 @@ def test_truncate_lines_preserves_newlines(tmp_path: Path) -> None:
     result = read_tool.invoke({"file_path": "/newlines.txt", "runtime": runtime})
 
     # Should have multiple lines
+    expected_min_lines = 3
     lines = result.split("\n")
-    assert len(lines) >= 3
+    assert len(lines) >= expected_min_lines
 
     # Check that line1 and line3 are present
     assert any("line1" in line for line in lines)

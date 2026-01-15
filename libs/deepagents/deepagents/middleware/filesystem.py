@@ -372,7 +372,8 @@ def _truncate_lines(
         The truncated string.
     """
     if max_line_length < 0:
-        raise ValueError("max_line_length must be non-negative")
+        msg = "max_line_length must be non-negative"
+        raise ValueError(msg)
 
     out: list[str] = []
 

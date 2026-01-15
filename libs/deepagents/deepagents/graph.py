@@ -51,7 +51,7 @@ def create_deep_agent(
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
-    mcp_root: str = "/tmp/.mcp",
+    mcp_root: str = "/.mcp",
     response_format: ResponseFormat | None = None,
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
@@ -100,13 +100,12 @@ def create_deep_agent(
         mcp_servers: Optional list of MCP server configurations for progressive tool
             disclosure. Each server config should be a dict with:
             - `name`: Server name (used as folder name in /.mcp/)
-            - `command`: Command to start the MCP server
-            - `args`: (optional) List of command arguments
-            - `env`: (optional) Dict of environment variables
+            - `url`: HTTP endpoint URL (e.g., "http://localhost:3000/mcp")
+            - `headers`: (optional) Dict of HTTP headers for authentication
             When provided, MCP tools are discovered dynamically via filesystem operations
             instead of loading all schemas upfront, achieving ~47% token reduction.
-        mcp_root: Root directory for MCP metadata storage (default: /tmp/.mcp).
-            Tool metadata is organized in a folder-per-server structure.
+        mcp_root: Virtual path prefix for MCP metadata within the backend (default: /.mcp).
+            Tool metadata is organized in a folder-per-server structure at `{mcp_root}/{server}/{tool}.json`.
         response_format: A structured output response format to use for the agent.
         context_schema: The schema of the deep agent.
         checkpointer: Optional `Checkpointer` for persisting agent state between runs.
@@ -179,7 +178,7 @@ def create_deep_agent(
         deepagent_middleware.append(
             MCPMiddleware(
                 servers=mcp_servers,  # type: ignore[arg-type]
-                mcp_root=mcp_root,
+                mcp_prefix=mcp_root,
             )
         )
 

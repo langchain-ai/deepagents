@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, ClassVar, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
-    AgentState,
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
@@ -19,19 +19,18 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
 
-if TYPE_CHECKING:
-    from deepagents.backends.protocol import BackendProtocol
+from deepagents.backends.utils import create_file_data
+from deepagents.middleware.filesystem import FilesystemState
 
 logger = logging.getLogger(__name__)
 
 
 class MCPServerConfig(TypedDict):
-    """Configuration for an MCP server."""
+    """Configuration for an MCP server (HTTP transport)."""
 
     name: str
-    command: str
-    args: NotRequired[list[str]]
-    env: NotRequired[dict[str, str]]
+    url: str
+    headers: NotRequired[dict[str, str]]
 
 
 class MCPToolMetadata(TypedDict):
@@ -44,8 +43,12 @@ class MCPToolMetadata(TypedDict):
     status: NotRequired[str]
 
 
-class MCPState(AgentState):
-    """State for the MCP middleware."""
+class MCPState(FilesystemState):
+    """State for the MCP middleware.
+
+    Extends FilesystemState to inherit the `files` field with its reducer,
+    allowing MCP metadata to be stored in agent state.
+    """
 
     mcp_metadata: NotRequired[Annotated[dict[str, MCPToolMetadata], PrivateStateAttr]]
     mcp_initialized: NotRequired[Annotated[bool, PrivateStateAttr]]
@@ -92,22 +95,28 @@ class MCPMiddleware(AgentMiddleware):
 
     state_schema = MCPState
 
+    # Global client cache: maps cache_key -> (client, ref_count)
+    _client_cache: ClassVar[dict[str, tuple[Any, int]]] = {}
+    _client_lock: ClassVar[asyncio.Lock | None] = None
+
+    @classmethod
+    def _get_lock(cls) -> asyncio.Lock:
+        if cls._client_lock is None:
+            cls._client_lock = asyncio.Lock()
+        return cls._client_lock
+
     def __init__(
         self,
         *,
         servers: list[MCPServerConfig],
-        mcp_root: str = "/tmp/.mcp",
+        mcp_prefix: str = "/.mcp",
         sync_on_startup: bool = True,
     ) -> None:
         self._validate_servers(servers)
         self.servers = servers
-        self.mcp_root = mcp_root
+        self.mcp_prefix = mcp_prefix
         self.sync_on_startup = sync_on_startup
-        self._mcp_client: Any | None = None
-
-        from deepagents.backends.filesystem import FilesystemBackend
-
-        self._mcp_backend = FilesystemBackend(root_dir=mcp_root, virtual_mode=True)
+        self._cache_key: str | None = None
         self.tools: list[BaseTool] = [self._create_mcp_invoke_tool()]
 
     def _validate_servers(self, servers: list[MCPServerConfig]) -> None:
@@ -116,49 +125,76 @@ class MCPMiddleware(AgentMiddleware):
 
         names: set[str] = set()
         for server in servers:
-            if "name" not in server or "command" not in server:
-                raise ValueError("MCP server requires 'name' and 'command'")
+            if "name" not in server:
+                raise ValueError("MCP server requires 'name'")
+            if "url" not in server:
+                raise ValueError(f"MCP server '{server['name']}' requires 'url'")
             if server["name"] in names:
                 raise ValueError(f"Duplicate server name: {server['name']}")
             names.add(server["name"])
 
+    def _compute_cache_key(self) -> str:
+        key_parts = []
+        for server in sorted(self.servers, key=lambda s: s["name"]):
+            key_parts.append(f"{server['name']}:{server['url']}")
+        return "|".join(key_parts)
+
+    @property
+    def _mcp_client(self) -> Any | None:
+        if self._cache_key is None:
+            return None
+        entry = MCPMiddleware._client_cache.get(self._cache_key)
+        return entry[0] if entry else None
+
     async def connect(self) -> None:
-        """Connect to MCP servers and sync metadata."""
-        if self._mcp_client is not None:
-            return
+        """Connect to MCP servers via HTTP."""
+        cache_key = self._compute_cache_key()
 
-        try:
-            from langchain_mcp_adapters.client import MultiServerMCPClient
-        except ImportError as e:
-            raise ImportError(
-                "langchain-mcp-adapters is required for MCP support. "
-                "Install with: pip install langchain-mcp-adapters"
-            ) from e
+        async with self._get_lock():
+            if cache_key in MCPMiddleware._client_cache:
+                client, ref_count = MCPMiddleware._client_cache[cache_key]
+                MCPMiddleware._client_cache[cache_key] = (client, ref_count + 1)
+                self._cache_key = cache_key
+                return
 
-        server_configs = {
-            server["name"]: {
-                "command": server["command"],
-                "args": server.get("args", []),
-                "env": server.get("env", {}),
+            try:
+                from langchain_mcp_adapters.client import MultiServerMCPClient
+            except ImportError as e:
+                raise ImportError(
+                    "langchain-mcp-adapters is required for MCP support. "
+                    "Install with: pip install langchain-mcp-adapters"
+                ) from e
+
+            server_configs = {
+                server["name"]: {
+                    "transport": "http",
+                    "url": server["url"],
+                    "headers": server.get("headers", {}),
+                }
+                for server in self.servers
             }
-            for server in self.servers
-        }
 
-        self._mcp_client = MultiServerMCPClient(server_configs)
-        await self._mcp_client.__aenter__()
-
-        if self.sync_on_startup:
-            await self._sync_metadata()
+            client = MultiServerMCPClient(server_configs)
+            MCPMiddleware._client_cache[cache_key] = (client, 1)
+            self._cache_key = cache_key
 
     async def close(self) -> None:
         """Cleanup MCP connections."""
-        if self._mcp_client is not None:
-            try:
-                await self._mcp_client.__aexit__(None, None, None)
-            except Exception as e:
-                logger.warning("Error closing MCP client: %s", e)
-            finally:
-                self._mcp_client = None
+        if self._cache_key is None:
+            return
+
+        async with self._get_lock():
+            if self._cache_key not in MCPMiddleware._client_cache:
+                self._cache_key = None
+                return
+
+            client, ref_count = MCPMiddleware._client_cache[self._cache_key]
+            if ref_count > 1:
+                MCPMiddleware._client_cache[self._cache_key] = (client, ref_count - 1)
+            else:
+                del MCPMiddleware._client_cache[self._cache_key]
+
+            self._cache_key = None
 
     async def __aenter__(self) -> "MCPMiddleware":
         await self.connect()
@@ -167,20 +203,21 @@ class MCPMiddleware(AgentMiddleware):
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
 
-    async def _sync_metadata(self) -> None:
-        """Sync MCP tool metadata to filesystem."""
+    async def _sync_metadata(self) -> dict[str, Any]:
+        """Build MCP tool metadata as files_update for state merge."""
         if self._mcp_client is None:
             logger.warning("Cannot sync metadata: MCP client not connected")
-            return
+            return {}
+
+        files_update: dict[str, Any] = {}
 
         try:
-            mcp_tools = self._mcp_client.get_tools()
+            mcp_tools = await self._mcp_client.get_tools()
             tools_by_server: dict[str, list[Any]] = {}
             for tool in mcp_tools:
                 server_name = self._extract_server_name(tool)
                 tools_by_server.setdefault(server_name, []).append(tool)
 
-            files_to_upload: list[tuple[str, bytes]] = []
             for server_name, server_tools in tools_by_server.items():
                 for tool in server_tools:
                     tool_name = self._extract_tool_name(tool, server_name)
@@ -191,15 +228,20 @@ class MCPMiddleware(AgentMiddleware):
                         "input_schema": self._get_tool_schema(tool),
                         "status": "available",
                     }
-                    file_path = f"/{server_name}/{tool_name}.json"
+                    file_path = f"{self.mcp_prefix}/{server_name}/{tool_name}.json"
                     content = json.dumps(metadata, indent=2)
-                    files_to_upload.append((file_path, content.encode("utf-8")))
+                    files_update[file_path] = create_file_data(content)
 
-            if files_to_upload:
-                await self._mcp_backend.aupload_files(files_to_upload)
-                logger.info("Synced %d MCP tool metadata files to %s", len(files_to_upload), self.mcp_root)
+            if files_update:
+                logger.info(
+                    "Prepared %d MCP tool metadata files for %s",
+                    len(files_update),
+                    self.mcp_prefix,
+                )
         except Exception as e:
-            logger.error("Error syncing MCP metadata: %s", e)
+            logger.error("Error building MCP metadata: %s", e)
+
+        return files_update
 
     def _extract_server_name(self, tool: Any) -> str:
         tool_name = getattr(tool, "name", "")
@@ -240,7 +282,7 @@ class MCPMiddleware(AgentMiddleware):
                 )
 
             try:
-                mcp_tools = middleware._mcp_client.get_tools()
+                mcp_tools = await middleware._mcp_client.get_tools()
                 target_tool = None
                 for tool in mcp_tools:
                     name = getattr(tool, "name", "")
@@ -293,7 +335,20 @@ class MCPMiddleware(AgentMiddleware):
             except Exception as e:
                 logger.error("Failed to connect to MCP servers: %s", e)
 
-        return {"mcp_initialized": True}
+        files_update: dict[str, Any] = {}
+
+        # Build metadata files if connected and sync_on_startup is enabled
+        if self._mcp_client is not None and self.sync_on_startup:
+            try:
+                files_update = await self._sync_metadata()
+            except Exception as e:
+                logger.error("Failed to build MCP metadata: %s", e)
+
+        result: dict[str, Any] = {"mcp_initialized": True}
+        if files_update:
+            result["files"] = files_update
+
+        return result
 
     def wrap_model_call(
         self,

@@ -442,7 +442,7 @@ A condensed summary follows:
             file_path = self._offload_to_backend(backend, messages_to_summarize, runtime)
 
         # Generate summary
-        summary = self._create_summary(messages_to_summarize, runtime)
+        summary = self._create_summary(messages_to_summarize)
 
         # Build summary message with file path reference if available
         new_messages = self._build_new_messages_with_path(summary, file_path)
@@ -494,7 +494,7 @@ A condensed summary follows:
             file_path = await self._aoffload_to_backend(backend, messages_to_summarize, runtime)
 
         # Generate summary
-        summary = await self._acreate_summary(messages_to_summarize, runtime)
+        summary = await self._acreate_summary(messages_to_summarize)
 
         # Build summary message with file path reference if available
         new_messages = self._build_new_messages_with_path(summary, file_path)

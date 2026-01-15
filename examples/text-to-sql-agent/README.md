@@ -1,6 +1,6 @@
 # Text-to-SQL Deep Agent
 
-A natural language to SQL query agent powered by LangChain's **DeepAgents** framework and Claude Sonnet 4.5. This is an advanced version of a text-to-SQL agent with planning, filesystem, and subagent capabilities.
+A natural language to SQL query agent powered by LangChain's **DeepAgents** framework.  This is an advanced version of a text-to-SQL agent with planning, filesystem, and subagent capabilities.
 
 ## What is DeepAgents?
 
@@ -10,30 +10,6 @@ DeepAgents is a sophisticated agent framework built on LangGraph that provides:
 - **Filesystem backend** - Save and retrieve context with file operations
 - **Subagent spawning** - Delegate specialized tasks to focused agents
 - **Context management** - Prevent context window overflow on complex tasks
-
-## Key Differences from Standard Agent
-
-| Feature | Standard Agent (create_agent) | Deep Agent (create_deep_agent) |
-|---------|-------------------------------|--------------------------------|
-| **Planning** | No built-in planning | `write_todos` tool for task breakdown |
-| **Filesystem** | No file operations | ls, read_file, write_file, edit_file |
-| **Subagents** | Single agent only | Can spawn specialized subagents |
-| **Configuration** | Model + system_prompt params | memory files + tools |
-| **Complexity** | Simple, focused | Advanced, multi-capability |
-| **Best for** | Straightforward queries | Complex multi-step analysis |
-
-## When to Use DeepAgents
-
-Use DeepAgents for:
-- Complex analytical questions requiring multiple steps
-- Questions that benefit from explicit planning
-- Scenarios where you need to save intermediate results
-- Tasks that could benefit from specialized subagents
-
-Use standard agent for:
-- Simple, direct SQL queries
-- Straightforward question-answering
-- When you want minimal overhead
 
 ## Demo Database
 
@@ -246,30 +222,6 @@ All dependencies are specified in `pyproject.toml`:
 - python-dotenv >= 1.0.0
 - tavily-python >= 0.5.0
 - rich >= 13.0.0
-
-## Comparison with text2sqlagent
-
-This repository is a companion to [text2sqlagent](https://github.com/kevinbfrank/text2sqlagent) which uses the simpler `create_agent` approach.
-
-**Use text2sqlagent when:**
-- You need straightforward text-to-SQL conversion
-- Simple queries are your primary use case
-- You want minimal setup and overhead
-
-**Use text2sqldeepagent when:**
-- You need complex multi-step analysis
-- Planning and reasoning transparency is important
-- You want to leverage subagents for specialized tasks
-- You need filesystem operations for context management
-
-## Safety Features
-
-- Read-only access - Only SELECT queries allowed
-- No DML statements - Cannot INSERT, UPDATE, DELETE, or DROP
-- Query validation before execution
-- Automatic error recovery with retries
-- Result limiting (5 rows by default)
-- Sample data only - Schema shows 3 sample rows per table
 
 ## LangSmith Integration
 

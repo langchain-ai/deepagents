@@ -165,6 +165,7 @@ class Settings:
     # Model configuration
     model_name: str | None = None  # Currently active model name
     model_provider: str | None = None  # Provider (openai, anthropic, google)
+    model_context_limit: int | None = None  # Max input tokens from model profile
 
     # Project information
     project_root: Path | None = None
@@ -552,27 +553,28 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     settings.model_name = model_name
     settings.model_provider = provider
 
-    # Create and return the model
+    # Create the model
+    model: BaseChatModel
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model_name)
-    if provider == "anthropic":
+        model = ChatOpenAI(model=model_name)
+    elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
+        model = ChatAnthropic(
             model_name=model_name,
             max_tokens=20_000,  # type: ignore[arg-type]
         )
-    if provider == "google":
+    elif provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(
+        model = ChatGoogleGenerativeAI(
             model=model_name,
             temperature=0,
             max_tokens=None,
         )
-    if provider == "vertexai":
+    elif provider == "vertexai":
         model_lower = model_name.lower()
 
         if "claude" in model_lower:
@@ -586,7 +588,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
                 console.print("  pip install deepagents-cli[vertexai]", markup=False)
                 sys.exit(1)
 
-            return ChatAnthropicVertex(
+            model = ChatAnthropicVertex(
                 # Remove version tag (e.g., "claude-haiku-4-5@20251015" -> "claude-haiku-4-5")
                 # ChatAnthropicVertex expects just the base model name without the @version suffix
                 model_name=model_name,
@@ -594,15 +596,32 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
                 location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
                 max_tokens=20_000,
             )
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        else:
+            from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(
-            model=model_name,
-            project=settings.google_cloud_project,
-            vertexai=True,
-            temperature=0,
-            max_tokens=None,
-        )
+            model = ChatGoogleGenerativeAI(
+                model=model_name,
+                project=settings.google_cloud_project,
+                vertexai=True,
+                temperature=0,
+                max_tokens=None,
+            )
+    else:
+        # Should not reach here due to earlier validation
+        console.print(f"[bold red]Error:[/bold red] Unknown provider: {provider}")
+        sys.exit(1)
+
+    # Extract context limit from model profile (if available)
+    if (
+        hasattr(model, "profile")
+        and model.profile is not None
+        and isinstance(model.profile, dict)
+        and "max_input_tokens" in model.profile
+        and isinstance(model.profile["max_input_tokens"], int)
+    ):
+        settings.model_context_limit = model.profile["max_input_tokens"]
+
+    return model
 
 
 def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:

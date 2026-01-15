@@ -107,6 +107,21 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
     """
     agent_dir_path = f"~/.deepagents/{assistant_id}"
 
+    # Build model identity section
+    model_identity_section = ""
+    if settings.model_name and isinstance(settings.model_name, str):
+        model_identity_section = f"""### Model Identity
+
+You are running as model `{settings.model_name}`"""
+        if settings.model_provider and isinstance(settings.model_provider, str):
+            model_identity_section += f" (provider: {settings.model_provider})"
+        model_identity_section += ".\n"
+        if settings.model_context_limit and isinstance(settings.model_context_limit, int):
+            model_identity_section += (
+                f"Your context window is {settings.model_context_limit:,} tokens.\n"
+            )
+        model_identity_section += "\n"
+
     if sandbox_type:
         # Get provider-specific working directory
 
@@ -140,7 +155,8 @@ The filesystem backend is currently operating in: `{cwd}`
 """
 
     return (
-        working_dir_section
+        model_identity_section
+        + working_dir_section
         + f"""### Skills Directory
 
 Your skills are stored at: `{agent_dir_path}/skills/`

@@ -1,5 +1,5 @@
-name: "Feature request"
-description: Request a new feature or enhancement for deepagents.
+name: "✨ Feature Request"
+description: Request a new feature or enhancement for Deep Agents. For questions, please use the Deep Agents forum (below).
 labels: ["feature request"]
 type: feature
 body:

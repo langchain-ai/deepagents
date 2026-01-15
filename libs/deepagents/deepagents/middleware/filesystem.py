@@ -61,17 +61,21 @@ def _file_data_reducer(
     right: dict[str, FileData | None],
 ) -> dict[str, FileData]:
     """Merge file updates with support for deletions.
+
     This reducer enables file deletion by treating `None` values in the right
     dictionary as deletion markers. It's designed to work with LangGraph's
     state management where annotated reducers control how state updates merge.
+
     Args:
         left: Existing files dictionary. May be `None` during initialization,
             or a list of dicts when multiple tool calls update state.
         right: New files dictionary to merge. Files with `None` values are
             treated as deletion markers and removed from the result.
+
     Returns:
         Merged dictionary where right overwrites left for matching keys,
         and `None` values in right trigger deletions.
+
     Example:
         ```python
         existing = {"/file1.txt": FileData(...), "/file2.txt": FileData(...)}

@@ -9,8 +9,9 @@ from deepagents.middleware.filesystem import (
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
-def test_parallel_write_file_calls_trigger_list_reducer():
+def test_parallel_write_file_calls_trigger_list_reducer() -> None:
     """Verify that parallel write_file calls correctly update file state.
+
     This test ensures that when an agent's model issues multiple `write_file`
     tool calls in parallel, the `_file_data_reducer` correctly handles the
     list of file updates and merges them into the final state.
@@ -65,7 +66,7 @@ def test_parallel_write_file_calls_trigger_list_reducer():
     assert result["files"]["/test2.txt"]["content"] == ["world"], "Content of /test2.txt should be 'world'"
 
 
-def test_file_data_reducer_handles_list():
+def test_file_data_reducer_handles_list() -> None:
     """Verify _file_data_reducer can handle a list of updates."""
     # Simulate initial state where left is a list of dicts
     left = [

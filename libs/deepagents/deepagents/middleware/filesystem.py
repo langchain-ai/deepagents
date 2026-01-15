@@ -351,6 +351,51 @@ def _ls_tool_generator(
     )
 
 
+def _truncate_lines(
+    text: str,
+    max_line_length: int = MAX_LINE_LENGTH,
+    *,
+    suffix: str | None = None,
+) -> str:
+    """Truncate each line in `text` to at most `max_line_length` characters.
+
+    - Preserves original newline characters.
+    - Safe for Unicode text.
+    - Optionally appends a suffix to truncated lines (e.g., "...").
+
+    Args:
+        text: Input string (may contain newlines).
+        max_line_length: Maximum length per line.
+        suffix: Optional suffix added when truncation occurs.
+
+    Returns:
+        The truncated string.
+    """
+    if max_line_length < 0:
+        raise ValueError("max_line_length must be non-negative")
+
+    out: list[str] = []
+
+    for line in text.splitlines(keepends=True):
+        # Separate content from newline(s)
+        content = line.rstrip("\r\n")
+        newline = line[len(content) :]
+
+        if len(content) <= max_line_length:
+            out.append(line)
+            continue
+
+        if suffix:
+            cutoff = max(0, max_line_length - len(suffix))
+            truncated = content[:cutoff] + suffix
+        else:
+            truncated = content[:max_line_length]
+
+        out.append(truncated + newline)
+
+    return "".join(out)
+
+
 def _read_file_tool_generator(
     backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
     custom_description: str | None = None,
@@ -375,7 +420,8 @@ def _read_file_tool_generator(
         """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        return resolved_backend.read(file_path, offset=offset, limit=limit)
+        content = resolved_backend.read(file_path, offset=offset, limit=limit)
+        return _truncate_lines(content, suffix="...")
 
     async def async_read_file(
         file_path: str,
@@ -386,7 +432,8 @@ def _read_file_tool_generator(
         """Asynchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        return await resolved_backend.aread(file_path, offset=offset, limit=limit)
+        content = await resolved_backend.aread(file_path, offset=offset, limit=limit)
+        return _truncate_lines(content, suffix="...")
 
     return StructuredTool.from_function(
         name="read_file",

@@ -1,4 +1,5 @@
 """Textual UI application for deepagents-cli."""
+# ruff: noqa: BLE001, PLR0912, PLR2004, S110, SIM108
 
 from __future__ import annotations
 
@@ -138,6 +139,7 @@ class DeepAgentsApp(App):
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
+        initial_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the DeepAgents application.
@@ -149,6 +151,7 @@ class DeepAgentsApp(App):
             auto_approve: Whether to start with auto-approve enabled
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
+            initial_prompt: Optional prompt to auto-submit when session starts
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -159,6 +162,7 @@ class DeepAgentsApp(App):
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
+        self._initial_prompt = initial_prompt
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -218,6 +222,13 @@ class DeepAgentsApp(App):
 
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
+
+        # Auto-submit initial prompt if provided
+        if self._initial_prompt and self._initial_prompt.strip():
+            # Use call_after_refresh to ensure UI is fully mounted before submitting
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._handle_user_message(self._initial_prompt))
+            )
 
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
@@ -291,7 +302,7 @@ class DeepAgentsApp(App):
             self._scroll_chat_to_bottom()
             # Focus approval menu
             self.call_after_refresh(menu.focus)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self._pending_approval_widget = None
             if not result_future.done():
                 result_future.set_exception(e)
@@ -497,7 +508,7 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
         finally:
             # Clean up loading widget and agent state
@@ -675,6 +686,7 @@ async def run_textual_app(
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
+    initial_prompt: str | None = None,
 ) -> None:
     """Run the Textual application.
 
@@ -685,6 +697,7 @@ async def run_textual_app(
         auto_approve: Whether to start with auto-approve enabled
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
+        initial_prompt: Optional prompt to auto-submit when session starts
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -693,6 +706,7 @@ async def run_textual_app(
         auto_approve=auto_approve,
         cwd=cwd,
         thread_id=thread_id,
+        initial_prompt=initial_prompt,
     )
     await app.run_async()
 

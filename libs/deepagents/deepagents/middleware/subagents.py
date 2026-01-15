@@ -392,7 +392,7 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state, context=runtime.context)
+        result = subagent.invoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -407,7 +407,7 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state, context=runtime.context)
+        result = await subagent.ainvoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)

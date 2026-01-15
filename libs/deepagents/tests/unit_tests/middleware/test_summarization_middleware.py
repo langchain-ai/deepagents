@@ -239,7 +239,6 @@ class TestOffloadingBasic:
         # Content should be valid JSON with expected structure
         payload = json.loads(content)
         assert "messages" in payload
-        assert "messages_text" in payload
         assert "thread_id" in payload
         assert payload["thread_id"] == "test-thread-123"
         # Summary is NOT stored in payload (it's in the conversation state instead)
@@ -416,31 +415,6 @@ class TestChainedSummarization:
             # Should not have lc_source: summarization
             additional_kwargs = msg.get("additional_kwargs", {})
             assert additional_kwargs.get("lc_source") != "summarization", "Previous summary message should be filtered from offload"
-
-    def test_summary_message_text_excluded_from_buffer(self) -> None:
-        """Test that `messages_text` doesn't include previous summary content."""
-        backend = MockBackend()
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=backend,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2, include_previous_summary=True)
-        state = {"messages": messages}
-        runtime = make_mock_runtime()
-
-        middleware.before_model(state, runtime)
-
-        _, content = backend.write_calls[0]
-        payload = json.loads(content)
-
-        # The messages_text should not include the previous summary
-        messages_text = payload["messages_text"]
-        assert "Previous summary content" not in messages_text
 
 
 class TestSummaryMessageFormat:

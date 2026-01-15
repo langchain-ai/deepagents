@@ -32,7 +32,6 @@ Offloaded messages are stored as JSON at:
 
 Each file contains:
 - `messages`: List of serialized messages that were summarized
-- `messages_text`: Human-readable text representation of the messages
 - `message_count`: Number of messages stored
 - `thread_id`: The conversation thread identifier
 - `timestamp`: ISO 8601 timestamp of when summarization occurred
@@ -51,15 +50,12 @@ from langchain.agents.middleware.summarization import (
     _DEFAULT_TRIM_TOKEN_LIMIT,
     DEFAULT_SUMMARY_PROMPT,
     ContextSize,
+    SummarizationMiddleware as BaseSummarizationMiddleware,
     TokenCounter,
     count_tokens_approximately,
 )
-from langchain.agents.middleware.summarization import (
-    SummarizationMiddleware as BaseSummarizationMiddleware,
-)
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage
-from langchain_core.messages.utils import get_buffer_string
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from typing_extensions import override
 

@@ -1,6 +1,7 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -10,7 +11,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 
+from deepagents.backends import FilesystemBackend
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.filesystem import MAX_LINE_LENGTH
 
 
 @tool(description="Sample tool")
@@ -255,3 +258,189 @@ class TestDeepAgentEndToEnd:
             # Verify the agent executed correctly
             assert "messages" in result
             assert len(result["messages"]) > 0
+
+    def test_deep_agent_truncate_lines(self, tmp_path: Path) -> None:
+        """Test line truncation in read_file tool with mixed short and long lines.
+
+        This end-to-end test verifies that the agent properly truncates long lines
+        when reading files through the read_file tool.
+        """
+        # Setup test file with mixed line lengths
+        fp = tmp_path / "my_file"
+        line1 = "normal line"
+        line2 = "x" * 3000  # Very long
+        line3 = "another normal line"
+        line4 = "y" * 2100  # Also long
+        line5 = "final normal line"
+        content = f"{line1}\n{line2}\n{line3}\n{line4}\n{line5}\n"
+
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content)
+
+        # Create a fake model that calls read_file
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "my_file"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the file successfully.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with filesystem backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content="Read my_file")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Normal lines should be present
+        assert "normal line" in file_content
+        assert "another normal line" in file_content
+        assert "final normal line" in file_content
+
+        # Long lines should be truncated with "..."
+        x_lines = [line for line in file_content.split("\n") if "xxx" in line]
+        assert len(x_lines) > 0
+        assert any(line.rstrip().endswith("...") for line in x_lines)
+        assert all(len(line) <= MAX_LINE_LENGTH for line in x_lines)
+
+        y_lines = [line for line in file_content.split("\n") if "yyy" in line]
+        assert len(y_lines) > 0
+        assert any(line.rstrip().endswith("...") for line in y_lines)
+        assert all(len(line) <= MAX_LINE_LENGTH for line in y_lines)
+
+    def test_deep_agent_truncate_lines_preserves_newlines(self, tmp_path: Path) -> None:
+        """Test that read_file preserves newlines correctly with truncation.
+
+        This end-to-end test verifies that newlines are preserved when the
+        agent reads files with long lines that need truncation.
+        """
+        # Setup test file with different newline patterns
+        fp = tmp_path / "my_file"
+        long_line = "b" * 2500
+        content = f"line1\n{long_line}\nline3"
+
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(content)
+
+        # Create a fake model that calls read_file
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "my_file"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the file with newlines.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with filesystem backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content="Read my_file")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Should have multiple lines
+        expected_min_lines = 3
+        lines = file_content.split("\n")
+        assert len(lines) >= expected_min_lines
+
+        # Check that line1 and line3 are present
+        assert any("line1" in line for line in lines)
+        assert any("line3" in line for line in lines)
+
+    def test_deep_agent_truncate_lines_empty_file(self, tmp_path: Path) -> None:
+        """Test reading an empty file through the agent.
+
+        This end-to-end test verifies that the agent can successfully read
+        and handle empty files.
+        """
+        # Setup empty test file
+        fp = tmp_path / "my_file"
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text("")
+
+        # Create a fake model that calls read_file
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "my_file"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the empty file.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with filesystem backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content="Read my_file")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Empty file should return empty or minimal content
+        # (FilesystemBackend might add warnings or format)
+        assert isinstance(file_content, str)

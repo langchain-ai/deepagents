@@ -1,13 +1,12 @@
-import os
 from pathlib import Path
 from textwrap import dedent
 
-from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend
-from deepagents.backends.filesystem import FilesystemBackend
+import requests
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
-import requests
+
+from deepagents import create_deep_agent
+from deepagents.backends.filesystem import FilesystemBackend
 
 
 def _write_file(p: Path, content: str):
@@ -16,7 +15,6 @@ def _write_file(p: Path, content: str):
 
 
 def test_summarize_continues_task(tmp_path: Path):
-
     # Pull sample file
     response = requests.get(
         "https://raw.githubusercontent.com/langchain-ai/langchain/3356d0555725c3e0bbb9408c2b3f554cad2a6ee2/libs/partners/openai/langchain_openai/chat_models/base.py"

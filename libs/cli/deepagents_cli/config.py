@@ -612,14 +612,9 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         sys.exit(1)
 
     # Extract context limit from model profile (if available)
-    if (
-        hasattr(model, "profile")
-        and model.profile is not None
-        and isinstance(model.profile, dict)
-        and "max_input_tokens" in model.profile
-        and isinstance(model.profile["max_input_tokens"], int)
-    ):
-        settings.model_context_limit = model.profile["max_input_tokens"]
+    profile = getattr(model, "profile", None)
+    if isinstance(profile, dict) and isinstance(profile.get("max_input_tokens"), int):
+        settings.model_context_limit = profile["max_input_tokens"]
 
     return model
 

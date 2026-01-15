@@ -745,17 +745,16 @@ class TestSubAgentStreamingMetadata:
             subgraphs=True,
             config={"configurable": {"thread_id": "test_thread"}, "tags": test_tags},
         ):
-            content = getattr(chunk, "content", "")
             agent_name = metadata.get("lc_agent_name")
             tags = metadata.get("tags", [])
 
             # Check parent content has correct agent name
-            if parent_content in content and not saw_parent_content:
+            if parent_content in chunk.content and not saw_parent_content:
                 assert agent_name == "supervisor", f"Parent content should have agent_name='supervisor', got '{agent_name}'"
                 saw_parent_content = True
 
             # Check subagent content has correct agent name and tags
-            if subagent_content in content and agent_name == "worker" and not saw_subagent_content:
+            if subagent_content in chunk.content and agent_name == "worker" and not saw_subagent_content:
                 assert all(t in tags for t in test_tags), f"Subagent chunk missing tags. Expected {test_tags}, got {tags}"
                 saw_subagent_content = True
 

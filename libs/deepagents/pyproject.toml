@@ -1,13 +1,13 @@
 [project]
 name = "deepagents"
-version = "0.3.5"
+version = "0.3.6"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "langchain-core>=1.2.6,<2.0.0",
-    "langchain>=1.2.3,<2.0.0",
+    "langchain>=1.2.4,<2.0.0",
     "langchain-anthropic>=1.3.1,<2.0.0",
     "langchain-google-genai>=4.1.3,<5.0.0",
     "wcmatch",
@@ -75,6 +75,11 @@ keep-runtime-typing = true
 
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"  # Google-style docstrings

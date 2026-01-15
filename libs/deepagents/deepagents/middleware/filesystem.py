@@ -20,10 +20,8 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
-
-# Re-export type here for backwards compatibility
-from deepagents.backends.protocol import BACKEND_TYPES as BACKEND_TYPES
 from deepagents.backends.protocol import (
+    BACKEND_TYPES as BACKEND_TYPES,  # Re-export for backwards compatibility
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,

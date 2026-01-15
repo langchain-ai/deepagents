@@ -218,25 +218,18 @@ class CompiledSubAgent(TypedDict):
 ```
 
 **`SubAgent` fields:**
+- **name**: This is the name of the subagent, and how the main agent will call the subagent
+- **description**: This is the description of the subagent that is shown to the main agent
+- **system_prompt**: This is the system prompt used for the subagent
+- **tools**: This is the list of tools that the subagent has access to.
+- **model**: Optional model name or model instance.
+- **middleware** Additional middleware to attach to the subagent. See [here](https://docs.langchain.com/oss/python/langchain/middleware) for an introduction into middleware and how it works with create_agent.
+- **interrupt_on** A custom interrupt config that specifies human-in-the-loop interactions for your tools.
 
-Required fields:
-
-- `name` (`str`): Unique identifier for the subagent. The main agent uses this name when calling the `task()` tool.
-- `description` (`str`): What this subagent does. Be specific and action-oriented. The main agent uses this to decide when to delegate.
-- `system_prompt` (`str`): Instructions for the subagent. Include tool usage guidance and output format requirements.
-- `tools` (`list[Callable]`): Tools the subagent can use. Keep this minimal and include only what's needed.
-
-Optional fields:
-
-- `model` (`str | BaseChatModel`): Override the main agent's model. Use the format `'provider:model-name'` (e.g., `'openai:gpt-4o'`). Defaults to `claude-sonnet-4-5-20250929`.
-- `middleware` (`list[Middleware]`): Additional middleware for custom behavior, logging, or rate limiting.
-- `interrupt_on` (`dict[str, bool]`): Configure human-in-the-loop for specific tools. Requires a checkpointer.
-
-**`CompiledSubAgent` fields:**
-
-- `name` (`str`): Unique identifier for the subagent.
-- `description` (`str`): What this subagent does.
-- `runnable` (`Runnable`): A compiled LangGraph graph (must call `.compile()` first).
+**CompiledSubAgent fields:**
+- **name**: This is the name of the subagent, and how the main agent will call the subagent
+- **description**: This is the description of the subagent that is shown to the main agent  
+- **runnable**: A pre-built LangGraph graph/agent that will be used as the subagent. **Important:** The runnable's state schema must include a `messages` key. This is required for the subagent to communicate results back to the main agent.
 
 #### Using `SubAgent`
 
@@ -444,9 +437,11 @@ For more complex use cases, you can also provide your own pre-built LangGraph gr
 
 ```python
 # Create a custom LangGraph graph
+# Important: Your state must include a 'messages' key
 def create_weather_graph():
     workflow = StateGraph(...)
     # Build your custom graph
+    # Make sure your state schema includes 'messages'
     return workflow.compile()
 
 weather_graph = create_weather_graph()

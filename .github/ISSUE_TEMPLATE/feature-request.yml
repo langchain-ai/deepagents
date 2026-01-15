@@ -1,0 +1,66 @@
+name: "✨ Feature Request"
+description: Request a new feature or enhancement for Deep Agents. For questions, please use the Deep Agents forum (below).
+labels: ["feature request"]
+type: feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to request a new feature.
+
+        Use this to request NEW FEATURES or ENHANCEMENTS in Deep Agents. For bug reports, please use the bug report template. For usage questions and general design questions, please use the [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18).
+
+        Relevant links to check before filing a feature request to see if your request has already been made or
+        if there's another way to achieve what you want:
+
+        * [Documentation](https://docs.langchain.com/oss/python/deepagents/overview),
+        * [API Reference Documentation](https://reference.langchain.com/python/deepagents/),
+        * [LangChain ChatBot](https://chat.langchain.com/)
+        * [GitHub search](https://github.com/langchain-ai/deepagents),
+        * [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18),
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checked other resources
+      description: Please confirm the following.
+      options:
+        - label: This is a feature request, not a bug report.
+          required: true
+        - label: I searched existing issues and didn't find this feature.
+          required: true
+        - label: I checked the docs and README for existing functionality.
+          required: true
+        - label: This request applies to this repo (deepagents) and not an external package.
+          required: true
+  - type: checkboxes
+    id: package
+    attributes:
+      label: Area (Required)
+      description: Which area of the repository does this request relate to? Select at least one.
+      options:
+        - label: deepagents (SDK)
+        - label: cli
+  - type: textarea
+    id: feature-description
+    validations:
+      required: true
+    attributes:
+      label: Feature description
+      description: What would you like to see added to Deep Agents? Be specific.
+  - type: textarea
+    id: use-case
+    validations:
+      required: true
+    attributes:
+      label: Use case
+      description: Describe the use case and why this feature is valuable.
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution (optional)
+      description: If you have an idea how to implement this, describe it here. Include API examples if relevant.
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context (optional)
+      description: Links, examples, or related issues

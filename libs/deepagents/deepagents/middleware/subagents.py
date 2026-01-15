@@ -69,14 +69,12 @@ class SubAgent(TypedDict):
 
 
 class CompiledSubAgent(TypedDict):
-    """A pre-compiled agent spec for complex workflows.
+    """A pre-compiled agent spec.
 
-    Use this when you need a pre-built LangGraph graph as a subagent.
-
-    Fields:
-        name: Unique identifier for the subagent.
-        description: What this subagent does.
-        runnable: A compiled LangGraph graph (must call `.compile()` first).
+    Important: The runnable's state schema must include a 'messages' key.
+    This is required for the subagent to communicate results back to the main agent.
+    When the subagent completes, the final message in the 'messages' list will be
+    extracted and returned as a ToolMessage to the parent agent.
     """
 
     name: str
@@ -86,7 +84,7 @@ class CompiledSubAgent(TypedDict):
     """What this subagent does."""
 
     runnable: Runnable
-    """A compiled LangGraph graph."""
+    """The Runnable to use for the agent. Must return a state with a 'messages' key."""
 
 
 DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
@@ -282,6 +280,7 @@ def _get_subagents(
             system_prompt=DEFAULT_SUBAGENT_PROMPT,
             tools=default_tools,
             middleware=general_purpose_middleware,
+            name="general-purpose",
         )
         agents["general-purpose"] = general_purpose_subagent
         subagent_descriptions.append(f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
@@ -308,6 +307,7 @@ def _get_subagents(
             system_prompt=agent_["system_prompt"],
             tools=_tools,
             middleware=_middleware,
+            name=agent_["name"],
         )
     return agents, subagent_descriptions
 
@@ -349,6 +349,15 @@ def _create_task_tool(
     subagent_description_str = "\n".join(subagent_descriptions)
 
     def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+        # Validate that the result contains a 'messages' key
+        if "messages" not in result:
+            error_msg = (
+                "CompiledSubAgent must return a state containing a 'messages' key. "
+                "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
+                "in their state schema to communicate results back to the main agent."
+            )
+            raise ValueError(error_msg)
+
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
         # Strip trailing whitespace to prevent API errors with Anthropic
         message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
@@ -383,7 +392,7 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state, runtime.config)
+        result = subagent.invoke(subagent_state, context=runtime.context)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -398,7 +407,7 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state, runtime.config)
+        result = await subagent.ainvoke(subagent_state, context=runtime.context)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)

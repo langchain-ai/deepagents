@@ -40,20 +40,35 @@ if TYPE_CHECKING:
 class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 
-    def __init__(self, update_callback: callable) -> None:
-        """Initialize with a callback to update the display."""
+    def __init__(self, update_callback: callable, hide_callback: callable | None = None) -> None:
+        """Initialize with callbacks to update the display."""
         self._update_callback = update_callback
+        self._hide_callback = hide_callback
         self.current_context = 0
 
-    def add(self, input_tokens: int, output_tokens: int) -> None:  # noqa: ARG002
-        """Update token count from a response."""
-        self.current_context = input_tokens
-        self._update_callback(input_tokens)
+    def add(self, total_tokens: int, _output_tokens: int = 0) -> None:
+        """Update token count from a response.
+
+        Args:
+            total_tokens: Total context tokens (input + output from usage_metadata)
+            _output_tokens: Unused, kept for backwards compatibility
+        """
+        self.current_context = total_tokens
+        self._update_callback(self.current_context)
 
     def reset(self) -> None:
         """Reset token count."""
         self.current_context = 0
         self._update_callback(0)
+
+    def hide(self) -> None:
+        """Hide the token display (e.g., during streaming)."""
+        if self._hide_callback:
+            self._hide_callback()
+
+    def show(self) -> None:
+        """Show the token display with current value (e.g., after interrupt)."""
+        self._update_callback(self.current_context)
 
 
 class TextualSessionState:
@@ -188,7 +203,7 @@ class DeepAgentsApp(App):
         )
 
         # Create token tracker that updates status bar
-        self._token_tracker = TextualTokenTracker(self._update_tokens)
+        self._token_tracker = TextualTokenTracker(self._update_tokens, self._hide_tokens)
 
         # Create UI adapter if agent is provided
         if self._agent:
@@ -213,6 +228,11 @@ class DeepAgentsApp(App):
         """Update the token count in status bar."""
         if self._status_bar:
             self._status_bar.set_tokens(count)
+
+    def _hide_tokens(self) -> None:
+        """Hide the token display during streaming."""
+        if self._status_bar:
+            self._status_bar.hide_tokens()
 
     def _scroll_chat_to_bottom(self) -> None:
         """Scroll the chat area to the bottom.
@@ -401,6 +421,10 @@ class DeepAgentsApp(App):
                 await self._mount_message(SystemMessage("deepagents version: unknown"))
         elif cmd == "/clear":
             await self._clear_messages()
+            if self._token_tracker:
+                self._token_tracker.reset()
+            # Clear status message (e.g., "Interrupted" from previous session)
+            self._update_status("")
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
@@ -493,6 +517,10 @@ class DeepAgentsApp(App):
         # Re-enable cursor blink now that agent is done
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+
+        # Ensure token display is restored (in case of early cancellation)
+        if self._token_tracker:
+            self._token_tracker.show()
 
     async def _mount_message(self, widget: Static) -> None:
         """Mount a message widget to the messages area.

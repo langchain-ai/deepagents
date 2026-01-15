@@ -27,7 +27,7 @@ poetry add deepagents
 
 ## Usage
 
-> **Note:** `deepagents` requires using a LLM that supports [tool calling](https://python.langchain.com/docs/concepts/tool_calling/).
+> **Note:** `deepagents` requires using a LLM that supports [tool calling](https://docs.langchain.com/oss/python/langchain/overview).
 
 This example uses [Tavily](https://tavily.com/) as an example search provider, but you can substitute any search API (e.g., DuckDuckGo, SerpAPI, Brave Search). To run the example below, you will need to `pip install tavily-python`.
 
@@ -106,7 +106,7 @@ There are several parameters you can pass to `create_deep_agent` to create your 
 
 ### `model`
 
-By default, `deepagents` uses `claude-sonnet-4-5-20250929`. You can customize this by passing any [LangChain model object](https://python.langchain.com/docs/integrations/chat/).
+By default, `deepagents` uses `claude-sonnet-4-5-20250929`. You can customize this by passing any [LangChain model object](https://docs.langchain.com/oss/python/integrations/providers/overview).
 
 > **Tip:** Use the `provider:model` format (e.g., `openai:gpt-5`) to quickly switch between models. See the [reference](https://reference.langchain.com/python/langchain/models/#langchain.chat_models.init_chat_model(model)) for more info.
 
@@ -218,6 +218,7 @@ class CompiledSubAgent(TypedDict):
 ```
 
 **`SubAgent` fields:**
+
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
 - **description**: This is the description of the subagent that is shown to the main agent
 - **system_prompt**: This is the system prompt used for the subagent
@@ -227,6 +228,7 @@ class CompiledSubAgent(TypedDict):
 - **interrupt_on** A custom interrupt config that specifies human-in-the-loop interactions for your tools.
 
 **CompiledSubAgent fields:**
+
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
 - **description**: This is the description of the subagent that is shown to the main agent  
 - **runnable**: A pre-built LangGraph graph/agent that will be used as the subagent. **Important:** The runnable's state schema must include a `messages` key. This is required for the subagent to communicate results back to the main agent.

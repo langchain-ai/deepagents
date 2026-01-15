@@ -273,53 +273,45 @@ def create_agentcore_sandbox(
     """Create AgentCore Code Interpreter sandbox.
 
     Args:
-        sandbox_id: Optional existing sandbox ID to reuse
+        sandbox_id: Not supported for AgentCore. Raises NotImplementedError if provided.
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
         AgentCoreBackend instance
 
+    Raises:
+        NotImplementedError: If sandbox_id is provided (session reconnection not supported)
+
     Note:
-        Connecting to existing AgentCore session by ID is not yet supported.
-        If sandbox_id is provided, this will raise NotImplementedError.
+        AgentCore sessions cannot be reconnected after the CLI exits. The sandbox_id
+        option is not supported. Within a single CLI session, all file operations
+        work normally - the session persists until the CLI exits or times out
+        (default 15 minutes, max 8 hours).
     """
     from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
 
-    from deepagents_cli.integrations.bedrock_agentcore import AgentCoreBackend
+    from deepagents_cli.integrations.agentcore import AgentCoreBackend
 
     # AgentCore uses AWS credentials (resolved by boto3)
     region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
 
     if sandbox_id:
         msg = (
-            "Connecting to existing AgentCore session by ID not yet supported. "
-            "Create a new session by omitting --sandbox-id."
+            "AgentCore does not support reconnecting to existing sessions. "
+            "Remove the --sandbox-id option. Within a single CLI session, "
+            "all file operations work normally."
         )
         raise NotImplementedError(msg)
 
     console.print("[yellow]Starting AgentCore Code Interpreter...[/yellow]")
 
-    interpreter = CodeInterpreter(region=region)
-    interpreter.start()
-    sandbox_id = interpreter.session_id
+    # Create interpreter with integration_source for telemetry tracking
+    interpreter = CodeInterpreter(
+        region=region, integration_source=AgentCoreBackend.INTEGRATION_SOURCE
+    )
 
-    # Poll until running (AgentCore requires this)
-    for _ in range(90):  # 180s timeout (90 * 2s)
-        # Check if sandbox is ready by attempting a simple command
-        try:
-            response = interpreter.invoke(method="executeCommand", params={"command": "echo ready"})
-            if response and "stream" in response:
-                break
-        except Exception:
-            pass
-        time.sleep(2)
-    else:
-        try:
-            interpreter.stop()
-        except Exception:
-            pass
-        msg = "AgentCore Code Interpreter failed to start within 180 seconds"
-        raise RuntimeError(msg)
+    # Start the session - it's ready immediately after start() returns
+    interpreter.start()
 
     backend = AgentCoreBackend(interpreter)
     console.print(f"[green]✓ AgentCore Code Interpreter ready: {backend.id}[/green]")
@@ -327,15 +319,16 @@ def create_agentcore_sandbox(
     # Run setup script if provided
     if setup_script_path:
         _run_sandbox_setup(backend, setup_script_path)
+
     try:
         yield backend
     finally:
-        console.print(f"[dim]Stopping AgentCore session {sandbox_id}...[/dim]")
+        console.print(f"[dim]Stopping AgentCore session {backend.id}...[/dim]")
         try:
             interpreter.stop()
-            console.print(f"[dim]✓ AgentCore session {sandbox_id} stopped[/dim]")
+            console.print("[dim]✓ AgentCore session stopped[/dim]")
         except Exception as e:
-            console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+            console.print(f"[yellow]⚠ Cleanup warning: {e}[/yellow]")
 
 
 _PROVIDER_TO_WORKING_DIR = {

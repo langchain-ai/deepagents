@@ -1,4 +1,4 @@
-"""Bedrock AgentCore Code Interpreter sandbox backend implementation.
+"""AgentCore Code Interpreter sandbox backend implementation.
 
 This module provides a sandbox backend that uses AWS Bedrock AgentCore
 Code Interpreter for remote code execution.
@@ -6,7 +6,8 @@ Code Interpreter for remote code execution.
 
 from __future__ import annotations
 
-import re
+import base64
+import logging
 from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
@@ -19,18 +20,23 @@ from deepagents.backends.sandbox import BaseSandbox
 if TYPE_CHECKING:
     from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
 
+logger = logging.getLogger(__name__)
 
-def _extract_output_from_stream(response: Any) -> tuple[str, int | None]:
-    """Extract output and exit code from code interpreter response stream.
+# Default session timeout from AgentCore SDK
+DEFAULT_TIMEOUT = 900  # 15 minutes (can be extended up to 8 hours)
+
+
+def _extract_text_from_stream(response: dict[str, Any]) -> tuple[str, int | None]:
+    """Extract text output and exit code from code interpreter response stream.
 
     Args:
-        response: Response from code interpreter execution
+        response: Response dict from code interpreter invocation
 
     Returns:
         Tuple of (output_text, exit_code)
     """
-    output = []
-    exit_code = None
+    output_parts: list[str] = []
+    exit_code: int | None = None
 
     for event in response.get("stream", []):
         if "result" in event:
@@ -45,61 +51,87 @@ def _extract_output_from_stream(response: Any) -> tuple[str, int | None]:
 
                 if content_type == "text":
                     text = content_item.get("text", "")
-                    output.append(text)
-
-                    # Try to extract exit code from text if not found elsewhere
-                    # Some commands include "Exit code: X" in output
-                    if exit_code is None:
-                        match = re.search(r"Exit code:\s*(\d+)", text)
-                        if match:
-                            exit_code = int(match.group(1))
-
-                elif content_type == "resource":
-                    resource = content_item.get("resource", {})
-                    file_path = resource.get("uri", "").replace("file://", "")
-
-                    if "text" in resource:
-                        file_content = resource["text"]
-                        output.append(f"==== File: {file_path} ====\n{file_content}\n")
-                    elif "blob" in resource:
-                        # Binary file (images, etc.) - just note it was created
-                        output.append(f"==== Binary File: {file_path} ====\n")
-                    else:
-                        output.append(f"==== File: {file_path} ====\n")
+                    output_parts.append(text)
 
                 elif content_type == "error":
                     error_msg = content_item.get("text", "Unknown error")
-                    output.append(f"Error: {error_msg}")
+                    output_parts.append(f"Error: {error_msg}")
                     if exit_code is None:
-                        exit_code = 1  # Default to failure for errors
+                        exit_code = 1
 
-    return "\n".join(output), exit_code
+    return "\n".join(output_parts), exit_code
+
+
+def _extract_files_from_stream(response: dict[str, Any]) -> dict[str, bytes]:
+    """Extract file contents from code interpreter response stream.
+
+    Parses the structured JSON response to extract file paths and contents.
+
+    Args:
+        response: Response dict from code interpreter readFiles invocation
+
+    Returns:
+        Dict mapping file paths to their contents as bytes
+    """
+    files: dict[str, bytes] = {}
+
+    for event in response.get("stream", []):
+        if "result" in event:
+            for content_item in event["result"].get("content", []):
+                if content_item.get("type") == "resource":
+                    resource = content_item.get("resource", {})
+                    uri = resource.get("uri", "")
+                    file_path = uri.replace("file://", "")
+
+                    if "text" in resource:
+                        files[file_path] = resource["text"].encode("utf-8")
+                    elif "blob" in resource:
+                        files[file_path] = base64.b64decode(resource["blob"])
+
+    return files
 
 
 class AgentCoreBackend(BaseSandbox):
-    """AgentCore Code Interpreter backend implementation conforming to SandboxBackendProtocol.
+    """AgentCore Code Interpreter backend implementing SandboxBackendProtocol.
 
-    This implementation uses AWS Bedrock AgentCore Code Interpreter to execute
-    shell commands and manage files in a secure, isolated MicroVM environment.
+    Uses AWS Bedrock AgentCore Code Interpreter to execute shell commands
+    and manage files in a secure, isolated MicroVM environment.
 
-    The backend inherits file operation methods from BaseSandbox (which use
-    shell commands via execute()) and implements the execute() method using
-    AgentCore's executeCommand API.
+    Session Behavior:
+        - Files created during a session persist for the session lifetime
+        - Session timeout defaults to 15 minutes (configurable up to 8 hours)
+        - Each session runs in an isolated MicroVM with dedicated resources
+
+    Note:
+        Reconnecting to a previous session (e.g., after CLI restart) is not
+        currently supported. The --sandbox-id option cannot be used with
+        AgentCore. However, within a single CLI session, all file operations
+        work normally - files written can be read back throughout the session.
 
     Example:
         ```python
         from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
 
-        interpreter = CodeInterpreter(region="us-west-2")
+        interpreter = CodeInterpreter(region="us-west-2", integration_source="deepagents-cli")
         interpreter.start()
 
         backend = AgentCoreBackend(interpreter)
-        result = backend.execute("ls -la")
-        print(result.output)
+
+        # Write a file
+        backend.upload_files([("hello.py", b"print('hello')")])
+
+        # Read it back (works within same session)
+        files = backend.download_files(["hello.py"])
+
+        # Execute it
+        result = backend.execute("python hello.py")
 
         interpreter.stop()
         ```
     """
+
+    # Integration source identifier for telemetry tracking
+    INTEGRATION_SOURCE = "deepagents-cli"
 
     def __init__(self, interpreter: CodeInterpreter) -> None:
         """Initialize the AgentCoreBackend with a CodeInterpreter instance.
@@ -108,31 +140,28 @@ class AgentCoreBackend(BaseSandbox):
             interpreter: Active CodeInterpreter instance (must be started)
         """
         self._interpreter = interpreter
-        self._timeout: int = 30 * 60  # 30 mins
+        self._timeout: int = DEFAULT_TIMEOUT  # 15 minutes
 
     @property
     def id(self) -> str:
         """Unique identifier for the sandbox backend (session ID)."""
         return self._interpreter.session_id
 
-    def execute(
-        self,
-        command: str,
-    ) -> ExecuteResponse:
-        """Execute a shell command in the sandbox and return ExecuteResponse.
+    def execute(self, command: str) -> ExecuteResponse:
+        """Execute a shell command in the sandbox.
 
         Args:
-            command: Full shell command string to execute.
+            command: Shell command string to execute
 
         Returns:
-            ExecuteResponse with combined output, exit code, and truncation flag.
+            ExecuteResponse with output, exit code, and truncation flag
         """
         try:
             response = self._interpreter.invoke(
                 method="executeCommand", params={"command": command}
             )
 
-            output, exit_code = _extract_output_from_stream(response)
+            output, exit_code = _extract_text_from_stream(response)
 
             return ExecuteResponse(
                 output=output,
@@ -140,7 +169,7 @@ class AgentCoreBackend(BaseSandbox):
                 truncated=False,
             )
         except Exception as e:
-            # Return error as output with non-zero exit code
+            logger.exception("Error executing command: %s", command[:50])
             return ExecuteResponse(
                 output=f"Error executing command: {e}",
                 exit_code=1,
@@ -148,137 +177,72 @@ class AgentCoreBackend(BaseSandbox):
             )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download multiple files from the AgentCore sandbox.
+        """Download files from the AgentCore sandbox.
 
-        Uses AgentCore's readFiles API to download file contents.
-        Supports partial success - individual downloads may fail without
-        affecting others.
+        Uses AgentCore's readFiles API. Supports partial success - individual
+        file downloads may fail without affecting others.
 
         Args:
-            paths: List of file paths to download.
+            paths: List of file paths to download
 
         Returns:
-            List of FileDownloadResponse objects, one per input path.
-            Response order matches input order.
+            List of FileDownloadResponse objects in same order as input paths
         """
-        responses: list[FileDownloadResponse] = []
-
         try:
-            # Read files using AgentCore's API
             response = self._interpreter.invoke(method="readFiles", params={"paths": paths})
-            output, _ = _extract_output_from_stream(response)
 
-            # Parse the output to extract file contents
-            # AgentCore returns files in format: ==== File: path ====\ncontent\n
-            file_contents: dict[str, bytes] = {}
-
-            current_file = None
-            current_content: list[str] = []
-
-            for line in output.split("\n"):
-                if line.startswith("==== File: ") and line.endswith(" ===="):
-                    # Save previous file if exists
-                    if current_file is not None:
-                        content_str = "\n".join(current_content)
-                        # Remove trailing empty line if present
-                        content_str = content_str.removesuffix("\n")
-                        file_contents[current_file] = content_str.encode("utf-8")
-                    # Start new file
-                    current_file = line[11:-5]  # Extract path between markers
-                    current_content = []
-                elif line.startswith("==== Binary File: "):
-                    # Save previous file
-                    if current_file is not None:
-                        content_str = "\n".join(current_content)
-                        file_contents[current_file] = content_str.encode("utf-8")
-                    # Binary files - mark as present but can't download via text API
-                    current_file = line[18:-5]
-                    current_content = []
-                elif current_file is not None:
-                    current_content.append(line)
-
-            # Save last file
-            if current_file is not None:
-                content_str = "\n".join(current_content)
-                file_contents[current_file] = content_str.encode("utf-8")
+            # Parse structured JSON response
+            file_contents = _extract_files_from_stream(response)
 
             # Build responses in order of input paths
-            for path in paths:
-                if path in file_contents:
-                    responses.append(
-                        FileDownloadResponse(path=path, content=file_contents[path], error=None)
-                    )
-                else:
-                    responses.append(
-                        FileDownloadResponse(path=path, content=None, error="file_not_found")
-                    )
+            return [
+                FileDownloadResponse(
+                    path=path,
+                    content=file_contents.get(path),
+                    error=None if path in file_contents else "file_not_found",
+                )
+                for path in paths
+            ]
 
         except Exception:
-            # Return error for all paths
-            for path in paths:
-                responses.append(
-                    FileDownloadResponse(
-                        path=path,
-                        content=None,
-                        error="file_not_found",  # Use standard error code
-                    )
-                )
-
-        return responses
+            logger.exception("Error downloading files: %s", paths)
+            return [
+                FileDownloadResponse(path=path, content=None, error="file_not_found")
+                for path in paths
+            ]
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Upload multiple files to the AgentCore sandbox.
+        """Upload files to the AgentCore sandbox.
 
-        Uses AgentCore's writeFiles API to upload file contents.
-        Supports partial success - individual uploads may fail without
-        affecting others.
+        Uses AgentCore's writeFiles API. Text files are supported directly.
+        Binary files are base64 encoded.
 
         Args:
-            files: List of (path, content) tuples to upload.
+            files: List of (path, content) tuples to upload
 
         Returns:
-            List of FileUploadResponse objects, one per input file.
-            Response order matches input order.
+            List of FileUploadResponse objects in same order as input files
         """
         responses: list[FileUploadResponse] = []
+        file_list: list[dict[str, str]] = []
+
+        for path, content in files:
+            try:
+                # Try to decode as text first
+                text_content = content.decode("utf-8")
+                file_list.append({"path": path, "text": text_content})
+            except UnicodeDecodeError:
+                # Binary content - base64 encode
+                encoded = base64.b64encode(content).decode("ascii")
+                file_list.append({"path": path, "blob": encoded})
 
         try:
-            # Prepare files for AgentCore's writeFiles API
-            # AgentCore expects: [{"path": "...", "text": "..."}]
-            file_list = []
-            for path, content in files:
-                try:
-                    text_content = content.decode("utf-8")
-                    file_list.append({"path": path, "text": text_content})
-                except UnicodeDecodeError:
-                    # Binary content - skip for now and mark as error
-                    responses.append(
-                        FileUploadResponse(
-                            path=path,
-                            error="invalid_path",  # Using closest standard error
-                        )
-                    )
-                    continue
-
             if file_list:
-                # Write files using AgentCore's API
                 self._interpreter.invoke(method="writeFiles", params={"content": file_list})
 
-            # Build success responses for text files
-            for path, _ in files:
-                # Only add if not already in responses (from binary error)
-                if not any(r.path == path for r in responses):
-                    responses.append(FileUploadResponse(path=path, error=None))
+            # All files uploaded successfully
+            return [FileUploadResponse(path=path, error=None) for path, _ in files]
 
         except Exception:
-            # Return error for all paths not already processed
-            for path, _ in files:
-                if not any(r.path == path for r in responses):
-                    responses.append(
-                        FileUploadResponse(
-                            path=path,
-                            error="permission_denied",  # Use standard error code
-                        )
-                    )
-
-        return responses
+            logger.exception("Error uploading files")
+            return [FileUploadResponse(path=path, error="permission_denied") for path, _ in files]

@@ -209,8 +209,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         """
         if not isinstance(msg, HumanMessage):
             return False
-        additional_kwargs = getattr(msg, "additional_kwargs", {})
-        return additional_kwargs.get("lc_source") == "summarization"
+        return msg.additional_kwargs.get("lc_source") == "summarization"
 
     def _filter_summary_messages(self, messages: list[AnyMessage]) -> list[AnyMessage]:
         """Filter out previous summary messages from a message list.
@@ -325,8 +324,8 @@ A condensed summary follows:
 
         try:
             result = backend.write(path, json.dumps(payload, indent=2, default=str))
-            if result is None or getattr(result, "error", None):
-                error_msg = getattr(result, "error", "backend returned None") if result else "backend returned None"
+            if result is None or result.error:
+                error_msg = result.error if result else "backend returned None"
                 logger.warning(
                     "Failed to offload conversation history to %s (thread: %s, %d messages): %s",
                     path,
@@ -385,8 +384,8 @@ A condensed summary follows:
 
         try:
             result = await backend.awrite(path, json.dumps(payload, indent=2, default=str))
-            if result is None or getattr(result, "error", None):
-                error_msg = getattr(result, "error", "backend returned None") if result else "backend returned None"
+            if result is None or result.error:
+                error_msg = result.error if result else "backend returned None"
                 logger.warning(
                     "Failed to offload conversation history to %s (thread: %s, %d messages): %s",
                     path,

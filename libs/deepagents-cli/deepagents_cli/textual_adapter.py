@@ -9,7 +9,6 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from deepagents.middleware.summarization import SUMMARIZATION_TAG
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
     HITLRequest,
@@ -48,8 +47,7 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     """
     if metadata is None:
         return False
-    tags = metadata.get("tags", [])
-    return SUMMARIZATION_TAG in tags
+    return metadata.get("lc_source") == "summarization"
 
 
 class TextualUIAdapter:

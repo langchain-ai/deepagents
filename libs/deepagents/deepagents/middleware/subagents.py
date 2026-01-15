@@ -10,6 +10,7 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
+from langchain_core.runnables.config import merge_configs
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
@@ -392,7 +393,11 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state, context=runtime.context)
+        # we explicitly merge the configs to ensure subagent.config takes priority, but we still
+        # want to pass parent config to subagent bc the global contextvar doesn't work for Python 3.10
+        # this ensures that subagent metadata (like lc_agent_name) takes priority over parent metadata
+        subagent_config = getattr(subagent, "config", {})
+        result = subagent.invoke(subagent_state, merge_configs(runtime.config, subagent_config))
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -407,7 +412,11 @@ def _create_task_tool(
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state, context=runtime.context)
+        # we explicitly merge the configs to ensure subagent.config takes priority, but we still
+        # want to pass parent config to subagent bc the global contextvar doesn't work for Python 3.10
+        # this ensures that subagent metadata (like lc_agent_name) takes priority over parent metadata
+        subagent_config = getattr(subagent, "config", {})
+        result = await subagent.ainvoke(subagent_state, merge_configs(runtime.config, subagent_config))
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)

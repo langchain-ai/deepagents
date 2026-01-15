@@ -1,0 +1,24 @@
+[project]
+name = "text2sql-deepagent"
+version = "0.1.0"
+description = "A natural language to SQL query agent powered by LangChain's DeepAgents framework and Claude Sonnet 4.5"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.3.5",
+    "langchain>=1.2.3",
+    "langchain-anthropic>=1.3.1",
+    "langchain-community>=0.3.0",
+    "langgraph>=1.0.6",
+    "sqlalchemy>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "tavily-python>=0.5.0",
+    "rich>=13.0.0",
+]
+
+[project.urls]
+Repository = "https://github.com/langchain-ai/deepagents/tree/master/examples/text-to-sql-agent"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

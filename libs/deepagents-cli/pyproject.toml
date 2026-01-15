@@ -64,7 +64,7 @@ requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-data]
-deepagents_cli = ["default_agent_prompt.md"]
+deepagents_cli = ["default_agent_prompt.md", "*.tcss", "py.typed"]
 
 [tool.ruff]
 line-length = 100

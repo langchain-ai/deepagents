@@ -6,13 +6,19 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for taking the time to file a bug report for deepagents.
+        Thank you for taking the time to file a bug report.
 
-        Before filing, please check these resources to see if your issue is already known or documented:
+        For usage questions and general design questions, please use the [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18).
 
-        * README
-        * Docs: https://docs.langchain.com/oss/python/deepagents/overview
-        * GitHub search for similar issues
+        Check these before submitting to see if your issue has already been reported, fixed or if there's another way to solve your problem:
+
+        Check these before submitting to see if your issue has already been reported, fixed or if there's another way to solve your problem:
+
+        * [Documentation](https://docs.langchain.com/oss/python/deepagents/overview),
+        * [API Reference Documentation](https://reference.langchain.com/python/deepagents/),
+        * [LangChain ChatBot](https://chat.langchain.com/)
+        * [GitHub search](https://github.com/langchain-ai/deepagents),
+        * [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18),
   - type: checkboxes
     id: checks
     attributes:
@@ -42,28 +48,47 @@ body:
     validations:
       required: true
     attributes:
-      label: Reproduction steps / Example
+      label: Reproduction Steps / Example Code (Python)
       description: |
-        Provide a minimal, reproducible example (commands, code, or steps). Include exact versions and environment details.
+        Please add a self-contained, [minimal, reproducible, example](https://stackoverflow.com/help/minimal-reproducible-example) with your use case.
+
+        If a maintainer can copy it, run it, and see it right away, there's a much higher chance that you'll be able to get help.
+
+        **Important!**
+
+        * Avoid screenshots, as they are hard to read and (more importantly) don't allow others to copy-and-paste your code.
+        * Reduce your code to the minimum required to reproduce the issue if possible.
+
+        (This will be automatically formatted into code, so no need for backticks.)
       render: python
   - type: textarea
     id: error
     attributes:
-      label: Error message and stack trace (if applicable)
-      description: Paste full error output and stack trace.
+      label: Error Message and Stack Trace (if applicable)
+      description: |
+        If you are reporting an error, please copy and paste the full error message and
+        stack trace.
+        (This will be automatically formatted into code, so no need for backticks.)
       render: shell
   - type: textarea
     id: description
     attributes:
-      label: What happened?
-      description: Describe the problem and expected behavior.
+      label: Description
+      description: |
+        What is the problem, question, or error?
+
+        Write a short description telling what you are doing, what you expect to happen, and what is currently happening.
       placeholder: |
-        I'm using deepagents to ... and expected ... but got ...
+        * I'm trying to use the `deepagents` library to do X.
+        * I expect to see Y.
+        * Instead, it does Z.
+    validations:
+      required: true
   - type: textarea
     id: system-info
     attributes:
       label: Environment / System Info
-      description: Provide OS, Python version, deepagents and langchain versions, and any relevant env vars.
+      description: Provide OS, Python version, `deepagents` and `langchain` versions, and any relevant env vars.
       placeholder: |
         OS:
         Python: 3.x.x

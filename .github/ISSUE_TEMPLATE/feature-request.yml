@@ -6,7 +6,18 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for proposing a feature for deepagents. Use this template to suggest enhancements or new capabilities specific to the deepagents SDK and CLI.
+        Thank you for taking the time to request a new feature.
+
+        Use this to request NEW FEATURES or ENHANCEMENTS in Deep Agents. For bug reports, please use the bug report template. For usage questions and general design questions, please use the [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18).
+
+        Relevant links to check before filing a feature request to see if your request has already been made or
+        if there's another way to achieve what you want:
+
+        * [Documentation](https://docs.langchain.com/oss/python/deepagents/overview),
+        * [API Reference Documentation](https://reference.langchain.com/python/deepagents/),
+        * [LangChain ChatBot](https://chat.langchain.com/)
+        * [GitHub search](https://github.com/langchain-ai/deepagents),
+        * [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18),
   - type: checkboxes
     id: checks
     attributes:
@@ -35,7 +46,7 @@ body:
       required: true
     attributes:
       label: Feature description
-      description: What would you like to see added to deepagents? Be specific.
+      description: What would you like to see added to Deep Agents? Be specific.
   - type: textarea
     id: use-case
     validations:

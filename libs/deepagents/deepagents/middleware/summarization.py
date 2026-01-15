@@ -56,8 +56,13 @@ from langchain.agents.middleware.summarization import (
 )
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage
+from langchain_core.messages.utils import get_buffer_string
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from typing_extensions import override
+
+#: Tag used to identify summarization model calls in streaming output.
+#: CLI adapters can filter chunks with this tag to show "Summarizing..." instead.
+SUMMARIZATION_TAG = "langchain:summarization"
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -402,6 +407,68 @@ A condensed summary follows:
         else:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
             return path
+
+    @override
+    def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
+        """Generate summary for the given messages with summarization tag.
+
+        Override necessary to tag the model call so CLI adapters can identify and filter
+        summarization output from streaming.
+
+        Args:
+            messages_to_summarize: Messages to summarize.
+
+        Returns:
+            Generated summary text.
+        """
+        if not messages_to_summarize:
+            return "No previous conversation history."
+
+        trimmed_messages = self._trim_messages_for_summary(messages_to_summarize)
+        if not trimmed_messages:
+            return "Previous conversation was too long to summarize."
+
+        formatted_messages = get_buffer_string(trimmed_messages)
+
+        try:
+            response = self.model.invoke(
+                self.summary_prompt.format(messages=formatted_messages),
+                config={"tags": [SUMMARIZATION_TAG]},
+            )
+            return response.text.strip()
+        except Exception as e:  # noqa: BLE001
+            return f"Error generating summary: {e!s}"
+
+    @override
+    async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
+        """Generate summary for the given messages with summarization tag (async).
+
+        Override necessary to tag the model call so CLI adapters can identify and filter
+        summarization output from streaming.
+
+        Args:
+            messages_to_summarize: Messages to summarize.
+
+        Returns:
+            Generated summary text.
+        """
+        if not messages_to_summarize:
+            return "No previous conversation history."
+
+        trimmed_messages = self._trim_messages_for_summary(messages_to_summarize)
+        if not trimmed_messages:
+            return "Previous conversation was too long to summarize."
+
+        formatted_messages = get_buffer_string(trimmed_messages)
+
+        try:
+            response = await self.model.ainvoke(
+                self.summary_prompt.format(messages=formatted_messages),
+                config={"tags": [SUMMARIZATION_TAG]},
+            )
+            return response.text.strip()
+        except Exception as e:  # noqa: BLE001
+            return f"Error generating summary: {e!s}"
 
     @override
     def before_model(

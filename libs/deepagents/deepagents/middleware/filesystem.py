@@ -4,7 +4,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -14,9 +14,10 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.types import Command
+from langgraph.runtime import Runtime
+from langgraph.types import Command, Overwrite
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
@@ -857,6 +858,9 @@ class FilesystemMiddleware(AgentMiddleware):
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        old_messages_length: int = 20,
+        max_write_edit_arg_length: int = 500,
+        truncation_text: str = "...[truncated]",
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -866,8 +870,17 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            old_messages_length: Tool calls older than this many AIMessages may have
+                their arguments truncated (e.g., lengthy file edits). Defaults to 20.
+            max_write_edit_arg_length: Maximum character length for an argument before
+                it's considered "large" and should be truncated. Defaults to 500.
+            truncation_text: The text to replace truncated arguments with.
+                Defaults to "...[truncated]".
         """
         self.tool_token_limit_before_evict = tool_token_limit_before_evict
+        self.old_messages_length = old_messages_length
+        self.max_write_edit_arg_length = max_write_edit_arg_length
+        self.truncation_text = truncation_text
 
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
@@ -889,6 +902,98 @@ class FilesystemMiddleware(AgentMiddleware):
         if callable(self.backend):
             return self.backend(runtime)
         return self.backend
+
+    def before_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        """Process messages before model invocation, truncating old large tool call arguments.
+
+        Args:
+            state: The agent state.
+            runtime: The runtime environment.
+
+        Returns:
+            An updated state with cleaned messages if any modifications were made,
+            otherwise None.
+        """
+        messages = state["messages"]
+        if not messages:
+            return None
+
+        # Find the cutoff index: count backwards from the end, looking for AIMessages
+        ai_message_count = 0
+        cutoff_index = len(messages)
+
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], AIMessage):
+                ai_message_count += 1
+                if ai_message_count >= self.old_messages_length:
+                    cutoff_index = i
+                    break
+
+        # If we don't have enough AI messages, no need to clean
+        if cutoff_index >= len(messages):
+            return None
+
+        # Process messages before the cutoff
+        cleaned_messages = []
+        modified = False
+
+        for i, msg in enumerate(messages):
+            if i < cutoff_index and isinstance(msg, AIMessage) and msg.tool_calls:
+                # Check if this AIMessage has tool calls we need to clean
+                cleaned_tool_calls = []
+                msg_modified = False
+
+                for tool_call in msg.tool_calls:
+                    if tool_call["name"] in {"write_file", "edit_file"}:
+                        cleaned_call = self._clean_tool_call(tool_call)
+                        if cleaned_call != tool_call:
+                            msg_modified = True
+                        cleaned_tool_calls.append(cleaned_call)
+                    else:
+                        cleaned_tool_calls.append(tool_call)
+
+                if msg_modified:
+                    # Create a new AIMessage with cleaned tool calls
+                    cleaned_msg = msg.model_copy()
+                    cleaned_msg.tool_calls = cleaned_tool_calls
+                    cleaned_messages.append(cleaned_msg)
+                    modified = True
+                else:
+                    cleaned_messages.append(msg)
+            else:
+                cleaned_messages.append(msg)
+
+        if modified:
+            return {"messages": Overwrite(cleaned_messages)}
+        return None
+
+    def _clean_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        """Clean a single tool call by truncating large arguments.
+
+        Args:
+            tool_call: The tool call dictionary to clean.
+
+        Returns:
+            A cleaned copy of the tool call with large arguments truncated.
+        """
+        args = tool_call.get("args", {})
+
+        cleaned_args = {}
+        modified = False
+
+        for key, value in args.items():
+            if isinstance(value, str) and len(value) > self.max_write_edit_arg_length:
+                cleaned_args[key] = value[:20] + self.truncation_text
+                modified = True
+            else:
+                cleaned_args[key] = value
+
+        if modified:
+            return {
+                **tool_call,
+                "args": cleaned_args,
+            }
+        return tool_call
 
     def wrap_model_call(
         self,

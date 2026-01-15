@@ -46,8 +46,7 @@ class FilesystemBackend(BackendProtocol):
 
                 If provided, all file paths will be resolved relative to this directory.
                 If not provided, uses the current working directory.
-            virtual_mode: Enables sandboxed operation where all paths are treated as
-                virtual paths rooted at `root_dir`.
+            virtual_mode: All paths are treated as virtual paths rooted at `root_dir`.
 
                 Path traversal (using `..` or `~`) is disallowed and all resolved paths
                 must remain within the root directory. When `False` (default), absolute

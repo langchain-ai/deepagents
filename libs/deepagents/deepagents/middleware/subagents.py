@@ -10,7 +10,6 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
-from langchain_core.runnables.config import merge_configs
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 

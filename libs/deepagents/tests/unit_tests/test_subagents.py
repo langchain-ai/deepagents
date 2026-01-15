@@ -711,19 +711,24 @@ class TestSubAgentStreamingMetadata:
         test_tags = ["test-tag", "session-123"]
 
         parent_chat_model = GenericFakeChatModel(
-            messages=iter([
-                AIMessage(content="", tool_calls=[{
-                    "name": "task",
-                    "args": {"description": "Do task", "subagent_type": "worker"},
-                    "id": "call_worker",
-                    "type": "tool_call",
-                }]),
-                AIMessage(content=parent_content),
-            ])
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do task", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content=parent_content),
+                ]
+            )
         )
-        subagent_chat_model = GenericFakeChatModel(
-            messages=iter([AIMessage(content=subagent_content)])
-        )
+        subagent_chat_model = GenericFakeChatModel(messages=iter([AIMessage(content=subagent_content)]))
 
         compiled_subagent = create_agent(model=subagent_chat_model, name="worker")
         parent_agent = create_deep_agent(
@@ -764,7 +769,7 @@ class TestSubAgentStreamingMetadata:
         """
         received_configs: list[RunnableConfig] = []
 
-        def lambda_subagent(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+        def lambda_subagent(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:  # noqa: ARG001
             received_configs.append(config)
             return {"messages": [AIMessage(content="Lambda response")]}
 
@@ -772,15 +777,22 @@ class TestSubAgentStreamingMetadata:
         assert not hasattr(runnable_lambda, "config")
 
         parent_chat_model = GenericFakeChatModel(
-            messages=iter([
-                AIMessage(content="", tool_calls=[{
-                    "name": "task",
-                    "args": {"description": "Do something", "subagent_type": "lambda-agent"},
-                    "id": "call_lambda",
-                    "type": "tool_call",
-                }]),
-                AIMessage(content="Done."),
-            ])
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do something", "subagent_type": "lambda-agent"},
+                                "id": "call_lambda",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
         )
 
         parent_agent = create_deep_agent(
@@ -810,26 +822,40 @@ class TestSubAgentStreamingMetadata:
             return f"Processed: {query}"
 
         parent_chat_model = GenericFakeChatModel(
-            messages=iter([
-                AIMessage(content="", tool_calls=[{
-                    "name": "task",
-                    "args": {"description": "Use capture_context", "subagent_type": "ctx-agent"},
-                    "id": "call_ctx",
-                    "type": "tool_call",
-                }]),
-                AIMessage(content="Done."),
-            ])
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Use capture_context", "subagent_type": "ctx-agent"},
+                                "id": "call_ctx",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
         )
         subagent_chat_model = GenericFakeChatModel(
-            messages=iter([
-                AIMessage(content="", tool_calls=[{
-                    "name": "capture_context",
-                    "args": {"query": "test"},
-                    "id": "call_tool",
-                    "type": "tool_call",
-                }]),
-                AIMessage(content="Captured."),
-            ])
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_context",
+                                "args": {"query": "test"},
+                                "id": "call_tool",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Captured."),
+                ]
+            )
         )
 
         compiled_subagent = create_agent(model=subagent_chat_model, tools=[capture_context], name="ctx-agent")

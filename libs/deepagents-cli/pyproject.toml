@@ -38,10 +38,19 @@ test = [
     "pytest-mock>=3.14.0",
     "pytest-socket>=0.7.0",
     "pytest-timeout>=2.3.1",
+    "pytest-watcher>=0.3.4,<1.0.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
     "responses>=0.25.0",
+]
+test_integration = []
+
+lint = [
     "ruff>=0.9.7",
 ]
 
+typing = [
+    "mypy>=1.10.0,<2.0.0",
+]
 
 dev = [
     "pytest",
@@ -52,11 +61,6 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pytest-socket>=0.7.0",
     "pytest-asyncio>=1.2.0",
-]
-
-lint = [
-    "ruff",
-    "mypy"
 ]
 
 [build-system]

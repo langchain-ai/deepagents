@@ -1,0 +1,71 @@
+name: "Bug report"
+description: Report a bug. For security issues, use the repo's SECURITY guidance.
+labels: ["bug"]
+type: bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to file a bug report for deepagents.
+
+        Before filing, please check these resources to see if your issue is already known or documented:
+
+        * README
+        * Docs: https://docs.langchain.com/oss/python/deepagents/overview
+        * GitHub search for similar issues
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checked other resources
+      description: Please confirm the following.
+      options:
+        - label: This is a bug, not a usage question.
+          required: true
+        - label: I added a clear and descriptive title.
+          required: true
+        - label: I searched existing issues and didn't find this.
+          required: true
+        - label: I can reproduce this with the latest released version.
+          required: true
+        - label: I included a minimal reproducible example and steps to reproduce.
+          required: true
+  - type: checkboxes
+    id: package
+    attributes:
+      label: Area (Required)
+      description: Which area of the repository does this issue relate to? Select at least one.
+      options:
+        - label: deepagents (SDK)
+        - label: cli
+  - type: textarea
+    id: reproduction
+    validations:
+      required: true
+    attributes:
+      label: Reproduction steps / Example
+      description: |
+        Provide a minimal, reproducible example (commands, code, or steps). Include exact versions and environment details.
+      render: python
+  - type: textarea
+    id: error
+    attributes:
+      label: Error message and stack trace (if applicable)
+      description: Paste full error output and stack trace.
+      render: shell
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem and expected behavior.
+      placeholder: |
+        I'm using deepagents to ... and expected ... but got ...
+  - type: textarea
+    id: system-info
+    attributes:
+      label: Environment / System Info
+      description: Provide OS, Python version, deepagents and langchain versions, and any relevant env vars.
+      placeholder: |
+        OS:
+        Python: 3.x.x
+        deepagents: 0.x.y
+        deepagents-cli: 0.x.y

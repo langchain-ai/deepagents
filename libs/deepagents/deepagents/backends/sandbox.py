@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 import shlex
 from abc import ABC, abstractmethod
 
@@ -190,7 +191,12 @@ except PermissionError:
                 continue
             try:
                 data = json.loads(line)
-                file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
+                file_infos.append(
+                    {
+                        "path": str(Path(path) / data["path"]),
+                        "is_dir": data["is_dir"],
+                    }
+                )
             except json.JSONDecodeError:
                 continue
 

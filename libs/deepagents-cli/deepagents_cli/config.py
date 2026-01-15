@@ -161,6 +161,7 @@ class Settings:
     # Model configuration
     model_name: str | None = None  # Currently active model name
     model_provider: str | None = None  # Provider (openai, anthropic, google)
+    model_context_limit: int | None = None  # Max input tokens from model profile
 
     # Project information
     project_root: Path | None = None
@@ -490,23 +491,40 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     settings.model_name = model_name
     settings.model_provider = provider
 
-    # Create and return the model
+    # Create the model
+    model: BaseChatModel
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model_name)
-    if provider == "anthropic":
+        model = ChatOpenAI(model=model_name)
+    elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
+        model = ChatAnthropic(
             model_name=model_name,
             max_tokens=20_000,  # type: ignore[arg-type]
         )
-    if provider == "google":
+    elif provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(
+        model = ChatGoogleGenerativeAI(
             model=model_name,
             temperature=0,
             max_tokens=None,
         )
+    else:
+        # Should not reach here due to earlier validation
+        console.print(f"[bold red]Error:[/bold red] Unknown provider: {provider}")
+        sys.exit(1)
+
+    # Extract context limit from model profile (if available)
+    if (
+        hasattr(model, "profile")
+        and model.profile is not None
+        and isinstance(model.profile, dict)
+        and "max_input_tokens" in model.profile
+        and isinstance(model.profile["max_input_tokens"], int)
+    ):
+        settings.model_context_limit = model.profile["max_input_tokens"]
+
+    return model

@@ -1073,6 +1073,64 @@ class FilesystemMiddleware(AgentMiddleware):
         )
         return processed_message, result.files_update
 
+    async def _aprocess_large_message(
+        self,
+        message: ToolMessage,
+        resolved_backend: BackendProtocol,
+    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+        """Async version of _process_large_message.
+
+        Uses async backend methods to avoid sync calls in async context.
+        See _process_large_message for full documentation.
+        """
+        # Early exit if eviction not configured
+        if not self.tool_token_limit_before_evict:
+            return message, None
+
+        # Convert content to string once for both size check and eviction
+        # Special case: single text block - extract text directly for readability
+        if (
+            isinstance(message.content, list)
+            and len(message.content) == 1
+            and isinstance(message.content[0], dict)
+            and message.content[0].get("type") == "text"
+            and "text" in message.content[0]
+        ):
+            content_str = str(message.content[0]["text"])
+        elif isinstance(message.content, str):
+            content_str = message.content
+        else:
+            # Multiple blocks or non-text content - stringify entire structure
+            content_str = str(message.content)
+
+        # Check if content exceeds eviction threshold
+        # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
+        # This errs on the high side to avoid premature eviction of content that might fit
+        if len(content_str) <= 4 * self.tool_token_limit_before_evict:
+            return message, None
+
+        # Write content to filesystem using async method
+        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
+        file_path = f"/large_tool_results/{sanitized_id}"
+        result = await resolved_backend.awrite(file_path, content_str)
+        if result.error:
+            return message, None
+
+        # Create truncated preview for the replacement message
+        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
+        replacement_text = TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=message.tool_call_id,
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+
+        # Always return as plain string after eviction
+        processed_message = ToolMessage(
+            content=replacement_text,
+            tool_call_id=message.tool_call_id,
+        )
+        return processed_message, result.files_update
+
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
 
@@ -1129,6 +1187,52 @@ class FilesystemMiddleware(AgentMiddleware):
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
         raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
+    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+        """Async version of _intercept_large_tool_result.
+
+        Uses async backend methods to avoid sync calls in async context.
+        See _intercept_large_tool_result for full documentation.
+        """
+        if isinstance(tool_result, ToolMessage):
+            resolved_backend = self._get_backend(runtime)
+            processed_message, files_update = await self._aprocess_large_message(
+                tool_result,
+                resolved_backend,
+            )
+            return (
+                Command(
+                    update={
+                        "files": files_update,
+                        "messages": [processed_message],
+                    }
+                )
+                if files_update is not None
+                else processed_message
+            )
+
+        if isinstance(tool_result, Command):
+            update = tool_result.update
+            if update is None:
+                return tool_result
+            command_messages = update.get("messages", [])
+            accumulated_file_updates = dict(update.get("files", {}))
+            resolved_backend = self._get_backend(runtime)
+            processed_messages = []
+            for message in command_messages:
+                if not isinstance(message, ToolMessage):
+                    processed_messages.append(message)
+                    continue
+
+                processed_message, files_update = await self._aprocess_large_message(
+                    message,
+                    resolved_backend,
+                )
+                processed_messages.append(processed_message)
+                if files_update is not None:
+                    accumulated_file_updates.update(files_update)
+            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+        raise AssertionError(f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}")
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -1167,4 +1271,4 @@ class FilesystemMiddleware(AgentMiddleware):
             return await handler(request)
 
         tool_result = await handler(request)
-        return self._intercept_large_tool_result(tool_result, request.runtime)
+        return await self._aintercept_large_tool_result(tool_result, request.runtime)

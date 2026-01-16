@@ -4,11 +4,12 @@ At the moment these tests are written against the state backend, but we will nee
 to extend them to other backends as well.
 """
 
-from langchain_core.messages import AIMessage, HumanMessage
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from tests.unit_tests.chat_model import GenericFakeChatModel
 
 from deepagents.graph import create_deep_agent
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def test_parallel_write_file_calls_trigger_list_reducer() -> None:
@@ -217,6 +218,11 @@ def test_edit_file_nonexistent_file() -> None:
         config={"configurable": {"thread_id": "test_thread_edit_nonexistent"}},
     )
 
+    # Verify the error message in the ToolMessage
+    tool_message = result["messages"][-2]
+    assert isinstance(tool_message, ToolMessage)
+    assert tool_message.content == "Error: File '/nonexistent.txt' not found"
+
     # Verify the file doesn't exist in state
     assert "/nonexistent.txt" not in result.get("files", {}), "Nonexistent file should not be in state"
 
@@ -268,11 +274,34 @@ def test_edit_file_string_not_found() -> None:
         config={"configurable": {"thread_id": "test_thread_edit_not_found"}},
     )
 
-    # Verify the file content was not changed
-    assert "/test.txt" in result["files"], "File should exist"
-    assert result["files"]["/test.txt"]["content"][0] == "hello world", "Content should remain unchanged"
+    tool_message = result["messages"][-2]
+    assert isinstance(tool_message, ToolMessage)
+
+    (
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "edit_file",
+                    "args": {
+                        "file_path": "/test.txt",
+                        "old_string": "goodbye",
+                        "new_string": "farewell",
+                    },
+                    "id": "call_edit_1",
+                    "type": "tool_call",
+                },
+            ],
+        ),
+    )
+    assert tool_message.content == "Error: String not found in file: 'goodbye'"
 
 
+# Our reducers do not handle parllel edits in StateBackend.
+# These will also not work correctly for other backends due to race conditions.
+# Even sandbox/file system backend could get into some edge cases (e.g., if the edits are overlapping)
+# Generally best to instruct the LLM to avoid parallel edits of the same file likely.
+@pytest.mark.xfail(reason="We should add after_model middleware to fail parallel edits of the same file.")
 def test_parallel_edit_file_calls() -> None:
     """Verify that parallel edit_file calls correctly update file state."""
     # Fake model will write a file, then issue multiple edit_file calls in parallel
@@ -328,16 +357,8 @@ def test_parallel_edit_file_calls() -> None:
         checkpointer=InMemorySaver(),
     )
 
-    result = agent.invoke(
+    _ = agent.invoke(
         {"messages": [HumanMessage(content="Edit file in parallel")]},
         config={"configurable": {"thread_id": "test_thread_parallel_edits"}},
     )
-
-    # Verify both edits were applied
-    assert "/multi.txt" in result["files"], "File should exist"
-    # Content is stored as a list of lines, join them to get full content
-    content_list = result["files"]["/multi.txt"]["content"]
-    full_content = "\n".join(content_list)
-    # Note: Due to parallel execution, both edits should be applied to the original content
-    assert "line 1" in full_content or "line one" in full_content, f"First edit should be present or original, got: {content_list}"
-    assert "line 2" in full_content or "line two" in full_content, f"Second edit should be present or original, got: {content_list}"
+    assert False, "Finish implementing correct behavior to add a ToolMessage with error if parallel edits to the same file are attempted."

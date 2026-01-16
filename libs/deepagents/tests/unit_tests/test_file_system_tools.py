@@ -279,10 +279,6 @@ def test_edit_file_string_not_found() -> None:
     assert tool_message.content == "Error: String not found in file: 'goodbye'"
 
 
-# Our reducers do not handle parallel edits in StateBackend.
-# These will also not work correctly for other backends due to race conditions.
-# Even sandbox/file system backend could get into some edge cases (e.g., if the edits are overlapping)
-# Generally best to instruct the LLM to avoid parallel edits of the same file likely.
 def test_grep_finds_written_file() -> None:
     """Verify that grep can find content in a file that was written."""
     # Fake model will write files with specific content, then grep for it
@@ -352,6 +348,10 @@ def test_grep_finds_written_file() -> None:
     assert "/project/main.py" in grep_message.content, "Grep should reference the file containing 'import'"
 
 
+# Our reducers do not handle parallel edits in StateBackend.
+# These will also not work correctly for other backends due to race conditions.
+# Even sandbox/file system backend could get into some edge cases (e.g., if the edits are overlapping)
+# Generally best to instruct the LLM to avoid parallel edits of the same file likely.
 @pytest.mark.xfail(reason="We should add after_model middleware to fail parallel edits of the same file.")
 def test_parallel_edit_file_calls() -> None:
     """Verify that parallel edit_file calls correctly update file state."""

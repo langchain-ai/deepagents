@@ -340,7 +340,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         return False
 
-    def _determine_truncate_cutoff_index(self, messages: list[AnyMessage]) -> int:
+    def _determine_truncate_cutoff_index(self, messages: list[AnyMessage]) -> int:  # noqa: PLR0911
         """Determine the cutoff index for argument truncation based on keep policy.
 
         Messages at index >= cutoff should be preserved without truncation.

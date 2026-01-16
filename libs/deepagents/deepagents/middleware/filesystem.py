@@ -193,12 +193,14 @@ Usage:
 
 WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
 
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- The content parameter must be a string
-- The write_file tool will create the a new file.
-- Prefer to edit existing files over creating new ones when possible."""
+Parameters:
+- file_path: Absolute path where the file should be created (must be absolute, not relative)
+- content: The text content to write to the file (required)
 
+Usage:
+- This tool creates new files only
+- To modify existing files, use the edit_file tool instead
+"""
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 

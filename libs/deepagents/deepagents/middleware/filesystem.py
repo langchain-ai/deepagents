@@ -90,24 +90,31 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     return result
 
 
-def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
+def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None, virtual_mode: bool | None = None) -> str:
     r"""Validate and normalize file path for security.
 
     Ensures paths are safe to use by preventing directory traversal attacks
     and enforcing consistent formatting. All paths are normalized to use
-    forward slashes and start with a leading slash.
+    forward slashes.
 
-    This function is designed for virtual filesystem paths and rejects
-    Windows absolute paths (e.g., C:/..., F:/...) to maintain consistency
-    and prevent path format ambiguity.
+    When virtual_mode=True or None, paths are normalized to start with a leading slash
+    (virtual filesystem format). When virtual_mode=False, relative paths are preserved
+    as relative paths to be resolved relative to the current working directory.
+
+    This function rejects Windows absolute paths (e.g., C:/..., F:/...) to maintain
+    consistency and prevent path format ambiguity.
 
     Args:
         path: The path to validate and normalize.
         allowed_prefixes: Optional list of allowed path prefixes. If provided,
             the normalized path must start with one of these prefixes.
+        virtual_mode: Optional flag indicating if the backend is in virtual mode.
+            When True or None, relative paths are converted to absolute virtual paths.
+            When False, relative paths are preserved as relative.
 
     Returns:
-        Normalized canonical path starting with `/` and using forward slashes.
+        Normalized canonical path. If virtual_mode=True or None, paths start with `/` and use
+        forward slashes. If virtual_mode=False, relative paths remain relative.
 
     Raises:
         ValueError: If path contains traversal sequences (`..` or `~`), is a
@@ -116,8 +123,9 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
 
     Example:
         ```python
-        validate_path("foo/bar")  # Returns: "/foo/bar"
-        validate_path("/./foo//bar")  # Returns: "/foo/bar"
+        validate_path("foo/bar", virtual_mode=True)  # Returns: "/foo/bar"
+        validate_path("foo/bar", virtual_mode=False)  # Returns: "foo/bar"
+        validate_path("/./foo//bar")  # Returns: "/foo/bar" (absolute preserved)
         validate_path("../etc/passwd")  # Raises ValueError
         validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
         validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
@@ -137,8 +145,20 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
     normalized = os.path.normpath(path)
     normalized = normalized.replace("\\", "/")
 
-    if not normalized.startswith("/"):
-        normalized = f"/{normalized}"
+    # Handle path normalization based on virtual_mode
+    if virtual_mode is True:
+        # In virtual mode, convert relative paths to absolute virtual paths
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+    elif virtual_mode is False:
+        # In non-virtual mode, preserve relative paths as relative
+        # (os.path.normpath doesn't add leading slashes to relative paths, so no action needed)
+        pass
+    else:
+        # virtual_mode is None: default to virtual mode behavior for backward compatibility
+        # (StateBackend and other backends without virtual_mode expect absolute virtual paths)
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
 
     if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
         msg = f"Path must start with one of {allowed_prefixes}: {path}"
@@ -308,6 +328,18 @@ def _get_backend(backend: BACKEND_TYPES, runtime: ToolRuntime) -> BackendProtoco
     return backend
 
 
+def _get_virtual_mode(backend: BackendProtocol) -> bool | None:
+    """Get the virtual_mode attribute from a backend if it exists.
+
+    Args:
+        backend: The backend instance to check.
+
+    Returns:
+        The virtual_mode value if the backend has this attribute, None otherwise.
+    """
+    return getattr(backend, "virtual_mode", None)
+
+
 def _ls_tool_generator(
     backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
     custom_description: str | None = None,
@@ -326,7 +358,8 @@ def _ls_tool_generator(
     def sync_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
         """Synchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
-        validated_path = _validate_path(path)
+        virtual_mode = _get_virtual_mode(resolved_backend)
+        validated_path = _validate_path(path, virtual_mode=virtual_mode)
         infos = resolved_backend.ls_info(validated_path)
         paths = [fi.get("path", "") for fi in infos]
         result = truncate_if_too_long(paths)
@@ -335,7 +368,8 @@ def _ls_tool_generator(
     async def async_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
         """Asynchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
-        validated_path = _validate_path(path)
+        virtual_mode = _get_virtual_mode(resolved_backend)
+        validated_path = _validate_path(path, virtual_mode=virtual_mode)
         infos = await resolved_backend.als_info(validated_path)
         paths = [fi.get("path", "") for fi in infos]
         result = truncate_if_too_long(paths)
@@ -372,7 +406,8 @@ def _read_file_tool_generator(
     ) -> str:
         """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        virtual_mode = _get_virtual_mode(resolved_backend)
+        file_path = _validate_path(file_path, virtual_mode=virtual_mode)
         return resolved_backend.read(file_path, offset=offset, limit=limit)
 
     async def async_read_file(
@@ -383,7 +418,8 @@ def _read_file_tool_generator(
     ) -> str:
         """Asynchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        virtual_mode = _get_virtual_mode(resolved_backend)
+        file_path = _validate_path(file_path, virtual_mode=virtual_mode)
         return await resolved_backend.aread(file_path, offset=offset, limit=limit)
 
     return StructuredTool.from_function(
@@ -416,7 +452,8 @@ def _write_file_tool_generator(
     ) -> Command | str:
         """Synchronous wrapper for write_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        virtual_mode = _get_virtual_mode(resolved_backend)
+        file_path = _validate_path(file_path, virtual_mode=virtual_mode)
         res: WriteResult = resolved_backend.write(file_path, content)
         if res.error:
             return res.error
@@ -442,7 +479,8 @@ def _write_file_tool_generator(
     ) -> Command | str:
         """Asynchronous wrapper for write_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        virtual_mode = _get_virtual_mode(resolved_backend)
+        file_path = _validate_path(file_path, virtual_mode=virtual_mode)
         res: WriteResult = await resolved_backend.awrite(file_path, content)
         if res.error:
             return res.error
@@ -494,7 +532,8 @@ def _edit_file_tool_generator(
     ) -> Command | str:
         """Synchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        virtual_mode = _get_virtual_mode(resolved_backend)
+        file_path = _validate_path(file_path, virtual_mode=virtual_mode)
         res: EditResult = resolved_backend.edit(file_path, old_string, new_string, replace_all=replace_all)
         if res.error:
             return res.error
@@ -522,7 +561,8 @@ def _edit_file_tool_generator(
     ) -> Command | str:
         """Asynchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
+        virtual_mode = _get_virtual_mode(resolved_backend)
+        file_path = _validate_path(file_path, virtual_mode=virtual_mode)
         res: EditResult = await resolved_backend.aedit(file_path, old_string, new_string, replace_all=replace_all)
         if res.error:
             return res.error

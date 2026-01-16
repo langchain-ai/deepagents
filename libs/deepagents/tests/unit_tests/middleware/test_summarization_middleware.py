@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
@@ -815,13 +815,14 @@ class TestMarkdownFormatting:
         # Should contain the actual message content
         assert "User message" in content
 
+
 # -----------------------------------------------------------------------------
-# Message cleaning tests
+# Argument truncation tests
 # -----------------------------------------------------------------------------
 
 
-def test_no_cleaning_when_trigger_is_none() -> None:
-    """Test that no cleaning occurs when clean_messages_trigger is None."""
+def test_no_truncation_when_trigger_is_none() -> None:
+    """Test that no truncation occurs when truncate_args_settings is None."""
     backend = MockBackend()
     mock_model = make_mock_model()
 
@@ -829,7 +830,7 @@ def test_no_cleaning_when_trigger_is_none() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),  # High threshold, no summarization
-        clean_messages_trigger=None,  # Cleaning disabled
+        truncate_args_settings=None,  # Truncation disabled
     )
 
     # Create messages with large tool calls
@@ -855,11 +856,11 @@ def test_no_cleaning_when_trigger_is_none() -> None:
 
     result = middleware.before_model(state, runtime)
 
-    # Should return None (no cleaning, no summarization)
+    # Should return None (no truncation, no summarization)
     assert result is None
 
 
-def test_cleaning_old_write_file_tool_call() -> None:
+def test_truncate_old_write_file_tool_call() -> None:
     """Test that old write_file tool calls with large arguments get truncated."""
     backend = MockBackend()
     mock_model = make_mock_model()
@@ -868,9 +869,11 @@ def test_cleaning_old_write_file_tool_call() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),  # High threshold, no summarization
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 2),
-        max_tool_arg_length=100,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 100,
+        },
     )
 
     large_content = "x" * 200
@@ -912,7 +915,7 @@ def test_cleaning_old_write_file_tool_call() -> None:
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
 
-def test_cleaning_old_edit_file_tool_call() -> None:
+def test_truncate_old_edit_file_tool_call() -> None:
     """Test that old edit_file tool calls with large arguments get truncated."""
     backend = MockBackend()
     mock_model = make_mock_model()
@@ -921,9 +924,11 @@ def test_cleaning_old_edit_file_tool_call() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 2),
-        max_tool_arg_length=50,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 50,
+        },
     )
 
     large_old_string = "a" * 100
@@ -966,7 +971,7 @@ def test_cleaning_old_edit_file_tool_call() -> None:
     assert first_ai_msg.tool_calls[0]["args"]["new_string"] == "b" * 20 + "...(argument truncated)"
 
 
-def test_cleaning_ignores_other_tool_calls() -> None:
+def test_truncate_ignores_other_tool_calls() -> None:
     """Test that tool calls other than write_file and edit_file are not affected."""
     backend = MockBackend()
     mock_model = make_mock_model()
@@ -975,9 +980,11 @@ def test_cleaning_ignores_other_tool_calls() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 2),
-        max_tool_arg_length=50,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 50,
+        },
     )
 
     large_content = "x" * 200
@@ -1010,7 +1017,7 @@ def test_cleaning_ignores_other_tool_calls() -> None:
     assert result is None
 
 
-def test_cleaning_respects_recent_messages() -> None:
+def test_truncate_respects_recent_messages() -> None:
     """Test that recent messages are not cleaned."""
     backend = MockBackend()
     mock_model = make_mock_model()
@@ -1019,9 +1026,11 @@ def test_cleaning_respects_recent_messages() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 4),  # Keep last 4 messages
-        max_tool_arg_length=100,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 4),  # Keep last 4 messages
+            "max_length": 100,
+        },
     )
 
     large_content = "x" * 200
@@ -1051,12 +1060,12 @@ def test_cleaning_respects_recent_messages() -> None:
 
     result = middleware.before_model(state, runtime)
 
-    # No cleaning should happen since the tool call is in the keep window (last 4 messages)
+    # No truncation should happen since the tool call is in the keep window (last 4 messages)
     assert result is None
 
 
-def test_cleaning_with_token_keep_policy() -> None:
-    """Test cleaning with token-based keep policy."""
+def test_truncate_with_token_keep_policy() -> None:
+    """Test truncation with token-based keep policy."""
     backend = MockBackend()
     mock_model = make_mock_model()
 
@@ -1068,9 +1077,11 @@ def test_cleaning_with_token_keep_policy() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("tokens", 250),  # Keep ~2-3 messages
-        max_tool_arg_length=100,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("tokens", 250),  # Keep ~2-3 messages
+            "max_length": 100,
+        },
         token_counter=simple_token_counter,
     )
 
@@ -1108,8 +1119,8 @@ def test_cleaning_with_token_keep_policy() -> None:
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
 
-def test_cleaning_with_fraction_trigger_and_keep() -> None:
-    """Test cleaning with fraction-based trigger and keep policy."""
+def test_truncate_with_fraction_trigger_and_keep() -> None:
+    """Test truncation with fraction-based trigger and keep policy."""
     backend = MockBackend()
     mock_model = make_mock_model()
     mock_model.profile = {"max_input_tokens": 1000}
@@ -1122,9 +1133,11 @@ def test_cleaning_with_fraction_trigger_and_keep() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),  # High threshold for summarization
-        clean_messages_trigger=("fraction", 0.5),  # Trigger at 50% of 1000 = 500 tokens
-        clean_messages_keep=("fraction", 0.2),  # Keep 20% of 1000 = 200 tokens (~1 message)
-        max_tool_arg_length=100,
+        truncate_args_settings={
+            "trigger": ("fraction", 0.5),  # Trigger at 50% of 1000 = 500 tokens
+            "keep": ("fraction", 0.2),  # Keep 20% of 1000 = 200 tokens (~1 message)
+            "max_length": 100,
+        },
         token_counter=token_counter,
     )
 
@@ -1151,17 +1164,17 @@ def test_cleaning_with_fraction_trigger_and_keep() -> None:
 
     result = middleware.before_model(state, runtime)
 
-    # Should trigger cleaning: 3 messages * 200 = 600 tokens > 500 threshold
+    # Should trigger truncation: 3 messages * 200 = 600 tokens > 500 threshold
     # Should keep only ~200 tokens (1 message) from the end
-    # So first 2 messages should be in cleaning zone
+    # So first 2 messages should be in truncation zone
     assert result is not None
     cleaned_messages = result["messages"].value
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
 
-def test_cleaning_before_summarization() -> None:
-    """Test that cleaning happens before summarization."""
+def test_truncate_before_summarization() -> None:
+    """Test that truncation happens before summarization."""
     backend = MockBackend()
     mock_model = make_mock_model(summary_response="Test summary")
 
@@ -1170,9 +1183,11 @@ def test_cleaning_before_summarization() -> None:
         backend=backend,
         trigger=("messages", 10),  # Trigger summarization
         keep=("messages", 2),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 3),
-        max_tool_arg_length=100,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 3),
+            "max_length": 100,
+        },
     )
 
     large_content = "x" * 200
@@ -1201,7 +1216,7 @@ def test_cleaning_before_summarization() -> None:
 
     assert result is not None
 
-    # Should have triggered both cleaning and summarization
+    # Should have triggered both truncation and summarization
     # Backend should have received a write call for offloading
     assert len(backend.write_calls) == 1
 
@@ -1210,8 +1225,8 @@ def test_cleaning_before_summarization() -> None:
     assert any("summary" in str(msg.content).lower() for msg in new_messages)
 
 
-def test_cleaning_without_summarization() -> None:
-    """Test that cleaning can happen independently of summarization."""
+def test_truncate_without_summarization() -> None:
+    """Test that truncation can happen independently of summarization."""
     backend = MockBackend()
     mock_model = make_mock_model()
 
@@ -1219,9 +1234,11 @@ def test_cleaning_without_summarization() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),  # High threshold, no summarization
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 2),
-        max_tool_arg_length=100,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 100,
+        },
     )
 
     large_content = "x" * 200
@@ -1255,13 +1272,13 @@ def test_cleaning_without_summarization() -> None:
     # No backend write (no summarization)
     assert len(backend.write_calls) == 0
 
-    # But cleaning should have happened
+    # But truncation should have happened
     cleaned_messages = result["messages"].value
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
 
-def test_cleaning_preserves_small_arguments() -> None:
+def test_truncate_preserves_small_arguments() -> None:
     """Test that small arguments are not truncated even in old messages."""
     backend = MockBackend()
     mock_model = make_mock_model()
@@ -1270,9 +1287,11 @@ def test_cleaning_preserves_small_arguments() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 2),
-        max_tool_arg_length=100,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 100,
+        },
     )
 
     small_content = "short"
@@ -1305,7 +1324,7 @@ def test_cleaning_preserves_small_arguments() -> None:
     assert result is None
 
 
-def test_cleaning_mixed_tool_calls() -> None:
+def test_truncate_mixed_tool_calls() -> None:
     """Test that only write_file and edit_file are cleaned in a message with multiple tool calls."""
     backend = MockBackend()
     mock_model = make_mock_model()
@@ -1314,9 +1333,11 @@ def test_cleaning_mixed_tool_calls() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 2),
-        max_tool_arg_length=50,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 50,
+        },
     )
 
     large_content = "x" * 200
@@ -1361,7 +1382,7 @@ def test_cleaning_mixed_tool_calls() -> None:
     cleaned_messages = result["messages"].value
 
     first_ai_msg = cleaned_messages[0]
-    assert len(first_ai_msg.tool_calls) == 3
+    assert len(first_ai_msg.tool_calls) == 3  # noqa: PLR2004
 
     # read_file should be unchanged
     assert first_ai_msg.tool_calls[0]["name"] == "read_file"
@@ -1376,7 +1397,7 @@ def test_cleaning_mixed_tool_calls() -> None:
     assert first_ai_msg.tool_calls[2]["args"]["command"] == "ls -la"
 
 
-def test_cleaning_custom_truncation_text() -> None:
+def test_truncate_custom_truncation_text() -> None:
     """Test that custom truncation text is used."""
     backend = MockBackend()
     mock_model = make_mock_model()
@@ -1385,10 +1406,12 @@ def test_cleaning_custom_truncation_text() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 2),
-        max_tool_arg_length=50,
-        truncation_text="[TRUNCATED]",
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 50,
+            "truncation_text": "[TRUNCATED]",
+        },
     )
 
     large_content = "y" * 100
@@ -1425,8 +1448,8 @@ def test_cleaning_custom_truncation_text() -> None:
 
 
 @pytest.mark.anyio
-async def test_cleaning_async_works() -> None:
-    """Test that async message cleaning works correctly."""
+async def test_truncate_async_works() -> None:
+    """Test that async argument truncation works correctly."""
     backend = MockBackend()
     mock_model = make_mock_model()
 
@@ -1434,9 +1457,11 @@ async def test_cleaning_async_works() -> None:
         model=mock_model,
         backend=backend,
         trigger=("messages", 100),
-        clean_messages_trigger=("messages", 5),
-        clean_messages_keep=("messages", 2),
-        max_tool_arg_length=100,
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 100,
+        },
     )
 
     large_content = "x" * 200

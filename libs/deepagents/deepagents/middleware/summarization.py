@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -62,6 +62,22 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 logger = logging.getLogger(__name__)
+
+
+class TruncateArgsSettings(TypedDict, total=False):
+    """Settings for truncating large tool arguments in old messages.
+
+    Attributes:
+        trigger: Threshold to trigger argument truncation. If None, truncation is disabled.
+        keep: Context retention policy for message truncation (defaults to last 20 messages).
+        max_length: Maximum character length for tool arguments before truncation (defaults to 100).
+        truncation_text: Text to replace truncated arguments with (defaults to "...(argument truncated)").
+    """
+
+    trigger: ContextSize | None
+    keep: ContextSize
+    max_length: int
+    truncation_text: str
 
 
 class SummarizationMiddleware(BaseSummarizationMiddleware):
@@ -106,10 +122,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         history_path_prefix: str = "/conversation_history",
-        clean_messages_trigger: ContextSize | None = None,
-        clean_messages_keep: ContextSize = ("messages", 20),
-        max_tool_arg_length: int = 100,
-        truncation_text: str = "...(argument truncated)",
+        truncate_args_settings: TruncateArgsSettings | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
@@ -166,47 +179,31 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
                 the summarization call.
 
                 Pass `None` to skip trimming entirely.
-            clean_messages_trigger: Threshold to trigger message cleaning (truncating tool args).
-                If None, cleaning is disabled.
+            truncate_args_settings: Settings for truncating large tool arguments in old messages.
 
-                Provide a [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
-                tuple to specify when cleaning should trigger.
-
-                !!! example
-
-                    ```python
-                    # Trigger cleaning when 50 messages is reached
-                    ("messages", 50)
-
-                    # Trigger cleaning when 50000 tokens is reached
-                    ("tokens", 50000)
-
-                    # Trigger cleaning when 50% of model's max input tokens is reached
-                    ("fraction", 0.5)
-                    ```
-            clean_messages_keep: Context retention policy for message cleaning.
-
-                Provide a [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
-                tuple to specify how much recent history to preserve without cleaning.
-
-                Defaults to keeping the most recent `20` messages.
+                Provide a [`TruncateArgsSettings`][deepagents.middleware.summarization.TruncateArgsSettings]
+                dictionary to configure when and how to truncate tool arguments. If `None`,
+                argument truncation is disabled.
 
                 !!! example
 
                     ```python
-                    # Keep the most recent 20 messages without cleaning
-                    ("messages", 20)
+                    # Truncate when 50 messages is reached, keep last 20 messages
+                    {
+                        "trigger": ("messages", 50),
+                        "keep": ("messages", 20),
+                        "max_length": 100,
+                        "truncation_text": "...(truncated)"
+                    }
 
-                    # Keep the most recent 5000 tokens without cleaning
-                    ("tokens", 5000)
-
-                    # Keep the most recent 10% of model's max input tokens without cleaning
-                    ("fraction", 0.1)
+                    # Truncate when 50% of tokens reached, keep 10% of tokens
+                    {
+                        "trigger": ("fraction", 0.5),
+                        "keep": ("fraction", 0.1),
+                        "max_length": 100,
+                        "truncation_text": "...(truncated)"
+                    }
                     ```
-            max_tool_arg_length: Maximum character length for tool arguments before truncation.
-                Defaults to 100.
-            truncation_text: Text to replace truncated arguments with.
-                Defaults to "...(argument truncated)".
         """
         super().__init__(
             model=model,
@@ -219,10 +216,18 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         )
         self._backend = backend
         self._history_path_prefix = history_path_prefix
-        self._clean_messages_trigger = clean_messages_trigger
-        self._clean_messages_keep = clean_messages_keep
-        self._max_tool_arg_length = max_tool_arg_length
-        self._truncation_text = truncation_text
+
+        # Parse truncate_args_settings
+        if truncate_args_settings is None:
+            self._truncate_args_trigger = None
+            self._truncate_args_keep = ("messages", 20)
+            self._max_arg_length = 100
+            self._truncation_text = "...(argument truncated)"
+        else:
+            self._truncate_args_trigger = truncate_args_settings.get("trigger")
+            self._truncate_args_keep = truncate_args_settings.get("keep", ("messages", 20))
+            self._max_arg_length = truncate_args_settings.get("max_length", 100)
+            self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
 
     def _get_backend(
         self,
@@ -364,20 +369,20 @@ A condensed summary follows:
         """
         return get_buffer_string(messages)
 
-    def _should_clean_messages(self, messages: list[AnyMessage], total_tokens: int) -> bool:
-        """Check if message cleaning should be triggered.
+    def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
+        """Check if argument truncation should be triggered.
 
         Args:
             messages: Current message history.
             total_tokens: Total token count of messages.
 
         Returns:
-            True if cleaning should occur, False otherwise.
+            True if truncation should occur, False otherwise.
         """
-        if self._clean_messages_trigger is None:
+        if self._truncate_args_trigger is None:
             return False
 
-        trigger_type, trigger_value = self._clean_messages_trigger
+        trigger_type, trigger_value = self._truncate_args_trigger
 
         if trigger_type == "messages":
             return len(messages) >= trigger_value
@@ -394,20 +399,20 @@ A condensed summary follows:
 
         return False
 
-    def _determine_clean_cutoff_index(self, messages: list[AnyMessage]) -> int:
-        """Determine the cutoff index for message cleaning based on keep policy.
+    def _determine_truncate_cutoff_index(self, messages: list[AnyMessage]) -> int:
+        """Determine the cutoff index for argument truncation based on keep policy.
 
-        Messages at index >= cutoff should be preserved without cleaning.
-        Messages at index < cutoff can have their tool args cleaned.
+        Messages at index >= cutoff should be preserved without truncation.
+        Messages at index < cutoff can have their tool args truncated.
 
         Args:
             messages: Current message history.
 
         Returns:
-            Index where cleaning cutoff occurs. Messages before this index
-            should be cleaned, messages at/after should be preserved.
+            Index where truncation cutoff occurs. Messages before this index
+            should have args truncated, messages at/after should be preserved.
         """
-        keep_type, keep_value = self._clean_messages_keep
+        keep_type, keep_value = self._truncate_args_keep
 
         if keep_type == "messages":
             # Keep the most recent N messages
@@ -443,83 +448,83 @@ A condensed summary follows:
 
         return len(messages)
 
-    def _clean_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
-        """Clean a single tool call by truncating large arguments.
+    def _truncate_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        """Truncate large arguments in a single tool call.
 
         Args:
-            tool_call: The tool call dictionary to clean.
+            tool_call: The tool call dictionary to truncate.
 
         Returns:
-            A cleaned copy of the tool call with large arguments truncated.
+            A copy of the tool call with large arguments truncated.
         """
         args = tool_call.get("args", {})
 
-        cleaned_args = {}
+        truncated_args = {}
         modified = False
 
         for key, value in args.items():
-            if isinstance(value, str) and len(value) > self._max_tool_arg_length:
-                cleaned_args[key] = value[:20] + self._truncation_text
+            if isinstance(value, str) and len(value) > self._max_arg_length:
+                truncated_args[key] = value[:20] + self._truncation_text
                 modified = True
             else:
-                cleaned_args[key] = value
+                truncated_args[key] = value
 
         if modified:
             return {
                 **tool_call,
-                "args": cleaned_args,
+                "args": truncated_args,
             }
         return tool_call
 
-    def _clean_messages(self, messages: list[AnyMessage]) -> tuple[list[AnyMessage], bool]:
-        """Clean old messages by truncating large tool call arguments.
+    def _truncate_args(self, messages: list[AnyMessage]) -> tuple[list[AnyMessage], bool]:
+        """Truncate large tool call arguments in old messages.
 
         Args:
-            messages: Messages to potentially clean.
+            messages: Messages to potentially truncate.
 
         Returns:
-            Tuple of (cleaned_messages, modified). If modified is False,
-            cleaned_messages is the same as input messages.
+            Tuple of (truncated_messages, modified). If modified is False,
+            truncated_messages is the same as input messages.
         """
         total_tokens = self.token_counter(messages)
-        if not self._should_clean_messages(messages, total_tokens):
+        if not self._should_truncate_args(messages, total_tokens):
             return messages, False
 
-        cutoff_index = self._determine_clean_cutoff_index(messages)
+        cutoff_index = self._determine_truncate_cutoff_index(messages)
         if cutoff_index >= len(messages):
             return messages, False
 
         # Process messages before the cutoff
-        cleaned_messages = []
+        truncated_messages = []
         modified = False
 
         for i, msg in enumerate(messages):
             if i < cutoff_index and isinstance(msg, AIMessage) and msg.tool_calls:
-                # Check if this AIMessage has tool calls we need to clean
-                cleaned_tool_calls = []
+                # Check if this AIMessage has tool calls we need to truncate
+                truncated_tool_calls = []
                 msg_modified = False
 
                 for tool_call in msg.tool_calls:
                     if tool_call["name"] in {"write_file", "edit_file"}:
-                        cleaned_call = self._clean_tool_call(tool_call)
-                        if cleaned_call != tool_call:
+                        truncated_call = self._truncate_tool_call(tool_call)
+                        if truncated_call != tool_call:
                             msg_modified = True
-                        cleaned_tool_calls.append(cleaned_call)
+                        truncated_tool_calls.append(truncated_call)
                     else:
-                        cleaned_tool_calls.append(tool_call)
+                        truncated_tool_calls.append(tool_call)
 
                 if msg_modified:
-                    # Create a new AIMessage with cleaned tool calls
-                    cleaned_msg = msg.model_copy()
-                    cleaned_msg.tool_calls = cleaned_tool_calls
-                    cleaned_messages.append(cleaned_msg)
+                    # Create a new AIMessage with truncated tool calls
+                    truncated_msg = msg.model_copy()
+                    truncated_msg.tool_calls = truncated_tool_calls
+                    truncated_messages.append(truncated_msg)
                     modified = True
                 else:
-                    cleaned_messages.append(msg)
+                    truncated_messages.append(msg)
             else:
-                cleaned_messages.append(msg)
+                truncated_messages.append(msg)
 
-        return cleaned_messages, modified
+        return truncated_messages, modified
 
     def _offload_to_backend(
         self,
@@ -659,9 +664,9 @@ A condensed summary follows:
         state: AgentState[Any],
         runtime: Runtime,
     ) -> dict[str, Any] | None:
-        """Process messages before model invocation, with history offloading and cleaning.
+        """Process messages before model invocation, with history offloading and arg truncation.
 
-        First cleans old messages by truncating large tool arguments if configured.
+        First truncates large tool arguments in old messages if configured.
         Then offloads messages to backend before summarization if thresholds are met.
         The summary message includes a reference to the file path where the
         full conversation history was stored.
@@ -671,36 +676,36 @@ A condensed summary follows:
             runtime: The runtime environment.
 
         Returns:
-            Updated state with cleaned/summarized messages if processing was performed.
+            Updated state with truncated/summarized messages if processing was performed.
         """
         messages = state["messages"]
         self._ensure_message_ids(messages)
 
-        # Step 1: Clean messages if configured
-        cleaned_messages, messages_were_cleaned = self._clean_messages(messages)
+        # Step 1: Truncate args if configured
+        truncated_messages, args_were_truncated = self._truncate_args(messages)
 
         # Step 2: Check if summarization should happen
-        total_tokens = self.token_counter(cleaned_messages)
-        should_summarize = self._should_summarize(cleaned_messages, total_tokens)
+        total_tokens = self.token_counter(truncated_messages)
+        should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
-        # If only cleaning happened (no summarization)
-        if messages_were_cleaned and not should_summarize:
-            return {"messages": Overwrite(cleaned_messages)}
+        # If only truncation happened (no summarization)
+        if args_were_truncated and not should_summarize:
+            return {"messages": Overwrite(truncated_messages)}
 
-        # If no cleaning and no summarization
+        # If no truncation and no summarization
         if not should_summarize:
             return None
 
         # Step 3: Perform summarization
-        cutoff_index = self._determine_cutoff_index(cleaned_messages)
+        cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # If cleaning happened but we can't summarize, still return cleaned messages
-            if messages_were_cleaned:
-                return {"messages": Overwrite(cleaned_messages)}
+            # If truncation happened but we can't summarize, still return truncated messages
+            if args_were_truncated:
+                return {"messages": Overwrite(truncated_messages)}
             return None
 
         messages_to_summarize, preserved_messages = self._partition_messages(
-            cleaned_messages, cutoff_index
+            truncated_messages, cutoff_index
         )
 
         # Offload to backend first to get the file path for the summary message
@@ -728,9 +733,9 @@ A condensed summary follows:
         state: AgentState[Any],
         runtime: Runtime,
     ) -> dict[str, Any] | None:
-        """Process messages before model invocation, with history offloading and cleaning (async).
+        """Process messages before model invocation, with history offloading and arg truncation (async).
 
-        First cleans old messages by truncating large tool arguments if configured.
+        First truncates large tool arguments in old messages if configured.
         Then offloads messages to backend before summarization if thresholds are met.
         The summary message includes a reference to the file path where the
         full conversation history was stored.
@@ -740,36 +745,36 @@ A condensed summary follows:
             runtime: The runtime environment.
 
         Returns:
-            Updated state with cleaned/summarized messages if processing was performed.
+            Updated state with truncated/summarized messages if processing was performed.
         """
         messages = state["messages"]
         self._ensure_message_ids(messages)
 
-        # Step 1: Clean messages if configured
-        cleaned_messages, messages_were_cleaned = self._clean_messages(messages)
+        # Step 1: Truncate args if configured
+        truncated_messages, args_were_truncated = self._truncate_args(messages)
 
         # Step 2: Check if summarization should happen
-        total_tokens = self.token_counter(cleaned_messages)
-        should_summarize = self._should_summarize(cleaned_messages, total_tokens)
+        total_tokens = self.token_counter(truncated_messages)
+        should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
-        # If only cleaning happened (no summarization)
-        if messages_were_cleaned and not should_summarize:
-            return {"messages": Overwrite(cleaned_messages)}
+        # If only truncation happened (no summarization)
+        if args_were_truncated and not should_summarize:
+            return {"messages": Overwrite(truncated_messages)}
 
-        # If no cleaning and no summarization
+        # If no truncation and no summarization
         if not should_summarize:
             return None
 
         # Step 3: Perform summarization
-        cutoff_index = self._determine_cutoff_index(cleaned_messages)
+        cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # If cleaning happened but we can't summarize, still return cleaned messages
-            if messages_were_cleaned:
-                return {"messages": Overwrite(cleaned_messages)}
+            # If truncation happened but we can't summarize, still return truncated messages
+            if args_were_truncated:
+                return {"messages": Overwrite(truncated_messages)}
             return None
 
         messages_to_summarize, preserved_messages = self._partition_messages(
-            cleaned_messages, cutoff_index
+            truncated_messages, cutoff_index
         )
 
         # Offload to backend first to get the file path for the summary message

@@ -49,9 +49,9 @@ from langchain.agents.middleware.summarization import (
     count_tokens_approximately,
 )
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
 from langgraph.config import get_config
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from langgraph.types import Overwrite
 from typing_extensions import override
 
 if TYPE_CHECKING:
@@ -106,9 +106,108 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         history_path_prefix: str = "/conversation_history",
+        clean_messages_trigger: ContextSize | None = None,
+        clean_messages_keep: ContextSize = ("messages", 20),
+        max_tool_arg_length: int = 100,
+        truncation_text: str = "...(argument truncated)",
         **deprecated_kwargs: Any,
     ) -> None:
-        """Initialize summarization middleware with backend support."""
+        """Initialize summarization middleware with backend support.
+
+        Args:
+            model: The language model to use for generating summaries.
+            trigger: One or more thresholds that trigger summarization.
+
+                Provide a single
+                [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
+                tuple or a list of tuples, in which case summarization runs when any
+                threshold is met.
+
+                !!! example
+
+                    ```python
+                    # Trigger summarization when 50 messages is reached
+                    ("messages", 50)
+
+                    # Trigger summarization when 3000 tokens is reached
+                    ("tokens", 3000)
+
+                    # Trigger summarization either when 80% of model's max input tokens
+                    # is reached or when 100 messages is reached (whichever comes first)
+                    [("fraction", 0.8), ("messages", 100)]
+                    ```
+
+                    See [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
+                    for more details.
+            keep: Context retention policy applied after summarization.
+
+                Provide a [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
+                tuple to specify how much history to preserve.
+
+                Defaults to keeping the most recent `20` messages.
+
+                Does not support multiple values like `trigger`.
+
+                !!! example
+
+                    ```python
+                    # Keep the most recent 20 messages
+                    ("messages", 20)
+
+                    # Keep the most recent 3000 tokens
+                    ("tokens", 3000)
+
+                    # Keep the most recent 30% of the model's max input tokens
+                    ("fraction", 0.3)
+                    ```
+            token_counter: Function to count tokens in messages.
+            summary_prompt: Prompt template for generating summaries.
+            trim_tokens_to_summarize: Maximum tokens to keep when preparing messages for
+                the summarization call.
+
+                Pass `None` to skip trimming entirely.
+            clean_messages_trigger: Threshold to trigger message cleaning (truncating tool args).
+                If None, cleaning is disabled.
+
+                Provide a [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
+                tuple to specify when cleaning should trigger.
+
+                !!! example
+
+                    ```python
+                    # Trigger cleaning when 50 messages is reached
+                    ("messages", 50)
+
+                    # Trigger cleaning when 50000 tokens is reached
+                    ("tokens", 50000)
+
+                    # Trigger cleaning when 50% of model's max input tokens is reached
+                    ("fraction", 0.5)
+                    ```
+            clean_messages_keep: Context retention policy for message cleaning.
+
+                Provide a [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
+                tuple to specify how much recent history to preserve without cleaning.
+
+                Defaults to keeping the most recent `20` messages.
+
+                !!! example
+
+                    ```python
+                    # Keep the most recent 20 messages without cleaning
+                    ("messages", 20)
+
+                    # Keep the most recent 5000 tokens without cleaning
+                    ("tokens", 5000)
+
+                    # Keep the most recent 10% of model's max input tokens without cleaning
+                    ("fraction", 0.1)
+                    ```
+            max_tool_arg_length: Maximum character length for tool arguments before truncation.
+                Defaults to 100.
+            truncation_text: Text to replace truncated arguments with.
+                Defaults to "...(argument truncated)".
+        """
         super().__init__(
             model=model,
             trigger=trigger,
@@ -120,6 +219,10 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         )
         self._backend = backend
         self._history_path_prefix = history_path_prefix
+        self._clean_messages_trigger = clean_messages_trigger
+        self._clean_messages_keep = clean_messages_keep
+        self._max_tool_arg_length = max_tool_arg_length
+        self._truncation_text = truncation_text
 
     def _get_backend(
         self,
@@ -261,6 +364,163 @@ A condensed summary follows:
         """
         return get_buffer_string(messages)
 
+    def _should_clean_messages(self, messages: list[AnyMessage], total_tokens: int) -> bool:
+        """Check if message cleaning should be triggered.
+
+        Args:
+            messages: Current message history.
+            total_tokens: Total token count of messages.
+
+        Returns:
+            True if cleaning should occur, False otherwise.
+        """
+        if self._clean_messages_trigger is None:
+            return False
+
+        trigger_type, trigger_value = self._clean_messages_trigger
+
+        if trigger_type == "messages":
+            return len(messages) >= trigger_value
+        if trigger_type == "tokens":
+            return total_tokens >= trigger_value
+        if trigger_type == "fraction":
+            max_input_tokens = self._get_profile_limits()
+            if max_input_tokens is None:
+                return False
+            threshold = int(max_input_tokens * trigger_value)
+            if threshold <= 0:
+                threshold = 1
+            return total_tokens >= threshold
+
+        return False
+
+    def _determine_clean_cutoff_index(self, messages: list[AnyMessage]) -> int:
+        """Determine the cutoff index for message cleaning based on keep policy.
+
+        Messages at index >= cutoff should be preserved without cleaning.
+        Messages at index < cutoff can have their tool args cleaned.
+
+        Args:
+            messages: Current message history.
+
+        Returns:
+            Index where cleaning cutoff occurs. Messages before this index
+            should be cleaned, messages at/after should be preserved.
+        """
+        keep_type, keep_value = self._clean_messages_keep
+
+        if keep_type == "messages":
+            # Keep the most recent N messages
+            if len(messages) <= keep_value:
+                return len(messages)  # All messages are recent
+            return len(messages) - keep_value
+
+        if keep_type in {"tokens", "fraction"}:
+            # Calculate target token count
+            if keep_type == "fraction":
+                max_input_tokens = self._get_profile_limits()
+                if max_input_tokens is None:
+                    # Fallback to message count if profile not available
+                    messages_to_keep = 20
+                    if len(messages) <= messages_to_keep:
+                        return len(messages)
+                    return len(messages) - messages_to_keep
+                target_token_count = int(max_input_tokens * keep_value)
+            else:
+                target_token_count = int(keep_value)
+
+            if target_token_count <= 0:
+                target_token_count = 1
+
+            # Keep recent messages up to token limit
+            tokens_kept = 0
+            for i in range(len(messages) - 1, -1, -1):
+                msg_tokens = self.token_counter([messages[i]])
+                if tokens_kept + msg_tokens > target_token_count:
+                    return i + 1
+                tokens_kept += msg_tokens
+            return 0  # All messages are within token limit
+
+        return len(messages)
+
+    def _clean_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        """Clean a single tool call by truncating large arguments.
+
+        Args:
+            tool_call: The tool call dictionary to clean.
+
+        Returns:
+            A cleaned copy of the tool call with large arguments truncated.
+        """
+        args = tool_call.get("args", {})
+
+        cleaned_args = {}
+        modified = False
+
+        for key, value in args.items():
+            if isinstance(value, str) and len(value) > self._max_tool_arg_length:
+                cleaned_args[key] = value[:20] + self._truncation_text
+                modified = True
+            else:
+                cleaned_args[key] = value
+
+        if modified:
+            return {
+                **tool_call,
+                "args": cleaned_args,
+            }
+        return tool_call
+
+    def _clean_messages(self, messages: list[AnyMessage]) -> tuple[list[AnyMessage], bool]:
+        """Clean old messages by truncating large tool call arguments.
+
+        Args:
+            messages: Messages to potentially clean.
+
+        Returns:
+            Tuple of (cleaned_messages, modified). If modified is False,
+            cleaned_messages is the same as input messages.
+        """
+        total_tokens = self.token_counter(messages)
+        if not self._should_clean_messages(messages, total_tokens):
+            return messages, False
+
+        cutoff_index = self._determine_clean_cutoff_index(messages)
+        if cutoff_index >= len(messages):
+            return messages, False
+
+        # Process messages before the cutoff
+        cleaned_messages = []
+        modified = False
+
+        for i, msg in enumerate(messages):
+            if i < cutoff_index and isinstance(msg, AIMessage) and msg.tool_calls:
+                # Check if this AIMessage has tool calls we need to clean
+                cleaned_tool_calls = []
+                msg_modified = False
+
+                for tool_call in msg.tool_calls:
+                    if tool_call["name"] in {"write_file", "edit_file"}:
+                        cleaned_call = self._clean_tool_call(tool_call)
+                        if cleaned_call != tool_call:
+                            msg_modified = True
+                        cleaned_tool_calls.append(cleaned_call)
+                    else:
+                        cleaned_tool_calls.append(tool_call)
+
+                if msg_modified:
+                    # Create a new AIMessage with cleaned tool calls
+                    cleaned_msg = msg.model_copy()
+                    cleaned_msg.tool_calls = cleaned_tool_calls
+                    cleaned_messages.append(cleaned_msg)
+                    modified = True
+                else:
+                    cleaned_messages.append(msg)
+            else:
+                cleaned_messages.append(msg)
+
+        return cleaned_messages, modified
+
     def _offload_to_backend(
         self,
         backend: BackendProtocol,
@@ -399,9 +659,10 @@ A condensed summary follows:
         state: AgentState[Any],
         runtime: Runtime,
     ) -> dict[str, Any] | None:
-        """Process messages before model invocation, with history offloading.
+        """Process messages before model invocation, with history offloading and cleaning.
 
-        Overrides parent to offload messages to backend before summarization.
+        First cleans old messages by truncating large tool arguments if configured.
+        Then offloads messages to backend before summarization if thresholds are met.
         The summary message includes a reference to the file path where the
         full conversation history was stored.
 
@@ -410,20 +671,37 @@ A condensed summary follows:
             runtime: The runtime environment.
 
         Returns:
-            Updated state with summarized messages if summarization was performed.
+            Updated state with cleaned/summarized messages if processing was performed.
         """
         messages = state["messages"]
         self._ensure_message_ids(messages)
 
-        total_tokens = self.token_counter(messages)
-        if not self._should_summarize(messages, total_tokens):
+        # Step 1: Clean messages if configured
+        cleaned_messages, messages_were_cleaned = self._clean_messages(messages)
+
+        # Step 2: Check if summarization should happen
+        total_tokens = self.token_counter(cleaned_messages)
+        should_summarize = self._should_summarize(cleaned_messages, total_tokens)
+
+        # If only cleaning happened (no summarization)
+        if messages_were_cleaned and not should_summarize:
+            return {"messages": Overwrite(cleaned_messages)}
+
+        # If no cleaning and no summarization
+        if not should_summarize:
             return None
 
-        cutoff_index = self._determine_cutoff_index(messages)
+        # Step 3: Perform summarization
+        cutoff_index = self._determine_cutoff_index(cleaned_messages)
         if cutoff_index <= 0:
+            # If cleaning happened but we can't summarize, still return cleaned messages
+            if messages_were_cleaned:
+                return {"messages": Overwrite(cleaned_messages)}
             return None
 
-        messages_to_summarize, preserved_messages = self._partition_messages(messages, cutoff_index)
+        messages_to_summarize, preserved_messages = self._partition_messages(
+            cleaned_messages, cutoff_index
+        )
 
         # Offload to backend first to get the file path for the summary message
         file_path: str | None = None
@@ -438,11 +716,10 @@ A condensed summary follows:
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         return {
-            "messages": [
-                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            "messages": Overwrite([
                 *new_messages,
                 *preserved_messages,
-            ]
+            ])
         }
 
     @override
@@ -451,9 +728,10 @@ A condensed summary follows:
         state: AgentState[Any],
         runtime: Runtime,
     ) -> dict[str, Any] | None:
-        """Process messages before model invocation, with history offloading (async).
+        """Process messages before model invocation, with history offloading and cleaning (async).
 
-        Overrides parent to offload messages to backend before summarization.
+        First cleans old messages by truncating large tool arguments if configured.
+        Then offloads messages to backend before summarization if thresholds are met.
         The summary message includes a reference to the file path where the
         full conversation history was stored.
 
@@ -462,20 +740,37 @@ A condensed summary follows:
             runtime: The runtime environment.
 
         Returns:
-            Updated state with summarized messages if summarization was performed.
+            Updated state with cleaned/summarized messages if processing was performed.
         """
         messages = state["messages"]
         self._ensure_message_ids(messages)
 
-        total_tokens = self.token_counter(messages)
-        if not self._should_summarize(messages, total_tokens):
+        # Step 1: Clean messages if configured
+        cleaned_messages, messages_were_cleaned = self._clean_messages(messages)
+
+        # Step 2: Check if summarization should happen
+        total_tokens = self.token_counter(cleaned_messages)
+        should_summarize = self._should_summarize(cleaned_messages, total_tokens)
+
+        # If only cleaning happened (no summarization)
+        if messages_were_cleaned and not should_summarize:
+            return {"messages": Overwrite(cleaned_messages)}
+
+        # If no cleaning and no summarization
+        if not should_summarize:
             return None
 
-        cutoff_index = self._determine_cutoff_index(messages)
+        # Step 3: Perform summarization
+        cutoff_index = self._determine_cutoff_index(cleaned_messages)
         if cutoff_index <= 0:
+            # If cleaning happened but we can't summarize, still return cleaned messages
+            if messages_were_cleaned:
+                return {"messages": Overwrite(cleaned_messages)}
             return None
 
-        messages_to_summarize, preserved_messages = self._partition_messages(messages, cutoff_index)
+        messages_to_summarize, preserved_messages = self._partition_messages(
+            cleaned_messages, cutoff_index
+        )
 
         # Offload to backend first to get the file path for the summary message
         file_path: str | None = None
@@ -490,9 +785,8 @@ A condensed summary follows:
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         return {
-            "messages": [
-                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+            "messages": Overwrite([
                 *new_messages,
                 *preserved_messages,
-            ]
+            ])
         }

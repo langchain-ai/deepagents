@@ -770,7 +770,7 @@ class TestFilesystemMiddleware:
         assert "     3\tshort line 3" in lines[2]
 
     def test_format_content_with_line_numbers_long_line_with_continuation(self):
-        """Test that long lines (>10000 chars) are split with continuation markers."""
+        """Test that long lines (>5000 chars) are split with continuation markers."""
         from deepagents.backends.utils import format_content_with_line_numbers
 
         long_line = "a" * 25000
@@ -778,15 +778,19 @@ class TestFilesystemMiddleware:
         result = format_content_with_line_numbers(content, start_line=1)
 
         lines = result.split("\n")
-        assert len(lines) == 5
+        assert len(lines) == 7  # 1 short + 5 continuation (2, 2.1, 2.2, 2.3, 2.4) + 1 short
         assert "     1\tshort line" in lines[0]
         assert "     2\t" in lines[1]
-        assert lines[1].count("a") == 10000
+        assert lines[1].count("a") == 5000
         assert "   2.1\t" in lines[2]
-        assert lines[2].count("a") == 10000
+        assert lines[2].count("a") == 5000
         assert "   2.2\t" in lines[3]
         assert lines[3].count("a") == 5000
-        assert "     3\tanother short line" in lines[4]
+        assert "   2.3\t" in lines[4]
+        assert lines[4].count("a") == 5000
+        assert "   2.4\t" in lines[5]
+        assert lines[5].count("a") == 5000
+        assert "     3\tanother short line" in lines[6]
 
     def test_format_content_with_line_numbers_multiple_long_lines(self):
         """Test multiple long lines in sequence with proper line numbering."""
@@ -797,29 +801,33 @@ class TestFilesystemMiddleware:
         content = [long_line_1, "middle", long_line_2]
         result = format_content_with_line_numbers(content, start_line=5)
         lines = result.split("\n")
-        assert len(lines) == 5
+        assert len(lines) == 7  # 3 (line 5, 5.1, 5.2) + 1 middle + 3 (line 7, 7.1, 7.2)
         assert "     5\t" in lines[0]
-        assert lines[0].count("x") == 10000
+        assert lines[0].count("x") == 5000
         assert "   5.1\t" in lines[1]
         assert lines[1].count("x") == 5000
-        assert "     6\tmiddle" in lines[2]
-        assert "     7\t" in lines[3]
-        assert lines[3].count("y") == 10000
-        assert "   7.1\t" in lines[4]
+        assert "   5.2\t" in lines[2]
+        assert lines[2].count("x") == 5000
+        assert "     6\tmiddle" in lines[3]
+        assert "     7\t" in lines[4]
         assert lines[4].count("y") == 5000
+        assert "   7.1\t" in lines[5]
+        assert lines[5].count("y") == 5000
+        assert "   7.2\t" in lines[6]
+        assert lines[6].count("y") == 5000
 
     def test_format_content_with_line_numbers_exact_limit(self):
-        """Test that a line exactly at the 10000 char limit is not split."""
+        """Test that a line exactly at the 5000 char limit is not split."""
         from deepagents.backends.utils import format_content_with_line_numbers
 
-        exact_line = "b" * 10000
+        exact_line = "b" * 5000
         content = [exact_line]
         result = format_content_with_line_numbers(content, start_line=1)
 
         lines = result.split("\n")
         assert len(lines) == 1
         assert "     1\t" in lines[0]
-        assert lines[0].count("b") == 10000
+        assert lines[0].count("b") == 5000
 
     def test_read_file_with_long_lines_shows_continuation_markers(self):
         """Test that read_file displays long lines with continuation markers."""
@@ -830,13 +838,15 @@ class TestFilesystemMiddleware:
         file_data = create_file_data(content)
         result = format_read_response(file_data, offset=0, limit=100)
         lines = result.split("\n")
-        assert len(lines) == 4
+        assert len(lines) == 5  # 1 first + 3 continuation (2, 2.1, 2.2) + 1 third
         assert "     1\tfirst line" in lines[0]
         assert "     2\t" in lines[1]
-        assert lines[1].count("z") == 10000
+        assert lines[1].count("z") == 5000
         assert "   2.1\t" in lines[2]
         assert lines[2].count("z") == 5000
-        assert "     3\tthird line" in lines[3]
+        assert "   2.2\t" in lines[3]
+        assert lines[3].count("z") == 5000
+        assert "     3\tthird line" in lines[4]
 
     def test_read_file_with_offset_and_long_lines(self):
         """Test that read_file with offset handles long lines correctly."""
@@ -847,12 +857,14 @@ class TestFilesystemMiddleware:
         file_data = create_file_data(content)
         result = format_read_response(file_data, offset=2, limit=10)
         lines = result.split("\n")
-        assert len(lines) == 3
+        assert len(lines) == 4  # 3 continuation (3, 3.1, 3.2) + 1 line4
         assert "     3\t" in lines[0]
-        assert lines[0].count("m") == 10000
+        assert lines[0].count("m") == 5000
         assert "   3.1\t" in lines[1]
-        assert lines[1].count("m") == 2000
-        assert "     4\tline4" in lines[2]
+        assert lines[1].count("m") == 5000
+        assert "   3.2\t" in lines[2]
+        assert lines[2].count("m") == 2000
+        assert "     4\tline4" in lines[3]
 
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""

@@ -100,7 +100,12 @@ User: "Search the web for latest AI news"
 
 
 class MCPMiddleware(AgentMiddleware):
-    """Middleware for progressive MCP tool discovery and execution."""
+    """Middleware for progressive MCP tool discovery and execution.
+
+    This middleware is designed for STATELESS HTTP MCP servers. The middleware
+    uses a shared HTTP client connection across all threads/agents that connect
+    to the same server configuration.
+    """
 
     state_schema = MCPState
 
@@ -146,7 +151,6 @@ class MCPMiddleware(AgentMiddleware):
         self.sync_on_startup = sync_on_startup
         self._cache_key: str | None = None
         self.tools: list[BaseTool] = [self._create_mcp_invoke_tool()]
-        # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
     def _validate_servers(self, servers: list[MCPServerConfig]) -> None:
@@ -187,6 +191,7 @@ class MCPMiddleware(AgentMiddleware):
         return self.backend
 
     def _compute_cache_key(self) -> str:
+        """Compute cache key for shared client connection."""
         key_parts = []
         for server in sorted(self.servers, key=lambda s: s["name"]):
             key_parts.append(f"{server['name']}:{server['url']}")
@@ -246,8 +251,18 @@ class MCPMiddleware(AgentMiddleware):
                 MCPMiddleware._client_cache[self._cache_key] = (client, ref_count - 1)
             else:
                 del MCPMiddleware._client_cache[self._cache_key]
+                await self._cleanup_client(client)
 
             self._cache_key = None
+
+    async def _cleanup_client(self, client: Any) -> None:
+        try:
+            if hasattr(client, "aclose"):
+                await client.aclose()
+            elif hasattr(client, "close"):
+                await asyncio.to_thread(client.close)
+        except Exception as e:
+            logger.warning("Error closing MCP client: %s", e)
 
     async def __aenter__(self) -> "MCPMiddleware":
         await self.connect()
@@ -408,10 +423,8 @@ class MCPMiddleware(AgentMiddleware):
 
         files_update: dict[str, Any] = {}
 
-        # Build metadata files if connected and sync_on_startup is enabled
         if self._mcp_client is not None and self.sync_on_startup:
             try:
-                # Resolve backend using helper
                 backend = self._get_backend(state, runtime, config)
                 files_update = await self._sync_metadata(backend)
             except Exception as e:

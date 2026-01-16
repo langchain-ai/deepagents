@@ -162,3 +162,26 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     summary_message = result["messages"][0]
     assert "conversation_history" in summary_message.content
     assert "1.md" in summary_message.content
+
+    # --- Needle in the haystack follow-up ---
+    # Ask about a specific detail from the beginning of the file that was read
+    # before summarization. The agent should read the conversation history to find it.
+    # The first standard library import in base.py (after `from __future__`) is `import base64`.
+    followup_message = {
+        "role": "user",
+        "content": (
+            "What is the first standard library import in base.py? "
+            "(After the `from __future__` import.) "
+            "Check the conversation history if needed."
+        ),
+    }
+    followup_result = agent.invoke({"messages": [followup_message]}, config)
+
+    # The agent should retrieve the answer from the conversation history
+    final_ai_message = followup_result["messages"][-1]
+    assert final_ai_message.type == "ai", "Expected final message to be from the AI"
+
+    # Check that the answer mentions "base64" (the first standard library import)
+    assert "base64" in final_ai_message.content.lower(), (
+        f"Expected agent to find 'base64' as the first import. Got: {final_ai_message.content}"
+    )

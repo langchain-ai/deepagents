@@ -295,7 +295,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         combined_content = existing_content + new_section
 
         try:
-            result = backend.write(path, combined_content)
+            result = backend.edit(path, existing_content, combined_content) if existing_content else backend.write(path, combined_content)
             if result is None or result.error:
                 error_msg = result.error if result else "backend returned None"
                 logger.warning(
@@ -361,7 +361,9 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         combined_content = existing_content + new_section
 
         try:
-            result = await backend.awrite(path, combined_content)
+            result = (
+                await backend.aedit(path, existing_content, combined_content) if existing_content else await backend.awrite(path, combined_content)
+            )
             if result is None or result.error:
                 error_msg = result.error if result else "backend returned None"
                 logger.warning(

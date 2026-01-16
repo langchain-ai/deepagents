@@ -13,6 +13,8 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
+from deepagents.middleware._utils import append_to_system_message
+
 
 class SubAgent(TypedDict):
     """Specification for an agent.
@@ -522,10 +524,10 @@ class SubAgentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Update the system prompt to include instructions on using subagents."""
+        """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
-            return handler(request.override(system_prompt=system_prompt))
+            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
+            return handler(request.override(system_message=new_system_message))
         return handler(request)
 
     async def awrap_model_call(
@@ -533,8 +535,8 @@ class SubAgentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """(async) Update the system prompt to include instructions on using subagents."""
+        """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
-            return await handler(request.override(system_prompt=system_prompt))
+            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
+            return await handler(request.override(system_message=new_system_message))
         return await handler(request)

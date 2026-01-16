@@ -1,15 +1,17 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langgraph.store.memory import InMemoryStore
@@ -19,6 +21,32 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
+from tests.utils import assert_all_deepagent_qualities
+
+
+class SystemMessageCapturingMiddleware(AgentMiddleware):
+    """Middleware that captures the system message for testing purposes."""
+
+    def __init__(self) -> None:
+        self.captured_system_messages: list = []
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        if request.system_message is not None:
+            self.captured_system_messages.append(request.system_message)
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        if request.system_message is not None:
+            self.captured_system_messages.append(request.system_message)
+        return await handler(request)
 
 
 @tool(description="Sample tool")
@@ -431,3 +459,49 @@ class TestDeepAgentEndToEnd:
         # Empty file should return empty or minimal content
         # (Backend might add warnings or format)
         assert isinstance(file_content, str)
+
+    def test_deep_agent_with_system_message(self) -> None:
+        """Test that create_deep_agent accepts a SystemMessage for system_prompt."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello! How can I help you today?"),
+                ]
+            )
+        )
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        system_msg = SystemMessage(
+            content=[
+                {"type": "text", "text": "You are a helpful assistant."},
+                {"type": "text", "text": "Always be polite."},
+            ]
+        )
+        agent = create_deep_agent(model=model, system_prompt=system_msg, middleware=[capturing_middleware])
+        assert_all_deepagent_qualities(agent)
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "You are a helpful assistant." in content
+        assert "Always be polite." in content
+        assert "you have access to a number of standard tools" in content
+
+    def test_deep_agent_with_system_message_string_content(self) -> None:
+        """Test that create_deep_agent accepts a SystemMessage with string content."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello! I'm your research assistant."),
+                ]
+            )
+        )
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        system_msg = SystemMessage(content="You are a helpful research assistant.")
+        agent = create_deep_agent(model=model, system_prompt=system_msg, middleware=[capturing_middleware])
+        assert_all_deepagent_qualities(agent)
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "You are a helpful research assistant." in content
+        assert "you have access to a number of standard tools" in content

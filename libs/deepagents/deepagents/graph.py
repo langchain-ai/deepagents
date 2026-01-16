@@ -12,6 +12,7 @@ from langchain.chat_models import init_chat_model
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.graph.state import CompiledStateGraph
@@ -45,7 +46,7 @@ def create_deep_agent(
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
-    system_prompt: str | None = None,
+    system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     skills: list[str] | None = None,
@@ -83,7 +84,7 @@ def create_deep_agent(
             file management, and subagent spawning.
         system_prompt: The additional instructions the agent should have.
 
-            Will go in the system prompt.
+            Will go in the system prompt. Can be a string or a `SystemMessage`.
         middleware: Additional middleware to apply after standard middleware.
         subagents: The subagents to use.
 
@@ -202,9 +203,23 @@ def create_deep_agent(
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
+    # Combine system_prompt with BASE_AGENT_PROMPT
+    if system_prompt is None:
+        final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
+    elif isinstance(system_prompt, SystemMessage):
+        # SystemMessage: append BASE_AGENT_PROMPT to content_blocks
+        new_content = [
+            *system_prompt.content_blocks,
+            {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
+        ]
+        final_system_prompt = SystemMessage(content=new_content)
+    else:
+        # String: simple concatenation
+        final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
+
     return create_agent(
         model,
-        system_prompt=system_prompt + "\n\n" + BASE_AGENT_PROMPT if system_prompt else BASE_AGENT_PROMPT,
+        system_prompt=final_system_prompt,
         tools=tools,
         middleware=deepagent_middleware,
         response_format=response_format,

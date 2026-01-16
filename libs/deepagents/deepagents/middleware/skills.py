@@ -114,6 +114,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
 
+from deepagents.middleware._utils import append_to_system_message
+
 logger = logging.getLogger(__name__)
 
 # Security: Maximum size for SKILL.md files to prevent DoS attacks (10MB)
@@ -563,13 +565,13 @@ class SkillsMiddleware(AgentMiddleware):
         return "\n".join(lines)
 
     def modify_request(self, request: ModelRequest) -> ModelRequest:
-        """Inject skills documentation into a model request's system prompt.
+        """Inject skills documentation into a model request's system message.
 
         Args:
             request: Model request to modify
 
         Returns:
-            New model request with skills documentation injected into system prompt
+            New model request with skills documentation injected into system message
         """
         skills_metadata = request.state.get("skills_metadata", [])
         skills_locations = self._format_skills_locations()
@@ -580,12 +582,9 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
         )
 
-        if request.system_prompt:
-            system_prompt = request.system_prompt + "\n\n" + skills_section
-        else:
-            system_prompt = skills_section
+        new_system_message = append_to_system_message(request.system_message, skills_section)
 
-        return request.override(system_prompt=system_prompt)
+        return request.override(system_message=new_system_message)
 
     def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution (synchronous).

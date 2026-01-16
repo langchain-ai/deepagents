@@ -53,7 +53,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
-from langchain.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 if TYPE_CHECKING:
@@ -68,6 +67,8 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langgraph.runtime import Runtime
+
+from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
 
@@ -354,23 +355,20 @@ class MemoryMiddleware(AgentMiddleware):
         return MemoryStateUpdate(memory_contents=contents)
 
     def modify_request(self, request: ModelRequest) -> ModelRequest:
-        """Inject memory content into the system prompt.
+        """Inject memory content into the system message.
 
         Args:
             request: Model request to modify.
 
         Returns:
-            Modified request with memory injected into system prompt.
+            Modified request with memory injected into system message.
         """
         contents = request.state.get("memory_contents", {})
         agent_memory = self._format_agent_memory(contents)
 
-        if request.system_prompt:
-            system_prompt = agent_memory + "\n\n" + request.system_prompt
-        else:
-            system_prompt = agent_memory
+        new_system_message = append_to_system_message(request.system_message, agent_memory)
 
-        return request.override(system_message=SystemMessage(system_prompt))
+        return request.override(system_message=new_system_message)
 
     def wrap_model_call(
         self,

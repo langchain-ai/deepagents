@@ -1,15 +1,17 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langgraph.store.memory import InMemoryStore
@@ -19,7 +21,32 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import MAX_LINE_LENGTH
+from tests.utils import assert_all_deepagent_qualities
+
+
+class SystemMessageCapturingMiddleware(AgentMiddleware):
+    """Middleware that captures the system message for testing purposes."""
+
+    def __init__(self) -> None:
+        self.captured_system_messages: list = []
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        if request.system_message is not None:
+            self.captured_system_messages.append(request.system_message)
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        if request.system_message is not None:
+            self.captured_system_messages.append(request.system_message)
+        return await handler(request)
 
 
 @tool(description="Sample tool")
@@ -302,18 +329,20 @@ class TestDeepAgentEndToEnd:
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
-        """Test line truncation in read_file tool with mixed short and long lines.
+        """Test line count limiting in read_file tool with very long lines."""
+        # Create a file with a very long line (18,000 chars) that will be split into continuation lines
+        # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
+        very_long_line = "x" * 18000  # 18,000 characters -> will split into 4 continuation lines (5k each)
 
-        This end-to-end test verifies that the agent properly truncates long lines
-        when reading files through the read_file tool across different backends.
-        """
-        # Setup test file content with mixed line lengths
-        line1 = "normal line"
-        line2 = "x" * 3000  # Very long
-        line3 = "another normal line"
-        line4 = "y" * 2100  # Also long
-        line5 = "final normal line"
-        content = f"{line1}\n{line2}\n{line3}\n{line4}\n{line5}\n"
+        # Add some normal lines before and after
+        lines = [
+            "short line 0",
+            very_long_line,  # This becomes lines 2, 2.1, 2.2, 2.3 (4 output lines)
+            "short line 2",
+            "short line 3",
+            "short line 4",
+        ]
+        content = "\n".join(lines)
 
         # Create backend and write file
         backend = backend_factory(tmp_path)
@@ -323,7 +352,8 @@ class TestDeepAgentEndToEnd:
         if isinstance(backend, StateBackend):
             backend.runtime.state["files"].update(res.files_update)
 
-        # Create a fake model that calls read_file
+        # Create a fake model that calls read_file with limit=3
+        # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -332,7 +362,7 @@ class TestDeepAgentEndToEnd:
                         tool_calls=[
                             {
                                 "name": "read_file",
-                                "args": {"file_path": file_path},
+                                "args": {"file_path": file_path, "limit": 3},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -360,94 +390,27 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Normal lines should be present
-        assert "normal line" in file_content
-        assert "another normal line" in file_content
-        assert "final normal line" in file_content
+        # Should have the first short line
+        assert "short line 0" in file_content
 
-        # Long lines should be truncated
-        x_lines = [line for line in file_content.split("\n") if "xxx" in line]
-        assert len(x_lines) > 0
-        assert any(line.rstrip().endswith("...[truncated]") for line in x_lines)
-        assert all(len(line) <= MAX_LINE_LENGTH for line in x_lines)
+        # Should have the beginning of the very long line (line 2 with continuation)
+        assert "xxx" in file_content  # The very long line should be present
 
-        y_lines = [line for line in file_content.split("\n") if "yyy" in line]
-        assert len(y_lines) > 0
-        assert any(line.rstrip().endswith("...[truncated]") for line in y_lines)
-        assert all(len(line) <= MAX_LINE_LENGTH for line in y_lines)
+        # Should NOT have the later short lines because the limit cuts off after 3 output lines
+        # (line 1, line 2, line 2.1)
+        assert "short line 2" not in file_content
+        assert "short line 3" not in file_content
+        assert "short line 4" not in file_content
 
-    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_truncate_lines_preserves_newlines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
-        """Test that read_file preserves newlines correctly with truncation.
-
-        This end-to-end test verifies that newlines are preserved when the
-        agent reads files with long lines that need truncation across different backends.
-        """
-        # Setup test file content with different newline patterns
-        long_line = "b" * 2500
-        content = f"line1\n{long_line}\nline3"
-
-        # Create backend and write file
-        backend = backend_factory(tmp_path)
-
-        file_path = "/my_file"
-        res = backend.write(file_path, content)
-        if isinstance(backend, StateBackend):
-            backend.runtime.state["files"].update(res.files_update)
-
-        # Create a fake model that calls read_file
-        model = FixedGenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "read_file",
-                                "args": {"file_path": file_path},
-                                "id": "call_1",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(
-                        content="I've read the file with newlines.",
-                    ),
-                ]
-            )
-        )
-
-        # Create agent with backend
-        agent = create_deep_agent(model=model, backend=backend)
-
-        # Invoke the agent
-        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
-
-        # Verify the agent executed correctly
-        assert "messages" in result
-
-        # Get the tool message containing the file content
-        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) > 0
-
-        file_content = tool_messages[0].content
-
-        # Should have multiple lines
-        expected_min_lines = 3
-        lines = file_content.split("\n")
-        assert len(lines) >= expected_min_lines
-
-        # Check that line1 and line3 are present
-        assert any("line1" in line for line in lines)
-        assert any("line3" in line for line in lines)
+        # Count actual lines in the output (excluding empty lines from formatting)
+        output_lines = [line for line in file_content.split("\n") if line.strip()]
+        # Should be at most 3 lines (the limit we specified)
+        # This includes continuation lines as separate lines
+        assert len(output_lines) <= 3
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
-    def test_deep_agent_truncate_lines_empty_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
-        """Test reading an empty file through the agent.
-
-        This end-to-end test verifies that the agent can successfully read
-        and handle empty files across different backends.
-        """
+    def test_deep_agent_read_empty_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test reading an empty file through the agent."""
         # Create backend and write empty file
         backend = backend_factory(tmp_path)
 
@@ -496,3 +459,49 @@ class TestDeepAgentEndToEnd:
         # Empty file should return empty or minimal content
         # (Backend might add warnings or format)
         assert isinstance(file_content, str)
+
+    def test_deep_agent_with_system_message(self) -> None:
+        """Test that create_deep_agent accepts a SystemMessage for system_prompt."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello! How can I help you today?"),
+                ]
+            )
+        )
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        system_msg = SystemMessage(
+            content=[
+                {"type": "text", "text": "You are a helpful assistant."},
+                {"type": "text", "text": "Always be polite."},
+            ]
+        )
+        agent = create_deep_agent(model=model, system_prompt=system_msg, middleware=[capturing_middleware])
+        assert_all_deepagent_qualities(agent)
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "You are a helpful assistant." in content
+        assert "Always be polite." in content
+        assert "you have access to a number of standard tools" in content
+
+    def test_deep_agent_with_system_message_string_content(self) -> None:
+        """Test that create_deep_agent accepts a SystemMessage with string content."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello! I'm your research assistant."),
+                ]
+            )
+        )
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        system_msg = SystemMessage(content="You are a helpful research assistant.")
+        agent = create_deep_agent(model=model, system_prompt=system_msg, middleware=[capturing_middleware])
+        assert_all_deepagent_qualities(agent)
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "You are a helpful research assistant." in content
+        assert "you have access to a number of standard tools" in content

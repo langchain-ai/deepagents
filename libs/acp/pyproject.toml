@@ -64,7 +64,7 @@ ignore = []
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
-known-first-party = ["deepagents_acp", "deepagents", "deepagents_cli"]
+known-first-party = ["deepagents_acp"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto" # or "strict"

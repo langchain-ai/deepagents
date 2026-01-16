@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from deepagents.backends import StateBackend
+from deepagents.backends.protocol import BackendProtocol, WriteResult
 from deepagents.middleware.mcp import (
     MCP_SYSTEM_PROMPT,
     MCPMiddleware,
@@ -232,7 +234,9 @@ def test_before_agent_skips_if_initialized() -> None:
 async def test_sync_metadata_handles_no_client() -> None:
     """Test that _sync_metadata handles missing client gracefully."""
     middleware = MCPMiddleware(servers=[{"name": "test", "url": "http://localhost:9999/mcp"}])
-    files_update = await middleware._sync_metadata()
+    # Create a mock backend - won't be used since client is not connected
+    mock_backend = MagicMock(spec=BackendProtocol)
+    files_update = await middleware._sync_metadata(mock_backend)
     assert files_update == {}
 
 
@@ -297,11 +301,24 @@ async def test_close_cleans_up_client(math_server: dict[str, Any]) -> None:
 
 @pytest.mark.asyncio
 async def test_sync_metadata_returns_files_update(math_server: dict[str, Any]) -> None:
-    """Test that _sync_metadata returns correct file structure."""
+    """Test that _sync_metadata returns correct file structure when using StateBackend."""
     middleware = MCPMiddleware(servers=[{"name": "math", "url": math_server["url"]}], mcp_prefix="/.mcp")
     await middleware.connect()
 
-    files_update = await middleware._sync_metadata()
+    # Create a mock backend that simulates StateBackend behavior
+    written_files: dict[str, Any] = {}
+
+    async def mock_awrite(file_path: str, content: str) -> WriteResult:
+        from deepagents.backends.utils import create_file_data
+
+        file_data = create_file_data(content)
+        written_files[file_path] = file_data
+        return WriteResult(path=file_path, files_update={file_path: file_data})
+
+    mock_backend = MagicMock(spec=BackendProtocol)
+    mock_backend.awrite = mock_awrite
+
+    files_update = await middleware._sync_metadata(mock_backend)
 
     assert "/.mcp/math/add.json" in files_update
     assert "/.mcp/math/multiply.json" in files_update
@@ -319,7 +336,13 @@ async def test_abefore_agent_connects_and_syncs(math_server: dict[str, Any]) -> 
     """Test that abefore_agent auto-connects and syncs metadata."""
     middleware = MCPMiddleware(servers=[{"name": "math", "url": math_server["url"]}], sync_on_startup=True)
 
-    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+    # Create a mock runtime with required attributes for _get_backend
+    mock_runtime = MagicMock()
+    mock_runtime.context = {}
+    mock_runtime.stream_writer = None
+    mock_runtime.store = None
+
+    result = await middleware.abefore_agent({}, mock_runtime, {})  # type: ignore[arg-type]
 
     assert result is not None
     assert result["mcp_initialized"] is True
@@ -378,7 +401,17 @@ async def test_connect_multiple_servers(math_server: dict[str, Any], weather_ser
     )
     await middleware.connect()
 
-    files_update = await middleware._sync_metadata()
+    # Create a mock backend that simulates StateBackend behavior
+    async def mock_awrite(file_path: str, content: str) -> WriteResult:
+        from deepagents.backends.utils import create_file_data
+
+        file_data = create_file_data(content)
+        return WriteResult(path=file_path, files_update={file_path: file_data})
+
+    mock_backend = MagicMock(spec=BackendProtocol)
+    mock_backend.awrite = mock_awrite
+
+    files_update = await middleware._sync_metadata(mock_backend)
 
     assert any("math" in path for path in files_update)
     assert any("weather" in path for path in files_update)

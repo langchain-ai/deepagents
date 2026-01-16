@@ -10,6 +10,7 @@ from typing import Annotated, Any, ClassVar, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    AgentState,
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
@@ -19,8 +20,9 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
 
-from deepagents.backends.utils import create_file_data
-from deepagents.middleware.filesystem import FilesystemState
+from deepagents.backends import StateBackend
+from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+from deepagents.middleware.filesystem import FileData, FilesystemState, _file_data_reducer
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +45,22 @@ class MCPToolMetadata(TypedDict):
     status: NotRequired[str]
 
 
-class MCPState(FilesystemState):
+class MCPState(AgentState):
     """State for the MCP middleware.
 
-    Extends FilesystemState to inherit the `files` field with its reducer,
-    allowing MCP metadata to be stored in agent state.
+    Works with any backend implementing BackendProtocol:
+    - StateBackend: Stores metadata in agent state (ephemeral)
+    - FilesystemBackend: Stores metadata as files (persistent)
+    - StoreBackend: Stores metadata in LangGraph store (persistent)
+    - Any custom backend implementing BackendProtocol
+
+    The 'files' field is only used when StateBackend is the backend.
+    For external backends, files are persisted directly and this field remains empty.
     """
 
     mcp_metadata: NotRequired[Annotated[dict[str, MCPToolMetadata], PrivateStateAttr]]
     mcp_initialized: NotRequired[Annotated[bool, PrivateStateAttr]]
+    files: Annotated[NotRequired[dict[str, FileData]], _file_data_reducer]
 
 
 MCP_SYSTEM_PROMPT = """
@@ -109,15 +118,36 @@ class MCPMiddleware(AgentMiddleware):
         self,
         *,
         servers: list[MCPServerConfig],
+        backend: BACKEND_TYPES | None = None,
         mcp_prefix: str = "/.mcp",
         sync_on_startup: bool = True,
     ) -> None:
+        """Initialize MCP middleware with progressive tool disclosure.
+
+        Args:
+            servers: List of MCP server configurations (HTTP transport).
+            backend: Backend for storing MCP metadata. Supports any BackendProtocol:
+                - None (default): Uses StateBackend factory (ephemeral, in agent state)
+                - BackendProtocol instance: Direct backend instance
+                - Callable: Factory function (runtime) -> BackendProtocol
+
+                Examples:
+                - StateBackend: Metadata in agent state (ephemeral)
+                - FilesystemBackend: Metadata as files on disk (persistent)
+                - StoreBackend: Metadata in LangGraph store (persistent, cross-thread)
+                - CompositeBackend: Route different paths to different backends
+
+            mcp_prefix: Virtual directory for MCP metadata (default: "/.mcp").
+            sync_on_startup: Whether to discover and sync tool metadata on first agent run.
+        """
         self._validate_servers(servers)
         self.servers = servers
         self.mcp_prefix = mcp_prefix
         self.sync_on_startup = sync_on_startup
         self._cache_key: str | None = None
         self.tools: list[BaseTool] = [self._create_mcp_invoke_tool()]
+        # Use provided backend or default to StateBackend factory
+        self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
     def _validate_servers(self, servers: list[MCPServerConfig]) -> None:
         if not servers:
@@ -132,6 +162,29 @@ class MCPMiddleware(AgentMiddleware):
             if server["name"] in names:
                 raise ValueError(f"Duplicate server name: {server['name']}")
             names.add(server["name"])
+
+    def _get_backend(
+        self,
+        state: MCPState,
+        runtime: Runtime,
+        config: RunnableConfig,
+    ) -> BackendProtocol:
+        """Resolve backend from instance or factory.
+
+        Constructs an artificial ToolRuntime to support backend factories
+        that need runtime context (pattern from MemoryMiddleware).
+        """
+        if callable(self.backend):
+            tool_runtime = ToolRuntime(
+                state=state,
+                context=runtime.context,
+                stream_writer=runtime.stream_writer,
+                store=runtime.store,
+                config=config,
+                tool_call_id=None,
+            )
+            return self.backend(tool_runtime)
+        return self.backend
 
     def _compute_cache_key(self) -> str:
         key_parts = []
@@ -203,13 +256,22 @@ class MCPMiddleware(AgentMiddleware):
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
 
-    async def _sync_metadata(self) -> dict[str, Any]:
-        """Build MCP tool metadata as files_update for state merge."""
+    async def _sync_metadata(self, backend: BackendProtocol) -> dict[str, Any]:
+        """Build MCP tool metadata and write to backend.
+
+        Args:
+            backend: Backend to write metadata files to.
+
+        Returns:
+            Dictionary of files_update for state merge (from checkpoint backends),
+            or empty dict (for external backends that persist directly).
+        """
         if self._mcp_client is None:
             logger.warning("Cannot sync metadata: MCP client not connected")
             return {}
 
         files_update: dict[str, Any] = {}
+        files_written = 0
 
         try:
             mcp_tools = await self._mcp_client.get_tools()
@@ -230,12 +292,21 @@ class MCPMiddleware(AgentMiddleware):
                     }
                     file_path = f"{self.mcp_prefix}/{server_name}/{tool_name}.json"
                     content = json.dumps(metadata, indent=2)
-                    files_update[file_path] = create_file_data(content)
 
-            if files_update:
+                    # Use backend interface instead of direct state manipulation
+                    result = await backend.awrite(file_path, content)
+                    if result.error:
+                        logger.error("Failed to write MCP metadata %s: %s", file_path, result.error)
+                        continue
+                    files_written += 1
+                    # Accumulate state updates for checkpoint backends
+                    if result.files_update:
+                        files_update.update(result.files_update)
+
+            if files_written:
                 logger.info(
                     "Prepared %d MCP tool metadata files for %s",
-                    len(files_update),
+                    files_written,
                     self.mcp_prefix,
                 )
         except Exception as e:
@@ -340,7 +411,9 @@ class MCPMiddleware(AgentMiddleware):
         # Build metadata files if connected and sync_on_startup is enabled
         if self._mcp_client is not None and self.sync_on_startup:
             try:
-                files_update = await self._sync_metadata()
+                # Resolve backend using helper
+                backend = self._get_backend(state, runtime, config)
+                files_update = await self._sync_metadata(backend)
             except Exception as e:
                 logger.error("Failed to build MCP metadata: %s", e)
 

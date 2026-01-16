@@ -1,10 +1,12 @@
 """Async tests for StoreBackend."""
 
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.store import StoreBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime():
@@ -276,10 +278,6 @@ async def test_store_backend_agrep_invalid_regex():
 
 async def test_store_backend_intercept_large_tool_result_async():
     """Test that StoreBackend properly handles large tool result interception in async context."""
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime()
     middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
 
@@ -298,10 +296,6 @@ async def test_store_backend_intercept_large_tool_result_async():
 
 async def test_store_backend_aintercept_large_tool_result_async():
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime()
     middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
 

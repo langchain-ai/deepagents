@@ -361,4 +361,4 @@ def test_parallel_edit_file_calls() -> None:
         {"messages": [HumanMessage(content="Edit file in parallel")]},
         config={"configurable": {"thread_id": "test_thread_parallel_edits"}},
     )
-    assert False, "Finish implementing correct behavior to add a ToolMessage with error if parallel edits to the same file are attempted."
+    assert False, "Finish implementing correct behavior to add a ToolMessage with error if parallel edits to the same file are attempted."  # noqa: PT015, B011

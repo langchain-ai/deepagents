@@ -276,31 +276,82 @@ def test_edit_file_string_not_found() -> None:
 
     tool_message = result["messages"][-2]
     assert isinstance(tool_message, ToolMessage)
-
-    (
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "edit_file",
-                    "args": {
-                        "file_path": "/test.txt",
-                        "old_string": "goodbye",
-                        "new_string": "farewell",
-                    },
-                    "id": "call_edit_1",
-                    "type": "tool_call",
-                },
-            ],
-        ),
-    )
     assert tool_message.content == "Error: String not found in file: 'goodbye'"
 
 
-# Our reducers do not handle parllel edits in StateBackend.
+# Our reducers do not handle parallel edits in StateBackend.
 # These will also not work correctly for other backends due to race conditions.
 # Even sandbox/file system backend could get into some edge cases (e.g., if the edits are overlapping)
 # Generally best to instruct the LLM to avoid parallel edits of the same file likely.
+def test_grep_finds_written_file() -> None:
+    """Verify that grep can find content in a file that was written."""
+    # Fake model will write files with specific content, then grep for it
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {
+                                "file_path": "/project/main.py",
+                                "content": "import os\nimport sys\n\ndef main():\n    print('Hello World')",
+                            },
+                            "id": "call_write_1",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "write_file",
+                            "args": {
+                                "file_path": "/project/utils.py",
+                                "content": "def helper():\n    return 42",
+                            },
+                            "id": "call_write_2",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "grep",
+                            "args": {
+                                "pattern": "import",
+                                "output_mode": "content",
+                            },
+                            "id": "call_grep_1",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="Found the imports."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=fake_model,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Write files and search")]},
+        config={"configurable": {"thread_id": "test_thread_grep"}},
+    )
+
+    # Verify files were created
+    assert "/project/main.py" in result["files"], "File /project/main.py should exist"
+    assert "/project/utils.py" in result["files"], "File /project/utils.py should exist"
+
+    # Verify grep found the pattern in messages
+    grep_message = result["messages"][-2]
+    assert isinstance(grep_message, ToolMessage)
+    assert "import" in grep_message.content.lower(), "Grep should find 'import' in the files"
+    assert "/project/main.py" in grep_message.content, "Grep should reference the file containing 'import'"
+
+
 @pytest.mark.xfail(reason="We should add after_model middleware to fail parallel edits of the same file.")
 def test_parallel_edit_file_calls() -> None:
     """Verify that parallel edit_file calls correctly update file state."""

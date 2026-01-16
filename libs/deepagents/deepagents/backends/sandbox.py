@@ -172,7 +172,7 @@ try:
     with os.scandir(path) as it:
         for entry in it:
             result = {{
-                'path': os.path.join(path, entry.name),
+                'path': entry.name,
                 'is_dir': entry.is_dir(follow_symlinks=False)
             }}
             print(json.dumps(result))

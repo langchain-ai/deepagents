@@ -2,13 +2,17 @@
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
+
+if TYPE_CHECKING:
+    from langchain.agents.middleware.types import AgentState
 
 # -----------------------------------------------------------------------------
 # Fixtures and helpers
@@ -27,13 +31,13 @@ def make_conversation_messages(
         num_old: Number of "old" messages that will be summarized
         num_recent: Number of "recent" messages to preserve
         include_previous_summary: If `True`, start with a summary `HumanMessage`
+            containing placeholder text.
 
     Returns:
         List of messages simulating a conversation
     """
     messages: list[BaseMessage] = []
 
-    # Optionally include a previous summary message
     if include_previous_summary:
         messages.append(
             HumanMessage(
@@ -43,7 +47,7 @@ def make_conversation_messages(
             )
         )
 
-    # Add old messages (will be summarized)
+    # Add old messages (to be summarized)
     for i in range(num_old):
         if i % 3 == 0:
             messages.append(HumanMessage(content=f"User message {i}", id=f"human-{i}"))
@@ -64,7 +68,7 @@ def make_conversation_messages(
                 )
             )
 
-    # Add recent messages (will be preserved)
+    # Add recent messages (to be preserved)
     for i in range(num_recent):
         idx = num_old + i
         messages.append(HumanMessage(content=f"Recent message {idx}", id=f"recent-{idx}"))
@@ -73,7 +77,7 @@ def make_conversation_messages(
 
 
 class MockBackend(BackendProtocol):
-    """Mock backend that records read/write calls and can simulate failures."""
+    """A mock backend that records read/write calls and can simulate failures."""
 
     def __init__(
         self,
@@ -82,6 +86,13 @@ class MockBackend(BackendProtocol):
         error_message: str | None = None,
         existing_content: str | None = None,
     ) -> None:
+        """Initialize the mock backend.
+
+        Args:
+            should_fail: If `True`, write operations will simulate a failure.
+            error_message: The error message to return on failure.
+            existing_content: Initialize the backend with existing content for reads.
+        """
         self.write_calls: list[tuple[str, str]] = []
         self.read_calls: list[str] = []
         self.should_fail = should_fail
@@ -140,7 +151,11 @@ def mock_get_config(thread_id: str | None = "test-thread-123") -> Generator[None
 
 
 def make_mock_model(summary_response: str = "This is a test summary.") -> MagicMock:
-    """Create a mock LLM model for summarization."""
+    """Create a mock LLM model for summarization.
+
+    Args:
+        summary_response: The text to return as the summary for testing purposes.
+    """
     model = MagicMock()
     model.invoke.return_value = MagicMock(text=summary_response)
     model._llm_type = "test-model"
@@ -150,56 +165,6 @@ def make_mock_model(summary_response: str = "This is a test summary.") -> MagicM
 
 
 # -----------------------------------------------------------------------------
-# Basic functionality tests
-# -----------------------------------------------------------------------------
-
-
-class TestNoBackendConfigured:
-    """Tests for behavior when no backend is configured."""
-
-    def test_no_offload_without_backend(self) -> None:
-        """Test that no offloading occurs when backend is `None`."""
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
-        runtime = make_mock_runtime()
-
-        # Should still return summarization result
-        result = middleware.before_model(state, runtime)
-
-        assert result is not None
-        assert "messages" in result
-
-    def test_summarization_works_without_backend(self) -> None:
-        """Test that summarization still works correctly without a backend."""
-        mock_model = make_mock_model(summary_response="Summary without backend")
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=None,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
-        runtime = make_mock_runtime()
-
-        result = middleware.before_model(state, runtime)
-
-        # Should have summary message
-        assert result is not None
-        new_messages = result["messages"].value
-        # First is the summary HumanMessage
-        summary_msg = new_messages[0]
-        assert "Summary without backend" in summary_msg.content
 
 
 class TestSummarizationMiddlewareInit:
@@ -233,6 +198,58 @@ class TestSummarizationMiddlewareInit:
         assert callable(middleware._backend)
 
 
+class TestNoBackendConfigured:
+    """Tests for behavior when no backend is configured."""
+
+    def test_no_offload_without_backend(self) -> None:
+        """Test that no offloading occurs when backend is `None`."""
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        # Should still return summarization result
+        result = middleware.before_model(state, runtime)
+
+        assert result is not None
+        assert "messages" in result
+
+    def test_summarization_works_without_backend(self) -> None:
+        """Test that summarization still works correctly without a backend."""
+        mock_model = make_mock_model(summary_response="Summary without backend")
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=None,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        result = middleware.before_model(state, runtime)
+
+        # Should have summary message
+        assert result is not None
+        new_messages = result["messages"]
+        # First is RemoveMessage, then the summary HumanMessage, then preserved messages
+        assert isinstance(new_messages[0], RemoveMessage)
+
+        summary_msg = new_messages[1]
+        assert isinstance(summary_msg, HumanMessage)
+        assert "Summary without backend" in summary_msg.content  # Mocked summary text
+        assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
+
+
 class TestOffloadingBasic:
     """Tests for basic offloading behavior."""
 
@@ -249,26 +266,20 @@ class TestOffloadingBasic:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        with mock_get_config(thread_id="test-thread-123"):
+        with mock_get_config():
             result = middleware.before_model(state, runtime)
 
         # Should have triggered summarization
         assert result is not None
-
-        # Backend should have received one write call
         assert len(backend.write_calls) == 1
 
         path, content = backend.write_calls[0]
-
-        # Path should be single markdown file per thread
         assert path == "/conversation_history/test-thread-123.md"
 
-        # Content should be markdown with timestamp header
         assert "## Summarized at" in content
-        # Content should include conversation messages
         assert "Human:" in content or "AI:" in content
 
     def test_offload_appends_to_existing_content(self) -> None:
@@ -285,7 +296,7 @@ class TestOffloadingBasic:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         middleware.before_model(state, runtime)
@@ -296,10 +307,6 @@ class TestOffloadingBasic:
         assert "## Summarized at 2024-01-01T00:00:00Z" in content
         expected_section_count = 2  # One existing + one new summarization section
         assert content.count("## Summarized at") == expected_section_count
-
-
-class TestRealisticScenarios:
-    """More realistic test scenarios with typical message patterns."""
 
     def test_typical_tool_heavy_conversation(self) -> None:
         """Test with a realistic tool-heavy conversation pattern.
@@ -341,7 +348,7 @@ class TestRealisticScenarios:
             ToolMessage(content="Tutorial content...", tool_call_id="tc2", id="t4"),
         ]
 
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         result = middleware.before_model(state, runtime)
@@ -387,7 +394,7 @@ class TestRealisticScenarios:
             AIMessage(content="Answer 3", id="a3"),
         ]
 
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         result = middleware.before_model(state, runtime)
@@ -396,14 +403,12 @@ class TestRealisticScenarios:
 
         _, content = backend.write_calls[0]
 
-        # The previous summary should NOT be in the offloaded messages
+        # The previous summary message (marked with lc_source: "summarization") should NOT
+        # be offloaded—it's a synthetic message, and the original messages it summarized
+        # are already stored in the backend file from the first summarization
         assert "First summary" not in content, "Previous summary should be filtered from offload"
-        # But the new questions should be there
+        # But the new conversation messages should be offloaded
         assert "New question 1" in content
-
-
-class TestChainedSummarization:
-    """Tests for handling multiple summarization events (chained summarization)."""
 
     def test_filters_previous_summary_messages(self) -> None:
         """Test that previous summary `HumanMessage` objects are NOT included in offload.
@@ -425,9 +430,9 @@ class TestChainedSummarization:
         messages = make_conversation_messages(
             num_old=6,
             num_recent=2,
-            include_previous_summary=True,  # Include previous summary message
+            include_previous_summary=True,
         )
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         middleware.before_model(state, runtime)
@@ -455,11 +460,12 @@ class TestSummaryMessageFormat:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id="test-thread"):
             result = middleware.before_model(state, runtime)
+        assert result is not None
 
         # Get the summary message (first in the overwrite list)
         summary_msg = result["messages"].value[0]
@@ -485,7 +491,7 @@ class TestSummaryMessageFormat:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         result = middleware.before_model(state, runtime)
@@ -512,7 +518,7 @@ class TestSummaryMessageFormat:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         result = middleware.before_model(state, runtime)
@@ -534,7 +540,7 @@ class TestSummaryMessageFormat:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         result = middleware.before_model(state, runtime)
@@ -562,7 +568,7 @@ class TestNoSummarizationTriggered:
         )
 
         messages = make_conversation_messages(num_old=3, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         result = middleware.before_model(state, runtime)
@@ -590,7 +596,7 @@ class TestBackendFailureHandling:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         # Should not raise, should return result
@@ -613,7 +619,7 @@ class TestBackendFailureHandling:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         # Should not raise
@@ -638,7 +644,7 @@ class TestThreadIdExtraction:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id="custom-thread-456"):
@@ -660,7 +666,7 @@ class TestThreadIdExtraction:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id=None):
@@ -692,7 +698,7 @@ class TestAsyncBehavior:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         result = await middleware.abefore_model(state, runtime)
@@ -715,7 +721,7 @@ class TestAsyncBehavior:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         result = await middleware.abefore_model(state, runtime)
@@ -743,7 +749,7 @@ class TestBackendFactoryInvocation:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         middleware.before_model(state, runtime)
@@ -752,37 +758,6 @@ class TestBackendFactoryInvocation:
         assert len(factory_called_with) == 1
         # Backend should have received write call
         assert len(backend.write_calls) == 1
-
-
-class TestMarkdownFormatting:
-    """Tests for markdown message formatting using get_buffer_string."""
-
-    def test_markdown_format_includes_message_content(self) -> None:
-        """Test that markdown format includes message content."""
-        backend = MockBackend()
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=backend,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
-        runtime = make_mock_runtime()
-
-        result = middleware.before_model(state, runtime)
-        assert result is not None
-
-        # Verify the offloaded content is markdown formatted
-        _, content = backend.write_calls[0]
-
-        # Should contain human-readable message prefixes
-        assert "Human:" in content or "AI:" in content
-        # Should contain the actual message content
-        assert "User message" in content
 
 
 class TestCustomHistoryPathPrefix:
@@ -802,7 +777,7 @@ class TestCustomHistoryPathPrefix:
         )
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = {"messages": messages}
+        state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id="test-thread"):
@@ -811,6 +786,36 @@ class TestCustomHistoryPathPrefix:
         path, _ = backend.write_calls[0]
         assert path == "/custom/path/test-thread.md"
 
+
+class TestMarkdownFormatting:
+    """Tests for markdown message formatting using `get_buffer_string`."""
+
+    def test_markdown_format_includes_message_content(self) -> None:
+        """Test that markdown format includes message content."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        result = middleware.before_model(state, runtime)
+        assert result is not None
+
+        # Verify the offloaded content is markdown formatted
+        _, content = backend.write_calls[0]
+
+        # Should contain human-readable message prefixes
+        assert "Human:" in content or "AI:" in content
+        # Should contain the actual message content
+        assert "User message" in content
 
 # -----------------------------------------------------------------------------
 # Message cleaning tests

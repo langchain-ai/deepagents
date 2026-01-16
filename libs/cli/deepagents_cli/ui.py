@@ -197,6 +197,9 @@ def show_help() -> None:
     )
     console.print("  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)")
     console.print(
+        "  --mcp-config PATH             Load MCP tools from JSON config file (Claude Desktop format)"
+    )
+    console.print(
         "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"
     )
     console.print()
@@ -227,6 +230,10 @@ def show_help() -> None:
     )
     console.print(
         "  deepagents --sandbox runloop            # Execute code in Runloop sandbox",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --mcp-config mcp.json        # Load MCP tools from config file",
         style=COLORS["dim"],
     )
     console.print()

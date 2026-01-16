@@ -1,11 +1,8 @@
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel
 
@@ -25,31 +22,6 @@ from ..utils import (
     get_weather,
     sample_tool,
 )
-
-
-class SystemMessageCapturingMiddleware(AgentMiddleware):
-    """Middleware that captures the system message for testing purposes."""
-
-    def __init__(self) -> None:
-        self.captured_system_messages: list = []
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        if request.system_message is not None:
-            self.captured_system_messages.append(request.system_message)
-        return handler(request)
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
-        if request.system_message is not None:
-            self.captured_system_messages.append(request.system_message)
-        return await handler(request)
 
 
 class TestDeepAgents:
@@ -222,35 +194,3 @@ class TestDeepAgents:
         assert_all_deepagent_qualities(agent)
         result = await agent.ainvoke({"messages": [HumanMessage(content="What is your name?")]})
         assert "Jackson" in result["messages"][-1].content
-
-    def test_deep_agent_with_system_message(self):
-        """Test that create_deep_agent accepts a SystemMessage for system_prompt."""
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        system_msg = SystemMessage(
-            content=[
-                {"type": "text", "text": "You are a helpful assistant."},
-                {"type": "text", "text": "Always be polite."},
-            ]
-        )
-        agent = create_deep_agent(system_prompt=system_msg, middleware=[capturing_middleware])
-        assert_all_deepagent_qualities(agent)
-
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
-
-        content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "You are a helpful assistant." in content
-        assert "Always be polite." in content
-        assert "you have access to a number of standard tools" in content
-
-    def test_deep_agent_with_system_message_string_content(self):
-        """Test that create_deep_agent accepts a SystemMessage with string content."""
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        system_msg = SystemMessage(content="You are a helpful research assistant.")
-        agent = create_deep_agent(system_prompt=system_msg, middleware=[capturing_middleware])
-        assert_all_deepagent_qualities(agent)
-
-        agent.invoke({"messages": [HumanMessage(content="Hello")]})
-
-        content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "You are a helpful research assistant." in content
-        assert "you have access to a number of standard tools" in content

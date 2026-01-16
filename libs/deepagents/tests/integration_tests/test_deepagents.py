@@ -197,10 +197,12 @@ class TestDeepAgents:
 
     def test_deep_agent_with_system_message(self):
         """Test that create_deep_agent accepts a SystemMessage for system_prompt."""
-        system_msg = SystemMessage(content=[
-            {"type": "text", "text": "You are a helpful assistant."},
-            {"type": "text", "text": "Always be polite."},
-        ])
+        system_msg = SystemMessage(
+            content=[
+                {"type": "text", "text": "You are a helpful assistant."},
+                {"type": "text", "text": "Always be polite."},
+            ]
+        )
         agent = create_deep_agent(system_prompt=system_msg)
         assert_all_deepagent_qualities(agent)
 

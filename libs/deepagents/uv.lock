@@ -742,16 +742,16 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.2.5"
+version = "1.2.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4e/21/03cc8979ad8c8121adab60b67aa888a501280050dd2495b991edd38a4443/langchain-1.2.5.tar.gz", hash = "sha256:ff3aaa0c9b930510b25eca3bea6c6ac273117655136cc66f83eafa93a470df38", size = 554079, upload-time = "2026-01-16T16:09:09.177Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/bc/d8f506a525baadee99a65c6cc28c1c35c9eaf1cb2009f048e9861d81a600/langchain-1.2.6.tar.gz", hash = "sha256:7d46cbf719d860a16f6fc182d5d3de17453dda187f3d43e9c40ac352a5094fdd", size = 553127, upload-time = "2026-01-16T19:21:19.611Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/59/86/69bf576ce2426d5d602cffb4a02e71bf5b93bd36848cef82f17a3530853b/langchain-1.2.5-py3-none-any.whl", hash = "sha256:f6433a0ca6383baa2e5792fbc9f5c42ae91e917591a7cb00e189f36c881b4666", size = 108686, upload-time = "2026-01-16T16:09:07.688Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/28/d5dc4cb06ccb29d62a590d446072964766555e85863f5044c6e644c07d0d/langchain-1.2.6-py3-none-any.whl", hash = "sha256:a9a6c39f03c09b6eb0f1b47e267ad2a2fd04e124dfaa9753bd6c11d2fe7d944e", size = 108458, upload-time = "2026-01-16T19:21:18.085Z" },
 ]
 
 [[package]]

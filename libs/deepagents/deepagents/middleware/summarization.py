@@ -24,22 +24,14 @@ agent = create_deep_agent(middleware=[middleware])
 
 ## Storage Format
 
-Offloaded messages are stored as JSON at:
+Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
 
-```txt
-/conversation_history/{thread_id}/{timestamp}.json
-```
-
-Each file contains:
-- `messages`: List of serialized messages that were summarized
-- `message_count`: Number of messages stored
-- `thread_id`: The conversation thread identifier
-- `timestamp`: ISO 8601 timestamp of when summarization occurred
+Each summarization event appends a new section to this file, creating a running log
+of all evicted messages.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -55,7 +47,8 @@ from langchain.agents.middleware.summarization import (
     count_tokens_approximately,
 )
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, get_buffer_string
+from langgraph.config import get_config
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from typing_extensions import override
 
@@ -155,40 +148,39 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             return self._backend(tool_runtime)
         return self._backend
 
-    def _get_thread_id(self, runtime: Runtime) -> str:
-        """Extract `thread_id` from runtime config if available.
+    def _get_thread_id(self) -> str:
+        """Extract `thread_id` from langgraph config.
 
-        Args:
-            runtime: Runtime context.
+        Uses `get_config()` to access the `RunnableConfig` from langgraph's
+        contextvar. Falls back to a generated session UUID if not available.
 
         Returns:
             Thread ID string, or a generated UUID if not available.
         """
-        # Try to get config from runtime
-        config = getattr(runtime, "config", None)
-        if config is not None:
-            configurable = config.get("configurable", {})
-            thread_id = configurable.get("thread_id")
+        try:
+            config = get_config()
+            thread_id = config.get("configurable", {}).get("thread_id")
             if thread_id is not None:
                 return str(thread_id)
+        except RuntimeError:
+            # Not in a runnable context
+            pass
 
-        # Fall back to generated ID - log this since it affects file organization
+        # Fallback: generate session ID
         generated_id = f"session_{uuid.uuid4().hex[:8]}"
-        logger.debug("No thread_id in runtime config, using generated session ID: %s", generated_id)
+        logger.debug("No thread_id found, using generated session ID: %s", generated_id)
         return generated_id
 
-    def _get_history_path(self, runtime: Runtime) -> str:
+    def _get_history_path(self) -> str:
         """Generate path for storing conversation history.
 
-        Args:
-            runtime: Runtime context.
+        Returns a single file per thread that gets appended to over time.
 
         Returns:
-            Path string like `'/conversation_history/{thread_id}/{timestamp}.json'`
+            Path string like `'/conversation_history/{thread_id}.md'`
         """
-        thread_id = self._get_thread_id(runtime)
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%f")
-        return f"{self._history_path_prefix}/{thread_id}/{timestamp}.json"
+        thread_id = self._get_thread_id()
+        return f"{self._history_path_prefix}/{thread_id}.md"
 
     def _is_summary_message(self, msg: AnyMessage) -> bool:
         """Check if a message is a previous summarization message.
@@ -252,46 +244,29 @@ A condensed summary follows:
             )
         ]
 
-    def _serialize_messages(self, messages: list[AnyMessage]) -> str:
-        """Serialize messages for storage.
+    def _format_messages_as_markdown(self, messages: list[AnyMessage]) -> str:
+        """Format messages as human-readable markdown.
+
+        Uses `get_buffer_string` to produce a compact, LLM-friendly representation of
+        the conversation history.
 
         Args:
-            messages: List of messages to serialize.
+            messages: List of messages to format.
 
         Returns:
-            JSON string containing serialized messages.
+            Markdown-formatted string of the conversation.
         """
-        serialized = []
-        for msg in messages:
-            try:
-                # Use model_dump if available (Pydantic v2)
-                if hasattr(msg, "model_dump"):
-                    serialized.append(msg.model_dump())
-                else:
-                    # Fallback to dict() for older versions
-                    serialized.append(msg.dict())
-            except (TypeError, ValueError, AttributeError) as e:
-                # Last resort: use string representation (may lose metadata like tool calls)
-                logger.warning(
-                    "Message serialization failed for %s, using minimal representation: %s",
-                    type(msg).__name__,
-                    e,
-                )
-                serialized.append(
-                    {
-                        "type": type(msg).__name__,
-                        "content": str(msg.content),
-                    }
-                )
-        return json.dumps(serialized, indent=2, default=str)
+        return get_buffer_string(messages)
 
     def _offload_to_backend(
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
-        runtime: Runtime,
     ) -> str | None:
         """Persist messages to backend before summarization.
+
+        Appends evicted messages to a single markdown file per thread. Each
+        summarization event adds a new section with a timestamp header.
 
         Previous summary messages are filtered out to avoid redundant storage
         during chained summarization events.
@@ -299,32 +274,38 @@ A condensed summary follows:
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
-            runtime: Runtime context.
 
         Returns:
             The file path where history was stored, or `None` if write failed.
         """
-        path = self._get_history_path(runtime)
-        thread_id = self._get_thread_id(runtime)
+        path = self._get_history_path()
 
         # Filter out previous summary messages to avoid redundant storage
         filtered_messages = self._filter_summary_messages(messages)
 
-        payload = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "thread_id": thread_id,
-            "message_count": len(filtered_messages),
-            "messages": json.loads(self._serialize_messages(filtered_messages)),
-        }
+        timestamp = datetime.now(UTC).isoformat()
+        new_section = f"## Summarized at {timestamp}\n\n{self._format_messages_as_markdown(filtered_messages)}\n\n"
+
+        # Read existing content (if any) and append
+        existing_content = ""
+        try:
+            content = backend.read(path)
+            # backend.read returns a string, empty or error string if file doesn't exist
+            if content and not content.startswith("Error:"):
+                existing_content = content
+        except Exception:  # noqa: BLE001, S110
+            # File doesn't exist yet, that's fine
+            pass
+
+        combined_content = existing_content + new_section
 
         try:
-            result = backend.write(path, json.dumps(payload, indent=2, default=str))
+            result = backend.write(path, combined_content)
             if result is None or result.error:
                 error_msg = result.error if result else "backend returned None"
                 logger.warning(
-                    "Failed to offload conversation history to %s (thread: %s, %d messages): %s",
+                    "Failed to offload conversation history to %s (%d messages): %s",
                     path,
-                    thread_id,
                     len(filtered_messages),
                     error_msg,
                 )
@@ -332,9 +313,8 @@ A condensed summary follows:
         except Exception as e:  # noqa: BLE001
             # Don't fail summarization if offloading fails - this is optional functionality
             logger.warning(
-                "Exception offloading conversation history to %s (thread: %s, %d messages): %s: %s",
+                "Exception offloading conversation history to %s (%d messages): %s: %s",
                 path,
-                thread_id,
                 len(filtered_messages),
                 type(e).__name__,
                 e,
@@ -348,9 +328,11 @@ A condensed summary follows:
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
-        runtime: Runtime,
     ) -> str | None:
         """Persist messages to backend before summarization (async).
+
+        Appends evicted messages to a single markdown file per thread. Each
+        summarization event adds a new section with a timestamp header.
 
         Previous summary messages are filtered out to avoid redundant storage
         during chained summarization events.
@@ -358,32 +340,38 @@ A condensed summary follows:
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
-            runtime: Runtime context.
 
         Returns:
             The file path where history was stored, or `None` if write failed.
         """
-        path = self._get_history_path(runtime)
-        thread_id = self._get_thread_id(runtime)
+        path = self._get_history_path()
 
         # Filter out previous summary messages to avoid redundant storage
         filtered_messages = self._filter_summary_messages(messages)
 
-        payload = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "thread_id": thread_id,
-            "message_count": len(filtered_messages),
-            "messages": json.loads(self._serialize_messages(filtered_messages)),
-        }
+        timestamp = datetime.now(UTC).isoformat()
+        new_section = f"## Summarized at {timestamp}\n\n{self._format_messages_as_markdown(filtered_messages)}\n\n"
+
+        # Read existing content (if any) and append
+        existing_content = ""
+        try:
+            content = await backend.aread(path)
+            # backend.aread returns a string, empty or error string if file doesn't exist
+            if content and not content.startswith("Error:"):
+                existing_content = content
+        except Exception:  # noqa: BLE001, S110
+            # File doesn't exist yet, that's fine
+            pass
+
+        combined_content = existing_content + new_section
 
         try:
-            result = await backend.awrite(path, json.dumps(payload, indent=2, default=str))
+            result = await backend.awrite(path, combined_content)
             if result is None or result.error:
                 error_msg = result.error if result else "backend returned None"
                 logger.warning(
-                    "Failed to offload conversation history to %s (thread: %s, %d messages): %s",
+                    "Failed to offload conversation history to %s (%d messages): %s",
                     path,
-                    thread_id,
                     len(filtered_messages),
                     error_msg,
                 )
@@ -391,9 +379,8 @@ A condensed summary follows:
         except Exception as e:  # noqa: BLE001
             # Don't fail summarization if offloading fails - this is optional functionality
             logger.warning(
-                "Exception offloading conversation history to %s (thread: %s, %d messages): %s: %s",
+                "Exception offloading conversation history to %s (%d messages): %s: %s",
                 path,
-                thread_id,
                 len(filtered_messages),
                 type(e).__name__,
                 e,
@@ -439,7 +426,7 @@ A condensed summary follows:
         file_path: str | None = None
         backend = self._get_backend(state, runtime)
         if backend is not None:
-            file_path = self._offload_to_backend(backend, messages_to_summarize, runtime)
+            file_path = self._offload_to_backend(backend, messages_to_summarize)
 
         # Generate summary
         summary = self._create_summary(messages_to_summarize)
@@ -491,7 +478,7 @@ A condensed summary follows:
         file_path: str | None = None
         backend = self._get_backend(state, runtime)
         if backend is not None:
-            file_path = await self._aoffload_to_backend(backend, messages_to_summarize, runtime)
+            file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
 
         # Generate summary
         summary = await self._acreate_summary(messages_to_summarize)

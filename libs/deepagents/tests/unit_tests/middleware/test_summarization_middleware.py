@@ -1,7 +1,7 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
-import json
-from unittest.mock import MagicMock
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -72,17 +72,29 @@ def make_conversation_messages(
 
 
 class MockBackend(BackendProtocol):
-    """Mock backend that records write calls and can simulate failures."""
+    """Mock backend that records read/write calls and can simulate failures."""
 
     def __init__(
         self,
         *,
         should_fail: bool = False,
         error_message: str | None = None,
+        existing_content: str | None = None,
     ) -> None:
         self.write_calls: list[tuple[str, str]] = []
+        self.read_calls: list[str] = []
         self.should_fail = should_fail
         self.error_message = error_message
+        self.existing_content = existing_content
+
+    def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:  # noqa: ARG002
+        self.read_calls.append(path)
+        if self.existing_content is not None:
+            return self.existing_content
+        return ""
+
+    async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> str:
+        return self.read(path, offset, limit)
 
     def write(self, path: str, content: str) -> WriteResult:
         self.write_calls.append((path, content))
@@ -94,19 +106,36 @@ class MockBackend(BackendProtocol):
         return self.write(path, content)
 
 
-def make_mock_runtime(thread_id: str | None = "test-thread-123") -> MagicMock:
-    """Create a mock `Runtime` with optional `thread_id` in config."""
+def make_mock_runtime() -> MagicMock:
+    """Create a mock `Runtime`.
+
+    Note: `Runtime` does not have a `config` attribute. Config is accessed
+    via `get_config()` from langgraph's contextvar. Use `mock_get_config()`
+    to control thread_id in tests.
+    """
     runtime = MagicMock()
     runtime.context = {}
     runtime.stream_writer = MagicMock()
     runtime.store = None
-
-    if thread_id is not None:
-        runtime.config = {"configurable": {"thread_id": thread_id}}
-    else:
-        runtime.config = {}
-
+    # Explicitly don't set runtime.config - it doesn't exist on real Runtime
+    del runtime.config
     return runtime
+
+
+@contextmanager
+def mock_get_config(thread_id: str | None = "test-thread-123"):
+    """Context manager to mock `get_config()` with a specific `thread_id`.
+
+    Args:
+        thread_id: The `thread_id` to return, or `None` to simulate missing config.
+
+    Yields:
+        `None` - use as a context manager around test code.
+    """
+    config = {"configurable": {"thread_id": thread_id}} if thread_id is not None else {"configurable": {}}
+
+    with patch("deepagents.middleware.summarization.get_config", return_value=config):
+        yield
 
 
 def make_mock_model(summary_response: str = "This is a test summary.") -> MagicMock:
@@ -222,7 +251,8 @@ class TestOffloadingBasic:
         state = {"messages": messages}
         runtime = make_mock_runtime()
 
-        result = middleware.before_model(state, runtime)
+        with mock_get_config(thread_id="test-thread-123"):
+            result = middleware.before_model(state, runtime)
 
         # Should have triggered summarization
         assert result is not None
@@ -232,21 +262,18 @@ class TestOffloadingBasic:
 
         path, content = backend.write_calls[0]
 
-        # Path should include thread_id and be JSON file
-        assert "/conversation_history/test-thread-123/" in path
-        assert path.endswith(".json")
+        # Path should be single markdown file per thread
+        assert path == "/conversation_history/test-thread-123.md"
 
-        # Content should be valid JSON with expected structure
-        payload = json.loads(content)
-        assert "messages" in payload
-        assert "thread_id" in payload
-        assert payload["thread_id"] == "test-thread-123"
-        # Summary is NOT stored in payload (it's in the conversation state instead)
-        assert "summary" not in payload
+        # Content should be markdown with timestamp header
+        assert "## Summarized at" in content
+        # Content should include conversation messages
+        assert "Human:" in content or "AI:" in content
 
-    def test_offload_message_count_correct(self) -> None:
-        """Test that `message_count` in payload matches summarized messages."""
-        backend = MockBackend()
+    def test_offload_appends_to_existing_content(self) -> None:
+        """Test that second summarization appends to existing file."""
+        existing = "## Summarized at 2024-01-01T00:00:00Z\n\nHuman: Previous message\n\n"
+        backend = MockBackend(existing_content=existing)
         mock_model = make_mock_model()
 
         middleware = SummarizationMiddleware(
@@ -263,12 +290,10 @@ class TestOffloadingBasic:
         middleware.before_model(state, runtime)
 
         _, content = backend.write_calls[0]
-        payload = json.loads(content)
 
-        # Should have summarized the old messages (total - kept)
-        # The exact count depends on cutoff logic, but should be > 0
-        assert payload["message_count"] > 0
-        assert len(payload["messages"]) == payload["message_count"]
+        # Should contain both old and new sections
+        assert "## Summarized at 2024-01-01T00:00:00Z" in content
+        assert content.count("## Summarized at") == 2  # Two summarization sections
 
 
 class TestRealisticScenarios:
@@ -323,10 +348,10 @@ class TestRealisticScenarios:
         assert len(backend.write_calls) == 1
 
         _, content = backend.write_calls[0]
-        payload = json.loads(content)
 
-        # Should have preserved some recent messages and summarized older ones
-        assert payload["message_count"] > 0
+        # Should have markdown content with summarized messages
+        assert "## Summarized at" in content
+        assert "Search for Python tutorials" in content
 
     def test_second_summarization_after_first(self) -> None:
         """Test a second summarization event after an initial one.
@@ -368,12 +393,11 @@ class TestRealisticScenarios:
         assert result is not None
 
         _, content = backend.write_calls[0]
-        payload = json.loads(content)
 
         # The previous summary should NOT be in the offloaded messages
-        for msg in payload["messages"]:
-            msg_content = msg.get("content", "")
-            assert "First summary" not in str(msg_content), "Previous summary should be filtered from offload"
+        assert "First summary" not in content, "Previous summary should be filtered from offload"
+        # But the new questions should be there
+        assert "New question 1" in content
 
 
 class TestChainedSummarization:
@@ -407,14 +431,10 @@ class TestChainedSummarization:
         middleware.before_model(state, runtime)
 
         _, content = backend.write_calls[0]
-        payload = json.loads(content)
 
-        # Check that the offloaded messages don't include the summary message
-        offloaded_messages = payload["messages"]
-        for msg in offloaded_messages:
-            # Should not have lc_source: summarization
-            additional_kwargs = msg.get("additional_kwargs", {})
-            assert additional_kwargs.get("lc_source") != "summarization", "Previous summary message should be filtered from offload"
+        # Check that the offloaded content doesn't include "Previous summary content"
+        # (which is the content of the summary message added by include_previous_summary)
+        assert "Previous summary content" not in content, "Previous summary message should be filtered from offload"
 
 
 class TestSummaryMessageFormat:
@@ -434,17 +454,17 @@ class TestSummaryMessageFormat:
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
         state = {"messages": messages}
-        runtime = make_mock_runtime(thread_id="test-thread")
+        runtime = make_mock_runtime()
 
-        result = middleware.before_model(state, runtime)
+        with mock_get_config(thread_id="test-thread"):
+            result = middleware.before_model(state, runtime)
 
         # Get the summary message (second in list, after RemoveMessage)
         summary_msg = result["messages"][1]
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
-        assert "/conversation_history/test-thread/" in summary_msg.content
-        assert ".json" in summary_msg.content
+        assert "/conversation_history/test-thread.md" in summary_msg.content
 
         # Should include the summary in XML tags
         assert "<summary>" in summary_msg.content
@@ -601,10 +621,10 @@ class TestBackendFailureHandling:
 
 
 class TestThreadIdExtraction:
-    """Tests for thread ID extraction from runtime config."""
+    """Tests for thread ID extraction via `get_config()`."""
 
     def test_thread_id_from_config(self) -> None:
-        """Test that `thread_id` is correctly extracted from runtime config."""
+        """Test that `thread_id` is correctly extracted from `get_config()`."""
         backend = MockBackend()
         mock_model = make_mock_model()
 
@@ -617,15 +637,13 @@ class TestThreadIdExtraction:
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
         state = {"messages": messages}
-        runtime = make_mock_runtime(thread_id="custom-thread-456")
+        runtime = make_mock_runtime()
 
-        middleware.before_model(state, runtime)
+        with mock_get_config(thread_id="custom-thread-456"):
+            middleware.before_model(state, runtime)
 
-        path, content = backend.write_calls[0]
-        assert "custom-thread-456" in path
-
-        payload = json.loads(content)
-        assert payload["thread_id"] == "custom-thread-456"
+        path, _ = backend.write_calls[0]
+        assert path == "/conversation_history/custom-thread-456.md"
 
     def test_fallback_thread_id_when_missing(self) -> None:
         """Test that a fallback ID is generated when `thread_id` is not in config."""
@@ -641,17 +659,16 @@ class TestThreadIdExtraction:
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
         state = {"messages": messages}
-        runtime = make_mock_runtime(thread_id=None)
+        runtime = make_mock_runtime()
 
-        middleware.before_model(state, runtime)
+        with mock_get_config(thread_id=None):
+            middleware.before_model(state, runtime)
 
-        path, content = backend.write_calls[0]
+        path, _ = backend.write_calls[0]
 
-        # Should have a generated session ID
+        # Should have a generated session ID in the path
         assert "session_" in path
-
-        payload = json.loads(content)
-        assert payload["thread_id"].startswith("session_")
+        assert path.endswith(".md")
 
 
 class TestAsyncBehavior:
@@ -735,11 +752,11 @@ class TestBackendFactoryInvocation:
         assert len(backend.write_calls) == 1
 
 
-class TestSerializationFallback:
-    """Tests for message serialization fallback behavior."""
+class TestMarkdownFormatting:
+    """Tests for markdown message formatting using get_buffer_string."""
 
-    def test_serialize_messages_fallback_on_serialization_error(self) -> None:
-        """Test that message serialization falls back gracefully when `model_dump` fails."""
+    def test_markdown_format_includes_message_content(self) -> None:
+        """Test that markdown format includes message content."""
         backend = MockBackend()
         mock_model = make_mock_model()
 
@@ -750,36 +767,20 @@ class TestSerializationFallback:
             keep=("messages", 2),
         )
 
-        # Create a message that will fail normal serialization
-        class UnserializableMessage(HumanMessage):
-            def model_dump(self) -> None:  # type: ignore[override]
-                msg = "Cannot serialize"
-                raise TypeError(msg)
-
-            def dict(self) -> None:  # type: ignore[override]
-                msg = "Cannot serialize"
-                raise TypeError(msg)
-
-        messages = [UnserializableMessage(content="test content", id="u1")]
-        # Add more messages to trigger summarization
-        messages.extend(make_conversation_messages(num_old=5, num_recent=2))
-
+        messages = make_conversation_messages(num_old=6, num_recent=2)
         state = {"messages": messages}
         runtime = make_mock_runtime()
 
-        # Should not raise, should fall back to string representation
         result = middleware.before_model(state, runtime)
         assert result is not None
 
-        # Verify the offloaded content still contains the message
+        # Verify the offloaded content is markdown formatted
         _, content = backend.write_calls[0]
-        payload = json.loads(content)
-        # The unserializable message should be in fallback format
-        messages_data = payload["messages"]
-        # Find the fallback message (has type and content keys only)
-        fallback_msgs = [m for m in messages_data if m.get("type") == "UnserializableMessage"]
-        assert len(fallback_msgs) == 1
-        assert fallback_msgs[0]["content"] == "test content"
+
+        # Should contain human-readable message prefixes
+        assert "Human:" in content or "AI:" in content
+        # Should contain the actual message content
+        assert "User message" in content
 
 
 class TestCustomHistoryPathPrefix:
@@ -800,10 +801,10 @@ class TestCustomHistoryPathPrefix:
 
         messages = make_conversation_messages(num_old=6, num_recent=2)
         state = {"messages": messages}
-        runtime = make_mock_runtime(thread_id="test-thread")
+        runtime = make_mock_runtime()
 
-        middleware.before_model(state, runtime)
+        with mock_get_config(thread_id="test-thread"):
+            middleware.before_model(state, runtime)
 
         path, _ = backend.write_calls[0]
-        assert path.startswith("/custom/path/test-thread/")
-        assert path.endswith(".json")
+        assert path == "/custom/path/test-thread.md"

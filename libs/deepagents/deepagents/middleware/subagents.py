@@ -524,6 +524,7 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
+            new_system_content: list[str | dict[str, str]]
             if request.system_message is not None:
                 new_system_content = [
                     *request.system_message.content_blocks,
@@ -531,7 +532,7 @@ class SubAgentMiddleware(AgentMiddleware):
                 ]
             else:
                 new_system_content = [{"type": "text", "text": self.system_prompt}]
-            new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+            new_system_message = SystemMessage(content=new_system_content)
             return handler(request.override(system_message=new_system_message))
         return handler(request)
 
@@ -542,6 +543,7 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
+            new_system_content: list[str | dict[str, str]]
             if request.system_message is not None:
                 new_system_content = [
                     *request.system_message.content_blocks,
@@ -549,6 +551,6 @@ class SubAgentMiddleware(AgentMiddleware):
                 ]
             else:
                 new_system_content = [{"type": "text", "text": self.system_prompt}]
-            new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+            new_system_message = SystemMessage(content=new_system_content)
             return await handler(request.override(system_message=new_system_message))
         return await handler(request)

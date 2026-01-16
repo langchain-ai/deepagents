@@ -4,7 +4,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired, cast
+from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -981,6 +981,7 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
+            new_system_content: list[str | dict[str, str]]
             if request.system_message is not None:
                 new_system_content = [
                     *request.system_message.content_blocks,
@@ -988,7 +989,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 ]
             else:
                 new_system_content = [{"type": "text", "text": system_prompt}]
-            new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+            new_system_message = SystemMessage(content=new_system_content)
             request = request.override(system_message=new_system_message)
 
         return handler(request)
@@ -1036,6 +1037,7 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
+            new_system_content: list[str | dict[str, str]]
             if request.system_message is not None:
                 new_system_content = [
                     *request.system_message.content_blocks,
@@ -1043,7 +1045,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 ]
             else:
                 new_system_content = [{"type": "text", "text": system_prompt}]
-            new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+            new_system_message = SystemMessage(content=new_system_content)
             request = request.override(system_message=new_system_message)
 
         return await handler(request)

@@ -93,7 +93,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated
 
 import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
@@ -581,6 +581,7 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
         )
 
+        new_system_content: list[str | dict[str, str]]
         if request.system_message is not None:
             new_system_content = [
                 *request.system_message.content_blocks,
@@ -588,7 +589,7 @@ class SkillsMiddleware(AgentMiddleware):
             ]
         else:
             new_system_content = [{"type": "text", "text": skills_section}]
-        new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+        new_system_message = SystemMessage(content=new_system_content)
 
         return request.override(system_message=new_system_message)
 

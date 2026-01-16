@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 from langchain.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -366,6 +366,7 @@ class MemoryMiddleware(AgentMiddleware):
         agent_memory = self._format_agent_memory(contents)
 
         # Memory is prepended (before other system content)
+        new_system_content: list[str | dict[str, str]]
         if request.system_message is not None:
             new_system_content = [
                 {"type": "text", "text": f"{agent_memory}\n\n"},
@@ -373,7 +374,7 @@ class MemoryMiddleware(AgentMiddleware):
             ]
         else:
             new_system_content = [{"type": "text", "text": agent_memory}]
-        new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+        new_system_message = SystemMessage(content=new_system_content)
 
         return request.override(system_message=new_system_message)
 

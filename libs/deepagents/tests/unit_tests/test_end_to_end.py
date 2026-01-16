@@ -22,7 +22,6 @@ from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import MAX_LINE_LENGTH
-
 from tests.utils import assert_all_deepagent_qualities
 
 
@@ -526,7 +525,7 @@ class TestDeepAgentEndToEnd:
         # (Backend might add warnings or format)
         assert isinstance(file_content, str)
 
-    def test_deep_agent_with_system_message(self):
+    def test_deep_agent_with_system_message(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage for system_prompt."""
         capturing_middleware = SystemMessageCapturingMiddleware()
         system_msg = SystemMessage(
@@ -545,7 +544,7 @@ class TestDeepAgentEndToEnd:
         assert "Always be polite." in content
         assert "you have access to a number of standard tools" in content
 
-    def test_deep_agent_with_system_message_string_content(self):
+    def test_deep_agent_with_system_message_string_content(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage with string content."""
         capturing_middleware = SystemMessageCapturingMiddleware()
         system_msg = SystemMessage(content="You are a helpful research assistant.")

@@ -14,7 +14,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -33,6 +33,7 @@ from deepagents.backends.utils import (
     sanitize_tool_call_id,
     truncate_if_too_long,
 )
+from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 2000
@@ -981,15 +982,7 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            new_system_content: list[str | dict[str, str]]
-            if request.system_message is not None:
-                new_system_content = [
-                    *request.system_message.content_blocks,
-                    {"type": "text", "text": f"\n\n{system_prompt}"},
-                ]
-            else:
-                new_system_content = [{"type": "text", "text": system_prompt}]
-            new_system_message = SystemMessage(content=new_system_content)
+            new_system_message = append_to_system_message(request.system_message, f"\n\n{system_prompt}")
             request = request.override(system_message=new_system_message)
 
         return handler(request)
@@ -1037,15 +1030,7 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            new_system_content: list[str | dict[str, str]]
-            if request.system_message is not None:
-                new_system_content = [
-                    *request.system_message.content_blocks,
-                    {"type": "text", "text": f"\n\n{system_prompt}"},
-                ]
-            else:
-                new_system_content = [{"type": "text", "text": system_prompt}]
-            new_system_message = SystemMessage(content=new_system_content)
+            new_system_message = append_to_system_message(request.system_message, f"\n\n{system_prompt}")
             request = request.override(system_message=new_system_message)
 
         return await handler(request)

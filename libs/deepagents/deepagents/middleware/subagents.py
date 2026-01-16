@@ -8,10 +8,12 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnCon
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
+
+from deepagents.middleware._utils import append_to_system_message
 
 
 class SubAgent(TypedDict):
@@ -524,15 +526,7 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            new_system_content: list[str | dict[str, str]]
-            if request.system_message is not None:
-                new_system_content = [
-                    *request.system_message.content_blocks,
-                    {"type": "text", "text": f"\n\n{self.system_prompt}"},
-                ]
-            else:
-                new_system_content = [{"type": "text", "text": self.system_prompt}]
-            new_system_message = SystemMessage(content=new_system_content)
+            new_system_message = append_to_system_message(request.system_message, f"\n\n{self.system_prompt}")
             return handler(request.override(system_message=new_system_message))
         return handler(request)
 
@@ -543,14 +537,6 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            new_system_content: list[str | dict[str, str]]
-            if request.system_message is not None:
-                new_system_content = [
-                    *request.system_message.content_blocks,
-                    {"type": "text", "text": f"\n\n{self.system_prompt}"},
-                ]
-            else:
-                new_system_content = [{"type": "text", "text": self.system_prompt}]
-            new_system_message = SystemMessage(content=new_system_content)
+            new_system_message = append_to_system_message(request.system_message, f"\n\n{self.system_prompt}")
             return await handler(request.override(system_message=new_system_message))
         return await handler(request)

@@ -53,7 +53,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
-from langchain.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 if TYPE_CHECKING:
@@ -68,6 +67,8 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langgraph.runtime import Runtime
+
+from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
 
@@ -365,16 +366,7 @@ class MemoryMiddleware(AgentMiddleware):
         contents = request.state.get("memory_contents", {})
         agent_memory = self._format_agent_memory(contents)
 
-        # Memory is prepended (before other system content)
-        new_system_content: list[str | dict[str, str]]
-        if request.system_message is not None:
-            new_system_content = [
-                {"type": "text", "text": f"{agent_memory}\n\n"},
-                *request.system_message.content_blocks,
-            ]
-        else:
-            new_system_content = [{"type": "text", "text": agent_memory}]
-        new_system_message = SystemMessage(content=new_system_content)
+        new_system_message = append_to_system_message(request.system_message, f"\n\n{agent_memory}")
 
         return request.override(system_message=new_system_message)
 

@@ -110,10 +110,11 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
+
+from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
 
@@ -581,15 +582,7 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
         )
 
-        new_system_content: list[str | dict[str, str]]
-        if request.system_message is not None:
-            new_system_content = [
-                *request.system_message.content_blocks,
-                {"type": "text", "text": f"\n\n{skills_section}"},
-            ]
-        else:
-            new_system_content = [{"type": "text", "text": skills_section}]
-        new_system_message = SystemMessage(content=new_system_content)
+        new_system_message = append_to_system_message(request.system_message, f"\n\n{skills_section}")
 
         return request.override(system_message=new_system_message)
 

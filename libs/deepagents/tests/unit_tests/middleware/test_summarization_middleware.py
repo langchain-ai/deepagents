@@ -240,11 +240,9 @@ class TestNoBackendConfigured:
 
         # Should have summary message
         assert result is not None
-        new_messages = result["messages"]
-        # First is RemoveMessage, then the summary HumanMessage, then preserved messages
-        assert isinstance(new_messages[0], RemoveMessage)
-
-        summary_msg = new_messages[1]
+        new_messages = result["messages"].value
+        # First is the summary HumanMessage, then preserved messages
+        summary_msg = new_messages[0]
         assert isinstance(summary_msg, HumanMessage)
         assert "Summary without backend" in summary_msg.content  # Mocked summary text
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"

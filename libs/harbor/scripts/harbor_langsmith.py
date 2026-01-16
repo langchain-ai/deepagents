@@ -243,12 +243,12 @@ async def create_experiment_async(dataset_name: str, experiment_name: str | None
         session_id = experiment_session["id"]
         tenant_id = experiment_session["tenant_id"]
 
-        print(f"✓ Experiment created successfully!")
+        print("✓ Experiment created successfully!")
         print(f"  Session ID: {session_id}")
         print(
             f"  View at: https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}"
         )
-        print(f"\nTo run Harbor with this experiment, use:")
+        print("\nTo run Harbor with this experiment, use:")
         print(f"  LANGSMITH_EXPERIMENT={experiment_name} harbor run ...")
 
         return session_id

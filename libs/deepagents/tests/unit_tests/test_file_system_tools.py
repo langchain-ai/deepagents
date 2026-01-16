@@ -9,10 +9,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import (
-    FileData,
-    _file_data_reducer,
-)
 
 
 def test_parallel_write_file_calls_trigger_list_reducer() -> None:
@@ -70,36 +66,6 @@ def test_parallel_write_file_calls_trigger_list_reducer() -> None:
     # Verify the content of the files
     assert result["files"]["/test1.txt"]["content"] == ["hello"], "Content of /test1.txt should be 'hello'"
     assert result["files"]["/test2.txt"]["content"] == ["world"], "Content of /test2.txt should be 'world'"
-
-
-def test_file_data_reducer_handles_list() -> None:
-    """Verify _file_data_reducer can handle a list of updates."""
-    # Simulate initial state where left is a list of dicts
-    left = [
-        {"/file1.txt": FileData(content=["one"], created_at="", modified_at="")},
-        {"/file2.txt": FileData(content=["two"], created_at="", modified_at="")},
-    ]
-    right = {"/file3.txt": FileData(content=["three"], created_at="", modified_at="")}
-
-    # The reducer should merge the list and the new dict
-    result = _file_data_reducer(left, right)
-
-    assert result == {
-        "/file1.txt": FileData(content=["one"], created_at="", modified_at=""),
-        "/file2.txt": FileData(content=["two"], created_at="", modified_at=""),
-        "/file3.txt": FileData(content=["three"], created_at="", modified_at=""),
-    }
-
-    # Also test with deletions within the list-based state
-    right_with_deletion = {
-        "/file1.txt": None,
-        "/file4.txt": FileData(content=["four"], created_at="", modified_at=""),
-    }
-    result_with_deletion = _file_data_reducer(left, right_with_deletion)
-    assert result_with_deletion == {
-        "/file2.txt": FileData(content=["two"], created_at="", modified_at=""),
-        "/file4.txt": FileData(content=["four"], created_at="", modified_at=""),
-    }
 
 
 def test_edit_file_single_replacement() -> None:

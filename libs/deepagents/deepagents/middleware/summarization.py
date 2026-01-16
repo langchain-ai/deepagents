@@ -1,7 +1,9 @@
 """Summarization middleware with backend support for offloading conversation history.
 
-This module extends `SummarizationMiddleware` to persist conversation history to a
-backend before summarization, enabling retrieval of full context when needed by an agent.
+This module provides a `SummarizationMiddleware` class that extends langchain's base
+`SummarizationMiddleware` (imported as `BaseSummarizationMiddleware`) to persist
+conversation history to a backend before summarization, enabling retrieval of full
+context when needed by an agent.
 
 ## Usage
 
@@ -152,10 +154,11 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         """Extract `thread_id` from langgraph config.
 
         Uses `get_config()` to access the `RunnableConfig` from langgraph's
-        contextvar. Falls back to a generated session UUID if not available.
+        contextvar. Falls back to a generated session ID if not available.
 
         Returns:
-            Thread ID string, or a generated UUID if not available.
+            Thread ID string from config, or a generated session ID
+                (e.g., `'session_a1b2c3d4'`) if not in a runnable context.
         """
         try:
             config = get_config()
@@ -245,16 +248,16 @@ A condensed summary follows:
         ]
 
     def _format_messages_as_markdown(self, messages: list[AnyMessage]) -> str:
-        """Format messages as human-readable markdown.
+        """Format messages as human-readable text with role prefixes.
 
         Uses `get_buffer_string` to produce a compact, LLM-friendly representation of
-        the conversation history.
+        the conversation history with role prefixes (e.g., `'Human:'`, `'AI:'`).
 
         Args:
             messages: List of messages to format.
 
         Returns:
-            Markdown-formatted string of the conversation.
+            Plain text string with messages prefixed by role.
         """
         return get_buffer_string(messages)
 

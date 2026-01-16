@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11, <4.0"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -386,7 +386,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", specifier = ">=1.2.4,<2.0.0" },
+    { name = "langchain", specifier = ">=1.2.5,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.3.1,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.2.6,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.1.3,<5.0.0" },
@@ -742,16 +742,16 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.2.4"
+version = "1.2.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ed/3f/371267e88c153500a75c0e9daf9645a69955cfe6f85699955241ac0fa6e2/langchain-1.2.4.tar.gz", hash = "sha256:65119ff1c2ac8cc2410739b0fb2773f8fbfbe83357df9bab8a5fceafb9e04aa1", size = 552340, upload-time = "2026-01-14T19:35:26.556Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/21/03cc8979ad8c8121adab60b67aa888a501280050dd2495b991edd38a4443/langchain-1.2.5.tar.gz", hash = "sha256:ff3aaa0c9b930510b25eca3bea6c6ac273117655136cc66f83eafa93a470df38", size = 554079, upload-time = "2026-01-16T16:09:09.177Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0c/71/667887579bb3cf3c2db88224849f7362a8c3f118666e426a51058ee43d9c/langchain-1.2.4-py3-none-any.whl", hash = "sha256:182ac9f3c4559c5a6477e00d60ff8a56212ec4db6f101a4957492818dc3ce3e9", size = 107949, upload-time = "2026-01-14T19:35:24.7Z" },
+    { url = "https://files.pythonhosted.org/packages/59/86/69bf576ce2426d5d602cffb4a02e71bf5b93bd36848cef82f17a3530853b/langchain-1.2.5-py3-none-any.whl", hash = "sha256:f6433a0ca6383baa2e5792fbc9f5c42ae91e917591a7cb00e189f36c881b4666", size = 108686, upload-time = "2026-01-16T16:09:07.688Z" },
 ]
 
 [[package]]

@@ -20,8 +20,11 @@ format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check --fix $(PYTHON_FILES)
 
-test:
-	uv run pytest tests/unit_tests --cov=deepagents --cov-report=term-missing
+TEST_FILE ?= tests/unit_tests/
+integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
-integration_test:
-	uv run pytest tests/integration_tests --cov=deepagents --cov-report=term-missing
+test tests:
+	uv run pytest $(TEST_FILE) --cov=deepagents --cov-report=term-missing
+
+integration_test integration_tests:
+	uv run pytest $(TEST_FILE) --cov=deepagents --cov-report=term-missing

@@ -7,9 +7,9 @@ license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
   "deepagents==0.3.6",
-  "langchain>=1.2.3,<2.0.0",
+  "langchain>=1.2.4,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
-  "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
+  "langgraph-checkpoint-sqlite>=3.0.2,<4.0.0",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",
@@ -38,10 +38,19 @@ test = [
     "pytest-mock>=3.14.0",
     "pytest-socket>=0.7.0",
     "pytest-timeout>=2.3.1",
+    "pytest-watcher>=0.3.4,<1.0.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
     "responses>=0.25.0",
-    "ruff>=0.9.7",
+]
+test_integration = []
+
+lint = [
+    "ruff<0.15.0",
 ]
 
+typing = [
+    "mypy<1.19.0",
+]
 
 dev = [
     "pytest",
@@ -52,11 +61,6 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pytest-socket>=0.7.0",
     "pytest-asyncio>=1.2.0",
-]
-
-lint = [
-    "ruff",
-    "mypy"
 ]
 
 [build-system]

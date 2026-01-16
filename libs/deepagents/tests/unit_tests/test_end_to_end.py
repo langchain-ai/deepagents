@@ -527,6 +527,13 @@ class TestDeepAgentEndToEnd:
 
     def test_deep_agent_with_system_message(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage for system_prompt."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello! How can I help you today?"),
+                ]
+            )
+        )
         capturing_middleware = SystemMessageCapturingMiddleware()
         system_msg = SystemMessage(
             content=[
@@ -534,7 +541,7 @@ class TestDeepAgentEndToEnd:
                 {"type": "text", "text": "Always be polite."},
             ]
         )
-        agent = create_deep_agent(system_prompt=system_msg, middleware=[capturing_middleware])
+        agent = create_deep_agent(model=model, system_prompt=system_msg, middleware=[capturing_middleware])
         assert_all_deepagent_qualities(agent)
 
         agent.invoke({"messages": [HumanMessage(content="Hello")]})
@@ -546,9 +553,16 @@ class TestDeepAgentEndToEnd:
 
     def test_deep_agent_with_system_message_string_content(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage with string content."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello! I'm your research assistant."),
+                ]
+            )
+        )
         capturing_middleware = SystemMessageCapturingMiddleware()
         system_msg = SystemMessage(content="You are a helpful research assistant.")
-        agent = create_deep_agent(system_prompt=system_msg, middleware=[capturing_middleware])
+        agent = create_deep_agent(model=model, system_prompt=system_msg, middleware=[capturing_middleware])
         assert_all_deepagent_qualities(agent)
 
         agent.invoke({"messages": [HumanMessage(content="Hello")]})

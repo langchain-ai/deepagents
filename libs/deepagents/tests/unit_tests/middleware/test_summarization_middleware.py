@@ -198,56 +198,6 @@ class TestSummarizationMiddlewareInit:
         assert callable(middleware._backend)
 
 
-class TestNoBackendConfigured:
-    """Tests for behavior when no backend is configured."""
-
-    def test_no_offload_without_backend(self) -> None:
-        """Test that no offloading occurs when backend is `None`."""
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        # Should still return summarization result
-        result = middleware.before_model(state, runtime)
-
-        assert result is not None
-        assert "messages" in result
-
-    def test_summarization_works_without_backend(self) -> None:
-        """Test that summarization still works correctly without a backend."""
-        mock_model = make_mock_model(summary_response="Summary without backend")
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=None,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        result = middleware.before_model(state, runtime)
-
-        # Should have summary message
-        assert result is not None
-        new_messages = result["messages"].value
-        # First is the summary HumanMessage, then preserved messages
-        summary_msg = new_messages[0]
-        assert isinstance(summary_msg, HumanMessage)
-        assert "Summary without backend" in summary_msg.content  # Mocked summary text
-        assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
-
-
 class TestOffloadingBasic:
     """Tests for basic offloading behavior."""
 
@@ -477,32 +427,6 @@ class TestSummaryMessageFormat:
         assert "Test summary content" in summary_msg.content
         assert "</summary>" in summary_msg.content
 
-    def test_summary_without_backend_has_simple_format(self) -> None:
-        """Test that summary without backend uses simple format (no file path)."""
-        mock_model = make_mock_model(summary_response="Simple summary")
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=None,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        result = middleware.before_model(state, runtime)
-
-        summary_msg = result["messages"].value[0]
-
-        # Should NOT have file path reference
-        assert "full conversation history has been saved to" not in summary_msg.content
-
-        # Should have simple format
-        assert "Here is a summary of the conversation to date:" in summary_msg.content
-        assert "Simple summary" in summary_msg.content
-
     def test_summary_has_lc_source_marker(self) -> None:
         """Test that summary message has `lc_source=summarization` marker."""
         backend = MockBackend()
@@ -548,6 +472,61 @@ class TestSummaryMessageFormat:
         # Should fall back to simple format since write failed
         assert "full conversation history has been saved to" not in summary_msg.content
         assert "Here is a summary of the conversation to date:" in summary_msg.content
+
+    def test_summary_includes_file_path_after_second_summarization(self) -> None:
+        """Test that summary message includes file path reference after multiple summarizations.
+
+        This ensures the path reference is present even when a previous summary message
+        exists in the conversation (i.e., chained summarization).
+        """
+        backend = MockBackend()
+        mock_model = make_mock_model(summary_response="Second summary content")
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        # State after first summarization - starts with a summary message
+        messages = [
+            HumanMessage(
+                content="Here is a summary of the conversation to date:\n\nFirst summary...",
+                additional_kwargs={"lc_source": "summarization"},
+                id="prev-summary",
+            ),
+            # New messages after first summary that trigger second summarization
+            HumanMessage(content="New question 1", id="h1"),
+            AIMessage(content="Answer 1", id="a1"),
+            HumanMessage(content="New question 2", id="h2"),
+            AIMessage(content="Answer 2", id="a2"),
+            HumanMessage(content="New question 3", id="h3"),
+            AIMessage(content="Answer 3", id="a3"),
+        ]
+
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config(thread_id="multi-summarize-thread"):
+            result = middleware.before_model(state, runtime)
+
+        assert result is not None
+
+        # The summary message should be at index 1 (after RemoveMessage)
+        summary_msg = result["messages"][1]
+
+        # Should include the file path reference
+        assert "full conversation history has been saved to" in summary_msg.content
+        assert "/conversation_history/multi-summarize-thread.md" in summary_msg.content
+
+        # Should include the summary in XML tags
+        assert "<summary>" in summary_msg.content
+        assert "Second summary content" in summary_msg.content
+        assert "</summary>" in summary_msg.content
+
+        # Should have lc_source marker
+        assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
 
 
 class TestNoSummarizationTriggered:

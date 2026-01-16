@@ -1,9 +1,7 @@
-"""Summarization middleware with backend support for offloading conversation history.
+"""Summarization middleware for offloading conversation history.
 
-This module provides a `SummarizationMiddleware` class that extends langchain's base
-`SummarizationMiddleware` (imported as `BaseSummarizationMiddleware`) to persist
-conversation history to a backend before summarization, enabling retrieval of full
-context when needed by an agent.
+Persists conversation history to a backend prior to summarization, enabling retrieval of
+full context if needed later by an agent.
 
 ## Usage
 
@@ -24,7 +22,7 @@ middleware = SummarizationMiddleware(
 agent = create_deep_agent(middleware=[middleware])
 ```
 
-## Storage Format
+## Storage
 
 Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
 
@@ -37,7 +35,8 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, TypedDict
+from textwrap import dedent
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -46,17 +45,18 @@ from langchain.agents.middleware.summarization import (
     ContextSize,
     SummarizationMiddleware as BaseSummarizationMiddleware,
     TokenCounter,
-    count_tokens_approximately,
 )
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
+from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Overwrite
-from typing_extensions import override
+from typing_extensions import TypedDict, override
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
     from langchain.chat_models import BaseChatModel
+    from langchain_core.runnables.config import RunnableConfig
     from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
@@ -81,41 +81,13 @@ class TruncateArgsSettings(TypedDict, total=False):
 
 
 class SummarizationMiddleware(BaseSummarizationMiddleware):
-    """Summarization middleware with backend support for conversation history offloading.
-
-    Args:
-        model: The language model to use for generating summaries.
-        backend: Backend instance or factory for persisting conversation history.
-
-            If `None`, no offloading occurs (like base `SummarizationMiddleware`).
-        trigger: Threshold(s) that trigger summarization.
-        keep: Context retention policy after summarization.
-        token_counter: Function to count tokens in messages.
-        summary_prompt: Prompt template for generating summaries.
-        trim_tokens_to_summarize: Max tokens to include when generating summary.
-        history_path_prefix: Path prefix for storing conversation history.
-
-            Defaults to `'/conversation_history'`.
-
-    Example:
-        ```python
-        from deepagents.middleware.summarization import SummarizationMiddleware
-        from deepagents.backends import StateBackend
-
-        middleware = SummarizationMiddleware(
-            model="gpt-4o-mini",
-            backend=lambda tool_runtime: StateBackend(tool_runtime),
-            trigger=("tokens", 100000),
-            keep=("messages", 20),
-        )
-        ```
-    """
+    """Summarization middleware with backend for conversation history offloading."""
 
     def __init__(
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES | None = None,
+        backend: BACKEND_TYPES,
         trigger: ContextSize | list[ContextSize] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
@@ -129,56 +101,16 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         Args:
             model: The language model to use for generating summaries.
-            trigger: One or more thresholds that trigger summarization.
+            backend: Backend instance or factory for persisting conversation history.
+            trigger: Threshold(s) that trigger summarization.
+            keep: Context retention policy after summarization.
 
-                Provide a single
-                [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
-                tuple or a list of tuples, in which case summarization runs when any
-                threshold is met.
-
-                !!! example
-
-                    ```python
-                    # Trigger summarization when 50 messages is reached
-                    ("messages", 50)
-
-                    # Trigger summarization when 3000 tokens is reached
-                    ("tokens", 3000)
-
-                    # Trigger summarization either when 80% of model's max input tokens
-                    # is reached or when 100 messages is reached (whichever comes first)
-                    [("fraction", 0.8), ("messages", 100)]
-                    ```
-
-                    See [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
-                    for more details.
-            keep: Context retention policy applied after summarization.
-
-                Provide a [`ContextSize`][langchain.agents.middleware.summarization.ContextSize]
-                tuple to specify how much history to preserve.
-
-                Defaults to keeping the most recent `20` messages.
-
-                Does not support multiple values like `trigger`.
-
-                !!! example
-
-                    ```python
-                    # Keep the most recent 20 messages
-                    ("messages", 20)
-
-                    # Keep the most recent 3000 tokens
-                    ("tokens", 3000)
-
-                    # Keep the most recent 30% of the model's max input tokens
-                    ("fraction", 0.3)
-                    ```
+                Defaults to keeping last 20 messages.
             token_counter: Function to count tokens in messages.
             summary_prompt: Prompt template for generating summaries.
-            trim_tokens_to_summarize: Maximum tokens to keep when preparing messages for
-                the summarization call.
+            trim_tokens_to_summarize: Max tokens to include when generating summary.
 
-                Pass `None` to skip trimming entirely.
+                Defaults to 4000.
             truncate_args_settings: Settings for truncating large tool arguments in old messages.
 
                 Provide a [`TruncateArgsSettings`][deepagents.middleware.summarization.TruncateArgsSettings]
@@ -188,12 +120,25 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
                 !!! example
 
                     ```python
-                    # Truncate when 50 messages is reached, keep last 20 messages
+                    # Truncate when 50 messages is reached, ignoring the last 20 messages
                     {"trigger": ("messages", 50), "keep": ("messages", 20), "max_length": 100, "truncation_text": "...(truncated)"}
 
-                    # Truncate when 50% of tokens reached, keep 10% of tokens
+                    # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 100, "truncation_text": "...(truncated)"}
-                    ```
+            history_path_prefix: Path prefix for storing conversation history.
+
+        Example:
+            ```python
+            from deepagents.middleware.summarization import SummarizationMiddleware
+            from deepagents.backends import StateBackend
+
+            middleware = SummarizationMiddleware(
+                model="gpt-4o-mini",
+                backend=lambda tool_runtime: StateBackend(tool_runtime),
+                trigger=("tokens", 100000),
+                keep=("messages", 20),
+            )
+            ```
         """
         super().__init__(
             model=model,
@@ -223,7 +168,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         self,
         state: AgentState[Any],
         runtime: Runtime,
-    ) -> BackendProtocol | None:
+    ) -> BackendProtocol:
         """Resolve backend from instance or factory.
 
         Args:
@@ -231,18 +176,21 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             runtime: Runtime context for factory functions.
 
         Returns:
-            Resolved backend instance, or None if no backend configured.
+            Resolved backend instance.
         """
-        if self._backend is None:
-            return None
-
         if callable(self._backend):
+            # Because we're using `before_model`, which doesn't receive `config` as a
+            # parameter, we access it via `runtime.config` instead.
+            # Cast is safe: empty dict `{}` is a valid `RunnableConfig` (all fields are
+            # optional in TypedDict).
+            config = cast("RunnableConfig", getattr(runtime, "config", {}))
+
             tool_runtime = ToolRuntime(
                 state=state,
                 context=runtime.context,
                 stream_writer=runtime.stream_writer,
                 store=runtime.store,
-                config=getattr(runtime, "config", {}),
+                config=config,
                 tool_call_id=None,
             )
             return self._backend(tool_runtime)
@@ -252,7 +200,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         """Extract `thread_id` from langgraph config.
 
         Uses `get_config()` to access the `RunnableConfig` from langgraph's
-        contextvar. Falls back to a generated session ID if not available.
+        `contextvar`. Falls back to a generated session ID if not available.
 
         Returns:
             Thread ID string from config, or a generated session ID
@@ -294,7 +242,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             msg: Message to check.
 
         Returns:
-            `True` if this is a summary message from a previous summarization.
+            Whether this is a summary `HumanMessage` from a previous summarization.
         """
         if not isinstance(msg, HumanMessage):
             return False
@@ -303,9 +251,9 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
     def _filter_summary_messages(self, messages: list[AnyMessage]) -> list[AnyMessage]:
         """Filter out previous summary messages from a message list.
 
-        When chained summarization occurs, we don't want to re-offload the
-        previous summary `HumanMessage` since the original messages are already
-        stored in the backend.
+        When chained summarization occurs, we don't want to re-offload the previous
+        summary `HumanMessage` since the original messages are already stored in the
+        backend.
 
         Args:
             messages: List of messages to filter.
@@ -322,19 +270,22 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             summary: The generated summary text.
             file_path: Path where conversation history was stored, or `None`.
 
+                Optional since offloading may fail.
+
         Returns:
             List containing the summary `HumanMessage`.
         """
         if file_path is not None:
-            content = f"""You are in the middle of a conversation that has been summarized.
+            content = dedent(f"""\
+                You are in the middle of a conversation that has been summarized.
 
-The full conversation history has been saved to {file_path} should you need to refer back to it for details.
+                The full conversation history has been saved to {file_path} should you need to refer back to it for details.
 
-A condensed summary follows:
+                A condensed summary follows:
 
-<summary>
-{summary}
-</summary>"""
+                <summary>
+                {summary}
+                </summary>""")
         else:
             content = f"Here is a summary of the conversation to date:\n\n{summary}"
 
@@ -526,8 +477,8 @@ A condensed summary follows:
         Appends evicted messages to a single markdown file per thread. Each
         summarization event adds a new section with a timestamp header.
 
-        Previous summary messages are filtered out to avoid redundant storage
-        during chained summarization events.
+        Previous summary messages are filtered out to avoid redundant storage during
+        chained summarization events.
 
         Args:
             backend: Backend to write to.
@@ -542,7 +493,7 @@ A condensed summary follows:
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{self._format_messages_as_markdown(filtered_messages)}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
         # Read existing content (if any) and append
         existing_content = ""
@@ -558,7 +509,7 @@ A condensed summary follows:
         combined_content = existing_content + new_section
 
         try:
-            result = backend.write(path, combined_content)
+            result = backend.edit(path, existing_content, combined_content) if existing_content else backend.write(path, combined_content)
             if result is None or result.error:
                 error_msg = result.error if result else "backend returned None"
                 logger.warning(
@@ -569,7 +520,7 @@ A condensed summary follows:
                 )
                 return None
         except Exception as e:  # noqa: BLE001
-            # Don't fail summarization if offloading fails - this is optional functionality
+            # Don't fail summarization if offloading fails - may revisit this?
             logger.warning(
                 "Exception offloading conversation history to %s (%d messages): %s: %s",
                 path,
@@ -592,8 +543,8 @@ A condensed summary follows:
         Appends evicted messages to a single markdown file per thread. Each
         summarization event adds a new section with a timestamp header.
 
-        Previous summary messages are filtered out to avoid redundant storage
-        during chained summarization events.
+        Previous summary messages are filtered out to avoid redundant storage during
+        chained summarization events.
 
         Args:
             backend: Backend to write to.
@@ -608,7 +559,7 @@ A condensed summary follows:
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{self._format_messages_as_markdown(filtered_messages)}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
         # Read existing content (if any) and append
         existing_content = ""
@@ -624,7 +575,9 @@ A condensed summary follows:
         combined_content = existing_content + new_section
 
         try:
-            result = await backend.awrite(path, combined_content)
+            result = (
+                await backend.aedit(path, existing_content, combined_content) if existing_content else await backend.awrite(path, combined_content)
+            )
             if result is None or result.error:
                 error_msg = result.error if result else "backend returned None"
                 logger.warning(
@@ -635,7 +588,7 @@ A condensed summary follows:
                 )
                 return None
         except Exception as e:  # noqa: BLE001
-            # Don't fail summarization if offloading fails - this is optional functionality
+            # Don't fail summarization if offloading fails - may revisit this?
             logger.warning(
                 "Exception offloading conversation history to %s (%d messages): %s: %s",
                 path,
@@ -660,6 +613,9 @@ A condensed summary follows:
         Then offloads messages to backend before summarization if thresholds are met.
         The summary message includes a reference to the file path where the
         full conversation history was stored.
+
+        The summary message includes a reference to the file path where the full
+        conversation history was stored.
 
         Args:
             state: The agent state.
@@ -696,11 +652,9 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first to get the file path for the summary message
-        file_path: str | None = None
+        # Offload to backend first to get the file path to include in the  summary message
         backend = self._get_backend(state, runtime)
-        if backend is not None:
-            file_path = self._offload_to_backend(backend, messages_to_summarize)
+        file_path = self._offload_to_backend(backend, messages_to_summarize)
 
         # Generate summary
         summary = self._create_summary(messages_to_summarize)
@@ -730,6 +684,9 @@ A condensed summary follows:
         The summary message includes a reference to the file path where the
         full conversation history was stored.
 
+        The summary message includes a reference to the file path where the full
+        conversation history was stored.
+
         Args:
             state: The agent state.
             runtime: The runtime environment.
@@ -765,11 +722,9 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first to get the file path for the summary message
-        file_path: str | None = None
+        # Offload to backend first to get the file path to include in the  summary message
         backend = self._get_backend(state, runtime)
-        if backend is not None:
-            file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
+        file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
 
         # Generate summary
         summary = await self._acreate_summary(messages_to_summarize)

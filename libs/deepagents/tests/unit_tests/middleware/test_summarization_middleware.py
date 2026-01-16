@@ -513,8 +513,8 @@ class TestSummaryMessageFormat:
 
         assert result is not None
 
-        # The summary message should be at index 1 (after RemoveMessage)
-        summary_msg = result["messages"][1]
+        # The summary message should be at index 0 (first in the Overwrite)
+        summary_msg = result["messages"].value[0]
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content

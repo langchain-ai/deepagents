@@ -170,9 +170,7 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     followup_message = {
         "role": "user",
         "content": (
-            "What is the first standard library import in base.py? "
-            "(After the `from __future__` import.) "
-            "Check the conversation history if needed."
+            "What is the first standard library import in base.py? (After the `from __future__` import.) Check the conversation history if needed."
         ),
     }
     followup_result = agent.invoke({"messages": [followup_message]}, config)
@@ -182,6 +180,4 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     assert final_ai_message.type == "ai", "Expected final message to be from the AI"
 
     # Check that the answer mentions "base64" (the first standard library import)
-    assert "base64" in final_ai_message.content.lower(), (
-        f"Expected agent to find 'base64' as the first import. Got: {final_ai_message.content}"
-    )
+    assert "base64" in final_ai_message.content.lower(), f"Expected agent to find 'base64' as the first import. Got: {final_ai_message.content}"

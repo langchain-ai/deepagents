@@ -17,6 +17,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
+from pydantic import Field
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
@@ -34,7 +35,6 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
 )
 from deepagents.middleware._utils import append_to_system_message
-from pydantic import Field
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 2000

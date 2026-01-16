@@ -252,7 +252,7 @@ async def execute_task_textual(
 
                     message, _metadata = data
 
-                    # Filter out summarization middleware output - show status instead
+                    # Filter out summarization LLM output & update status to reflect
                     if _is_summarization_chunk(_metadata):
                         adapter._update_status("Summarizing conversation...")
                         continue

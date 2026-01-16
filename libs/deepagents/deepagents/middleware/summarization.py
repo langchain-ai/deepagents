@@ -189,20 +189,10 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
                     ```python
                     # Truncate when 50 messages is reached, keep last 20 messages
-                    {
-                        "trigger": ("messages", 50),
-                        "keep": ("messages", 20),
-                        "max_length": 100,
-                        "truncation_text": "...(truncated)"
-                    }
+                    {"trigger": ("messages", 50), "keep": ("messages", 20), "max_length": 100, "truncation_text": "...(truncated)"}
 
                     # Truncate when 50% of tokens reached, keep 10% of tokens
-                    {
-                        "trigger": ("fraction", 0.5),
-                        "keep": ("fraction", 0.1),
-                        "max_length": 100,
-                        "truncation_text": "...(truncated)"
-                    }
+                    {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 100, "truncation_text": "...(truncated)"}
                     ```
         """
         super().__init__(
@@ -704,9 +694,7 @@ A condensed summary follows:
                 return {"messages": Overwrite(truncated_messages)}
             return None
 
-        messages_to_summarize, preserved_messages = self._partition_messages(
-            truncated_messages, cutoff_index
-        )
+        messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first to get the file path for the summary message
         file_path: str | None = None
@@ -721,10 +709,12 @@ A condensed summary follows:
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         return {
-            "messages": Overwrite([
-                *new_messages,
-                *preserved_messages,
-            ])
+            "messages": Overwrite(
+                [
+                    *new_messages,
+                    *preserved_messages,
+                ]
+            )
         }
 
     @override
@@ -773,9 +763,7 @@ A condensed summary follows:
                 return {"messages": Overwrite(truncated_messages)}
             return None
 
-        messages_to_summarize, preserved_messages = self._partition_messages(
-            truncated_messages, cutoff_index
-        )
+        messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first to get the file path for the summary message
         file_path: str | None = None
@@ -790,8 +778,10 @@ A condensed summary follows:
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         return {
-            "messages": Overwrite([
-                *new_messages,
-                *preserved_messages,
-            ])
+            "messages": Overwrite(
+                [
+                    *new_messages,
+                    *preserved_messages,
+                ]
+            )
         }

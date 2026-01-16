@@ -302,9 +302,9 @@ class TestDeepAgentEndToEnd:
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
         """Test line count limiting in read_file tool with very long lines."""
-        # Create a file with a very long line (>30,000 chars) that will be split into continuation lines
-        # This will become line 1, 1.1, 1.2, 1.3 (4 output lines for 1 logical line)
-        very_long_line = "x" * 35000  # 35,000 characters -> will split into 4 continuation lines (10k each)
+        # Create a file with a very long line (18,000 chars) that will be split into continuation lines
+        # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
+        very_long_line = "x" * 18000  # 18,000 characters -> will split into 4 continuation lines (5k each)
 
         # Add some normal lines before and after
         lines = [

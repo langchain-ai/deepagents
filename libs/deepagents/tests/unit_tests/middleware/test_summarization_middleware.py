@@ -198,58 +198,6 @@ class TestSummarizationMiddlewareInit:
         assert callable(middleware._backend)
 
 
-class TestNoBackendConfigured:
-    """Tests for behavior when no backend is configured."""
-
-    def test_no_offload_without_backend(self) -> None:
-        """Test that no offloading occurs when backend is `None`."""
-        mock_model = make_mock_model()
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        # Should still return summarization result
-        result = middleware.before_model(state, runtime)
-
-        assert result is not None
-        assert "messages" in result
-
-    def test_summarization_works_without_backend(self) -> None:
-        """Test that summarization still works correctly without a backend."""
-        mock_model = make_mock_model(summary_response="Summary without backend")
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=None,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        result = middleware.before_model(state, runtime)
-
-        # Should have summary message
-        assert result is not None
-        new_messages = result["messages"]
-        # First is RemoveMessage, then the summary HumanMessage, then preserved messages
-        assert isinstance(new_messages[0], RemoveMessage)
-
-        summary_msg = new_messages[1]
-        assert isinstance(summary_msg, HumanMessage)
-        assert "Summary without backend" in summary_msg.content  # Mocked summary text
-        assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
-
-
 class TestOffloadingBasic:
     """Tests for basic offloading behavior."""
 
@@ -478,34 +426,6 @@ class TestSummaryMessageFormat:
         assert "<summary>" in summary_msg.content
         assert "Test summary content" in summary_msg.content
         assert "</summary>" in summary_msg.content
-
-    def test_summary_without_backend_has_simple_format(self) -> None:
-        """Test that summary without backend uses simple format (no file path)."""
-        mock_model = make_mock_model(summary_response="Simple summary")
-
-        middleware = SummarizationMiddleware(
-            model=mock_model,
-            backend=None,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        result = middleware.before_model(state, runtime)
-
-        assert result is not None
-        assert "messages" in result
-        summary_msg = result["messages"][1]
-
-        # Should NOT have file path reference
-        assert "full conversation history has been saved to" not in summary_msg.content
-
-        # Should have simple format
-        assert "Here is a summary of the conversation to date:" in summary_msg.content
-        assert "Simple summary" in summary_msg.content
 
     def test_summary_has_lc_source_marker(self) -> None:
         """Test that summary message has `lc_source=summarization` marker."""

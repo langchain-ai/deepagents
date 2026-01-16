@@ -1,0 +1,30 @@
+name: "\U0001F512 Privileged"
+description: You are a Deep Agents maintainer. If not, check the other options.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If you are not a Deep Agents maintainer, employee, or were not asked directly by a maintainer to create an issue, then please start the conversation on the [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18) instead.
+  - type: checkboxes
+    id: privileged
+    attributes:
+      label: Privileged issue
+      description: Confirm that you are allowed to create an issue here.
+      options:
+        - label: I am a Deep Agents maintainer.
+          required: true
+  - type: textarea
+    id: content
+    attributes:
+      label: Issue Content
+      description: Add the content of the issue here.
+  - type: checkboxes
+    id: package
+    attributes:
+      label: Area (Required)
+      description: |
+        Please select area(s) that this issue is related to.
+      options:
+        - label: deepagents (SDK)
+        - label: cli
+        - label: Other / not sure / general

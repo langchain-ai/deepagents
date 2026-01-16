@@ -372,7 +372,14 @@ def _read_file_tool_generator(
         """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        return resolved_backend.read(file_path, offset=offset, limit=limit)
+        result = resolved_backend.read(file_path, offset=offset, limit=limit)
+
+        lines = result.splitlines(keepends=True)
+        if len(lines) > limit:
+            lines = lines[:limit]
+            result = "".join(lines)
+
+        return result
 
     async def async_read_file(
         file_path: str,
@@ -383,7 +390,14 @@ def _read_file_tool_generator(
         """Asynchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        return await resolved_backend.aread(file_path, offset=offset, limit=limit)
+        result = await resolved_backend.aread(file_path, offset=offset, limit=limit)
+
+        lines = result.splitlines(keepends=True)
+        if len(lines) > limit:
+            lines = lines[:limit]
+            result = "".join(lines)
+
+        return result
 
     return StructuredTool.from_function(
         name="read_file",

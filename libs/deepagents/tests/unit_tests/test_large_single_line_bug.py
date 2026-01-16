@@ -1,7 +1,7 @@
 """Test for large single-line file bug.
 
 When tool results are evicted via str(dict), they become a single line.
-read_file chunks this into 100 lines × 5000 chars = 500K chars—token overflow.
+read_file chunks this into 100 lines x 5000 chars = 500K chars - token overflow.
 """
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -57,9 +57,7 @@ class TestLargeSingleLineFile:
         )
 
         agent = create_deep_agent(model=fake_model)
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Write and read a large file")]}
-        )
+        result = agent.invoke({"messages": [HumanMessage(content="Write and read a large file")]})
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         read_file_response = tool_messages[-1]

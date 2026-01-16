@@ -92,6 +92,9 @@ def show_help() -> None:
     console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
     )
+    console.print(
+        "  --mcp-config PATH          Load MCP tools from JSON config file (Claude Desktop format)"
+    )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print(
         "  --shell-allow-list CMDS    Comma-separated local shell commands to allow"
@@ -207,6 +210,14 @@ def show_skills_help() -> None:
         "  3. ~/.agents/skills/               user skills\n"
         "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
         "  5. <package>/built_in_skills/      built-in skills[/dim]",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "\n[dim]Create your first skill:\n  deepagents skills create my-skill[/dim]",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --mcp-config mcp.json        # Load MCP tools from config file",
         style=COLORS["dim"],
     )
     console.print()

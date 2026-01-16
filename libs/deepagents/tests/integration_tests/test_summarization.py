@@ -100,8 +100,6 @@ def test_summarize_continues_task(tmp_path: Path, model_name: str) -> None:
     # Verify the agent made substantial progress reading the file after summarization.
     # We check the highest line number seen across all tool messages to confirm
     # the agent continued working after context was summarized.
-    # Note: The LLM may not read the entire file if it decides it has enough info,
-    # so we check for "substantial progress" (past line 2000) rather than completion.
     max_line_seen = 0
     reached_eof = False
 
@@ -115,7 +113,7 @@ def test_summarize_continues_task(tmp_path: Path, model_name: str) -> None:
             if line_numbers:
                 max_line_seen = max(max_line_seen, *[int(n) for n in line_numbers])
 
-    assert max_line_seen >= 2000 or reached_eof, (  # noqa: PLR2004
+    assert max_line_seen >= 4609 or reached_eof, (  # noqa: PLR2004
         f"Expected agent to make substantial progress reading file. Max line seen: {max_line_seen}, reached EOF: {reached_eof}"
     )
 

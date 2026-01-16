@@ -195,7 +195,7 @@ class BackendProtocol(abc.ABC):
         self,
         file_path: str,
         offset: int = 0,
-        limit: int = 2000,
+        limit: int = 500,
     ) -> str:
         """Read file content with line numbers.
 
@@ -222,7 +222,7 @@ class BackendProtocol(abc.ABC):
         self,
         file_path: str,
         offset: int = 0,
-        limit: int = 2000,
+        limit: int = 500,
     ) -> str:
         """Async version of read."""
         return await asyncio.to_thread(self.read, file_path, offset, limit)

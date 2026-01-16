@@ -208,7 +208,7 @@ class FilesystemBackend(BackendProtocol):
         self,
         file_path: str,
         offset: int = 0,
-        limit: int = 2000,
+        limit: int = 500,
     ) -> str:
         """Read file content with line numbers.
 

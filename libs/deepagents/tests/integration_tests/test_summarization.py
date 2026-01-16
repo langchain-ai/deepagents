@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from textwrap import dedent
+from typing import Any
 
 import pytest
 import requests
@@ -42,7 +43,7 @@ def _write_file(p: Path, content: str) -> None:
     p.write_text(content)
 
 
-def _setup_summarization_test(tmp_path: Path, model_name: str):
+def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, FilesystemBackend, Path, dict[str, Any]]:
     """Common setup for summarization tests.
 
     Returns:

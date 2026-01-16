@@ -1,5 +1,6 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
+from collections.abc import Generator
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -123,7 +124,7 @@ def make_mock_runtime() -> MagicMock:
 
 
 @contextmanager
-def mock_get_config(thread_id: str | None = "test-thread-123"):
+def mock_get_config(thread_id: str | None = "test-thread-123") -> Generator[None, None, None]:
     """Context manager to mock `get_config()` with a specific `thread_id`.
 
     Args:
@@ -293,7 +294,8 @@ class TestOffloadingBasic:
 
         # Should contain both old and new sections
         assert "## Summarized at 2024-01-01T00:00:00Z" in content
-        assert content.count("## Summarized at") == 2  # Two summarization sections
+        expected_section_count = 2  # One existing + one new summarization section
+        assert content.count("## Summarized at") == expected_section_count
 
 
 class TestRealisticScenarios:

@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict, cast
 
 from langchain.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -354,23 +354,28 @@ class MemoryMiddleware(AgentMiddleware):
         return MemoryStateUpdate(memory_contents=contents)
 
     def modify_request(self, request: ModelRequest) -> ModelRequest:
-        """Inject memory content into the system prompt.
+        """Inject memory content into the system message.
 
         Args:
             request: Model request to modify.
 
         Returns:
-            Modified request with memory injected into system prompt.
+            Modified request with memory injected into system message.
         """
         contents = request.state.get("memory_contents", {})
         agent_memory = self._format_agent_memory(contents)
 
-        if request.system_prompt:
-            system_prompt = agent_memory + "\n\n" + request.system_prompt
+        # Memory is prepended (before other system content)
+        if request.system_message is not None:
+            new_system_content = [
+                {"type": "text", "text": f"{agent_memory}\n\n"},
+                *request.system_message.content_blocks,
+            ]
         else:
-            system_prompt = agent_memory
+            new_system_content = [{"type": "text", "text": agent_memory}]
+        new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
 
-        return request.override(system_message=SystemMessage(system_prompt))
+        return request.override(system_message=new_system_message)
 
     def wrap_model_call(
         self,

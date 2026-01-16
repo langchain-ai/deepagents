@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel
 
@@ -194,3 +194,18 @@ class TestDeepAgents:
         assert_all_deepagent_qualities(agent)
         result = await agent.ainvoke({"messages": [HumanMessage(content="What is your name?")]})
         assert "Jackson" in result["messages"][-1].content
+
+    def test_deep_agent_with_system_message(self):
+        """Test that create_deep_agent accepts a SystemMessage for system_prompt."""
+        system_msg = SystemMessage(content=[
+            {"type": "text", "text": "You are a helpful assistant."},
+            {"type": "text", "text": "Always be polite."},
+        ])
+        agent = create_deep_agent(system_prompt=system_msg)
+        assert_all_deepagent_qualities(agent)
+
+    def test_deep_agent_with_system_message_string_content(self):
+        """Test that create_deep_agent accepts a SystemMessage with string content."""
+        system_msg = SystemMessage(content="You are a helpful research assistant.")
+        agent = create_deep_agent(system_prompt=system_msg)
+        assert_all_deepagent_qualities(agent)

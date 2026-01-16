@@ -93,7 +93,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
@@ -110,6 +110,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
@@ -563,13 +564,13 @@ class SkillsMiddleware(AgentMiddleware):
         return "\n".join(lines)
 
     def modify_request(self, request: ModelRequest) -> ModelRequest:
-        """Inject skills documentation into a model request's system prompt.
+        """Inject skills documentation into a model request's system message.
 
         Args:
             request: Model request to modify
 
         Returns:
-            New model request with skills documentation injected into system prompt
+            New model request with skills documentation injected into system message
         """
         skills_metadata = request.state.get("skills_metadata", [])
         skills_locations = self._format_skills_locations()
@@ -580,12 +581,16 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
         )
 
-        if request.system_prompt:
-            system_prompt = request.system_prompt + "\n\n" + skills_section
+        if request.system_message is not None:
+            new_system_content = [
+                *request.system_message.content_blocks,
+                {"type": "text", "text": f"\n\n{skills_section}"},
+            ]
         else:
-            system_prompt = skills_section
+            new_system_content = [{"type": "text", "text": skills_section}]
+        new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
 
-        return request.override(system_prompt=system_prompt)
+        return request.override(system_message=new_system_message)
 
     def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution (synchronous).

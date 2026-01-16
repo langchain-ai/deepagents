@@ -8,7 +8,7 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnCon
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -522,10 +522,17 @@ class SubAgentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Update the system prompt to include instructions on using subagents."""
+        """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
-            return handler(request.override(system_prompt=system_prompt))
+            if request.system_message is not None:
+                new_system_content = [
+                    *request.system_message.content_blocks,
+                    {"type": "text", "text": f"\n\n{self.system_prompt}"},
+                ]
+            else:
+                new_system_content = [{"type": "text", "text": self.system_prompt}]
+            new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+            return handler(request.override(system_message=new_system_message))
         return handler(request)
 
     async def awrap_model_call(
@@ -533,8 +540,15 @@ class SubAgentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """(async) Update the system prompt to include instructions on using subagents."""
+        """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            system_prompt = request.system_prompt + "\n\n" + self.system_prompt if request.system_prompt else self.system_prompt
-            return await handler(request.override(system_prompt=system_prompt))
+            if request.system_message is not None:
+                new_system_content = [
+                    *request.system_message.content_blocks,
+                    {"type": "text", "text": f"\n\n{self.system_prompt}"},
+                ]
+            else:
+                new_system_content = [{"type": "text", "text": self.system_prompt}]
+            new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+            return await handler(request.override(system_message=new_system_message))
         return await handler(request)

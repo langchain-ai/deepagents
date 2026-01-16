@@ -4,7 +4,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Literal, NotRequired, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -14,7 +14,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -981,7 +981,15 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+            if request.system_message is not None:
+                new_system_content = [
+                    *request.system_message.content_blocks,
+                    {"type": "text", "text": f"\n\n{system_prompt}"},
+                ]
+            else:
+                new_system_content = [{"type": "text", "text": system_prompt}]
+            new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+            request = request.override(system_message=new_system_message)
 
         return handler(request)
 
@@ -1028,7 +1036,15 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+            if request.system_message is not None:
+                new_system_content = [
+                    *request.system_message.content_blocks,
+                    {"type": "text", "text": f"\n\n{system_prompt}"},
+                ]
+            else:
+                new_system_content = [{"type": "text", "text": system_prompt}]
+            new_system_message = SystemMessage(content=cast("list[str | dict[str, str]]", new_system_content))
+            request = request.override(system_message=new_system_message)
 
         return await handler(request)
 

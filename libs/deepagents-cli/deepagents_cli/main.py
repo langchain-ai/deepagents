@@ -178,6 +178,10 @@ def parse_args() -> argparse.Namespace:
         "--sandbox-setup",
         help="Path to setup script to run in sandbox after creation",
     )
+    parser.add_argument(
+        "--mcp-config",
+        help="Path to MCP servers JSON configuration file (Claude Desktop format)",
+    )
     return parser.parse_args()
 
 
@@ -191,6 +195,7 @@ async def run_textual_cli_async(
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
+    mcp_config_path: str | None = None,
 ) -> None:
     """Run the Textual CLI interface (async version).
 
@@ -203,6 +208,7 @@ async def run_textual_cli_async(
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
+        mcp_config_path: Optional path to MCP servers JSON configuration file
     """
     from deepagents_cli.app import run_textual_app
 
@@ -220,6 +226,24 @@ async def run_textual_cli_async(
         tools = [http_request, fetch_url]
         if settings.has_tavily:
             tools.append(web_search)
+
+        # Load MCP tools if config provided
+        mcp_client = None
+        if mcp_config_path:
+            try:
+                from deepagents_cli.mcp_tools import get_mcp_tools
+                mcp_tools, mcp_client = await get_mcp_tools(mcp_config_path)
+                tools.extend(mcp_tools)
+                console.print(f"[green]✓ Loaded {len(mcp_tools)} MCP tools[/green]")
+            except ImportError:
+                console.print("[yellow]⚠ langchain-mcp-adapters not installed[/yellow]")
+                console.print("[dim]Install: uv pip install langchain-mcp-adapters[/dim]")
+            except FileNotFoundError as e:
+                console.print(f"[red]✗ MCP config file not found: {e}[/red]")
+                sys.exit(1)
+            except Exception as e:
+                console.print(f"[red]✗ Failed to load MCP tools: {e}[/red]")
+                sys.exit(1)
 
         # Handle sandbox mode
         sandbox_backend = None
@@ -263,6 +287,14 @@ async def run_textual_cli_async(
             console.print(error_text)
             sys.exit(1)
         finally:
+            # Clean up MCP client if initialized
+            # Note: MultiServerMCPClient uses get_tools() which creates sessions per tool call
+            # No explicit cleanup needed as sessions are closed automatically
+            if 'mcp_client' in locals() and mcp_client is not None:
+                with contextlib.suppress(Exception):
+                    if hasattr(mcp_client, 'cleanup'):
+                        await mcp_client.cleanup()
+
             # Clean up sandbox if we created one
             if sandbox_cm is not None:
                 with contextlib.suppress(Exception):
@@ -364,6 +396,7 @@ def cli_main() -> None:
                     thread_id=thread_id,
                     is_resumed=is_resumed,
                     initial_prompt=getattr(args, "initial_prompt", None),
+                    mcp_config_path=getattr(args, "mcp_config", None),
                 )
             )
     except KeyboardInterrupt:

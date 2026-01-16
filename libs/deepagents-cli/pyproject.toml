@@ -24,6 +24,8 @@ dependencies = [
   "textual>=1.0.0",
   "textual-autocomplete>=3.0.0",
   "aiosqlite>=0.19.0",
+  "langchain-mcp-adapters>=0.1.0",
+  "responses>=0.25.8",
 ]
 
 [project.scripts]

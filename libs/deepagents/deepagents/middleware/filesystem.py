@@ -982,7 +982,7 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, f"\n\n{system_prompt}")
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
             request = request.override(system_message=new_system_message)
 
         return handler(request)
@@ -1030,7 +1030,7 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, f"\n\n{system_prompt}")
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
             request = request.override(system_message=new_system_message)
 
         return await handler(request)

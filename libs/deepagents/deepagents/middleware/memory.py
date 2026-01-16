@@ -366,7 +366,7 @@ class MemoryMiddleware(AgentMiddleware):
         contents = request.state.get("memory_contents", {})
         agent_memory = self._format_agent_memory(contents)
 
-        new_system_message = append_to_system_message(request.system_message, f"\n\n{agent_memory}")
+        new_system_message = append_to_system_message(request.system_message, agent_memory)
 
         return request.override(system_message=new_system_message)
 

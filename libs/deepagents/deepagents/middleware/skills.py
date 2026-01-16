@@ -582,7 +582,7 @@ class SkillsMiddleware(AgentMiddleware):
             skills_list=skills_list,
         )
 
-        new_system_message = append_to_system_message(request.system_message, f"\n\n{skills_section}")
+        new_system_message = append_to_system_message(request.system_message, skills_section)
 
         return request.override(system_message=new_system_message)
 

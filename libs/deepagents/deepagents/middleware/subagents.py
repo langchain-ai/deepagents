@@ -526,7 +526,7 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, f"\n\n{self.system_prompt}")
+            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
             return handler(request.override(system_message=new_system_message))
         return handler(request)
 
@@ -537,6 +537,6 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, f"\n\n{self.system_prompt}")
+            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
             return await handler(request.override(system_message=new_system_message))
         return await handler(request)

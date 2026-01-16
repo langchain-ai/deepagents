@@ -34,6 +34,7 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
 )
 from deepagents.middleware._utils import append_to_system_message
+from pydantic import Field
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_LINE_LENGTH = 2000
@@ -193,13 +194,9 @@ Usage:
 
 WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
 
-Parameters:
-- file_path: Absolute path where the file should be created (must be absolute, not relative)
-- content: The text content to write to the file (required)
-
 Usage:
-- This tool creates new files only
-- To modify existing files, use the edit_file tool instead
+    - This tool creates new files only.
+    - To modify existing files, use the edit_file tool instead.
 """
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
@@ -461,8 +458,8 @@ def _write_file_tool_generator(
     tool_description = custom_description or WRITE_FILE_TOOL_DESCRIPTION
 
     def sync_write_file(
-        file_path: str,
-        content: str,
+        file_path: Annotated[str, Field(description="Absolute path where the file should be created. Must be absolute, not relative.")],
+        content: Annotated[str, Field(description="The text content to write to the file. This parameter is required.")],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> Command | str:
         """Synchronous wrapper for write_file tool."""

@@ -14,7 +14,7 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import MouseUp  # noqa: TC002 - used in type annotation
+from textual.events import Click, MouseUp  # noqa: TC002 - used in type annotation
 from textual.widgets import Static  # noqa: TC002 - used at runtime
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
@@ -672,6 +672,13 @@ class DeepAgentsApp(App):
         """Handle escape in approval menu - reject."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+
+    def on_click(self, _event: Click) -> None:
+        """Handle clicks anywhere in the terminal to focus on the command line."""
+        if not self._chat_input:
+            return
+
+        self.call_after_refresh(self._chat_input.focus_input)
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002
         """Copy selection to clipboard on mouse release."""

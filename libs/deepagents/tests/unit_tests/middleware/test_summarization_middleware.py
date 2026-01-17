@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
-from deepagents.backends.protocol import BackendProtocol, WriteResult
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 if TYPE_CHECKING:
@@ -94,7 +94,9 @@ class MockBackend(BackendProtocol):
             existing_content: Initialize the backend with existing content for reads.
         """
         self.write_calls: list[tuple[str, str]] = []
+        self.edit_calls: list[tuple[str, str, str]] = []
         self.read_calls: list[str] = []
+        self.download_files_calls: list[list[str]] = []
         self.should_fail = should_fail
         self.error_message = error_message
         self.existing_content = existing_content
@@ -108,6 +110,33 @@ class MockBackend(BackendProtocol):
     async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         return self.read(path, offset, limit)
 
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download files - returns raw content as bytes."""
+        self.download_files_calls.append(paths)
+        responses = []
+        for path in paths:
+            if self.existing_content is not None:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path,
+                        content=self.existing_content.encode("utf-8"),
+                        error=None,
+                    )
+                )
+            else:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path,
+                        content=None,
+                        error="file_not_found",
+                    )
+                )
+        return responses
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Async version of download_files."""
+        return self.download_files(paths)
+
     def write(self, path: str, content: str) -> WriteResult:
         self.write_calls.append((path, content))
         if self.should_fail:
@@ -116,6 +145,17 @@ class MockBackend(BackendProtocol):
 
     async def awrite(self, path: str, content: str) -> WriteResult:
         return self.write(path, content)
+
+    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: ARG002
+        """Edit a file by replacing string occurrences."""
+        self.edit_calls.append((path, old_string, new_string))
+        if self.should_fail:
+            return EditResult(error=self.error_message or "Mock edit failure")
+        return EditResult(path=path, occurrences=1)
+
+    async def aedit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:
+        """Async version of edit."""
+        return self.edit(path, old_string, new_string, replace_all)
 
 
 def make_mock_runtime() -> MagicMock:
@@ -249,12 +289,16 @@ class TestOffloadingBasic:
 
         middleware.before_model(state, runtime)
 
-        _, content = backend.write_calls[0]
+        assert len(backend.edit_calls) == 1
+        _, old_string, new_string = backend.edit_calls[0]
 
-        # Should contain both old and new sections
-        assert "## Summarized at 2024-01-01T00:00:00Z" in content
+        # old_string should be the existing content
+        assert old_string == existing
+
+        # new_string (combined content) should contain both old and new sections
+        assert "## Summarized at 2024-01-01T00:00:00Z" in new_string
         expected_section_count = 2  # One existing + one new summarization section
-        assert content.count("## Summarized at") == expected_section_count
+        assert new_string.count("## Summarized at") == expected_section_count
 
     def test_typical_tool_heavy_conversation(self) -> None:
         """Test with a realistic tool-heavy conversation pattern.

@@ -282,12 +282,13 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
         # Read existing content (if any) and append
+        # Note: We use download_files() instead of read() because read() returns
+        # line-numbered content (for LLM consumption), but edit() expects raw content.
         existing_content = ""
         try:
-            content = backend.read(path)
-            # backend.read returns a string, empty or error string if file doesn't exist
-            if content and not content.startswith("Error:"):
-                existing_content = content
+            responses = backend.download_files([path])
+            if responses and responses[0].content is not None and responses[0].error is None:
+                existing_content = responses[0].content.decode("utf-8")
         except Exception:  # noqa: BLE001, S110
             # File doesn't exist yet, that's fine
             pass
@@ -348,12 +349,13 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
         # Read existing content (if any) and append
+        # Note: We use adownload_files() instead of aread() because read() returns
+        # line-numbered content (for LLM consumption), but edit() expects raw content.
         existing_content = ""
         try:
-            content = await backend.aread(path)
-            # backend.aread returns a string, empty or error string if file doesn't exist
-            if content and not content.startswith("Error:"):
-                existing_content = content
+            responses = await backend.adownload_files([path])
+            if responses and responses[0].content is not None and responses[0].error is None:
+                existing_content = responses[0].content.decode("utf-8")
         except Exception:  # noqa: BLE001, S110
             # File doesn't exist yet, that's fine
             pass

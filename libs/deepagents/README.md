@@ -467,6 +467,59 @@ agent = create_agent(
 )
 ```
 
+### `ToolSearchMiddleware`
+
+When agents have access to many tools (50+), tool definitions can consume significant context tokens and tool selection accuracy can degrade. `ToolSearchMiddleware` enables on-demand tool discovery to solve these problems.
+
+**How it works:**
+
+1. At initialization, the middleware indexes all tools
+2. If tools exceed a token threshold (default 10% of context), "deferred mode" activates
+3. In deferred mode, only a `search_tools` meta-tool and `always_include` tools are available initially
+4. The agent calls `search_tools(query)` to discover relevant tools
+5. Discovered tools become available for subsequent calls
+
+```python
+from langchain.agents import create_agent
+from deepagents.middleware.tool_search import ToolSearchMiddleware
+
+# Many tools from MCP servers or other sources
+many_tools = get_mcp_tools()  # 100+ tools
+
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    tools=many_tools,
+    middleware=[
+        ToolSearchMiddleware(
+            # Tools that should always be available (bypass search)
+            always_include=["read_file", "write_file", "ls"],
+            # Search mode: "bm25" (default), "regex", or "hybrid"
+            search_mode="hybrid",
+            # Token threshold for activating deferred mode
+            # Can be float (fraction of context) or int (absolute tokens)
+            token_threshold=0.10,  # 10% of context window
+        ),
+    ],
+)
+```
+
+**Configuration options:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `token_threshold` | `0.10` | Fraction of context window or absolute token count |
+| `context_window` | Auto-detect | Context window size in tokens |
+| `always_include` | `[]` | Tool names that bypass search |
+| `search_mode` | `"bm25"` | Search algorithm: `"bm25"`, `"regex"`, or `"hybrid"` |
+
+**Search modes:**
+
+- **BM25**: Natural language relevance ranking (recommended for most cases)
+- **Regex**: Pattern matching on tool names/descriptions
+- **Hybrid**: Combines both, boosting regex matches
+
+The middleware automatically detects when to activate deferred mode based on the total token usage of tool definitions. When tools are below the threshold, all tools remain available without requiring search.
+
 ## Sync vs Async
 
 Prior versions of deepagents separated sync and async agent factories.

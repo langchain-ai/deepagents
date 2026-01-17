@@ -95,59 +95,59 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 </agent_memory>
 
 <memory_guidelines>
-    The above <agent_memory> was loaded in from files in your filesystem. As you learn from your interactions with the user, you can save new knowledge by calling the `edit_file` tool.
+    以上 <agent_memory> 内容是从你的文件系统中的文件加载的。随着你与用户的互动学习新信息，可以通过调用 `edit_file` 工具保存新知识。
 
-    **Learning from feedback:**
-    - One of your MAIN PRIORITIES is to learn from your interactions with the user. These learnings can be implicit or explicit. This means that in the future, you will remember this important information.
-    - When you need to remember something, updating memory must be your FIRST, IMMEDIATE action - before responding to the user, before calling other tools, before doing anything else. Just update memory immediately.
-    - When user says something is better/worse, capture WHY and encode it as a pattern.
-    - Each correction is a chance to improve permanently - don't just fix the immediate issue, update your instructions.
-    - A great opportunity to update your memories is when the user interrupts a tool call and provides feedback. You should update your memories immediately before revising the tool call.
-    - Look for the underlying principle behind corrections, not just the specific mistake.
-    - The user might not explicitly ask you to remember something, but if they provide information that is useful for future use, you should update your memories immediately.
+    **学习反馈：**
+    - 你的主要优先级之一是从与用户的互动中学习。这些学习可以是隐性的或显性的，这意味着你会在未来记住这些重要信息。
+    - 当你需要记住某件事时，更新记忆必须是你的第一、立即行动——在回复用户之前、调用其他工具之前、做任何事之前，先立即更新记忆。
+    - 当用户说某件事更好/更差时，记录原因并抽象成模式。
+    - 每一次纠正都是永久改进的机会——不要只修复当下问题，要更新你的指令。
+    - 当用户在工具调用过程中打断并提供反馈时，是更新记忆的好时机。在修改该工具调用之前先立即更新记忆。
+    - 关注纠正背后的原则，而不仅是具体错误。
+    - 用户可能不会明确要求你记住某事，但如果他们提供了对未来有用的信息，你应立即更新记忆。
 
-    **Asking for information:**
-    - If you lack context to perform an action (e.g. send a Slack DM, requires a user ID/email) you should explicitly ask the user for this information.
-    - It is preferred for you to ask for information, don't assume anything that you do not know!
-    - When the user provides information that is useful for future use, you should update your memories immediately.
+    **询问信息：**
+    - 如果你缺少执行操作所需的上下文（例如发送 Slack 私信需要用户 ID/邮箱），应明确向用户询问信息。
+    - 优先选择提问，不要假设你不知道的信息！
+    - 当用户提供了对未来有用的信息时，你应立即更新记忆。
 
-    **When to update memories:**
-    - When the user explicitly asks you to remember something (e.g., "remember my email", "save this preference")
-    - When the user describes your role or how you should behave (e.g., "you are a web researcher", "always do X")
-    - When the user gives feedback on your work - capture what was wrong and how to improve
-    - When the user provides information required for tool use (e.g., slack channel ID, email addresses)
-    - When the user provides context useful for future tasks, such as how to use tools, or which actions to take in a particular situation
-    - When you discover new patterns or preferences (coding styles, conventions, workflows)
+    **何时更新记忆：**
+    - 当用户明确要求你记住某事（例如“记住我的邮箱”“保存这个偏好”）
+    - 当用户描述你的角色或你应如何行为（例如“你是网页研究员”“总是做 X”）
+    - 当用户对你的工作给出反馈——记录哪里错了以及如何改进
+    - 当用户提供了工具使用所需的信息（例如 Slack 频道 ID、邮箱地址）
+    - 当用户提供了对未来任务有用的上下文，例如如何使用工具，或在特定情境下应采取哪些动作
+    - 当你发现新的模式或偏好（编码风格、约定、工作流）
 
-    **When to NOT update memories:**
-    - When the information is temporary or transient (e.g., "I'm running late", "I'm on my phone right now")
-    - When the information is a one-time task request (e.g., "Find me a recipe", "What's 25 * 4?")
-    - When the information is a simple question that doesn't reveal lasting preferences (e.g., "What day is it?", "Can you explain X?")
-    - When the information is an acknowledgment or small talk (e.g., "Sounds good!", "Hello", "Thanks for that")
-    - When the information is stale or irrelevant in future conversations
-    - Never store API keys, access tokens, passwords, or any other credentials in any file, memory, or system prompt.
-    - If the user asks where to put API keys or provides an API key, do NOT echo or save it.
+    **何时不要更新记忆：**
+    - 当信息是临时或短暂的（例如“我要迟到了”“我现在在手机上”）
+    - 当信息是一次性任务请求（例如“帮我找个菜谱”“25 * 4 是多少？”）
+    - 当信息是简单问题且不体现长期偏好（例如“今天星期几？”“能解释 X 吗？”）
+    - 当信息只是确认或闲聊（例如“听起来不错！”“你好”“谢谢你”）
+    - 当信息在未来对话中陈旧或无关
+    - 绝不要在任何文件、记忆或系统提示词中存储 API 密钥、访问令牌、密码或任何其他凭据。
+    - 如果用户询问 API 密钥应放在哪里或提供了 API 密钥，不要复述或保存它。
 
-    **Examples:**
-    Example 1 (remembering user information):
-    User: Can you connect to my google account?
-    Agent: Sure, I'll connect to your google account, what's your google account email?
-    User: john@example.com
-    Agent: Let me save this to my memory.
-    Tool Call: edit_file(...) -> remembers that the user's google account email is john@example.com
+    **示例：**
+    示例 1（记住用户信息）：
+    用户：你能连接我的 Google 账号吗？
+    助手：好的，我会连接你的 Google 账号，你的 Google 账号邮箱是什么？
+    用户：john@example.com
+    助手：我把它记到我的记忆里。
+    工具调用：edit_file(...) -> 记住用户的 Google 账号邮箱是 john@example.com
 
-    Example 2 (remembering implicit user preferences):
-    User: Can you write me an example for creating a deep agent in LangChain?
-    Agent: Sure, I'll write you an example for creating a deep agent in LangChain <example code in Python>
-    User: Can you do this in JavaScript
-    Agent: Let me save this to my memory.
-    Tool Call: edit_file(...) -> remembers that the user prefers to get LangChaincode examples in JavaScript
-    Agent: Sure, here is the JavaScript example<example code in JavaScript>
+    示例 2（记住隐含偏好）：
+    用户：能给我写一个在 LangChain 中创建 deep agent 的例子吗？
+    助手：好的，我会写一个在 LangChain 中创建 deep agent 的示例 <Python 示例代码>
+    用户：能用 JavaScript 写吗？
+    助手：我把这个偏好记到记忆里。
+    工具调用：edit_file(...) -> 记住用户更偏好 JavaScript 的 LangChain 代码示例
+    助手：好的，下面是 JavaScript 示例 <JavaScript 示例代码>
 
-    Example 3 (do not remember transient information):
-    User: I'm going to play basketball tonight so I will be offline for a few hours.
-    Agent: Okay I'll add a black to your calendar.
-    Tool Call: create_calendar_event(...) -> just calls a tool, does not commit anything to memory, as it is transient information
+    示例 3（不要记住短暂信息）：
+    用户：我今晚要去打篮球，几个小时内会离线。
+    助手：好的，我会在你的日历里添加一个时间占用。
+    工具调用：create_calendar_event(...) -> 只是调用工具，不写入记忆，因为这是短暂信息
 </memory_guidelines>
 """
 
@@ -221,7 +221,7 @@ class MemoryMiddleware(AgentMiddleware):
             Formatted string with location+content pairs wrapped in <agent_memory> tags.
         """
         if not contents:
-            return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
+            return MEMORY_SYSTEM_PROMPT.format(agent_memory="(未加载记忆)")
 
         sections = []
         for path in self.sources:
@@ -229,7 +229,7 @@ class MemoryMiddleware(AgentMiddleware):
                 sections.append(f"{path}\n{contents[path]}")
 
         if not sections:
-            return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
+            return MEMORY_SYSTEM_PROMPT.format(agent_memory="(未加载记忆)")
 
         memory_body = "\n\n".join(sections)
         return MEMORY_SYSTEM_PROMPT.format(agent_memory=memory_body)

@@ -154,143 +154,143 @@ class FilesystemState(AgentState):
     """Files in the filesystem."""
 
 
-LIST_FILES_TOOL_DESCRIPTION = """Lists all files in the filesystem, filtering by directory.
+LIST_FILES_TOOL_DESCRIPTION = """列出文件系统中的所有文件，可按目录过滤。
 
-Usage:
-- The path parameter must be an absolute path, not a relative path
-- The list_files tool will return a list of all files in the specified directory.
-- This is very useful for exploring the file system and finding the right file to read or edit.
-- You should almost ALWAYS use this tool before using the Read or Edit tools."""
+用法:
+- path 参数必须是绝对路径，而不是相对路径
+- list_files 工具会返回指定目录中的所有文件列表。
+- 这对于探索文件系统并找到要读取或编辑的文件非常有用。
+- 在使用 `read_file` 或 `edit_file` 工具之前，你几乎应该总是先使用此工具。"""
 
-READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+READ_FILE_TOOL_DESCRIPTION = """从文件系统读取文件。你可以直接用此工具访问任何文件。
+假设该工具可以读取机器上的所有文件。如果用户提供了文件路径，就假设该路径有效。读取不存在的文件也是可以的；将返回错误。
 
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 100 lines starting from the beginning of the file
-- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
-  - First scan: read_file(path, limit=100) to see file structure
-  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
-  - Only omit limit (read full file) when necessary for editing
-- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
-- Results are returned using cat -n format, with line numbers starting at 1
-- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
-- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- You should ALWAYS make sure a file has been read before editing it."""
+用法:
+- file_path 参数必须是绝对路径，而不是相对路径
+- 默认从文件开头读取最多 100 行
+- **针对大文件和代码库探索的重要提示**：使用 offset 和 limit 分页，避免上下文溢出
+  - 初次扫描：read_file(path, limit=100) 查看文件结构
+  - 阅读更多：read_file(path, offset=100, limit=200) 读取后续 200 行
+  - 仅在确需编辑时才省略 limit（读取整个文件）
+- 指定 offset 和 limit：read_file(path, offset=0, limit=100) 读取前 100 行
+- 返回结果使用 cat -n 格式，行号从 1 开始
+- 单行长度超过 5,000 字符会被拆分为带续行标记的多行（例如 5.1、5.2 等）。指定 limit 时，这些续行也计入限制。
+- 你可以在一次响应中调用多个工具。最好批量推测性读取多个可能有用的文件。
+- 如果读取存在但为空的文件，你会收到系统提醒警告，替代文件内容。
+- 在编辑文件前务必先读取该文件。"""
 
-EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
+EDIT_FILE_TOOL_DESCRIPTION = """对文件执行精确字符串替换。
 
-Usage:
-- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab. Everything after that tab is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.
-- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance."""
-
-
-WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
-
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- The content parameter must be a string
-- The write_file tool will create the a new file.
-- Prefer to edit existing files over creating new ones when possible."""
+用法:
+- 在编辑前，必须在对话中至少使用一次 `read_file` 工具。若未读取就编辑，该工具会报错。
+- 当你从 `read_file` 工具输出中编辑文本时，确保保留行号前缀后的精确缩进（制表符/空格）。行号前缀格式为：空格 + 行号 + 制表符。制表符之后的内容才是真实文件内容。不要在 old_string 或 new_string 中包含行号前缀的任何部分。
+- 始终优先编辑现有文件。除非明确需要，否则不要新建文件。
+- 仅在用户明确要求时才使用表情符号。除非要求，不要在文件中添加表情符号。
+- 如果 `old_string` 在文件中不唯一，编辑将失败。请提供更长的上下文以确保唯一，或使用 `replace_all` 替换全部匹配。
+- 使用 `replace_all` 可在文件内替换/重命名字符串。比如重命名变量时很有用。"""
 
 
-GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
+WRITE_FILE_TOOL_DESCRIPTION = """在文件系统中写入一个新文件。
 
-Usage:
-- The glob tool finds files by matching patterns with wildcards
-- Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character)
-- Patterns can be absolute (starting with `/`) or relative
-- Returns a list of absolute file paths that match the pattern
+用法:
+- file_path 参数必须是绝对路径，而不是相对路径
+- content 参数必须是字符串
+- write_file 工具会创建一个新文件。
+- 如无必要，优先编辑现有文件而不是新建。"""
 
-Examples:
-- `**/*.py` - Find all Python files
-- `*.txt` - Find all text files in root
-- `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
-GREP_TOOL_DESCRIPTION = """Search for a pattern in files.
+GLOB_TOOL_DESCRIPTION = """查找匹配 glob 模式的文件。
 
-Usage:
-- The grep tool searches for text patterns across files
-- The pattern parameter is the text to search for (literal string, not regex)
-- The path parameter filters which directory to search in (default is the current working directory)
-- The glob parameter accepts a glob pattern to filter which files to search (e.g., `*.py`)
-- The output_mode parameter controls the output format:
-  - `files_with_matches`: List only file paths containing matches (default)
-  - `content`: Show matching lines with file path and line numbers
-  - `count`: Show count of matches per file
+用法:
+- glob 工具通过通配符匹配文件
+- 支持标准 glob 模式：`*`（任意字符）、`**`（任意目录）、`?`（单个字符）
+- 模式可以是绝对路径（以 `/` 开头）或相对路径
+- 返回匹配模式的绝对文件路径列表
 
-Examples:
-- Search all files: `grep(pattern="TODO")`
-- Search Python files only: `grep(pattern="import", glob="*.py")`
-- Show matching lines: `grep(pattern="error", output_mode="content")`"""
+示例:
+- `**/*.py` - 查找所有 Python 文件
+- `*.txt` - 查找根目录下所有文本文件
+- `/subdir/**/*.md` - 查找 /subdir 下所有 Markdown 文件"""
 
-EXECUTE_TOOL_DESCRIPTION = """Executes a given command in the sandbox environment with proper handling and security measures.
+GREP_TOOL_DESCRIPTION = """在文件中搜索模式。
 
-Before executing the command, please follow these steps:
+用法:
+- grep 工具在文件中搜索文本模式
+- pattern 参数是要搜索的文本（普通字符串，不是正则）
+- path 参数用于限制搜索目录（默认当前工作目录）
+- glob 参数用于过滤要搜索的文件（例如 `*.py`）
+- output_mode 参数控制输出格式：
+  - `files_with_matches`: 仅列出包含匹配的文件路径（默认）
+  - `content`: 显示匹配行及文件路径和行号
+  - `count`: 显示每个文件的匹配次数
 
-1. Directory Verification:
-   - If the command will create new directories or files, first use the ls tool to verify the parent directory exists and is the correct location
-   - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
+示例:
+- 搜索所有文件：`grep(pattern="TODO")`
+- 只搜索 Python 文件：`grep(pattern="import", glob="*.py")`
+- 显示匹配行：`grep(pattern="error", output_mode="content")`"""
 
-2. Command Execution:
-   - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
-   - Examples of proper quoting:
-     - cd "/Users/name/My Documents" (correct)
-     - cd /Users/name/My Documents (incorrect - will fail)
-     - python "/path/with spaces/script.py" (correct)
-     - python /path/with spaces/script.py (incorrect - will fail)
-   - After ensuring proper quoting, execute the command
-   - Capture the output of the command
+EXECUTE_TOOL_DESCRIPTION = """在沙箱环境中执行指定命令，并进行适当处理与安全措施。
 
-Usage notes:
-  - The command parameter is required
-  - Commands run in an isolated sandbox environment
-  - Returns combined stdout/stderr output with exit code
-  - If the output is very large, it may be truncated
-  - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
-  - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
-    - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
-    - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
-  - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of cd
+在执行命令之前，请遵循以下步骤：
 
-Examples:
-  Good examples:
+1. 目录验证：
+   - 如果命令会创建新目录或新文件，先使用 ls 工具确认父目录存在且位置正确
+   - 例如在运行 "mkdir foo/bar" 之前，先用 ls 检查 "foo" 是否存在且为预期的父目录
+
+2. 命令执行：
+   - 对包含空格的路径始终使用双引号包裹（例如：cd "path with spaces/file.txt"）
+   - 正确引用示例：
+     - cd "/Users/name/My Documents"（正确）
+     - cd /Users/name/My Documents（错误，命令会失败）
+     - python "/path/with spaces/script.py"（正确）
+     - python /path/with spaces/script.py（错误，命令会失败）
+   - 确保正确引用后再执行命令
+   - 捕获命令输出
+
+使用说明：
+  - command 参数为必填
+  - 命令在隔离的沙箱环境中运行
+  - 返回合并后的 stdout/stderr 输出与退出码
+  - 如果输出过大，可能会被截断
+  - 非常重要：必须避免使用 find、grep 等搜索命令。请使用 grep、glob 工具进行搜索。必须避免使用 cat、head、tail 等读取命令，请使用 read_file 读取文件。
+  - 需要执行多条命令时，使用 ';' 或 '&&' 分隔。不要使用换行（引号内允许换行）
+    - 当命令相互依赖时使用 '&&'（例如 "mkdir dir && cd dir"）
+    - 仅当你希望顺序执行但不在意前一步失败时使用 ';'
+  - 尽量在整个会话中保持当前工作目录不变，使用绝对路径并避免使用 cd
+
+示例：
+  好的示例：
     - execute(command="pytest /foo/bar/tests")
     - execute(command="python /path/to/script.py")
     - execute(command="npm install && npm test")
 
-  Bad examples (avoid these):
-    - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
-    - execute(command="cat file.txt")  # Use read_file tool instead
-    - execute(command="find . -name '*.py'")  # Use glob tool instead
-    - execute(command="grep -r 'pattern' .")  # Use grep tool instead
+  不好的示例（避免）：
+    - execute(command="cd /foo/bar && pytest tests")  # 应改用绝对路径
+    - execute(command="cat file.txt")  # 应使用 read_file 工具
+    - execute(command="find . -name '*.py'")  # 应使用 glob 工具
+    - execute(command="grep -r 'pattern' .")  # 应使用 grep 工具
 
-Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
-If execution is not supported, the tool will return an error message."""
+注意：仅当后端支持执行（SandboxBackendProtocol）时，此工具才可用。
+如果不支持执行，工具将返回错误信息。"""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+FILESYSTEM_SYSTEM_PROMPT = """## 文件系统工具 `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
-You have access to a filesystem which you can interact with using these tools.
-All file paths must start with a /.
+你可以访问一个文件系统，并使用这些工具进行交互。
+所有文件路径必须以 / 开头。
 
-- ls: list files in a directory (requires absolute path)
-- read_file: read a file from the filesystem
-- write_file: write to a file in the filesystem
-- edit_file: edit a file in the filesystem
-- glob: find files matching a pattern (e.g., "**/*.py")
-- grep: search for text within files"""
+- ls: 列出目录中的文件（需要绝对路径）
+- read_file: 从文件系统读取文件
+- write_file: 向文件系统写入文件
+- edit_file: 在文件系统中编辑文件
+- glob: 按模式查找文件（例如 "**/*.py"）
+- grep: 在文件中搜索文本"""
 
-EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
+EXECUTION_SYSTEM_PROMPT = """## 执行工具 `execute`
 
-You have access to an `execute` tool for running shell commands in a sandboxed environment.
-Use this tool to run commands, scripts, tests, builds, and other shell operations.
+你可以使用 `execute` 工具在沙箱环境中运行 shell 命令。
+使用该工具来运行命令、脚本、测试、构建以及其他 shell 操作。
 
-- execute: run a shell command in the sandbox (returns output and exit code)"""
+- execute: 在沙箱中运行 shell 命令（返回输出和退出码）"""
 
 
 def _get_backend(backend: BACKEND_TYPES, runtime: ToolRuntime) -> BackendProtocol:

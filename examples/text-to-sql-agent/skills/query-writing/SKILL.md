@@ -1,50 +1,50 @@
 ---
 name: query-writing
-description: For writing and executing SQL queries - from simple single-table queries to complex multi-table JOINs and aggregations
+description: 用于编写和执行 SQL 查询——从简单单表查询到复杂多表 JOIN 与聚合
 ---
 
-# Query Writing Skill
+# SQL 查询编写技能
 
-## When to Use This Skill
+## 何时使用此技能
 
-Use this skill when you need to answer a question by writing and executing a SQL query.
+当你需要通过编写并执行 SQL 查询来回答问题时，使用此技能。
 
-## Workflow for Simple Queries
+## 简单查询流程
 
-For straightforward questions about a single table:
+针对单表的直观问题：
 
-1. **Identify the table** - Which table has the data?
-2. **Get the schema** - Use `sql_db_schema` to see columns
-3. **Write the query** - SELECT relevant columns with WHERE/LIMIT/ORDER BY
-4. **Execute** - Run with `sql_db_query`
-5. **Format answer** - Present results clearly
+1. **确定表** - 哪个表包含数据？
+2. **获取表结构** - 使用 `sql_db_schema` 查看列
+3. **编写查询** - SELECT 相关列并配合 WHERE/LIMIT/ORDER BY
+4. **执行** - 使用 `sql_db_query` 运行
+5. **整理答案** - 清晰呈现结果
 
-## Workflow for Complex Queries
+## 复杂查询流程
 
-For questions requiring multiple tables:
+针对需要多表联查的问题：
 
-### 1. Plan Your Approach
-**Use `write_todos` to break down the task:**
-- Identify all tables needed
-- Map relationships (foreign keys)
-- Plan JOIN structure
-- Determine aggregations
+### 1. 制定方案
+**使用 `write_todos` 拆解任务：**
+- 识别所需的全部表
+- 映射关系（外键）
+- 规划 JOIN 结构
+- 确定聚合方式
 
-### 2. Examine Schemas
-Use `sql_db_schema` for EACH table to find join columns and needed fields.
+### 2. 查看表结构
+对每个表使用 `sql_db_schema`，找出联结列与所需字段。
 
-### 3. Construct Query
-- SELECT - Columns and aggregates
-- FROM/JOIN - Connect tables on FK = PK
-- WHERE - Filters before aggregation
-- GROUP BY - All non-aggregate columns
-- ORDER BY - Sort meaningfully
-- LIMIT - Default 5 rows
+### 3. 构造查询
+- SELECT - 列与聚合
+- FROM/JOIN - 通过 FK = PK 连接表
+- WHERE - 聚合前过滤
+- GROUP BY - 所有非聚合列
+- ORDER BY - 有意义地排序
+- LIMIT - 默认 5 行
 
-### 4. Validate and Execute
-Check all JOINs have conditions, GROUP BY is correct, then run query.
+### 4. 校验并执行
+检查所有 JOIN 都有条件、GROUP BY 正确，然后执行查询。
 
-## Example: Revenue by Country
+## 示例：按国家统计收入
 ```sql
 SELECT
     c.Country,
@@ -56,10 +56,10 @@ ORDER BY TotalRevenue DESC
 LIMIT 5;
 ```
 
-## Quality Guidelines
+## 质量规范
 
-- Query only relevant columns (not SELECT *)
-- Always apply LIMIT (5 default)
-- Use table aliases for clarity
-- For complex queries: use write_todos to plan
-- Never use DML statements (INSERT, UPDATE, DELETE, DROP)
+- 只查询相关列（不使用 SELECT *）
+- 始终使用 LIMIT（默认 5 行）
+- 使用表别名以提升可读性
+- 复杂查询：使用 write_todos 进行规划
+- 绝不使用 DML 语句（INSERT、UPDATE、DELETE、DROP）

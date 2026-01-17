@@ -27,7 +27,7 @@ from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import SummarizationMiddleware
 
-BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
+BASE_AGENT_PROMPT = "为了完成用户提出的目标，你可以使用一系列标准工具。"
 
 
 def get_default_model() -> ChatAnthropic:

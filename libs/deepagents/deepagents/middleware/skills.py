@@ -433,43 +433,43 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
 
 SKILLS_SYSTEM_PROMPT = """
 
-## Skills System
+## 技能系统
 
-You have access to a skills library that provides specialized capabilities and domain knowledge.
+你可以访问一个技能库，提供专门能力和领域知识。
 
 {skills_locations}
 
-**Available Skills:**
+**可用技能：**
 
 {skills_list}
 
-**How to Use Skills (Progressive Disclosure):**
+**如何使用技能（渐进披露）：**
 
-Skills follow a **progressive disclosure** pattern - you see their name and description above, but only read full instructions when needed:
+技能遵循**渐进披露**模式——你会看到上面的名称和描述，但只有在需要时才阅读完整指令：
 
-1. **Recognize when a skill applies**: Check if the user's task matches a skill's description
-2. **Read the skill's full instructions**: Use the path shown in the skill list above
-3. **Follow the skill's instructions**: SKILL.md contains step-by-step workflows, best practices, and examples
-4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
+1. **识别技能适用场景**：检查用户任务是否匹配技能描述
+2. **阅读技能完整指令**：使用上方技能列表中的路径
+3. **遵循技能指令**：SKILL.md 包含分步流程、最佳实践和示例
+4. **访问配套文件**：技能可能包含辅助脚本、配置或参考文档——使用绝对路径
 
-**When to Use Skills:**
-- User's request matches a skill's domain (e.g., "research X" -> web-research skill)
-- You need specialized knowledge or structured workflows
-- A skill provides proven patterns for complex tasks
+**何时使用技能：**
+- 用户请求匹配技能领域（例如，“研究 X”-> web-research 技能）
+- 需要专门知识或结构化流程
+- 技能为复杂任务提供成熟模式
 
-**Executing Skill Scripts:**
-Skills may contain Python scripts or other executable files. Always use absolute paths from the skill list.
+**执行技能脚本：**
+技能可能包含 Python 脚本或其他可执行文件。始终使用技能列表中的绝对路径。
 
-**Example Workflow:**
+**示例流程：**
 
-User: "Can you research the latest developments in quantum computing?"
+用户：“你能研究量子计算的最新进展吗？”
 
-1. Check available skills -> See "web-research" skill with its path
-2. Read the skill using the path shown
-3. Follow the skill's research workflow (search -> organize -> synthesize)
-4. Use any helper scripts with absolute paths
+1. 查看可用技能 -> 看到 “web-research” 技能及其路径
+2. 使用该路径读取技能
+3. 按技能中的研究流程执行（检索 -> 组织 -> 综合）
+4. 如需使用辅助脚本，使用绝对路径
 
-Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!
+记住：技能让你更强大、更一致。如有疑问，先检查是否有适用技能！
 """
 
 
@@ -547,15 +547,15 @@ class SkillsMiddleware(AgentMiddleware):
         locations = []
         for i, source_path in enumerate(self.sources):
             name = PurePosixPath(source_path.rstrip("/")).name.capitalize()
-            suffix = " (higher priority)" if i == len(self.sources) - 1 else ""
-            locations.append(f"**{name} Skills**: `{source_path}`{suffix}")
+            suffix = "（优先级更高）" if i == len(self.sources) - 1 else ""
+            locations.append(f"**{name} 技能**: `{source_path}`{suffix}")
         return "\n".join(locations)
 
     def _format_skills_list(self, skills: list[SkillMetadata]) -> str:
         """Format skills metadata for display in system prompt."""
         if not skills:
             paths = [f"{source_path}" for source_path in self.sources]
-            return f"(No skills available yet. You can create skills in {' or '.join(paths)})"
+            return f"(暂无可用技能。你可以在 {' 或 '.join(paths)} 创建技能)"
 
         lines = []
         for skill in skills:

@@ -1128,6 +1128,7 @@ class FilesystemMiddleware(AgentMiddleware):
         processed_message = ToolMessage(
             content=replacement_text,
             tool_call_id=message.tool_call_id,
+            name=message.name,
         )
         return processed_message, result.files_update
 

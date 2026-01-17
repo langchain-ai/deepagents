@@ -300,7 +300,7 @@ async def test_store_backend_aintercept_large_tool_result_async():
     middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
 
     large_content = "z" * 5000
-    tool_message = ToolMessage(content=large_content, tool_call_id="test_async_789")
+    tool_message = ToolMessage(content=large_content, tool_call_id="test_async_789", name="example_tool")
 
     # Use the async intercept path (what awrap_tool_call uses)
     result = await middleware._aintercept_large_tool_result(tool_message, rt)
@@ -308,6 +308,7 @@ async def test_store_backend_aintercept_large_tool_result_async():
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
     assert "/large_tool_results/test_async_789" in result.content
+    assert result.name == "example_tool"
 
     # Verify content was stored via async path
     stored_content = await rt.store.aget(("filesystem",), "/large_tool_results/test_async_789")

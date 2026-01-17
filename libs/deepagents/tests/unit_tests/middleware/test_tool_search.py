@@ -953,6 +953,44 @@ class TestThreadSafety:
             assert len(tools) == 1
             assert tools[0] is first_tool
 
+    def test_tools_property_concurrent_initialization_with_barrier(self):
+        """Concurrent access to tools property should create only one search tool.
+
+        This test uses a barrier to ensure all threads hit the tools property
+        simultaneously, maximizing the chance of detecting race conditions.
+        """
+        middleware = ToolSearchMiddleware()
+
+        # Use a barrier to synchronize all threads
+        barrier = threading.Barrier(10)
+        tool_ids = []
+        lock = threading.Lock()
+        errors = []
+
+        def get_tools():
+            try:
+                barrier.wait()  # All threads start at once
+                t = middleware.tools
+                with lock:
+                    tool_ids.append(id(t[0]))
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+
+        threads = [threading.Thread(target=get_tools) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # No errors should occur
+        assert len(errors) == 0, f"Errors during concurrent tools access: {errors}"
+
+        # All threads should get the same tool instance (same id)
+        assert len(tool_ids) == 10
+        unique_ids = set(tool_ids)
+        assert len(unique_ids) == 1, f"Expected 1 unique tool id, got {len(unique_ids)}: {unique_ids}"
+
 
 class TestBM25EdgeCases:
     """Tests for BM25 algorithm edge cases."""

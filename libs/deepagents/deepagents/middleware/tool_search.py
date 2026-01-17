@@ -562,9 +562,16 @@ class ToolSearchMiddleware(AgentMiddleware):
 
     @property
     def tools(self) -> Sequence[BaseTool]:
-        """Return the search_tools meta-tool."""
+        """Return the search_tools meta-tool.
+
+        This property uses double-checked locking to ensure thread-safe
+        lazy initialization of the search tool.
+        """
         if self._search_tool is None:
-            self._search_tool = self._create_search_tool()
+            with self._init_lock:
+                # Double-check after acquiring lock
+                if self._search_tool is None:
+                    self._search_tool = self._create_search_tool()
         return [self._search_tool]
 
     def _create_search_tool(self) -> BaseTool:

@@ -814,8 +814,9 @@ class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
-    `edit_file`, `glob`, and `grep`. Files can be stored using any backend that implements
-    the `BackendProtocol`.
+    `edit_file`, `glob`, and `grep`.
+
+    Files can be stored using any backend that implements the `BackendProtocol`.
 
     If the backend implements `SandboxBackendProtocol`, an `execute` tool is also added
     for running shell commands.
@@ -835,8 +836,6 @@ class FilesystemMiddleware(AgentMiddleware):
         custom_tool_descriptions: Optional custom tool descriptions override.
         tool_token_limit_before_evict: Token limit before evicting a tool result to the
             filesystem.
-
-            Defaults to 20,000 tokens.
 
             When exceeded, writes the result using the configured backend and replaces it
             with a truncated preview and file reference.

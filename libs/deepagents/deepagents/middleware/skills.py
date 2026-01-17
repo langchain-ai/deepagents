@@ -601,7 +601,7 @@ class SkillsMiddleware(AgentMiddleware):
             config: Runnable config.
 
         Returns:
-            State update with skills_metadata populated, or None if already present
+            State update with `skills_metadata` populated, or `None` if already present
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:
@@ -636,7 +636,7 @@ class SkillsMiddleware(AgentMiddleware):
             config: Runnable config.
 
         Returns:
-            State update with skills_metadata populated, or None if already present
+            State update with `skills_metadata` populated, or `None` if already present
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:

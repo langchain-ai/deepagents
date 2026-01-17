@@ -155,6 +155,9 @@ class Settings:
     google_api_key: str | None
     tavily_api_key: str | None
 
+    # Google Cloud configuration (for VertexAI)
+    google_cloud_project: str | None
+
     # LangSmith configuration
     deepagents_langchain_project: str | None  # For deepagents agent tracing
     user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
@@ -181,6 +184,7 @@ class Settings:
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         google_key = os.environ.get("GOOGLE_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
+        google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
         # Detect LangSmith configuration
         # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
@@ -198,6 +202,7 @@ class Settings:
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
             tavily_api_key=tavily_key,
+            google_cloud_project=google_cloud_project,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
@@ -217,6 +222,15 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
+
+    @property
+    def has_vertex_ai(self) -> bool:
+        """Check if VertexAI is available (Google Cloud project set, but no Google API key).
+
+        VertexAI uses Application Default Credentials (ADC) for authentication,
+        so if GOOGLE_CLOUD_PROJECT is set and GOOGLE_API_KEY is not, we assume VertexAI.
+        """
+        return self.google_cloud_project is not None and self.google_api_key is None
 
     @property
     def has_tavily(self) -> bool:
@@ -408,15 +422,22 @@ def _detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from
 
     Returns:
-        Provider name (openai, anthropic, google) or None if can't detect
+        Provider name (openai, anthropic, google, vertexai) or None if can't detect
     """
     model_lower = model_name.lower()
+
+    # Check for model name patterns
     if any(x in model_lower for x in ["gpt", "o1", "o3"]):
         return "openai"
     if "claude" in model_lower:
+        if not settings.has_anthropic and settings.has_vertex_ai:
+            return "vertexai"
         return "anthropic"
     if "gemini" in model_lower:
+        if settings.has_vertex_ai:
+            return "vertexai"
         return "google"
+
     return None
 
 
@@ -445,10 +466,14 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             console.print("\nSupported model name patterns:")
             console.print("  - OpenAI: gpt-*, o1-*, o3-*")
             console.print("  - Anthropic: claude-*")
-            console.print("  - Google: gemini-*")
+            console.print("  - Google: gemini-* (requires GOOGLE_API_KEY)")
+            console.print(
+                "  - VertexAI: claude-*/gemini-* (requires GOOGLE_CLOUD_PROJECT, "
+                "uses Application Default Credentials)"
+            )
             sys.exit(1)
 
-        # Check if API key for detected provider is available
+        # Check if credentials for detected provider are available
         if provider == "openai" and not settings.has_openai:
             console.print(
                 f"[bold red]Error:[/bold red] Model '{model_name_override}' requires OPENAI_API_KEY"
@@ -464,6 +489,15 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
                 f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY"
             )
             sys.exit(1)
+        elif provider == "vertexai" and not settings.has_vertex_ai:
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires "
+                "GOOGLE_CLOUD_PROJECT to be set"
+            )
+            console.print("\nPlease set GOOGLE_CLOUD_PROJECT environment variable.")
+            console.print("Also ensure you have authenticated with:")
+            console.print("  gcloud auth application-default login")
+            sys.exit(1)
 
         model_name = model_name_override
     # Use environment variable defaults, detect provider by API key priority
@@ -476,12 +510,18 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     elif settings.has_google:
         provider = "google"
         model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
+    elif settings.has_vertex_ai:
+        provider = "vertexai"
+        model_name = os.environ.get("VERTEX_AI_MODEL", "gemini-3-pro-preview")
     else:
-        console.print("[bold red]Error:[/bold red] No API key configured.")
+        console.print("[bold red]Error:[/bold red] No credentials configured.")
         console.print("\nPlease set one of the following environment variables:")
         console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5.2)")
         console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
         console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
+        console.print(
+            "  - GOOGLE_CLOUD_PROJECT (for VertexAI models, with Application Default Credentials)"
+        )
         console.print("\nExample:")
         console.print("  export OPENAI_API_KEY=your_api_key_here")
         console.print("\nOr add it to your .env file.")
@@ -508,6 +548,37 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
 
         return ChatGoogleGenerativeAI(
             model=model_name,
+            temperature=0,
+            max_tokens=None,
+        )
+    if provider == "vertexai":
+        model_lower = model_name.lower()
+
+        if "claude" in model_lower:
+            try:
+                from langchain_google_vertexai.model_garden import ChatAnthropicVertex
+            except ImportError:
+                console.print(
+                    "[bold red]Error:[/bold red] langchain-google-vertexai package is required for this model"
+                )
+                console.print("\nInstall it with:")
+                console.print("  pip install deepagents-cli[vertexai]", markup=False)
+                sys.exit(1)
+
+            return ChatAnthropicVertex(
+                # Remove version tag (e.g., "claude-haiku-4-5@20251015" -> "claude-haiku-4-5")
+                # ChatAnthropicVertex expects just the base model name without the @version suffix
+                model_name=model_name,
+                project=settings.google_cloud_project,
+                location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
+                max_tokens=20_000,
+            )
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            project=settings.google_cloud_project,
+            vertexai=True,
             temperature=0,
             max_tokens=None,
         )

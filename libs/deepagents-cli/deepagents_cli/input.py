@@ -184,6 +184,12 @@ def get_bottom_toolbar(
     def toolbar() -> list[tuple[str, str]]:
         parts = []
 
+        # Show subagent context indicator
+        if session_state.depth > 0:
+            ctx = session_state.current_context
+            parts.append(("bg:#7c3aed fg:#ffffff bold", f" {ctx.subagent_type}:{session_state.depth} "))
+            parts.append(("", " | "))
+
         # Check if we're in BASH mode (input starts with !)
         try:
             session = session_ref.get("session")
@@ -405,9 +411,20 @@ def create_prompt_session(
     # Create session reference dict for toolbar to access session
     session_ref = {}
 
+    # Dynamic prompt that shows depth indicator when in subagent context
+    def get_prompt_message() -> HTML:
+        if session_state.depth > 0:
+            ctx = session_state.current_context
+            # Show [subagent_type:depth] > when in a subagent
+            return HTML(
+                f'<style fg="#fbbf24">[{ctx.subagent_type}:{session_state.depth}]</style> '
+                f'<style fg="{COLORS["user"]}">></style> '
+            )
+        return HTML(f'<style fg="{COLORS["user"]}">></style> ')
+
     # Create the session
     session = PromptSession(
-        message=HTML(f'<style fg="{COLORS["user"]}">></style> '),
+        message=get_prompt_message,
         multiline=True,  # Keep multiline support but Enter submits
         key_bindings=kb,
         completer=merge_completers([CommandCompleter(), FilePathCompleter()]),

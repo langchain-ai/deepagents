@@ -6,6 +6,9 @@ import re
 import sys
 import termios
 import tty
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
 
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
@@ -23,7 +26,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
-from deepagents_cli.config import COLORS, console
+from deepagents_cli.config import COLORS, ConversationContext, console, settings
 from deepagents_cli.file_ops import FileOpTracker, build_approval_preview
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
@@ -37,6 +40,13 @@ from deepagents_cli.ui import (
 )
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+
+
+@dataclass
+class ExecuteTaskResult:
+    """Result of execute_task, potentially containing a step-into context."""
+
+    step_into_context: ConversationContext | None = None
 
 
 def _display_user_message_with_images(text: str) -> None:
@@ -71,7 +81,8 @@ def prompt_for_tool_approval(
 
     Returns:
         Decision (ApproveDecision or RejectDecision) OR
-        dict with {"type": "auto_approve_all"} to switch to auto-approve mode
+        dict with {"type": "auto_approve_all"} to switch to auto-approve mode OR
+        dict with {"type": "step_into", "args": {...}} to step into a subagent
     """
     description = action_request.get("description", "No description available")
     name = action_request["name"]
@@ -101,7 +112,12 @@ def prompt_for_tool_approval(
         console.print()
         render_diff_block(preview.diff, preview.diff_title or preview.title)
 
-    options = ["approve", "reject", "auto-accept all going forward"]
+    # Add "Step into" option for task tool
+    is_task_tool = name == "task"
+    if is_task_tool:
+        options = ["approve", "reject", "step into", "auto-accept all going forward"]
+    else:
+        options = ["approve", "reject", "auto-accept all going forward"]
     selected = 0  # Start with approve selected
 
     try:
@@ -119,8 +135,9 @@ def prompt_for_tool_approval(
 
             while True:
                 if not first_render:
-                    # Move cursor back to start of menu (up 3 lines, then to start of line)
-                    sys.stdout.write("\033[3A\r")
+                    # Move cursor back to start of menu (up N lines, then to start of line)
+                    num_options = len(options)
+                    sys.stdout.write(f"\033[{num_options}A\r")
 
                 first_render = False
 
@@ -135,6 +152,9 @@ def prompt_for_tool_approval(
                         elif option == "reject":
                             # Red bold with filled checkbox
                             sys.stdout.write("\033[1;31m☑ Reject\033[0m\n")
+                        elif option == "step into":
+                            # Cyan bold with filled checkbox for step into
+                            sys.stdout.write("\033[1;36m☑ Step into (interactive)\033[0m\n")
                         else:
                             # Blue bold with filled checkbox for auto-accept
                             sys.stdout.write("\033[1;34m☑ Auto-accept all going forward\033[0m\n")
@@ -144,6 +164,9 @@ def prompt_for_tool_approval(
                     elif option == "reject":
                         # Dim with empty checkbox
                         sys.stdout.write("\033[2m☐ Reject\033[0m\n")
+                    elif option == "step into":
+                        # Dim with empty checkbox
+                        sys.stdout.write("\033[2m☐ Step into (interactive)\033[0m\n")
                     else:
                         # Dim with empty checkbox
                         sys.stdout.write("\033[2m☐ Auto-accept all going forward\033[0m\n")
@@ -175,6 +198,10 @@ def prompt_for_tool_approval(
                     selected = 1
                     sys.stdout.write("\r\n")  # Move to start of line and add newline
                     break
+                elif char.lower() == "s" and is_task_tool:
+                    selected = 2  # Step into
+                    sys.stdout.write("\r\n")
+                    break
 
         finally:
             # Show cursor again
@@ -186,12 +213,19 @@ def prompt_for_tool_approval(
         # Fallback for non-Unix systems
         console.print("  ☐ (A)pprove  (default)")
         console.print("  ☐ (R)eject")
-        console.print("  ☐ (Auto)-accept all going forward")
-        choice = input("\nChoice (A/R/Auto, default=Approve): ").strip().lower()
+        if is_task_tool:
+            console.print("  ☐ (S)tep into (interactive)")
+            console.print("  ☐ (Auto)-accept all going forward")
+            choice = input("\nChoice (A/R/S/Auto, default=Approve): ").strip().lower()
+        else:
+            console.print("  ☐ (Auto)-accept all going forward")
+            choice = input("\nChoice (A/R/Auto, default=Approve): ").strip().lower()
         if choice in {"r", "reject"}:
             selected = 1
-        elif choice in {"auto", "auto-accept"}:
+        elif choice in {"s", "step", "step into"} and is_task_tool:
             selected = 2
+        elif choice in {"auto", "auto-accept"}:
+            selected = 3 if is_task_tool else 2
         else:
             selected = 0
 
@@ -200,8 +234,54 @@ def prompt_for_tool_approval(
         return ApproveDecision(type="approve")
     if selected == 1:
         return RejectDecision(type="reject", message="User rejected the command")
+    if is_task_tool and selected == 2:
+        # Return step-into marker with task args
+        return {"type": "step_into", "args": args}
     # Return special marker for auto-approve mode
     return {"type": "auto_approve_all"}
+
+
+def _create_branch_context(
+    assistant_id: str | None,
+    subagent_type: str,
+    task_description: str,
+) -> ConversationContext:
+    """Create a new conversation context for stepping into a subagent.
+
+    Creates the branch directory and summary file.
+    """
+    branch_id = str(uuid.uuid4())[:8]
+    thread_id = str(uuid.uuid4())
+
+    # Create branch directory
+    agent_name = assistant_id or "agent"
+    branch_dir = settings.user_deepagents_dir / agent_name / "branches" / branch_id
+    branch_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create summary file with template
+    summary_path = branch_dir / "summary.md"
+    summary_template = f"""# Branch Summary: {subagent_type}
+
+## Task
+{task_description}
+
+## Findings
+
+<!-- Add your findings here -->
+
+## Conclusion
+
+<!-- Summary for parent context -->
+"""
+    summary_path.write_text(summary_template)
+
+    return ConversationContext(
+        thread_id=thread_id,
+        subagent_type=subagent_type,
+        task_description=task_description,
+        summary_path=summary_path,
+        parent_tool_call_id=None,  # Will be set by caller if needed
+    )
 
 
 async def execute_task(
@@ -212,8 +292,12 @@ async def execute_task(
     token_tracker: TokenTracker | None = None,
     backend=None,
     image_tracker: ImageTracker | None = None,
-) -> None:
-    """Execute any task by passing it directly to the AI agent."""
+) -> ExecuteTaskResult:
+    """Execute any task by passing it directly to the AI agent.
+
+    Returns:
+        ExecuteTaskResult with optional step_into_context if user chose to step into a subagent.
+    """
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
 
@@ -616,6 +700,42 @@ async def execute_task(
                                 assistant_id,
                             )
 
+                            # Check if user wants to step into a subagent
+                            if (
+                                isinstance(decision, dict)
+                                and decision.get("type") == "step_into"
+                            ):
+                                # User wants to step into this subagent interactively
+                                task_args = decision.get("args", {})
+                                subagent_type = task_args.get("subagent_type", "general-purpose")
+                                task_description = task_args.get("description", "")
+
+                                # Create branch context
+                                step_into_ctx = _create_branch_context(
+                                    assistant_id, subagent_type, task_description
+                                )
+
+                                # Display step-into message
+                                console.print()
+                                console.print("━" * 60)
+                                console.print(
+                                    f"[bold cyan]Stepped into: {subagent_type} subagent[/bold cyan]"
+                                )
+                                console.print(
+                                    f"[dim]Summary file: {step_into_ctx.summary_path}[/dim]"
+                                )
+                                console.print(
+                                    "[dim]Type /return to exit, /summary to edit summary, "
+                                    "/context to see stack[/dim]"
+                                )
+                                console.print("━" * 60)
+                                console.print()
+
+                                # Stop spinner and return with step-into context
+                                if spinner_active:
+                                    status.stop()
+                                return ExecuteTaskResult(step_into_context=step_into_ctx)
+
                             # Check if user wants to switch to auto-approve mode
                             if (
                                 isinstance(decision, dict)
@@ -663,7 +783,7 @@ async def execute_task(
                     console.print("[yellow]Command rejected.[/yellow]", style="bold")
                     console.print("Tell the agent what you'd like to do differently.")
                     console.print()
-                    return
+                    return ExecuteTaskResult()
 
                 # Resume the agent with the human decision
                 stream_input = Command(resume=hitl_response)
@@ -692,7 +812,7 @@ async def execute_task(
         except Exception as e:
             console.print(f"[red]Warning: Failed to update agent state: {e}[/red]\n")
 
-        return
+        return ExecuteTaskResult()
 
     except KeyboardInterrupt:
         # User pressed Ctrl+C - clean up and exit gracefully
@@ -715,7 +835,7 @@ async def execute_task(
         except Exception as e:
             console.print(f"[red]Warning: Failed to update agent state: {e}[/red]\n")
 
-        return
+        return ExecuteTaskResult()
 
     if spinner_active:
         status.stop()
@@ -725,3 +845,5 @@ async def execute_task(
         # Track token usage (display only via /tokens command)
         if token_tracker and (captured_input_tokens or captured_output_tokens):
             token_tracker.add(captured_input_tokens, captured_output_tokens)
+
+    return ExecuteTaskResult()

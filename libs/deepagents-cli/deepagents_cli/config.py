@@ -4,7 +4,7 @@ import os
 import re
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import dotenv
@@ -45,6 +45,9 @@ COMMANDS = {
     "clear": "Clear screen and reset conversation",
     "help": "Show help information",
     "tokens": "Show token usage for current session",
+    "context": "Show current position in conversation stack",
+    "return": "Return from subagent to parent context",
+    "summary": "View/edit the summary file for current branch",
     "quit": "Exit the CLI",
     "exit": "Exit the CLI",
 }
@@ -334,15 +337,92 @@ class Settings:
 settings = Settings.from_environment()
 
 
+@dataclass
+class ConversationContext:
+    """Represents a single conversation context in the stack.
+
+    Used for tracking nested subagent conversations when user "steps into" a subagent.
+    """
+
+    thread_id: str
+    subagent_type: str  # "root" for main conversation, or subagent type name
+    task_description: str  # Original task from parent (empty for root)
+    summary_path: Path | None  # Where summary will be written (None for root)
+    parent_tool_call_id: str | None  # For returning ToolMessage to parent (None for root)
+
+
 class SessionState:
-    """Holds mutable session state (auto-approve mode, etc)."""
+    """Holds mutable session state (auto-approve mode, context stack, etc).
+
+    The context_stack tracks nested conversations when stepping into subagents.
+    The root context is always at index 0.
+    """
 
     def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
         self.auto_approve = auto_approve
         self.no_splash = no_splash
         self.exit_hint_until: float | None = None
         self.exit_hint_handle = None
-        self.thread_id = str(uuid.uuid4())
+        # Initialize with root context
+        self.context_stack: list[ConversationContext] = [
+            ConversationContext(
+                thread_id=str(uuid.uuid4()),
+                subagent_type="root",
+                task_description="",
+                summary_path=None,
+                parent_tool_call_id=None,
+            )
+        ]
+
+    @property
+    def thread_id(self) -> str:
+        """Get the current context's thread_id (backwards compatible)."""
+        return self.current_context.thread_id
+
+    @property
+    def current_context(self) -> ConversationContext:
+        """Get the current (topmost) conversation context."""
+        return self.context_stack[-1]
+
+    @property
+    def depth(self) -> int:
+        """Get the current nesting depth (0 = root)."""
+        return len(self.context_stack) - 1
+
+    @property
+    def is_in_subagent(self) -> bool:
+        """Check if currently in a stepped-into subagent context."""
+        return self.depth > 0
+
+    def push_context(self, ctx: ConversationContext) -> None:
+        """Push a new context onto the stack (entering a subagent)."""
+        self.context_stack.append(ctx)
+
+    def pop_context(self) -> ConversationContext:
+        """Pop the current context from the stack (returning from subagent).
+
+        Returns:
+            The popped context.
+
+        Raises:
+            ValueError: If trying to pop the root context.
+        """
+        if self.depth == 0:
+            msg = "Cannot pop root context"
+            raise ValueError(msg)
+        return self.context_stack.pop()
+
+    def reset_to_root(self) -> None:
+        """Reset to a fresh root context (used by /clear)."""
+        self.context_stack = [
+            ConversationContext(
+                thread_id=str(uuid.uuid4()),
+                subagent_type="root",
+                task_description="",
+                summary_path=None,
+                parent_tool_call_id=None,
+            )
+        ]
 
     def toggle_auto_approve(self) -> bool:
         """Toggle auto-approve and return new state."""

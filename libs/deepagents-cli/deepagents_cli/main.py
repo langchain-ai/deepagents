@@ -9,7 +9,7 @@ from pathlib import Path
 from deepagents.backends.protocol import SandboxBackendProtocol
 
 from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
-from deepagents_cli.commands import execute_bash_command, handle_command
+from deepagents_cli.commands import CommandResult, execute_bash_command, handle_command
 from deepagents_cli.config import (
     COLORS,
     DEEP_AGENTS_ASCII,
@@ -246,11 +246,34 @@ async def simple_cli(
 
         # Check for slash commands first
         if user_input.startswith("/"):
-            result = handle_command(user_input, agent, token_tracker)
-            if result == "exit":
+            cmd_result = handle_command(user_input, agent, token_tracker, session_state)
+            if cmd_result == "exit":
                 console.print("\nGoodbye!", style=COLORS["primary"])
                 break
-            if result:
+            if isinstance(cmd_result, CommandResult) and cmd_result.return_to_parent:
+                # Handle return from subagent: pop context and inject summary to parent
+                child_ctx = session_state.pop_context()
+                summary_content = getattr(child_ctx, "summary_content", "")
+
+                console.print()
+                console.print(
+                    f"[bold green]✓ Returned to {'root' if session_state.depth == 0 else session_state.current_context.subagent_type}[/bold green]"
+                )
+                console.print()
+
+                # Trigger the parent agent to process the summary
+                summary_message = f"[Subagent '{child_ctx.subagent_type}' completed]\n\n{summary_content}"
+                await execute_task(
+                    summary_message,
+                    agent,
+                    assistant_id,
+                    session_state,
+                    token_tracker,
+                    backend=backend,
+                    image_tracker=image_tracker,
+                )
+                continue
+            if cmd_result:
                 # Command was handled, continue to next input
                 continue
 
@@ -264,7 +287,7 @@ async def simple_cli(
             console.print("\nGoodbye!", style=COLORS["primary"])
             break
 
-        await execute_task(
+        result = await execute_task(
             user_input,
             agent,
             assistant_id,
@@ -273,6 +296,33 @@ async def simple_cli(
             backend=backend,
             image_tracker=image_tracker,
         )
+
+        # Handle step-into if user chose to enter a subagent
+        if result.step_into_context:
+            ctx = result.step_into_context
+            session_state.push_context(ctx)
+
+            # Build initial prompt with task description + summary file info
+            initial_prompt = f"""{ctx.task_description}
+
+---
+**Interactive Session Info:**
+This is an interactive session. The user has stepped into this conversation to work with you directly.
+A summary file has been created at: `{ctx.summary_path}`
+When the user asks you to "add to the summary" or "update the summary", edit that file.
+The summary will be returned to the parent conversation when the user types `/return`."""
+
+            # Immediately invoke the agent with the task description
+            # so it starts working on the task
+            await execute_task(
+                initial_prompt,
+                agent,
+                assistant_id,
+                session_state,
+                token_tracker,
+                backend=backend,
+                image_tracker=image_tracker,
+            )
 
 
 async def _run_agent_session(

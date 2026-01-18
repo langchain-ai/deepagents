@@ -217,6 +217,22 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/version" in s[0] for s in suggestions)
 
+    def test_finds_command_by_alias(self, controller, mock_view):
+        """Test that typing an alias (e.g., /exit) finds the main command (/quit)."""
+        controller.on_text_changed("/ex", 3)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+
+        assert any("/quit" in s[0] for s in suggestions)
+
+    def test_finds_command_by_short_alias(self, controller, mock_view):
+        """Test matching by short alias (/q)."""
+        controller.on_text_changed("/q", 2)
+
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert any("/quit" in s[0] for s in suggestions)
+
     def test_shows_all_commands_on_slash_only(self, controller, mock_view):
         """Shows all commands when just / is typed."""
         controller.on_text_changed("/", 1)

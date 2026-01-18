@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
@@ -14,8 +13,6 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain.tools import ToolRuntime
-from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
@@ -38,10 +35,11 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
 )
 
-# Keep runtime-visible for pydantic/StructuredTool annotation resolution.
-_TYPE_RESOLUTION_DEPS = (ToolRuntime, ToolCallRequest, Awaitable, Callable, Sequence)
-
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Sequence
+
+    from langchain.tools import ToolRuntime
+    from langchain.tools.tool_node import ToolCallRequest
     from langchain.types import Runtime
 
 

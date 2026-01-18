@@ -17,8 +17,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-deepagents = { path = "../../libs/deepagents" }
-langchain = { path = "../../libs/langchain/libs/langchain_v1" }
+langchain = { git = "https://github.com/hhscc-lz/langchain.git", subdirectory = "libs/langchain_v1" }
 
 [project.urls]
 Repository = "https://github.com/langchain-ai/deepagents/tree/master/examples/text-to-sql-agent"

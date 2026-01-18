@@ -1,62 +1,72 @@
-# Text-to-SQL Deep Agent
+# 文本到 SQL Deep Agent
 
-A natural language to SQL query agent powered by LangChain's **DeepAgents** framework.  This is an advanced version of a text-to-SQL agent with planning, filesystem, and subagent capabilities.
+这是一个由 LangChain 的 **DeepAgents** 框架驱动的自然语言转 SQL 查询智能体示例，具备规划、文件系统与子代理能力。
 
-## What is DeepAgents?
+## 什么是 DeepAgents？
 
-DeepAgents is a sophisticated agent framework built on LangGraph that provides:
+DeepAgents 是一个基于 LangGraph 的高级智能体框架，提供：
 
-- **Planning capabilities** - Break down complex tasks with `write_todos` tool
-- **Filesystem backend** - Save and retrieve context with file operations
-- **Subagent spawning** - Delegate specialized tasks to focused agents
-- **Context management** - Prevent context window overflow on complex tasks
+- **规划能力** - 使用 `write_todos` 工具拆解复杂任务
+- **文件系统后端** - 通过文件操作保存和检索上下文
+- **子代理机制** - 将特定任务委派给专用代理
+- **上下文管理** - 防止复杂任务中上下文溢出
 
-## Demo Database
+## 演示数据库
 
-Uses the [Chinook database](https://github.com/lerocha/chinook-database) - a sample database representing a digital media store.
+使用 [Chinook 数据库](https://github.com/lerocha/chinook-database) —— 一个代表数字媒体商店的示例数据库。
 
-## Quick Start
+## 快速开始
 
-### Prerequisites
+### 前置条件
 
-- Python 3.11 or higher
-- Anthropic API key ([get one here](https://console.anthropic.com/))
-- (Optional) LangSmith API key for tracing ([sign up here](https://smith.langchain.com/))
+- Python 3.11 或更高版本
+- Anthropic API key（[在此获取](https://console.anthropic.com/)）
+- （可选）LangSmith API key 用于追踪（[在此注册](https://smith.langchain.com/)）
 
-### Installation
+### 安装
 
-1. Clone the deepagents repository and navigate to this example:
+1. 克隆 deepagents 仓库并进入根目录：
 ```bash
 git clone https://github.com/langchain-ai/deepagents.git
-cd deepagents/examples/text-to-sql-agent
+cd deepagents
 ```
 
-2. Download the Chinook database:
+2. 克隆 LangChain 仓库到 `libs/langchain`（不纳入 git，便于随时拉取上游更新）：
 ```bash
-# Download the SQLite database file
+git clone https://github.com/langchain-ai/langchain.git libs/langchain
+```
+
+3. 进入此示例目录：
+```bash
+cd examples/text-to-sql-agent
+```
+
+4. 下载 Chinook 数据库：
+```bash
+# 下载 SQLite 数据库文件
 curl -L -o chinook.db https://github.com/lerocha/chinook-database/raw/master/ChinookDatabase/DataSources/Chinook_Sqlite.sqlite
 ```
 
-3. Create a virtual environment and install dependencies:
+5. 创建虚拟环境并安装依赖：
 ```bash
-# Using uv (recommended)
+# 使用 uv（推荐）
 uv venv --python 3.11
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 uv pip install -e .
 ```
 
-4. Set up your environment variables:
+6. 设置环境变量：
 ```bash
 cp .env.example .env
-# Edit .env and add your API keys
+# 编辑 .env 并填写 API keys
 ```
 
-Required in `.env`:
+`.env` 必填：
 ```
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
-Optional:
+可选：
 ```
 LANGCHAIN_TRACING_V2=true
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
@@ -64,11 +74,11 @@ LANGCHAIN_API_KEY=your_langsmith_api_key_here
 LANGCHAIN_PROJECT=text2sql-deepagent
 ```
 
-## Usage
+## 使用方式
 
-### Command Line Interface
+### 命令行
 
-Run the agent from the command line with a natural language question:
+直接用自然语言问题运行：
 
 ```bash
 python agent.py "What are the top 5 best-selling artists?"
@@ -82,17 +92,17 @@ python agent.py "Which employee generated the most revenue by country?"
 python agent.py "How many customers are from Canada?"
 ```
 
-### Programmatic Usage
+### 代码调用
 
-You can also use the agent in your Python code:
+你也可以在 Python 中使用：
 
 ```python
 from agent import create_sql_deep_agent
 
-# Create the agent
+# 创建代理
 agent = create_sql_deep_agent()
 
-# Ask a question
+# 提问
 result = agent.invoke({
     "messages": [{"role": "user", "content": "What are the top 5 best-selling artists?"}]
 })
@@ -100,121 +110,120 @@ result = agent.invoke({
 print(result["messages"][-1].content)
 ```
 
+## DeepAgent 如何工作
 
-## How DeepAgent Works
-
-### Architecture
+### 架构
 
 ```
-User Question
+用户问题
      ↓
-DeepAgent (with planning)
-     ├─ write_todos (plan the approach)
-     ├─ SQL Tools
+DeepAgent（带规划）
+     ├─ write_todos（规划方案）
+     ├─ SQL 工具
      │  ├─ list_tables
      │  ├─ get_schema
      │  ├─ query_checker
      │  └─ execute_query
-     ├─ Filesystem Tools (optional)
+     ├─ 文件系统工具（可选）
      │  ├─ ls
      │  ├─ read_file
      │  ├─ write_file
      │  └─ edit_file
-     └─ Subagent Spawning (optional)
+     └─ 子代理（可选）
      ↓
-SQLite Database (Chinook)
+SQLite 数据库（Chinook）
      ↓
-Formatted Answer
+格式化答案
 ```
 
-### Configuration
+### 配置
 
-DeepAgent uses **progressive disclosure** with memory files and skills:
+DeepAgent 使用 **渐进式加载** 的记忆文件与技能：
 
-**AGENTS.md** (always loaded) - Contains:
-- Agent identity and role
-- Core principles and safety rules
-- General guidelines
-- Communication style
+**AGENTS.md**（始终加载）包含：
+- 代理身份与角色
+- 核心原则与安全规则
+- 通用指南
+- 交流风格
 
-**skills/** (loaded on-demand) - Specialized workflows:
-- **query-writing** - How to write and execute SQL queries (simple and complex)
-- **schema-exploration** - How to discover database structure and relationships
+**skills/**（按需加载）包含专门流程：
+- **query-writing** - SQL 查询编写（简单与复杂）
+- **schema-exploration** - 数据库结构与关系发现
 
-The agent sees skill descriptions in its context but only loads the full SKILL.md instructions when it determines which skill is needed for the current task. This **progressive disclosure** pattern keeps context efficient while providing deep expertise when needed.
+代理会先看到技能描述，但只有当判断需要某个技能时才加载完整 SKILL.md。这个 **渐进式加载** 模式能在保持上下文高效的同时提供深度能力。
 
-## Example Queries
+## 示例问题
 
-### Simple Query
+### 简单问题
 ```
 "How many customers are from Canada?"
 ```
-The agent will directly query and return the count.
+代理将直接查询并返回数量。
 
-### Complex Query with Planning
+### 需要规划的复杂问题
 ```
 "Which employee generated the most revenue and from which countries?"
 ```
-The agent will:
-1. Use `write_todos` to plan the approach
-2. Identify required tables (Employee, Invoice, Customer)
-3. Plan the JOIN structure
-4. Execute the query
-5. Format results with analysis
+代理将：
+1. 使用 `write_todos` 规划方案
+2. 确定需要的表（Employee、Invoice、Customer）
+3. 规划 JOIN 结构
+4. 执行查询
+5. 格式化结果并给出分析
 
-## DeepAgent Output Example
+## DeepAgent 输出示例
 
-DeepAgent shows its reasoning process:
+DeepAgent 会展示其推理过程：
 
 ```
-Question: Which employee generated the most revenue by country?
+问题：哪位员工按国家统计的收入最高？
 
-[Planning Step]
-Using write_todos:
-- [ ] List tables in database
-- [ ] Examine Employee and Invoice schemas
-- [ ] Plan multi-table JOIN query
-- [ ] Execute and aggregate by employee and country
-- [ ] Format results
+[规划步骤]
+使用 write_todos：
+- [ ] 列出数据库表
+- [ ] 查看 Employee 与 Invoice 的表结构
+- [ ] 规划多表 JOIN 查询
+- [ ] 执行查询并按员工与国家聚合
+- [ ] 格式化结果
 
-[Execution Steps]
-1. Listing tables...
-2. Getting schema for: Employee, Invoice, InvoiceLine, Customer
-3. Generating SQL query...
-4. Executing query...
-5. Formatting results...
+[执行步骤]
+1. 列出表...
+2. 获取表结构：Employee、Invoice、InvoiceLine、Customer
+3. 生成 SQL 查询...
+4. 执行查询...
+5. 格式化结果...
 
-[Final Answer]
-Employee Jane Peacock (ID: 3) generated the most revenue...
-Top countries: USA ($1000), Canada ($500)...
+[最终答案]
+员工 Jane Peacock（ID: 3）产生了最高收入...
+主要国家：USA（$1000）、Canada（$500）...
 ```
 
-## Project Structure
+## 项目结构
 
 ```
 text-to-sql-agent/
-├── agent.py                      # Core Deep Agent implementation with CLI
-├── AGENTS.md                     # Agent identity and general instructions (always loaded)
-├── skills/                       # Specialized workflows (loaded on-demand)
+├── agent.py                      # 核心 Deep Agent 实现与 CLI
+├── AGENTS.md                     # 代理身份与通用指令（始终加载）
+├── skills/                       # 专项流程（按需加载）
 │   ├── query-writing/
-│   │   └── SKILL.md             # SQL query writing workflow
+│   │   └── SKILL.md             # SQL 查询编写流程
 │   └── schema-exploration/
-│       └── SKILL.md             # Database structure discovery workflow
-├── chinook.db                    # Sample SQLite database (downloaded, gitignored)
-├── pyproject.toml                # Project configuration and dependencies
-├── uv.lock                       # Locked dependency versions
-├── .env.example                  # Environment variable template
-├── .gitignore                    # Git ignore rules
-├── text-to-sql-langsmith-trace.png  # LangSmith trace example image
-└── README.md                     # This file
+│       └── SKILL.md             # 数据库结构发现流程
+├── chinook.db                    # 示例 SQLite 数据库（下载后，已 gitignore）
+├── pyproject.toml                # 项目配置与依赖
+├── uv.lock                       # 依赖锁定
+├── .env.example                  # 环境变量模板
+├── .gitignore                    # Git 忽略规则
+├── text-to-sql-langsmith-trace.png  # LangSmith Trace 示例图
+└── README.md                     # 本文件
 ```
 
-## Requirements
+## 依赖说明
 
-All dependencies are specified in `pyproject.toml`:
+所有依赖都在 `pyproject.toml` 中指定。本示例刻意使用本地路径引用核心库：
 
-- deepagents >= 0.3.5
-- langchain >= 1.2.3
+- deepagents（本地）`../../libs/deepagents`
+- langchain（本地）`../../libs/langchain/libs/langchain_v1`
 - langchain-anthropic >= 1.3.1
 - langchain-community >= 0.3.0
 - langgraph >= 1.0.6
@@ -223,13 +232,18 @@ All dependencies are specified in `pyproject.toml`:
 - tavily-python >= 0.5.0
 - rich >= 13.0.0
 
-## LangSmith Integration
+要更新 LangChain，可运行：
+```bash
+git -C libs/langchain pull
+```
 
-### Setup
+## LangSmith 集成
 
-1. Sign up for a free account at [LangSmith](https://smith.langchain.com/)
-2. Create an API key from your account settings
-3. Add these variables to your `.env` file:
+### 设置
+
+1. 在 [LangSmith](https://smith.langchain.com/) 注册免费账号
+2. 在账户设置中创建 API key
+3. 在 `.env` 中添加：
 ```
 LANGCHAIN_TRACING_V2=true
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
@@ -237,34 +251,34 @@ LANGCHAIN_API_KEY=your_langsmith_api_key_here
 LANGCHAIN_PROJECT=text2sql-deepagent
 ```
 
-### What You'll See
+### 你会看到什么
 
-When configured, every query is automatically traced:
+启用后，每次查询都会自动被追踪：
 
 ![DeepAgent LangSmith Trace Example](text-to-sql-langsmith-trace.png)
 
-You can view:
-- Complete execution trace with all tool calls
-- Planning steps (write_todos)
-- Filesystem operations
-- Token usage and costs
-- Generated SQL queries
-- Error messages and retry attempts
+你可以查看：
+- 完整执行轨迹与工具调用
+- 规划步骤（write_todos）
+- 文件系统操作
+- Token 使用量与成本
+- 生成的 SQL 查询
+- 错误信息与重试
 
-View your traces at: https://smith.langchain.com/
+在此查看追踪结果：https://smith.langchain.com/
 
-## Resources
+## 资源
 
-- [DeepAgents Documentation](https://docs.langchain.com/oss/python/deepagents/overview)
+- [DeepAgents 文档](https://docs.langchain.com/oss/python/deepagents/overview)
 - [DeepAgents GitHub](https://github.com/langchain-ai/deepagents)
 - [LangChain](https://www.langchain.com/)
 - [Claude Sonnet 4.5](https://www.anthropic.com/claude)
-- [Chinook Database](https://github.com/lerocha/chinook-database)
+- [Chinook 数据库](https://github.com/lerocha/chinook-database)
 
-## License
+## 许可证
 
 MIT
 
-## Contributing
+## 贡献
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+欢迎贡献！请随时提交 Pull Request。

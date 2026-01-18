@@ -171,6 +171,54 @@ agent = create_deep_agent(
 
 See the [subagents documentation](https://docs.langchain.com/oss/python/deepagents/subagents) for more details.
 
+### Step-Into Mode for Subagents
+
+Traditional subagent delegation is fire-and-forget: you send a task, wait for results, and hope it explored the right direction. **Step-into mode** changes this by letting you enter an interactive session with the subagent while maintaining context isolation.
+
+When using the CLI with human-in-the-loop enabled, subagent invocations present a new option:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 🤖 Task: Subagent Invocation                                │
+│                                                             │
+│ [Approve]  [Reject]  [Step into]  [Auto-accept all]         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Selecting **Step into** opens an interactive session where you can:
+
+- **Guide exploration in real-time** - redirect the subagent mid-task instead of starting over
+- **Ask follow-up questions** - dig deeper into findings within the isolated context
+- **Curate the summary** - decide what information returns to the parent context
+
+```
+You: Research the authentication system
+
+Agent: I'll delegate this to a subagent.
+
+[Select "Step into"]
+
+[general-purpose:1] > Agent finds 3 auth methods...
+
+[general-purpose:1] > Focus on JWT only.
+
+[general-purpose:1] > Agent explores JWT, finds issues...
+
+[general-purpose:1] > /return   ← exit with curated summary
+```
+
+Key commands in step-into mode:
+
+| Command | Description |
+|---------|-------------|
+| `/return` | Exit subagent and send summary to parent |
+| `/summary` | View or edit the summary file |
+| `/context` | Show your position in the context stack |
+
+Step-into supports nesting - you can step into subagents spawned by subagents, with `/return` unwinding one level at a time.
+
+See the [step-into documentation](libs/deepagents-cli/STEP_INTO.md) for the full guide.
+
 ### `interrupt_on`
 
 Some tools may be sensitive and require human approval before execution. Deepagents supports human-in-the-loop workflows through LangGraph’s interrupt capabilities. You can configure which tools require approval using a checkpointer.

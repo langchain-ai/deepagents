@@ -5,8 +5,8 @@ description = "A natural language to SQL query agent powered by LangChain's Deep
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents @ file:../../libs/deepagents",
-    "langchain @ file:../../libs/langchain/libs/langchain_v1",
+    "deepagents",
+    "langchain",
     "langchain-anthropic>=1.3.1",
     "langchain-community>=0.3.0",
     "langgraph>=1.0.6",
@@ -15,6 +15,10 @@ dependencies = [
     "tavily-python>=0.5.0",
     "rich>=13.0.0",
 ]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents" }
+langchain = { path = "../../libs/langchain/libs/langchain_v1" }
 
 [project.urls]
 Repository = "https://github.com/langchain-ai/deepagents/tree/master/examples/text-to-sql-agent"

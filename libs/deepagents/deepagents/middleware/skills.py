@@ -560,6 +560,8 @@ class SkillsMiddleware(AgentMiddleware):
         lines = []
         for skill in skills:
             lines.append(f"- **{skill['name']}**: {skill['description']}")
+            if skill["allowed_tools"]:
+                lines.append(f"  -> Allowed tools: {', '.join(skill['allowed_tools'])}")
             lines.append(f"  -> Read `{skill['path']}` for full instructions")
 
         return "\n".join(lines)

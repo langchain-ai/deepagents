@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     # Harbor runtime
-    "harbor>=0.1.12,<0.1.33",  # TODO: accommodate breaking changes in 0.1.33
+    "harbor>=0.1.12",
     "langchain-anthropic>=1.0.0",
     "langchain-openai>=1.0.0",
     "deepagents>=0.2.5",

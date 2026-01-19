@@ -1,10 +1,12 @@
 """Async tests for StoreBackend."""
 
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.store import StoreBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime():
@@ -276,10 +278,6 @@ async def test_store_backend_agrep_invalid_regex():
 
 async def test_store_backend_intercept_large_tool_result_async():
     """Test that StoreBackend properly handles large tool result interception in async context."""
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime()
     middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
 
@@ -292,5 +290,26 @@ async def test_store_backend_intercept_large_tool_result_async():
     assert "/large_tool_results/test_456" in result.content
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
+    assert stored_content is not None
+    assert stored_content.value["content"] == [large_content]
+
+
+async def test_store_backend_aintercept_large_tool_result_async():
+    """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
+    rt = make_runtime()
+    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+
+    large_content = "z" * 5000
+    tool_message = ToolMessage(content=large_content, tool_call_id="test_async_789")
+
+    # Use the async intercept path (what awrap_tool_call uses)
+    result = await middleware._aintercept_large_tool_result(tool_message, rt)
+
+    assert isinstance(result, ToolMessage)
+    assert "Tool result too large" in result.content
+    assert "/large_tool_results/test_async_789" in result.content
+
+    # Verify content was stored via async path
+    stored_content = await rt.store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
     assert stored_content.value["content"] == [large_content]

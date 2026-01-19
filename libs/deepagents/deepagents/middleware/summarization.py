@@ -496,15 +496,21 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
         # Read existing content (if any) and append
+        # Note: We use download_files() instead of read() because read() returns
+        # line-numbered content (for LLM consumption), but edit() expects raw content.
         existing_content = ""
         try:
-            content = backend.read(path)
-            # backend.read returns a string, empty or error string if file doesn't exist
-            if content and not content.startswith("Error:"):
-                existing_content = content
-        except Exception:  # noqa: BLE001, S110
-            # File doesn't exist yet, that's fine
-            pass
+            responses = backend.download_files([path])
+            if responses and responses[0].content is not None and responses[0].error is None:
+                existing_content = responses[0].content.decode("utf-8")
+        except Exception as e:  # noqa: BLE001
+            # File likely doesn't exist yet, but log for observability
+            logger.debug(
+                "Exception reading existing history from %s (treating as new file): %s: %s",
+                path,
+                type(e).__name__,
+                e,
+            )
 
         combined_content = existing_content + new_section
 
@@ -520,7 +526,6 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
                 )
                 return None
         except Exception as e:  # noqa: BLE001
-            # Don't fail summarization if offloading fails - may revisit this?
             logger.warning(
                 "Exception offloading conversation history to %s (%d messages): %s: %s",
                 path,
@@ -562,15 +567,21 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
         # Read existing content (if any) and append
+        # Note: We use adownload_files() instead of aread() because read() returns
+        # line-numbered content (for LLM consumption), but edit() expects raw content.
         existing_content = ""
         try:
-            content = await backend.aread(path)
-            # backend.aread returns a string, empty or error string if file doesn't exist
-            if content and not content.startswith("Error:"):
-                existing_content = content
-        except Exception:  # noqa: BLE001, S110
-            # File doesn't exist yet, that's fine
-            pass
+            responses = await backend.adownload_files([path])
+            if responses and responses[0].content is not None and responses[0].error is None:
+                existing_content = responses[0].content.decode("utf-8")
+        except Exception as e:  # noqa: BLE001
+            # File likely doesn't exist yet, but log for observability
+            logger.debug(
+                "Exception reading existing history from %s (treating as new file): %s: %s",
+                path,
+                type(e).__name__,
+                e,
+            )
 
         combined_content = existing_content + new_section
 
@@ -588,7 +599,6 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
                 )
                 return None
         except Exception as e:  # noqa: BLE001
-            # Don't fail summarization if offloading fails - may revisit this?
             logger.warning(
                 "Exception offloading conversation history to %s (%d messages): %s: %s",
                 path,
@@ -652,14 +662,17 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first to get the file path to include in the  summary message
+        # Offload to backend first - abort summarization if this fails to prevent data loss
         backend = self._get_backend(state, runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
+        if file_path is None:
+            # Offloading failed - don't proceed with summarization to preserve messages
+            return None
 
         # Generate summary
         summary = self._create_summary(messages_to_summarize)
 
-        # Build summary message with file path reference if available
+        # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         return {
@@ -722,14 +735,17 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        # Offload to backend first to get the file path to include in the  summary message
+        # Offload to backend first - abort summarization if this fails to prevent data loss
         backend = self._get_backend(state, runtime)
         file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
+        if file_path is None:
+            # Offloading failed - don't proceed with summarization to preserve messages
+            return None
 
         # Generate summary
         summary = await self._acreate_summary(messages_to_summarize)
 
-        # Build summary message with file path reference if available
+        # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         return {

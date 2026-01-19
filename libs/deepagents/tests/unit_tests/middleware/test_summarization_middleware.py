@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
-from deepagents.backends.protocol import BackendProtocol, WriteResult
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 if TYPE_CHECKING:
@@ -85,6 +85,8 @@ class MockBackend(BackendProtocol):
         should_fail: bool = False,
         error_message: str | None = None,
         existing_content: str | None = None,
+        download_raises: bool = False,
+        write_raises: bool = False,
     ) -> None:
         """Initialize the mock backend.
 
@@ -92,12 +94,18 @@ class MockBackend(BackendProtocol):
             should_fail: If `True`, write operations will simulate a failure.
             error_message: The error message to return on failure.
             existing_content: Initialize the backend with existing content for reads.
+            download_raises: If `True`, `download_files` will raise an exception.
+            write_raises: If `True`, `write`/`edit` will raise an exception.
         """
         self.write_calls: list[tuple[str, str]] = []
+        self.edit_calls: list[tuple[str, str, str]] = []
         self.read_calls: list[str] = []
+        self.download_files_calls: list[list[str]] = []
         self.should_fail = should_fail
         self.error_message = error_message
         self.existing_content = existing_content
+        self.download_raises = download_raises
+        self.write_raises = write_raises
 
     def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:  # noqa: ARG002
         self.read_calls.append(path)
@@ -108,14 +116,70 @@ class MockBackend(BackendProtocol):
     async def aread(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         return self.read(path, offset, limit)
 
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download files - returns raw content as bytes."""
+        self.download_files_calls.append(paths)
+        if self.download_raises:
+            msg = "Mock download_files exception"
+            raise RuntimeError(msg)
+        responses = []
+        for path in paths:
+            if self.existing_content is not None:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path,
+                        content=self.existing_content.encode("utf-8"),
+                        error=None,
+                    )
+                )
+            else:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path,
+                        content=None,
+                        error="file_not_found",
+                    )
+                )
+        return responses
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Async version of download_files."""
+        if self.download_raises:
+            msg = "Mock adownload_files exception"
+            raise RuntimeError(msg)
+        return self.download_files(paths)
+
     def write(self, path: str, content: str) -> WriteResult:
         self.write_calls.append((path, content))
+        if self.write_raises:
+            msg = "Mock write exception"
+            raise RuntimeError(msg)
         if self.should_fail:
             return WriteResult(error=self.error_message or "Mock write failure")
         return WriteResult(path=path)
 
     async def awrite(self, path: str, content: str) -> WriteResult:
+        if self.write_raises:
+            msg = "Mock awrite exception"
+            raise RuntimeError(msg)
         return self.write(path, content)
+
+    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: ARG002, FBT001, FBT002
+        """Edit a file by replacing string occurrences."""
+        self.edit_calls.append((path, old_string, new_string))
+        if self.write_raises:
+            msg = "Mock edit exception"
+            raise RuntimeError(msg)
+        if self.should_fail:
+            return EditResult(error=self.error_message or "Mock edit failure")
+        return EditResult(path=path, occurrences=1)
+
+    async def aedit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
+        """Async version of edit."""
+        if self.write_raises:
+            msg = "Mock aedit exception"
+            raise RuntimeError(msg)
+        return self.edit(path, old_string, new_string, replace_all)
 
 
 def make_mock_runtime() -> MagicMock:
@@ -249,12 +313,16 @@ class TestOffloadingBasic:
 
         middleware.before_model(state, runtime)
 
-        _, content = backend.write_calls[0]
+        assert len(backend.edit_calls) == 1
+        _, old_string, new_string = backend.edit_calls[0]
 
-        # Should contain both old and new sections
-        assert "## Summarized at 2024-01-01T00:00:00Z" in content
+        # old_string should be the existing content
+        assert old_string == existing
+
+        # new_string (combined content) should contain both old and new sections
+        assert "## Summarized at 2024-01-01T00:00:00Z" in new_string
         expected_section_count = 2  # One existing + one new summarization section
-        assert content.count("## Summarized at") == expected_section_count
+        assert new_string.count("## Summarized at") == expected_section_count
 
     def test_typical_tool_heavy_conversation(self) -> None:
         """Test with a realistic tool-heavy conversation pattern.
@@ -449,10 +517,10 @@ class TestSummaryMessageFormat:
 
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
 
-    def test_summary_fallback_on_backend_failure(self) -> None:
-        """Test that summary uses simple format when backend write fails."""
+    def test_summarization_aborts_on_backend_failure(self) -> None:
+        """Test that summarization aborts when backend write fails to prevent data loss."""
         backend = MockBackend(should_fail=True)
-        mock_model = make_mock_model(summary_response="Fallback summary")
+        mock_model = make_mock_model(summary_response="Unused summary")
 
         middleware = SummarizationMiddleware(
             model=mock_model,
@@ -467,11 +535,8 @@ class TestSummaryMessageFormat:
 
         result = middleware.before_model(state, runtime)
 
-        summary_msg = result["messages"].value[0]
-
-        # Should fall back to simple format since write failed
-        assert "full conversation history has been saved to" not in summary_msg.content
-        assert "Here is a summary of the conversation to date:" in summary_msg.content
+        # Should abort summarization to preserve messages
+        assert result is None
 
     def test_summary_includes_file_path_after_second_summarization(self) -> None:
         """Test that summary message includes file path reference after multiple summarizations.
@@ -558,10 +623,10 @@ class TestNoSummarizationTriggered:
 
 
 class TestBackendFailureHandling:
-    """Tests for graceful handling of backend failures."""
+    """Tests for backend failure handling - summarization aborts to prevent data loss."""
 
-    def test_summarization_continues_on_write_failure(self) -> None:
-        """Test that summarization completes even if backend write fails."""
+    def test_summarization_aborts_on_write_failure(self) -> None:
+        """Test that summarization aborts when backend write fails to preserve messages."""
         backend = MockBackend(should_fail=True, error_message="Storage unavailable")
         mock_model = make_mock_model()
 
@@ -576,15 +641,15 @@ class TestBackendFailureHandling:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        # Should not raise, should return result
+        # Should not raise, but should return None to preserve messages
         result = middleware.before_model(state, runtime)
 
-        assert result is not None
-        assert "messages" in result
+        assert result is None
 
-    def test_summarization_continues_on_write_exception(self) -> None:
-        """Test that summarization completes even if backend raises exception."""
+    def test_summarization_aborts_on_write_exception(self) -> None:
+        """Test that summarization aborts when backend raises exception to preserve messages."""
         backend = MagicMock()
+        backend.download_files.return_value = []
         backend.write.side_effect = Exception("Network error")
         mock_model = make_mock_model()
 
@@ -599,10 +664,10 @@ class TestBackendFailureHandling:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        # Should not raise
+        # Should not raise, but should return None to preserve messages
         result = middleware.before_model(state, runtime)
 
-        assert result is not None
+        assert result is None
 
 
 class TestThreadIdExtraction:
@@ -684,8 +749,8 @@ class TestAsyncBehavior:
         assert len(backend.write_calls) == 1
 
     @pytest.mark.anyio
-    async def test_async_continues_on_failure(self) -> None:
-        """Test that async summarization completes even on backend failure."""
+    async def test_async_aborts_on_failure(self) -> None:
+        """Test that async summarization aborts on backend failure to preserve messages."""
         backend = MockBackend(should_fail=True)
         mock_model = make_mock_model()
         mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
@@ -703,7 +768,8 @@ class TestAsyncBehavior:
 
         result = await middleware.abefore_model(state, runtime)
 
-        assert result is not None
+        # Should abort to preserve messages
+        assert result is None
 
 
 class TestBackendFactoryInvocation:
@@ -793,6 +859,254 @@ class TestMarkdownFormatting:
         assert "Human:" in content or "AI:" in content
         # Should contain the actual message content
         assert "User message" in content
+
+
+class TestDownloadFilesException:
+    """Tests for exception handling when download_files raises."""
+
+    def test_summarization_continues_on_download_files_exception(self) -> None:
+        """Test that summarization continues when download_files raises an exception."""
+        backend = MockBackend(download_raises=True)
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        # Should not raise - summarization should continue
+        result = middleware.before_model(state, runtime)
+
+        assert result is not None
+        assert "messages" in result
+        # download_files was called (and raised)
+        assert len(backend.download_files_calls) == 1
+        # write should still be called (with no existing content)
+        assert len(backend.write_calls) == 1
+
+    @pytest.mark.anyio
+    async def test_async_summarization_continues_on_download_files_exception(self) -> None:
+        """Test that async summarization continues when adownload_files raises."""
+        backend = MockBackend(download_raises=True)
+        mock_model = make_mock_model()
+        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        # Should not raise - summarization should continue
+        result = await middleware.abefore_model(state, runtime)
+
+        assert result is not None
+        assert "messages" in result
+        # write should still be called (with no existing content)
+        assert len(backend.write_calls) == 1
+
+
+class TestWriteEditException:
+    """Tests for exception handling when `write`/`edit` raises - summarization aborts."""
+
+    def test_summarization_aborts_on_write_exception(self) -> None:
+        """Test that summarization aborts when `write` raises an exception.
+
+        Covers lines 314-322: Exception handler for write in _offload_to_backend.
+        """
+        backend = MockBackend(write_raises=True)
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        # Should not raise, but should abort to preserve messages
+        result = middleware.before_model(state, runtime)
+
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_async_summarization_aborts_on_write_exception(self) -> None:
+        """Test that async summarization aborts when `awrite` raises.
+
+        Covers lines 387-395: Exception handler for awrite in _aoffload_to_backend.
+        """
+        backend = MockBackend(write_raises=True)
+        mock_model = make_mock_model()
+        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        # Should not raise, but should abort to preserve messages
+        result = await middleware.abefore_model(state, runtime)
+
+        assert result is None
+
+    def test_summarization_aborts_on_edit_exception(self) -> None:
+        """Test that summarization aborts when `edit` raises an exception (existing content).
+
+        Covers lines 314-322: Exception handler for edit in _offload_to_backend.
+        """
+        existing = "## Summarized at 2024-01-01T00:00:00Z\n\nHuman: Previous message\n\n"
+        backend = MockBackend(existing_content=existing, write_raises=True)
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        # Should not raise, but should abort to preserve messages
+        result = middleware.before_model(state, runtime)
+
+        assert result is None
+
+    @pytest.mark.anyio
+    async def test_async_summarization_aborts_on_edit_exception(self) -> None:
+        """Test that async summarization aborts when `aedit` raises (existing content).
+
+        Covers lines 387-395: Exception handler for aedit in _aoffload_to_backend.
+        """
+        existing = "## Summarized at 2024-01-01T00:00:00Z\n\nHuman: Previous message\n\n"
+        backend = MockBackend(existing_content=existing, write_raises=True)
+        mock_model = make_mock_model()
+        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        # Should not raise, but should abort to preserve messages
+        result = await middleware.abefore_model(state, runtime)
+
+        assert result is None
+
+
+class TestCutoffIndexEdgeCases:
+    """Tests for edge cases where `cutoff_index <= 0`."""
+
+    def test_no_summarization_when_cutoff_index_zero(self) -> None:
+        """Test that no summarization occurs when `cutoff_index` is `0`."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 3),  # Trigger at 3 messages
+            keep=("messages", 10),  # But keep 10 messages (more than we have)
+        )
+
+        # Create exactly 3 messages to trigger summarization check
+        messages = [
+            HumanMessage(content="Message 1", id="h1"),
+            AIMessage(content="Reply 1", id="a1"),
+            HumanMessage(content="Message 2", id="h2"),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        result = middleware.before_model(state, runtime)
+
+        # Should return None because cutoff_index would be 0 or negative
+        assert result is None
+        # No writes should occur
+        assert len(backend.write_calls) == 0
+
+    @pytest.mark.anyio
+    async def test_async_no_summarization_when_not_triggered(self) -> None:
+        """Test that async `abefore_model` returns `None` when summarization not triggered."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 100),  # High threshold
+            keep=("messages", 3),
+        )
+
+        messages = make_conversation_messages(num_old=3, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        result = await middleware.abefore_model(state, runtime)
+
+        # Should return None (no summarization)
+        assert result is None
+        # No writes should have occurred
+        assert len(backend.write_calls) == 0
+
+    @pytest.mark.anyio
+    async def test_async_no_summarization_when_cutoff_index_zero(self) -> None:
+        """Test that async `abefore_model` returns `None` when `cutoff_index <= 0`."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 3),  # Trigger at 3 messages
+            keep=("messages", 10),  # But keep 10 messages (more than we have)
+        )
+
+        # Create exactly 3 messages to trigger summarization check
+        messages = [
+            HumanMessage(content="Message 1", id="h1"),
+            AIMessage(content="Reply 1", id="a1"),
+            HumanMessage(content="Message 2", id="h2"),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        result = await middleware.abefore_model(state, runtime)
+
+        # Should return None because cutoff_index would be 0 or negative
+        assert result is None
+        # No writes should occur
+        assert len(backend.write_calls) == 0
 
 
 # -----------------------------------------------------------------------------

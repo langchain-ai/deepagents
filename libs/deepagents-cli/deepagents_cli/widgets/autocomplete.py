@@ -77,17 +77,18 @@ class CompletionController(Protocol):
 # Slash Command Completion
 # ============================================================================
 
-SLASH_COMMANDS: list[tuple[str, str]] = [
-    ("/help", "Show help"),
-    ("/clear", "Clear chat and start new session"),
-    ("/quit", "Exit app"),
-    ("/exit", "Exit app"),
-    ("/tokens", "Token usage"),
-    ("/threads", "Show session info"),
-    ("/version", "Show version"),
+SLASH_COMMANDS: list[tuple[str, str, list[str]]] = [
+    ("/help", "Show help", []),
+    ("/clear", "Clear chat and start new session", []),
+    ("/quit", "Exit app (alias: /exit, /q)", ["/exit", "/q"]),
+    ("/tokens", "Token usage", []),
+    ("/threads", "Show session info", []),
+    ("/version", "Show version", []),
 ]
-"""Built-in slash commands with descriptions."""
+"""Built-in slash commands.
 
+Each item: (command: str, description: str, aliases: list[str])
+"""
 MAX_SUGGESTIONS = 10
 
 
@@ -96,7 +97,7 @@ class SlashCommandController:
 
     def __init__(
         self,
-        commands: list[tuple[str, str]],
+        commands: list[tuple[str, str, list[str]]],
         view: CompletionView,
     ) -> None:
         """Initialize the slash command controller.
@@ -134,11 +135,21 @@ class SlashCommandController:
         # Get the search string (text after /)
         search = text[1:cursor_index].lower()
 
-        # Filter commands that match
-        suggestions = [
-            (cmd, desc) for cmd, desc in self._commands if cmd.lower().startswith("/" + search)
-        ]
+        search_prefix = "/" + search
 
+        suggestions = []
+
+        for cmd, desc, aliases in self._commands:
+            matched = False
+            if cmd.lower().startswith(search_prefix):
+                matched = True
+            else:
+                for alias in aliases:
+                    if alias.lower().startswith(search_prefix):
+                        matched = True
+                        break
+            if matched:
+                suggestions.append((cmd, desc))
         if len(suggestions) > MAX_SUGGESTIONS:
             suggestions = suggestions[:MAX_SUGGESTIONS]
 

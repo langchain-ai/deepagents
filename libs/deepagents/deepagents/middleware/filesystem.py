@@ -21,11 +21,8 @@ from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
-
-# Re-export type here for backwards compatibility
-from deepagents.backends.protocol import BACKEND_TYPES as BACKEND_TYPES
 from deepagents.backends.protocol import (
-    BACKEND_TYPES as BACKEND_TYPES,  # Re-export for backwards compatibility
+    BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,

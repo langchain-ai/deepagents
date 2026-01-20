@@ -59,8 +59,10 @@ class FilesystemBackend(BackendProtocol):
         2. Exclude secrets from accessible filesystem paths (especially in CI/CD)
         3. Use SandboxBackend for production environments requiring filesystem
            interaction
-        4. Use ``virtual_mode=True`` with ``root_dir`` to restrict access to a
-           specific directory
+        4. **Always** use ``virtual_mode=True`` with ``root_dir`` to enable path-based
+           access restrictions (blocks ``..``, ``~``, and absolute paths outside root).
+           Note: The default ``virtual_mode=False`` provides no security even with
+           ``root_dir`` set.
     """
 
     def __init__(
@@ -74,13 +76,29 @@ class FilesystemBackend(BackendProtocol):
         Args:
             root_dir: Optional root directory for file operations.
 
-                If provided, all file paths will be resolved relative to this directory.
-                If not provided, uses the current working directory.
-            virtual_mode: All paths are treated as virtual paths rooted at `root_dir`.
+                - If not provided, defaults to the current working directory.
+                - When ``virtual_mode=False`` (default): Only affects relative path
+                  resolution. Provides **no security** - agents can access any file
+                  using absolute paths or ``..`` sequences.
+                - When ``virtual_mode=True``: All paths are restricted to this
+                  directory with traversal protection enabled.
 
-                Path traversal (using `..` or `~`) is disallowed and all resolved paths
-                must remain within the root directory. When `False` (default), absolute
-                paths are allowed as-is and relative paths resolve under cwd.
+            virtual_mode: Enable path-based access restrictions (default: False).
+
+                When ``True``, all paths are treated as virtual paths anchored to
+                ``root_dir``. Path traversal (``..``, ``~``) is blocked and all
+                resolved paths are verified to remain within ``root_dir``.
+
+                When ``False`` (default), **no security is provided**:
+
+                - Absolute paths (e.g., ``/etc/passwd``) bypass ``root_dir`` entirely
+                - Relative paths with ``..`` can escape ``root_dir``
+                - Agents have unrestricted filesystem access
+
+                **Security note:** ``virtual_mode=True`` provides path-based access
+                control, not process isolation. It restricts which files can be
+                accessed via paths, but does not sandbox the Python process itself.
+
             max_file_size_mb: Maximum file size in megabytes for operations like
                 grep's Python fallback search.
 

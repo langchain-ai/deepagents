@@ -611,9 +611,10 @@ class DeepAgentsApp(App):
             await self._mount_message(self._loading_widget)
             self._agent_running = True
 
-            # Disable cursor blink while agent is working
+            # Disable submission while agent is working (user can still type)
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
+                self._chat_input.set_submit_enabled(enabled=False)
 
             # Use run_worker to avoid blocking the main event loop
             # This allows the UI to remain responsive during agent execution
@@ -657,9 +658,10 @@ class DeepAgentsApp(App):
                 await self._loading_widget.remove()
             self._loading_widget = None
 
-        # Re-enable cursor blink now that agent is done
+        # Re-enable submission now that agent is done
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+            self._chat_input.set_submit_enabled(enabled=True)
 
         # Ensure token display is restored (in case of early cancellation)
         if self._token_tracker:

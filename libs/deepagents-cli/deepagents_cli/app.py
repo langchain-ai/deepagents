@@ -368,28 +368,20 @@ class DeepAgentsApp(App):
         Uses anchor() for smoother streaming - keeps scroll locked to bottom
         as new content is added without causing visual jumps.
         """
-        try:
-            chat = self.query_one("#chat", VerticalScroll)
-            # Only scroll/anchor if content exceeds viewport
-            if chat.virtual_size.height > chat.size.height:
-                chat.anchor()
-        except NoMatches:
-            pass
+        chat = self.query_one("#chat", VerticalScroll)
+        if chat.virtual_size.height > chat.size.height:
+            chat.anchor()
 
     def _size_initial_spacer(self) -> None:
         """Size the spacer to fill remaining viewport below input."""
-        try:
-            chat = self.query_one("#chat", VerticalScroll)
-            welcome = self.query_one("#welcome-banner", WelcomeBanner)
-            input_container = self.query_one("#bottom-app-container", Container)
-            spacer = self.query_one("#chat-spacer", Static)
-            # Spacer fills space below input: viewport - welcome - input - padding
-            content_height = welcome.size.height + input_container.size.height + 4
-            spacer_height = chat.size.height - content_height
-            if spacer_height > 0:
-                spacer.styles.height = spacer_height
-        except NoMatches:
-            pass
+        chat = self.query_one("#chat", VerticalScroll)
+        welcome = self.query_one("#welcome-banner", WelcomeBanner)
+        input_container = self.query_one("#bottom-app-container", Container)
+        spacer = self.query_one("#chat-spacer", Static)
+        content_height = welcome.size.height + input_container.size.height + 4
+        spacer_height = chat.size.height - content_height
+        if spacer_height > 0:
+            spacer.styles.height = spacer_height
 
     async def _remove_spacer(self) -> None:
         """Remove the initial spacer when first message is sent."""
@@ -698,17 +690,12 @@ class DeepAgentsApp(App):
         Args:
             widget: The message widget to mount
         """
-        try:
-            # Remove spacer on first message
-            await self._remove_spacer()
-            messages = self.query_one("#messages", Container)
-            await messages.mount(widget)
-            # Only scroll if content exceeds viewport (prevents jarring jump)
-            chat = self.query_one("#chat", VerticalScroll)
-            if chat.virtual_size.height > chat.size.height:
-                chat.scroll_end(animate=False)
-        except NoMatches:
-            pass
+        await self._remove_spacer()
+        messages = self.query_one("#messages", Container)
+        await messages.mount(widget)
+        chat = self.query_one("#chat", VerticalScroll)
+        if chat.virtual_size.height > chat.size.height:
+            chat.scroll_end(animate=False)
 
     async def _clear_messages(self) -> None:
         """Clear the messages area."""

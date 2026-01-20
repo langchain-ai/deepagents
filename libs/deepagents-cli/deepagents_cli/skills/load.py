@@ -12,8 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.skills import SkillMetadata
-from deepagents.middleware.skills import _list_skills as list_skills_from_backend
+from deepagents.middleware.skills import SkillMetadata, _list_skills as list_skills_from_backend
 
 
 class ExtendedSkillMetadata(SkillMetadata):

@@ -1,5 +1,5 @@
 """Textual UI application for deepagents-cli."""
-# ruff: noqa: BLE001, PLR0912, PLR2004, S110, SIM108
+# ruff: noqa: BLE001, PLR0912, PLR2004, S110
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import Click, MouseUp  # noqa: TC002 - used in type annotation
-from textual.widgets import Static  # noqa: TC002 - used at runtime
+from textual.events import Click, MouseUp
+from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual

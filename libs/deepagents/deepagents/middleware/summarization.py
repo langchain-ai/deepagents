@@ -70,7 +70,7 @@ class TruncateArgsSettings(TypedDict, total=False):
     Attributes:
         trigger: Threshold to trigger argument truncation. If None, truncation is disabled.
         keep: Context retention policy for message truncation (defaults to last 20 messages).
-        max_length: Maximum character length for tool arguments before truncation (defaults to 100).
+        max_length: Maximum character length for tool arguments before truncation (defaults to 2000).
         truncation_text: Text to replace truncated arguments with (defaults to "...(argument truncated)").
     """
 
@@ -121,10 +121,10 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
                     ```python
                     # Truncate when 50 messages is reached, ignoring the last 20 messages
-                    {"trigger": ("messages", 50), "keep": ("messages", 20), "max_length": 100, "truncation_text": "...(truncated)"}
+                    {"trigger": ("messages", 50), "keep": ("messages", 20), "max_length": 2000, "truncation_text": "...(truncated)"}
 
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
-                    {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 100, "truncation_text": "...(truncated)"}
+                    {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
             history_path_prefix: Path prefix for storing conversation history.
 
         Example:
@@ -156,12 +156,12 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         if truncate_args_settings is None:
             self._truncate_args_trigger = None
             self._truncate_args_keep = ("messages", 20)
-            self._max_arg_length = 100
+            self._max_arg_length = 2000
             self._truncation_text = "...(argument truncated)"
         else:
             self._truncate_args_trigger = truncate_args_settings.get("trigger")
             self._truncate_args_keep = truncate_args_settings.get("keep", ("messages", 20))
-            self._max_arg_length = truncate_args_settings.get("max_length", 100)
+            self._max_arg_length = truncate_args_settings.get("max_length", 2000)
             self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
 
     def _get_backend(

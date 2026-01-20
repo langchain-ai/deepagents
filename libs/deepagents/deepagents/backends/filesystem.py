@@ -44,26 +44,26 @@ class FilesystemBackend(BackendProtocol):
 
         **Inappropriate use cases:**
 
-        - Web servers or HTTP APIs - use StateBackend, StoreBackend, or
-          SandboxBackend instead
+        - Web servers or HTTP APIs - use `StateBackend`, `StoreBackend`, or
+            `SandboxBackend` instead
 
         **Security risks:**
 
         - Agents can read any accessible file, including secrets (API keys,
-          credentials, .env files)
+            credentials, `.env` files)
         - Combined with network tools, secrets may be exfiltrated via SSRF attacks
         - File modifications are permanent and irreversible
 
         **Recommended safeguards:**
 
-        1. Enable Human-in-the-Loop (HIL) middleware to review sensitive operations
+        1. Enable Human-in-the-Loop (HITL) middleware to review sensitive operations
         2. Exclude secrets from accessible filesystem paths (especially in CI/CD)
-        3. Use SandboxBackend for production environments requiring filesystem
-           interaction
-        4. **Always** use ``virtual_mode=True`` with ``root_dir`` to enable path-based
-           access restrictions (blocks ``..``, ``~``, and absolute paths outside root).
-           Note: The default ``virtual_mode=False`` provides no security even with
-           ``root_dir`` set.
+        3. Use `SandboxBackend` for production environments requiring filesystem
+            interaction
+        4. **Always** use `virtual_mode=True` with `root_dir` to enable path-based
+            access restrictions (blocks `..`, `~`, and absolute paths outside root).
+            Note that the default (`virtual_mode=False`) provides no security even with
+            `root_dir` set.
     """
 
     def __init__(
@@ -78,25 +78,25 @@ class FilesystemBackend(BackendProtocol):
             root_dir: Optional root directory for file operations.
 
                 - If not provided, defaults to the current working directory.
-                - When ``virtual_mode=False`` (default): Only affects relative path
-                  resolution. Provides **no security** - agents can access any file
-                  using absolute paths or ``..`` sequences.
-                - When ``virtual_mode=True``: All paths are restricted to this
-                  directory with traversal protection enabled.
+                - When `virtual_mode=False` (default): Only affects relative path
+                    resolution. Provides **no security** - agents can access any file
+                    using absolute paths or `..` sequences.
+                - When `virtual_mode=True`: All paths are restricted to this
+                    directory with traversal protection enabled.
 
-            virtual_mode: Enable path-based access restrictions (default: False).
+            virtual_mode: Enable path-based access restrictions.
 
-                When ``True``, all paths are treated as virtual paths anchored to
-                ``root_dir``. Path traversal (``..``, ``~``) is blocked and all
-                resolved paths are verified to remain within ``root_dir``.
+                When `True`, all paths are treated as virtual paths anchored to
+                `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
+                are verified to remain within `root_dir`.
 
-                When ``False`` (default), **no security is provided**:
+                When `False` (default), **no security is provided**:
 
-                - Absolute paths (e.g., ``/etc/passwd``) bypass ``root_dir`` entirely
-                - Relative paths with ``..`` can escape ``root_dir``
+                - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
+                - Relative paths with `..` can escape `root_dir`
                 - Agents have unrestricted filesystem access
 
-                **Security note:** ``virtual_mode=True`` provides path-based access
+                **Security note:** `virtual_mode=True` provides path-based access
                 control, not process isolation. It restricts which files can be
                 accessed via paths, but does not sandbox the Python process itself.
 

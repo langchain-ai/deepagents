@@ -1,4 +1,5 @@
 """Textual UI application for deepagents-cli."""
+# ruff: noqa: BLE001, PLR0912, PLR2004, S110, SIM108
 
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import MouseUp  # noqa: TC002 - used in type annotation
+from textual.events import Click, MouseUp  # noqa: TC002 - used in type annotation
 from textual.widgets import Static  # noqa: TC002 - used at runtime
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
@@ -40,20 +41,35 @@ if TYPE_CHECKING:
 class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 
-    def __init__(self, update_callback: callable) -> None:
-        """Initialize with a callback to update the display."""
+    def __init__(self, update_callback: callable, hide_callback: callable | None = None) -> None:
+        """Initialize with callbacks to update the display."""
         self._update_callback = update_callback
+        self._hide_callback = hide_callback
         self.current_context = 0
 
-    def add(self, input_tokens: int, output_tokens: int) -> None:  # noqa: ARG002
-        """Update token count from a response."""
-        self.current_context = input_tokens
-        self._update_callback(input_tokens)
+    def add(self, total_tokens: int, _output_tokens: int = 0) -> None:
+        """Update token count from a response.
+
+        Args:
+            total_tokens: Total context tokens (input + output from usage_metadata)
+            _output_tokens: Unused, kept for backwards compatibility
+        """
+        self.current_context = total_tokens
+        self._update_callback(self.current_context)
 
     def reset(self) -> None:
         """Reset token count."""
         self.current_context = 0
         self._update_callback(0)
+
+    def hide(self) -> None:
+        """Hide the token display (e.g., during streaming)."""
+        if self._hide_callback:
+            self._hide_callback()
+
+    def show(self) -> None:
+        """Show the token display with current value (e.g., after interrupt)."""
+        self._update_callback(self.current_context)
 
 
 class TextualSessionState:
@@ -78,6 +94,121 @@ class TextualSessionState:
         """Reset to a new thread. Returns the new thread_id."""
         self.thread_id = uuid.uuid4().hex[:8]
         return self.thread_id
+
+
+# Prompt for /remember command - triggers agent to review conversation and update memory/skills
+REMEMBER_PROMPT = """Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
+
+## Step 1: Identify Best Practices and Key Learnings
+
+Scan the conversation for:
+
+### Best Practices (highest priority)
+- **Patterns that worked well** - approaches, techniques, or solutions we found effective
+- **Anti-patterns to avoid** - mistakes, gotchas, or approaches that caused problems
+- **Quality standards** - criteria we established for good code, documentation, or processes
+- **Decision rationale** - why we chose one approach over another
+
+### Other Valuable Knowledge
+- Coding conventions and style preferences
+- Project architecture decisions
+- Workflows and processes we developed
+- Tools, libraries, or techniques worth remembering
+- Feedback I gave about your behavior or outputs
+
+## Step 2: Decide Where to Store Each Learning
+
+For each best practice or learning, choose the right destination:
+
+### → Memory (AGENTS.md) for preferences and guidelines
+Use memory when the knowledge is:
+- A preference or guideline (not a multi-step process)
+- Something to always keep in mind
+- A simple rule or pattern
+
+**Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
+**Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
+
+### → Skill for reusable workflows and methodologies
+**Create a skill when** we developed:
+- A multi-step process worth reusing
+- A methodology for a specific type of task
+- A workflow with best practices baked in
+- A procedure that should be followed consistently
+
+Skills are more powerful than memory entries because they can encode **how** to do something well, not just **what** to remember.
+
+## Step 3: Create Skills for Significant Best Practices
+
+If we established best practices around a workflow or process, capture them in a skill.
+
+**Example:** If we discussed best practices for code review, create a `code-review` skill that encodes those practices into a reusable workflow.
+
+### Skill Location
+`~/.deepagents/agent/skills/<skill-name>/SKILL.md`
+
+### Skill Structure
+```
+skill-name/
+├── SKILL.md          (required - main instructions with best practices)
+├── scripts/          (optional - executable code)
+├── references/       (optional - detailed documentation)
+└── assets/           (optional - templates, examples)
+```
+
+### SKILL.md Format
+```markdown
+---
+name: skill-name
+description: "What this skill does AND when to use it. Include triggers like 'when the user asks to X' or 'when working with Y'. This description determines when the skill activates."
+---
+
+# Skill Name
+
+## Overview
+Brief explanation of what this skill accomplishes.
+
+## Best Practices
+Capture the key best practices upfront:
+- Best practice 1: explanation
+- Best practice 2: explanation
+
+## Process
+Step-by-step instructions (imperative form):
+1. First, do X
+2. Then, do Y
+3. Finally, do Z
+
+## Common Pitfalls
+- Pitfall to avoid and why
+- Another anti-pattern we discovered
+```
+
+### Key Principles
+1. **Encode best practices prominently** - Put them near the top so they guide the entire workflow
+2. **Concise is key** - Only include non-obvious knowledge. Every paragraph should justify its token cost.
+3. **Clear triggers** - The description determines when the skill activates. Be specific.
+4. **Imperative form** - Write as commands: "Create a file" not "You should create a file"
+5. **Include anti-patterns** - What NOT to do is often as valuable as what to do
+
+## Step 4: Update Memory for Simpler Learnings
+
+For preferences, guidelines, and simple rules that don't warrant a full skill:
+
+```markdown
+## Best Practices
+- When doing X, always Y because Z
+- Avoid A because it leads to B
+```
+
+Use `edit_file` to update existing files or `write_file` to create new ones.
+
+## Step 5: Summarize Changes
+
+List what you captured and where you stored it:
+- Skills created (with key best practices encoded)
+- Memory entries added (with location)
+"""
 
 
 class DeepAgentsApp(App):
@@ -123,6 +254,7 @@ class DeepAgentsApp(App):
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
+        initial_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the DeepAgents application.
@@ -134,6 +266,7 @@ class DeepAgentsApp(App):
             auto_approve: Whether to start with auto-approve enabled
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
+            initial_prompt: Optional prompt to auto-submit when session starts
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -144,6 +277,7 @@ class DeepAgentsApp(App):
         self._cwd = str(cwd) if cwd else str(Path.cwd())
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
+        self._initial_prompt = initial_prompt
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -188,7 +322,7 @@ class DeepAgentsApp(App):
         )
 
         # Create token tracker that updates status bar
-        self._token_tracker = TextualTokenTracker(self._update_tokens)
+        self._token_tracker = TextualTokenTracker(self._update_tokens, self._hide_tokens)
 
         # Create UI adapter if agent is provided
         if self._agent:
@@ -204,6 +338,13 @@ class DeepAgentsApp(App):
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
 
+        # Auto-submit initial prompt if provided
+        if self._initial_prompt and self._initial_prompt.strip():
+            # Use call_after_refresh to ensure UI is fully mounted before submitting
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._handle_user_message(self._initial_prompt))
+            )
+
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
         if self._status_bar:
@@ -213,6 +354,11 @@ class DeepAgentsApp(App):
         """Update the token count in status bar."""
         if self._status_bar:
             self._status_bar.set_tokens(count)
+
+    def _hide_tokens(self) -> None:
+        """Hide the token display during streaming."""
+        if self._status_bar:
+            self._status_bar.hide_tokens()
 
     def _scroll_chat_to_bottom(self) -> None:
         """Scroll the chat area to the bottom.
@@ -271,7 +417,7 @@ class DeepAgentsApp(App):
             self._scroll_chat_to_bottom()
             # Focus approval menu
             self.call_after_refresh(menu.focus)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self._pending_approval_widget = None
             if not result_future.done():
                 result_future.set_exception(e)
@@ -387,10 +533,24 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                SystemMessage("Commands: /quit, /clear, /tokens, /threads, /help")
+                SystemMessage("Commands: /quit, /clear, /remember, /tokens, /threads, /help")
             )
+
+        elif cmd == "/version":
+            await self._mount_message(UserMessage(command))
+            # Show CLI package version
+            try:
+                from deepagents_cli._version import __version__
+
+                await self._mount_message(SystemMessage(f"deepagents version: {__version__}"))
+            except Exception:
+                await self._mount_message(SystemMessage("deepagents version: unknown"))
         elif cmd == "/clear":
             await self._clear_messages()
+            if self._token_tracker:
+                self._token_tracker.reset()
+            # Clear status message (e.g., "Interrupted" from previous session)
+            self._update_status("")
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
@@ -414,6 +574,23 @@ class DeepAgentsApp(App):
                 await self._mount_message(SystemMessage(f"Current context: {formatted} tokens"))
             else:
                 await self._mount_message(SystemMessage("No token usage yet"))
+        elif cmd == "/remember" or cmd.startswith("/remember "):
+            # Extract any additional context after /remember
+            additional_context = ""
+            if cmd.startswith("/remember "):
+                additional_context = command.strip()[len("/remember ") :].strip()
+
+            # Build the final prompt
+            if additional_context:
+                final_prompt = (
+                    f"{REMEMBER_PROMPT}\n\n**Additional context from user:** {additional_context}"
+                )
+            else:
+                final_prompt = REMEMBER_PROMPT
+
+            # Send as a user message to the agent
+            await self._handle_user_message(final_prompt)
+            return  # _handle_user_message already mounts the message
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(SystemMessage(f"Unknown command: {cmd}"))
@@ -434,9 +611,10 @@ class DeepAgentsApp(App):
             await self._mount_message(self._loading_widget)
             self._agent_running = True
 
-            # Disable cursor blink while agent is working
+            # Disable submission while agent is working (user can still type)
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
+                self._chat_input.set_submit_enabled(enabled=False)
 
             # Use run_worker to avoid blocking the main event loop
             # This allows the UI to remain responsive during agent execution
@@ -463,7 +641,7 @@ class DeepAgentsApp(App):
                 adapter=self._ui_adapter,
                 backend=self._backend,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             await self._mount_message(ErrorMessage(f"Agent error: {e}"))
         finally:
             # Clean up loading widget and agent state
@@ -480,9 +658,14 @@ class DeepAgentsApp(App):
                 await self._loading_widget.remove()
             self._loading_widget = None
 
-        # Re-enable cursor blink now that agent is done
+        # Re-enable submission now that agent is done
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
+            self._chat_input.set_submit_enabled(enabled=True)
+
+        # Ensure token display is restored (in case of early cancellation)
+        if self._token_tracker:
+            self._token_tracker.show()
 
     async def _mount_message(self, widget: Static) -> None:
         """Mount a message widget to the messages area.
@@ -624,6 +807,13 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
+    def on_click(self, _event: Click) -> None:
+        """Handle clicks anywhere in the terminal to focus on the command line."""
+        if not self._chat_input:
+            return
+
+        self.call_after_refresh(self._chat_input.focus_input)
+
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
@@ -637,6 +827,7 @@ async def run_textual_app(
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
+    initial_prompt: str | None = None,
 ) -> None:
     """Run the Textual application.
 
@@ -647,6 +838,7 @@ async def run_textual_app(
         auto_approve: Whether to start with auto-approve enabled
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
+        initial_prompt: Optional prompt to auto-submit when session starts
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -655,6 +847,7 @@ async def run_textual_app(
         auto_approve=auto_approve,
         cwd=cwd,
         thread_id=thread_id,
+        initial_prompt=initial_prompt,
     )
     await app.run_async()
 

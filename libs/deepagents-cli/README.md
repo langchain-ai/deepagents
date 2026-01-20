@@ -65,47 +65,29 @@ Type naturally as you would in a chat interface. The agent will use its built-in
 
 ## Model Configuration
 
-The CLI supports three LLM providers with automatic provider detection based on model name:
+The CLI supports OpenAI, Anthropic, and Google models. It automatically selects a provider based on which API keys are available. If multiple keys are set, it uses the first match in this order:
 
-**Supported Providers:**
+| Priority | API key | Default model |
+|----------|---------|---------------|
+| 1st | `OPENAI_API_KEY` | `gpt-5-mini` |
+| 2nd | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` |
+| 3rd | `GOOGLE_API_KEY` | `gemini-3-pro-preview` |
 
-- **OpenAI** - Models like `gpt-4o`, `gpt-5-mini`, `o1-preview`, `o3-mini` (default: `gpt-5-mini`)
-- **Anthropic** - Models like `claude-sonnet-4-5-20250929`, `claude-3-opus-20240229` (default: `claude-sonnet-4-5-20250929`)
-- **Google** - Models like `gemini-3-pro-preview`, `gemini-2.5-pro` (default: `gemini-3-pro-preview`)
-
-**Specify model at startup:**
+To use a different model, pass the `--model` flag:
 
 ```bash
-# Auto-detects Anthropic from model name pattern
-deepagents --model claude-sonnet-4-5-20250929
-
-# Auto-detects OpenAI from model name pattern
+deepagents --model claude-opus-4-5-20251101
 deepagents --model gpt-4o
+deepagents --model gemini-2.5-pro
 ```
 
-**Or use environment variables:**
-
-```bash
-# Set provider-specific model defaults
-export ANTHROPIC_MODEL="claude-sonnet-4-5-20250929"
-export OPENAI_MODEL="gpt-4o"
-export GOOGLE_MODEL="gemini-2.5-pro"
-
-# Set API keys (required)
-export ANTHROPIC_API_KEY="your-key"
-export OPENAI_API_KEY="your-key"
-export GOOGLE_API_KEY="your-key"
-```
+The CLI auto-detects the provider from the model name and requires the corresponding API key. The active model is displayed at startup.
 
 **Model name conventions:**
-
-Model names follow each provider's official naming convention:
 
 - **OpenAI**: See [OpenAI Models Documentation](https://platform.openai.com/docs/models)
 - **Anthropic**: See [Anthropic Models Documentation](https://docs.anthropic.com/en/docs/about-claude/models)
 - **Google**: See [Google Gemini Models Documentation](https://ai.google.dev/gemini-api/docs/models/gemini)
-
-The active model is displayed at startup in the CLI interface.
 
 ## Built-in Tools
 
@@ -158,50 +140,30 @@ deepagents create <agent_name>
 
 #### LangSmith Tracing
 
-The CLI supports separate LangSmith project configuration for agent tracing vs user code tracing:
-
-**Agent Tracing** - Traces deepagents operations (tool calls, agent decisions):
+Enable LangSmith tracing to see agent operations in your LangSmith dashboard:
 
 ```bash
-export DEEPAGENTS_LANGSMITH_PROJECT="my-agent-project"
-```
+export LANGSMITH_API_KEY="your-api-key"
+export LANGSMITH_TRACING=true
+export DEEPAGENTS_LANGSMITH_PROJECT="my-project"
 
-**User Code Tracing** - Traces code executed via shell commands:
-
-```bash
-export LANGSMITH_PROJECT="my-user-code-project"
-```
-
-**Complete Setup Example:**
-
-```bash
-# Enable LangSmith tracing
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY="your-api-key"
-
-# Configure separate projects
-export DEEPAGENTS_LANGSMITH_PROJECT="agent-traces"
-export LANGSMITH_PROJECT="user-code-traces"
-
-# Run deepagents
 deepagents
 ```
 
-When both are configured, the CLI displays:
+When configured, the CLI displays:
 
 ```
-✓ LangSmith tracing enabled: Deepagents → 'agent-traces'
-  User code (shell) → 'user-code-traces'
+✓ LangSmith tracing: 'my-project'
 ```
 
-**Why separate projects?**
+**Advanced: Separate Projects**
 
-- Keep agent operations separate from your application code traces
-- Easier debugging by isolating agent vs user code behavior
-- Different retention policies or access controls per project
+If you're building a LangChain app with deepagents and want to separate agent traces from your app's traces:
 
-**Backwards Compatibility:**
-If `DEEPAGENTS_LANGSMITH_PROJECT` is not set, both agent and user code trace to the same project specified by `LANGSMITH_PROJECT`.
+```bash
+export DEEPAGENTS_LANGSMITH_PROJECT="agent-traces"  # Deepagents operations
+export LANGSMITH_PROJECT="my-app-traces"            # Your app's LangChain calls
+```
 
 ## Customization
 

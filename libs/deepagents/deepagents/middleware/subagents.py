@@ -358,6 +358,7 @@ def _create_task_tool(
     subagent_description_str = "\n".join(subagent_descriptions)
 
     def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+        # Validate that the result contains a 'messages' key
         if "messages" not in result:
             error_msg = (
                 "CompiledSubAgent must return a state containing a 'messages' key. "
@@ -457,18 +458,24 @@ class SubAgentMiddleware(AgentMiddleware):
 
     Args:
         default_model: The model to use for subagents.
-            Can be a LanguageModelLike or a dict for init_chat_model.
+
+            Can be a `LanguageModelLike` or a dict for `init_chat_model`.
         default_tools: The tools to use for the default general-purpose subagent.
-        default_middleware: Default middleware to apply to all subagents. If `None` (default),
-            no default middleware is applied. Pass a list to specify custom middleware.
-        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
-            are also the fallback for any subagents that don't specify their own tool configs.
+        default_middleware: Default middleware to apply to all subagents.
+
+            If `None`, no default middleware is applied.
+
+            Pass a list to specify custom middleware.
+        default_interrupt_on: The tool configs to use for the default general-purpose subagent.
+
+            These are also the fallback for any subagents that don't specify their own tool configs.
         subagents: A list of additional subagents to provide to the agent.
         system_prompt: Full system prompt override. When provided, completely replaces
             the agent's system prompt.
-        general_purpose_agent: Whether to include the general-purpose agent. Defaults to `True`.
-        task_description: Custom description for the task tool. If `None`, uses the
-            default description template.
+        general_purpose_agent: Whether to include the general-purpose agent.
+        task_description: Custom description for the task tool.
+
+            If `None`, uses the default description template.
 
     Example:
         ```python
@@ -512,7 +519,7 @@ class SubAgentMiddleware(AgentMiddleware):
         general_purpose_agent: bool = True,
         task_description: str | None = None,
     ) -> None:
-        """Initialize the SubAgentMiddleware."""
+        """Initialize the `SubAgentMiddleware`."""
         super().__init__()
         self.system_prompt = system_prompt
         task_tool = _create_task_tool(
@@ -531,7 +538,7 @@ class SubAgentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Update the system prompt to include instructions on using subagents."""
+        """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             request_system_prompt = None
             if hasattr(request, "system_message") and request.system_message:
@@ -553,7 +560,7 @@ class SubAgentMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """(async) Update the system prompt to include instructions on using subagents."""
+        """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
             request_system_prompt = None
             if hasattr(request, "system_message") and request.system_message:

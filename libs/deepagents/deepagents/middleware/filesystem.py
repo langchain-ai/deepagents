@@ -20,10 +20,8 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
-
-# Re-export type here for backwards compatibility
-from deepagents.backends.protocol import BACKEND_TYPES as BACKEND_TYPES
 from deepagents.backends.protocol import (
+    BACKEND_TYPES as BACKEND_TYPES,  # Re-export for backwards compatibility
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,
@@ -35,12 +33,12 @@ from deepagents.backends.utils import (
     sanitize_tool_call_id,
     truncate_if_too_long,
 )
+from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
-MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
-DEFAULT_READ_LIMIT = 500
+DEFAULT_READ_LIMIT = 100
 
 
 class FileData(TypedDict):
@@ -169,14 +167,14 @@ Assume this tool is able to read all files on the machine. If the User provides 
 
 Usage:
 - The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 500 lines starting from the beginning of the file
+- By default, it reads up to 100 lines starting from the beginning of the file
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
   - First scan: read_file(path, limit=100) to see file structure
   - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
   - Only omit limit (read full file) when necessary for editing
 - Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
-- Any lines longer than 2000 characters will be truncated
 - Results are returned using cat -n format, with line numbers starting at 1
+- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
 - You should ALWAYS make sure a file has been read before editing it."""
@@ -375,7 +373,14 @@ def _read_file_tool_generator(
         """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        return resolved_backend.read(file_path, offset=offset, limit=limit)
+        result = resolved_backend.read(file_path, offset=offset, limit=limit)
+
+        lines = result.splitlines(keepends=True)
+        if len(lines) > limit:
+            lines = lines[:limit]
+            result = "".join(lines)
+
+        return result
 
     async def async_read_file(
         file_path: str,
@@ -386,7 +391,14 @@ def _read_file_tool_generator(
         """Asynchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
         file_path = _validate_path(file_path)
-        return await resolved_backend.aread(file_path, offset=offset, limit=limit)
+        result = await resolved_backend.aread(file_path, offset=offset, limit=limit)
+
+        lines = result.splitlines(keepends=True)
+        if len(lines) > limit:
+            lines = lines[:limit]
+            result = "".join(lines)
+
+        return result
 
     return StructuredTool.from_function(
         name="read_file",
@@ -802,8 +814,9 @@ class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
-    `edit_file`, `glob`, and `grep`. Files can be stored using any backend that implements
-    the `BackendProtocol`.
+    `edit_file`, `glob`, and `grep`.
+
+    Files can be stored using any backend that implements the `BackendProtocol`.
 
     If the backend implements `SandboxBackendProtocol`, an `execute` tool is also added
     for running shell commands.
@@ -823,8 +836,6 @@ class FilesystemMiddleware(AgentMiddleware):
         custom_tool_descriptions: Optional custom tool descriptions override.
         tool_token_limit_before_evict: Token limit before evicting a tool result to the
             filesystem.
-
-            Defaults to 20,000 tokens.
 
             When exceeded, writes the result using the configured backend and replaces it
             with a truncated preview and file reference.
@@ -935,7 +946,8 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
+            request = request.override(system_message=new_system_message)
 
         return handler(request)
 
@@ -982,7 +994,8 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
+            request = request.override(system_message=new_system_message)
 
         return await handler(request)
 
@@ -1056,6 +1069,66 @@ class FilesystemMiddleware(AgentMiddleware):
         processed_message = ToolMessage(
             content=replacement_text,
             tool_call_id=message.tool_call_id,
+            name=message.name,
+        )
+        return processed_message, result.files_update
+
+    async def _aprocess_large_message(
+        self,
+        message: ToolMessage,
+        resolved_backend: BackendProtocol,
+    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+        """Async version of _process_large_message.
+
+        Uses async backend methods to avoid sync calls in async context.
+        See _process_large_message for full documentation.
+        """
+        # Early exit if eviction not configured
+        if not self.tool_token_limit_before_evict:
+            return message, None
+
+        # Convert content to string once for both size check and eviction
+        # Special case: single text block - extract text directly for readability
+        if (
+            isinstance(message.content, list)
+            and len(message.content) == 1
+            and isinstance(message.content[0], dict)
+            and message.content[0].get("type") == "text"
+            and "text" in message.content[0]
+        ):
+            content_str = str(message.content[0]["text"])
+        elif isinstance(message.content, str):
+            content_str = message.content
+        else:
+            # Multiple blocks or non-text content - stringify entire structure
+            content_str = str(message.content)
+
+        # Check if content exceeds eviction threshold
+        # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
+        # This errs on the high side to avoid premature eviction of content that might fit
+        if len(content_str) <= 4 * self.tool_token_limit_before_evict:
+            return message, None
+
+        # Write content to filesystem using async method
+        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
+        file_path = f"/large_tool_results/{sanitized_id}"
+        result = await resolved_backend.awrite(file_path, content_str)
+        if result.error:
+            return message, None
+
+        # Create truncated preview for the replacement message
+        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
+        replacement_text = TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=message.tool_call_id,
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+
+        # Always return as plain string after eviction
+        processed_message = ToolMessage(
+            content=replacement_text,
+            tool_call_id=message.tool_call_id,
+            name=message.name,
         )
         return processed_message, result.files_update
 
@@ -1115,6 +1188,52 @@ class FilesystemMiddleware(AgentMiddleware):
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
         raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
+    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+        """Async version of _intercept_large_tool_result.
+
+        Uses async backend methods to avoid sync calls in async context.
+        See _intercept_large_tool_result for full documentation.
+        """
+        if isinstance(tool_result, ToolMessage):
+            resolved_backend = self._get_backend(runtime)
+            processed_message, files_update = await self._aprocess_large_message(
+                tool_result,
+                resolved_backend,
+            )
+            return (
+                Command(
+                    update={
+                        "files": files_update,
+                        "messages": [processed_message],
+                    }
+                )
+                if files_update is not None
+                else processed_message
+            )
+
+        if isinstance(tool_result, Command):
+            update = tool_result.update
+            if update is None:
+                return tool_result
+            command_messages = update.get("messages", [])
+            accumulated_file_updates = dict(update.get("files", {}))
+            resolved_backend = self._get_backend(runtime)
+            processed_messages = []
+            for message in command_messages:
+                if not isinstance(message, ToolMessage):
+                    processed_messages.append(message)
+                    continue
+
+                processed_message, files_update = await self._aprocess_large_message(
+                    message,
+                    resolved_backend,
+                )
+                processed_messages.append(processed_message)
+                if files_update is not None:
+                    accumulated_file_updates.update(files_update)
+            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+        raise AssertionError(f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}")
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -1153,4 +1272,4 @@ class FilesystemMiddleware(AgentMiddleware):
             return await handler(request)
 
         tool_result = await handler(request)
-        return self._intercept_large_tool_result(tool_result, request.runtime)
+        return await self._aintercept_large_tool_result(tool_result, request.runtime)

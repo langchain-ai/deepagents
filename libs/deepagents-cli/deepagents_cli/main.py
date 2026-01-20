@@ -1,12 +1,26 @@
 """Main entry point and CLI loop for deepagents."""
-# ruff: noqa: T201
+# ruff: noqa: T201, E402, BLE001, PLR0912, PLR0915
+
+# Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
+# ruff: noqa: E402
+import warnings
+
+warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 
 import argparse
 import asyncio
 import contextlib
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
+warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
+
+from rich.text import Text
+
+from deepagents_cli._version import __version__
 
 # Now safe to import agent (which imports LangChain modules)
 from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
@@ -75,6 +89,11 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"deepagents {__version__}",
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
@@ -127,6 +146,14 @@ def parse_args() -> argparse.Namespace:
         help="Resume thread: -r for most recent, -r <ID> for specific thread",
     )
 
+    # Initial prompt - auto-submit when session starts
+    parser.add_argument(
+        "-m",
+        "--message",
+        dest="initial_prompt",
+        help="Initial prompt to auto-submit when session starts",
+    )
+
     parser.add_argument(
         "--model",
         help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5-mini). "
@@ -163,6 +190,7 @@ async def run_textual_cli_async(
     model_name: str | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
+    initial_prompt: str | None = None,
 ) -> None:
     """Run the Textual CLI interface (async version).
 
@@ -174,6 +202,7 @@ async def run_textual_cli_async(
         model_name: Optional model name to use
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
+        initial_prompt: Optional prompt to auto-submit when session starts
     """
     from deepagents_cli.app import run_textual_app
 
@@ -204,7 +233,7 @@ async def run_textual_cli_async(
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
                 console.print("[red]❌ Sandbox creation failed[/red]")
-                console.print(f"[dim]{e}[/dim]")
+                console.print(Text(str(e), style="dim"))
                 sys.exit(1)
 
         try:
@@ -226,9 +255,12 @@ async def run_textual_cli_async(
                 auto_approve=auto_approve,
                 cwd=Path.cwd(),
                 thread_id=thread_id,
+                initial_prompt=initial_prompt,
             )
         except Exception as e:
-            console.print(f"[red]❌ Failed to create agent: {e}[/red]")
+            error_text = Text("❌ Failed to create agent: ", style="red")
+            error_text.append(str(e))
+            console.print(error_text)
             sys.exit(1)
         finally:
             # Clean up sandbox if we created one
@@ -290,12 +322,13 @@ def cli_main() -> None:
                     if agent_name:
                         args.agent = agent_name
                 else:
-                    msg = (
-                        f"No previous thread for '{args.agent}'"
-                        if agent_filter
-                        else "No previous threads"
-                    )
-                    console.print(f"[yellow]{msg}, starting new.[/yellow]")
+                    if agent_filter:
+                        msg = Text("No previous thread for '", style="yellow")
+                        msg.append(args.agent)
+                        msg.append("', starting new.", style="yellow")
+                    else:
+                        msg = Text("No previous threads, starting new.", style="yellow")
+                    console.print(msg)
 
             elif args.resume_thread:
                 # -r <ID>: Resume specific thread
@@ -307,7 +340,10 @@ def cli_main() -> None:
                         if agent_name:
                             args.agent = agent_name
                 else:
-                    console.print(f"[red]Thread '{args.resume_thread}' not found.[/red]")
+                    error_msg = Text("Thread '", style="red")
+                    error_msg.append(args.resume_thread)
+                    error_msg.append("' not found.", style="red")
+                    console.print(error_msg)
                     console.print(
                         "[dim]Use 'deepagents threads list' to see available threads.[/dim]"
                     )
@@ -327,6 +363,7 @@ def cli_main() -> None:
                     model_name=getattr(args, "model", None),
                     thread_id=thread_id,
                     is_resumed=is_resumed,
+                    initial_prompt=getattr(args, "initial_prompt", None),
                 )
             )
     except KeyboardInterrupt:

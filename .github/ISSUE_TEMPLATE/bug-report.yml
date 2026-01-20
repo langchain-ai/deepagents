@@ -1,0 +1,96 @@
+name: "\U0001F41B Bug Report"
+description: Report a bug in Deep Agents. To report a security issue, please instead use the security option below. For questions, please use the Deep Agents forum (below).
+labels: ["bug"]
+type: bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to file a bug report.
+
+        For usage questions and general design questions, please use the [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18).
+
+        Check these before submitting to see if your issue has already been reported, fixed or if there's another way to solve your problem:
+
+        Check these before submitting to see if your issue has already been reported, fixed or if there's another way to solve your problem:
+
+        * [Documentation](https://docs.langchain.com/oss/python/deepagents/overview),
+        * [API Reference Documentation](https://reference.langchain.com/python/deepagents/),
+        * [LangChain ChatBot](https://chat.langchain.com/)
+        * [GitHub search](https://github.com/langchain-ai/deepagents),
+        * [Deep Agents Forum](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18),
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checked other resources
+      description: Please confirm the following.
+      options:
+        - label: This is a bug, not a usage question.
+          required: true
+        - label: I added a clear and descriptive title.
+          required: true
+        - label: I searched existing issues and didn't find this.
+          required: true
+        - label: I can reproduce this with the latest released version.
+          required: true
+        - label: I included a minimal reproducible example and steps to reproduce.
+          required: true
+  - type: checkboxes
+    id: package
+    attributes:
+      label: Area (Required)
+      description: Which area of the repository does this issue relate to? Select at least one.
+      options:
+        - label: deepagents (SDK)
+        - label: cli
+  - type: textarea
+    id: reproduction
+    validations:
+      required: true
+    attributes:
+      label: Reproduction Steps / Example Code (Python)
+      description: |
+        Please add a self-contained, [minimal, reproducible, example](https://stackoverflow.com/help/minimal-reproducible-example) with your use case.
+
+        If a maintainer can copy it, run it, and see it right away, there's a much higher chance that you'll be able to get help.
+
+        **Important!**
+
+        * Avoid screenshots, as they are hard to read and (more importantly) don't allow others to copy-and-paste your code.
+        * Reduce your code to the minimum required to reproduce the issue if possible.
+
+        (This will be automatically formatted into code, so no need for backticks.)
+      render: python
+  - type: textarea
+    id: error
+    attributes:
+      label: Error Message and Stack Trace (if applicable)
+      description: |
+        If you are reporting an error, please copy and paste the full error message and
+        stack trace.
+        (This will be automatically formatted into code, so no need for backticks.)
+      render: shell
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: |
+        What is the problem, question, or error?
+
+        Write a short description telling what you are doing, what you expect to happen, and what is currently happening.
+      placeholder: |
+        * I'm trying to use the `deepagents` library to do X.
+        * I expect to see Y.
+        * Instead, it does Z.
+    validations:
+      required: true
+  - type: textarea
+    id: system-info
+    attributes:
+      label: Environment / System Info
+      description: Provide OS, Python version, `deepagents` and `langchain` versions, and any relevant env vars.
+      placeholder: |
+        OS:
+        Python: 3.x.x
+        deepagents: 0.x.y
+        deepagents-cli: 0.x.y

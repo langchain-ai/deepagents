@@ -1,15 +1,15 @@
 [project]
 name = "deepagents-cli"
-version = "0.0.12"
+version = "0.0.13a2"
 description = "Deepagents CLI"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "deepagents==0.2.8,<1.0.0",
+  "deepagents==0.3.7a1",
   "langchain>=1.2.3,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
-  "langgraph-checkpoint-sqlite>=2.0.0,<3.0.0",
+  "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
   "requests",
   "rich>=13.0.0",
   "prompt-toolkit>=3.0.52",
@@ -63,8 +63,11 @@ lint = [
 requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+include = ["deepagents_cli*"]
+
 [tool.setuptools.package-data]
-deepagents_cli = ["default_agent_prompt.md"]
+deepagents_cli = ["default_agent_prompt.md", "*.tcss", "py.typed"]
 
 [tool.ruff]
 line-length = 100
@@ -95,6 +98,11 @@ keep-runtime-typing = true
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
 
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_cli"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"  # Google-style docstrings
 ignore-var-parameters = true
@@ -119,9 +127,10 @@ timeout = 10  # Default timeout for all tests (can be overridden per-test)
 strict = true
 ignore_missing_imports = true
 enable_error_code = ["deprecated"]
+exclude = ["build/"]
 # Optional: reduce strictness if needed
 disallow_any_generics = false
 warn_return_any = false
 
 [tool.uv.sources]
-deepagents = { path = "../deepagents" }
+deepagents = { path = "../deepagents", editable = true }

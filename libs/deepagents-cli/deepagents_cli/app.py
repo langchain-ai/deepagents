@@ -582,7 +582,9 @@ class DeepAgentsApp(App):
 
             # Build the final prompt
             if additional_context:
-                final_prompt = f"{REMEMBER_PROMPT}\n\n**Additional context from user:** {additional_context}"
+                final_prompt = (
+                    f"{REMEMBER_PROMPT}\n\n**Additional context from user:** {additional_context}"
+                )
             else:
                 final_prompt = REMEMBER_PROMPT
 

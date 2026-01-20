@@ -5,11 +5,18 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+from typing import Any, TypedDict
+
+import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
+from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig, RunnableLambda
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from deepagents.graph import create_deep_agent
@@ -686,3 +693,253 @@ class TestSubAgentsWithStructuredOutput:
         assert population_tool_message.content == expected_population_content, (
             f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
         )
+
+
+class TestSubAgentStreamingMetadata:
+    """Tests for metadata propagation during subagent streaming."""
+
+    def test_lc_agent_name_and_tags_in_streaming_metadata(self) -> None:
+        """Test that lc_agent_name and tags are correctly set in streaming metadata.
+
+        Verifies:
+        1. Parent content chunks have lc_agent_name='supervisor'
+        2. Subagent content chunks have lc_agent_name='worker'
+        3. Tags from parent config appear in subagent streaming chunks
+        """
+        parent_content = "PARENT_RESPONSE"
+        subagent_content = "SUBAGENT_RESPONSE"
+        test_tags = ["test-tag", "session-123"]
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do task", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content=parent_content),
+                ]
+            )
+        )
+        subagent_chat_model = GenericFakeChatModel(messages=iter([AIMessage(content=subagent_content)]))
+
+        compiled_subagent = create_agent(model=subagent_chat_model, name="worker")
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            name="supervisor",
+            subagents=[CompiledSubAgent(name="worker", description="Does work.", runnable=compiled_subagent)],
+        )
+
+        saw_parent_content = saw_subagent_content = False
+        for _ns, (chunk, metadata) in parent_agent.stream(
+            {"messages": [HumanMessage(content="Do something")]},
+            stream_mode="messages",
+            subgraphs=True,
+            config={"configurable": {"thread_id": "test_thread"}, "tags": test_tags},
+        ):
+            agent_name = metadata.get("lc_agent_name")
+            tags = metadata.get("tags", [])
+
+            # Check parent content has correct agent name
+            if parent_content in chunk.content and not saw_parent_content:
+                assert agent_name == "supervisor", f"Parent content should have agent_name='supervisor', got '{agent_name}'"
+                saw_parent_content = True
+
+            # Check subagent content has correct agent name and tags
+            if subagent_content in chunk.content and agent_name == "worker" and not saw_subagent_content:
+                assert all(t in tags for t in test_tags), f"Subagent chunk missing tags. Expected {test_tags}, got {tags}"
+                saw_subagent_content = True
+
+        assert saw_parent_content, "Should have seen parent content with supervisor agent name"
+        assert saw_subagent_content, "Should have seen subagent content with worker agent name and tags"
+
+    def test_config_passed_to_runnable_lambda_subagent(self) -> None:
+        """Test that config (including tags) is passed to a RunnableLambda subagent.
+
+        RunnableLambda doesn't have a 'config' attribute, so this tests the safe getattr fallback.
+        """
+        received_configs: list[RunnableConfig] = []
+
+        def lambda_subagent(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:  # noqa: ARG001
+            received_configs.append(config)
+            return {"messages": [AIMessage(content="Lambda response")]}
+
+        runnable_lambda = RunnableLambda(lambda_subagent)
+        assert not hasattr(runnable_lambda, "config")
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do something", "subagent_type": "lambda-agent"},
+                                "id": "call_lambda",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            name="parent",
+            subagents=[CompiledSubAgent(name="lambda-agent", description="Lambda subagent.", runnable=runnable_lambda)],
+        )
+
+        test_tags = ["lambda-tag", "config-test"]
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Do something")]},
+            config={"configurable": {"thread_id": "test_lambda"}, "tags": test_tags},
+        )
+
+        assert len(received_configs) > 0, "Lambda should have been invoked"
+        assert all(t in received_configs[0].get("tags", []) for t in test_tags), f"Missing tags in config: {received_configs[0].get('tags')}"
+
+    def test_context_passed_to_subagent_tool_runtime(self) -> None:
+        """Test that context passed to main agent is available in subagent's ToolRuntime.context."""
+        received_contexts: list[Any] = []
+
+        @tool
+        def capture_context(query: str, runtime: ToolRuntime) -> str:
+            """Captures runtime context."""
+            received_contexts.append(runtime.context)
+            return f"Processed: {query}"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Use capture_context", "subagent_type": "ctx-agent"},
+                                "id": "call_ctx",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_context",
+                                "args": {"query": "test"},
+                                "id": "call_tool",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Captured."),
+                ]
+            )
+        )
+
+        compiled_subagent = create_agent(model=subagent_chat_model, tools=[capture_context], name="ctx-agent")
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            name="orchestrator",
+            subagents=[CompiledSubAgent(name="ctx-agent", description="Context-aware subagent.", runnable=compiled_subagent)],
+        )
+
+        test_context = {"user_id": "user-123", "session_id": "session-456"}
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Process")]},
+            config={"configurable": {"thread_id": "test_context"}},
+            context=test_context,
+        )
+
+        assert len(received_contexts) > 0, "Subagent tool should have been invoked"
+        assert received_contexts[0] == test_context, f"Expected {test_context}, got {received_contexts[0]}"
+
+
+class TestCompiledSubAgentValidation:
+    """Tests for CompiledSubAgent validation and error handling."""
+
+    def test_compiled_subagent_without_messages_raises_error(self) -> None:
+        """Test that a CompiledSubAgent without 'messages' in state raises a clear error.
+
+        This test verifies that when a custom StateGraph is used with CompiledSubAgent
+        and doesn't include a 'messages' key in its state, a helpful ValueError is raised
+        explaining the requirement.
+        """
+
+        # Define a custom state without 'messages' key
+        class CustomState(TypedDict):
+            custom_field: str
+
+        def custom_node(_state: CustomState) -> CustomState:
+            return {"custom_field": "processed"}
+
+        # Build a custom graph that doesn't use messages
+        graph_builder = StateGraph(CustomState)
+        graph_builder.add_node("process", custom_node)
+        graph_builder.add_edge(START, "process")
+        graph_builder.add_edge("process", END)
+        custom_graph = graph_builder.compile()
+
+        # Create parent agent with this custom subagent
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Process something",
+                                    "subagent_type": "custom-processor",
+                                },
+                                "id": "call_custom",
+                            }
+                        ],
+                    ),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="custom-processor",
+                    description="A custom processor",
+                    runnable=custom_graph,
+                )
+            ],
+        )
+
+        # Attempting to invoke should raise a clear error about missing 'messages' key
+        with pytest.raises(
+            ValueError,
+            match="CompiledSubAgent must return a state containing a 'messages' key",
+        ):
+            parent_agent.invoke(
+                {"messages": [HumanMessage(content="Process this")]},
+                config={"configurable": {"thread_id": "test_thread_no_messages"}},
+            )

@@ -41,8 +41,8 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-deepagents = { path = "../deepagents" }
 deepagents-cli = { path = "../deepagents-cli" }
+deepagents = { path = "../deepagents", editable = true }
 
 [tool.ruff]
 line-length = 100
@@ -51,6 +51,11 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_harbor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

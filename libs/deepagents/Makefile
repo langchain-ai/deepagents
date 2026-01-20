@@ -1,3 +1,5 @@
+.PHONY: lint lint_diff lint_package lint_tests format format_diff test integration_test
+
 PYTHON_FILES=.
 MYPY_CACHE=.mypy_cache
 lint format: PYTHON_FILES=.

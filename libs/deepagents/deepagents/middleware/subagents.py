@@ -12,7 +12,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -52,7 +52,17 @@ class SubAgent(TypedDict):
 
 
 class CompiledSubAgent(TypedDict):
-    """A pre-compiled agent spec."""
+    """A pre-compiled agent spec.
+
+    !!! note
+
+        The runnable's state schema must include a 'messages' key.
+
+        This is required for the subagent to communicate results back to the main agent.
+
+    When the subagent completes, the final message in the 'messages' list will be
+    extracted and returned as a `ToolMessage` to the parent agent.
+    """
 
     name: str
     """The name of the agent."""
@@ -61,7 +71,16 @@ class CompiledSubAgent(TypedDict):
     """The description of the agent."""
 
     runnable: Runnable
-    """The Runnable to use for the agent."""
+    """A custom agent implementation.
+
+    Create a custom agent using either:
+
+    1. LangChain's [`create_agent()`](https://docs.langchain.com/oss/python/langchain/quickstart)
+    2. A custom graph using [`langgraph`](https://docs.langchain.com/oss/python/langgraph/quickstart)
+
+    If you're creating a custom graph, make sure the state schema includes a 'messages' key.
+    This is required for the subagent to communicate results back to the main agent.
+    """
 
 
 DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
@@ -259,6 +278,7 @@ def _get_subagents(
             system_prompt=DEFAULT_SUBAGENT_PROMPT,
             tools=default_tools,
             middleware=general_purpose_middleware,
+            name="general-purpose",
         )
         agents["general-purpose"] = general_purpose_subagent
         subagent_descriptions.append(
@@ -296,6 +316,7 @@ def _get_subagents(
             system_prompt=subagent_system_prompt,
             tools=_tools,
             middleware=_middleware,
+            name=agent_["name"],
         )
     return agents, subagent_descriptions
 
@@ -337,9 +358,15 @@ def _create_task_tool(
     subagent_description_str = "\n".join(subagent_descriptions)
 
     def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
-        state_update = {
-            k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS
-        }
+        if "messages" not in result:
+            error_msg = (
+                "CompiledSubAgent must return a state containing a 'messages' key. "
+                "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
+                "in their state schema to communicate results back to the main agent."
+            )
+            raise ValueError(error_msg)
+
+        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
         # Strip trailing whitespace to prevent API errors with Anthropic
         message_text = (
             result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
@@ -382,10 +409,8 @@ def _create_task_tool(
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        subagent, subagent_state = _validate_and_prepare_state(
-            subagent_type, description, runtime
-        )
-        result = subagent.invoke(subagent_state, runtime.config)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        result = subagent.invoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -399,10 +424,8 @@ def _create_task_tool(
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
-        subagent, subagent_state = _validate_and_prepare_state(
-            subagent_type, description, runtime
-        )
-        result = await subagent.ainvoke(subagent_state, runtime.config)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        result = await subagent.ainvoke(subagent_state)
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -510,22 +533,19 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """Update the system prompt to include instructions on using subagents."""
         if self.system_prompt is not None:
-            # Safely get system prompt from request message or config
             request_system_prompt = None
             if hasattr(request, "system_message") and request.system_message:
                 request_system_prompt = request.system_message.content
+            elif hasattr(request, "runtime"):
+                request_system_prompt = request.runtime.config.get("configurable", {}).get("system_prompt")
 
-            if request_system_prompt is None and hasattr(request, "runtime"):
-                request_system_prompt = request.runtime.config.get(
-                    "configurable", {}
-                ).get("system_prompt")
-
-            system_prompt = (
+            combined_prompt = (
                 f"{request_system_prompt}\n\n{self.system_prompt}"
                 if request_system_prompt
                 else self.system_prompt
             )
-            return handler(request.override(system_prompt=system_prompt))
+            new_system_message = SystemMessage(content=combined_prompt)
+            return handler(request.override(system_message=new_system_message))
         return handler(request)
 
     async def awrap_model_call(
@@ -535,20 +555,17 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         """(async) Update the system prompt to include instructions on using subagents."""
         if self.system_prompt is not None:
-            # Safely get system prompt from request message or config
             request_system_prompt = None
             if hasattr(request, "system_message") and request.system_message:
                 request_system_prompt = request.system_message.content
+            elif hasattr(request, "runtime"):
+                request_system_prompt = request.runtime.config.get("configurable", {}).get("system_prompt")
 
-            if request_system_prompt is None and hasattr(request, "runtime"):
-                request_system_prompt = request.runtime.config.get(
-                    "configurable", {}
-                ).get("system_prompt")
-
-            system_prompt = (
+            combined_prompt = (
                 f"{request_system_prompt}\n\n{self.system_prompt}"
                 if request_system_prompt
                 else self.system_prompt
             )
-            return await handler(request.override(system_prompt=system_prompt))
+            new_system_message = SystemMessage(content=combined_prompt)
+            return await handler(request.override(system_message=new_system_message))
         return await handler(request)

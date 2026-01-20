@@ -894,6 +894,21 @@ class TestFilesystemMiddleware:
         assert "/large_tool_results/test_123" in result.update["files"]
         assert "Tool result too large" in result.update["messages"][0].content
 
+    def test_intercept_long_toolmessage_preserves_name(self):
+        """Test that ToolMessage name is preserved after eviction."""
+        from langgraph.types import Command
+
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
+
+        large_content = "x" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123", name="example_tool")
+        result = middleware._intercept_large_tool_result(tool_message, runtime)
+
+        assert isinstance(result, Command)
+        assert result.update["messages"][0].name == "example_tool"
+
     def test_intercept_command_with_short_toolmessage(self):
         """Test that Commands with small messages pass through unchanged."""
         from langgraph.types import Command

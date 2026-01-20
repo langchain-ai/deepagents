@@ -1,4 +1,4 @@
-"""Middleware for the DeepAgent."""
+"""Middleware for the agent."""
 
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware

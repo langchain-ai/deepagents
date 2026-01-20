@@ -63,11 +63,14 @@ def create_deep_agent(
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
-    Deep agents require a LLM that supports tool calling.
+    !!! warning "Deep agents require a LLM that supports tool calling!"
 
-    This agent will by default have access to a tool to write todos (`write_todos`),
-    seven file and execution tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`,
-    and a tool to call subagents (`task`).
+    By default, this agent has access to the following tools:
+
+    - `write_todos`: manage a todo list
+    - `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: file operations
+    - `execute`: run shell commands
+    - `task`: call subagents
 
     The `execute` tool allows running shell commands if the backend implements `SandboxBackendProtocol`.
     For non-sandbox backends, the `execute` tool will return an error message.
@@ -82,10 +85,14 @@ def create_deep_agent(
 
             In addition to custom tools you provide, deep agents include built-in tools for planning,
             file management, and subagent spawning.
-        system_prompt: The additional instructions the agent should have.
+        system_prompt: Custom system instructions to prepend before the base deep agent
+            prompt.
 
-            Will go in the system prompt. Can be a string or a `SystemMessage`.
-        middleware: Additional middleware to apply after standard middleware.
+            If a string, it's concatenated with the base prompt.
+        middleware: Additional middleware to apply after the standard middleware stack
+            (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
+            `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
+            `PatchToolCallsMiddleware`).
         subagents: The subagents to use.
 
             Each subagent should be a `dict` with the following keys:

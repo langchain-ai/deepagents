@@ -483,8 +483,8 @@ class TestSummaryMessageFormat:
             result = middleware.before_model(state, runtime)
         assert result is not None
 
-        # Get the summary message (first in the overwrite list)
-        summary_msg = result["messages"].value[0]
+        # Get the summary message (second in list, after RemoveMessage)
+        summary_msg = result["messages"][1]
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
@@ -513,7 +513,8 @@ class TestSummaryMessageFormat:
 
         result = middleware.before_model(state, runtime)
 
-        summary_msg = result["messages"].value[0]
+        assert result is not None
+        summary_msg = result["messages"][1]
 
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
 
@@ -578,8 +579,8 @@ class TestSummaryMessageFormat:
 
         assert result is not None
 
-        # The summary message should be at index 0 (first in the Overwrite)
-        summary_msg = result["messages"].value[0]
+        # The summary message should be at index 1 (after RemoveMessage)
+        summary_msg = result["messages"][1]
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
@@ -1197,7 +1198,8 @@ def test_truncate_old_write_file_tool_call() -> None:
     result = middleware.before_model(state, runtime)
 
     assert result is not None
-    cleaned_messages = result["messages"].value
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     # Check that the old tool call was cleaned
     first_ai_msg = cleaned_messages[0]
@@ -1256,7 +1258,8 @@ def test_truncate_old_edit_file_tool_call() -> None:
     result = middleware.before_model(state, runtime)
 
     assert result is not None
-    cleaned_messages = result["messages"].value
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["name"] == "edit_file"
@@ -1405,7 +1408,8 @@ def test_truncate_with_token_keep_policy() -> None:
     result = middleware.before_model(state, runtime)
 
     assert result is not None
-    cleaned_messages = result["messages"].value
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     # First message should be cleaned since it's outside the token window
     first_ai_msg = cleaned_messages[0]
@@ -1461,7 +1465,8 @@ def test_truncate_with_fraction_trigger_and_keep() -> None:
     # Should keep only ~200 tokens (1 message) from the end
     # So first 2 messages should be in truncation zone
     assert result is not None
-    cleaned_messages = result["messages"].value
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
@@ -1513,8 +1518,8 @@ def test_truncate_before_summarization() -> None:
     # Backend should have received a write call for offloading
     assert len(backend.write_calls) == 1
 
-    # Result should contain summary message
-    new_messages = result["messages"].value
+    # Result should contain summary message (skip RemoveMessage at index 0)
+    new_messages = result["messages"][1:]
     assert any("summary" in str(msg.content).lower() for msg in new_messages)
 
 
@@ -1566,7 +1571,8 @@ def test_truncate_without_summarization() -> None:
     assert len(backend.write_calls) == 0
 
     # But truncation should have happened
-    cleaned_messages = result["messages"].value
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
@@ -1672,7 +1678,8 @@ def test_truncate_mixed_tool_calls() -> None:
     result = middleware.before_model(state, runtime)
 
     assert result is not None
-    cleaned_messages = result["messages"].value
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
     assert len(first_ai_msg.tool_calls) == 3  # noqa: PLR2004
@@ -1734,7 +1741,8 @@ def test_truncate_custom_truncation_text() -> None:
     result = middleware.before_model(state, runtime)
 
     assert result is not None
-    cleaned_messages = result["messages"].value
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "y" * 20 + "[TRUNCATED]"
@@ -1784,7 +1792,8 @@ async def test_truncate_async_works() -> None:
     result = await middleware.abefore_model(state, runtime)
 
     assert result is not None
-    cleaned_messages = result["messages"].value
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"

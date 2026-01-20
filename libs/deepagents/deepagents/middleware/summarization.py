@@ -47,10 +47,10 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
-from langgraph.types import Overwrite
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from typing_extensions import TypedDict, override
 
 if TYPE_CHECKING:
@@ -295,20 +295,6 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
                 additional_kwargs={"lc_source": "summarization"},
             )
         ]
-
-    def _format_messages_as_markdown(self, messages: list[AnyMessage]) -> str:
-        """Format messages as human-readable text with role prefixes.
-
-        Uses `get_buffer_string` to produce a compact, LLM-friendly representation of
-        the conversation history with role prefixes (e.g., `'Human:'`, `'AI:'`).
-
-        Args:
-            messages: List of messages to format.
-
-        Returns:
-            Plain text string with messages prefixed by role.
-        """
-        return get_buffer_string(messages)
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Check if argument truncation should be triggered.
@@ -621,9 +607,6 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         First truncates large tool arguments in old messages if configured.
         Then offloads messages to backend before summarization if thresholds are met.
-        The summary message includes a reference to the file path where the
-        full conversation history was stored.
-
         The summary message includes a reference to the file path where the full
         conversation history was stored.
 
@@ -646,7 +629,12 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         # If only truncation happened (no summarization)
         if args_were_truncated and not should_summarize:
-            return {"messages": Overwrite(truncated_messages)}
+            return {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    *truncated_messages,
+                ]
+            }
 
         # If no truncation and no summarization
         if not should_summarize:
@@ -657,7 +645,12 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         if cutoff_index <= 0:
             # If truncation happened but we can't summarize, still return truncated messages
             if args_were_truncated:
-                return {"messages": Overwrite(truncated_messages)}
+                return {
+                    "messages": [
+                        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                        *truncated_messages,
+                    ]
+                }
             return None
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
@@ -676,12 +669,11 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         return {
-            "messages": Overwrite(
-                [
-                    *new_messages,
-                    *preserved_messages,
-                ]
-            )
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *new_messages,
+                *preserved_messages,
+            ]
         }
 
     @override
@@ -719,7 +711,12 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         # If only truncation happened (no summarization)
         if args_were_truncated and not should_summarize:
-            return {"messages": Overwrite(truncated_messages)}
+            return {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    *truncated_messages,
+                ]
+            }
 
         # If no truncation and no summarization
         if not should_summarize:
@@ -730,7 +727,12 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         if cutoff_index <= 0:
             # If truncation happened but we can't summarize, still return truncated messages
             if args_were_truncated:
-                return {"messages": Overwrite(truncated_messages)}
+                return {
+                    "messages": [
+                        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                        *truncated_messages,
+                    ]
+                }
             return None
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
@@ -749,10 +751,9 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         return {
-            "messages": Overwrite(
-                [
-                    *new_messages,
-                    *preserved_messages,
-                ]
-            )
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *new_messages,
+                *preserved_messages,
+            ]
         }

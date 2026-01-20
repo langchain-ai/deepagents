@@ -17,7 +17,6 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
-from pydantic import Field
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
@@ -156,122 +155,62 @@ class FilesystemState(AgentState):
     """Files in the filesystem."""
 
 
-LIST_FILES_TOOL_DESCRIPTION = """Lists all files in the filesystem, filtering by directory.
+LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
+
+This is useful for exploring the filesystem and finding the right file to read or edit.
+You should almost ALWAYS use this tool before using the read_file or edit_file tools."""
+
+READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
+
+Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- The path parameter must be an absolute path, not a relative path
-- The list_files tool will return a list of all files in the specified directory.
-- This is very useful for exploring the file system and finding the right file to read or edit.
-- You should almost ALWAYS use this tool before using the Read or Edit tools."""
-
-READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
-
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 500 lines starting from the beginning of the file
-- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
-  - First scan: read_file(path, limit=100) to see file structure
-  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
-  - Only omit limit (read full file) when necessary for editing
-- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
-- Any lines longer than 2000 characters will be truncated
-- Results are returned using cat -n format, with line numbers starting at 1
-- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- You should ALWAYS make sure a file has been read before editing it."""
+- **IMPORTANT for large files**: Use pagination with offset and limit to avoid context overflow
+- Results are returned with line numbers starting at 1
+- Lines longer than 2000 characters will be truncated
+- You can call multiple tools in a single response to read multiple files at once
+- If a file exists but is empty, you will receive a system reminder warning
+- You should ALWAYS read a file before editing it."""
 
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
-- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab. Everything after that tab is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.
-- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance."""
+- You must read the file before editing. This tool will error if you attempt an edit without reading the file first.
+- When editing, preserve the exact indentation (tabs/spaces) from the read output. Never include line number prefixes in old_string or new_string.
+- ALWAYS prefer editing existing files over creating new ones.
+- Only use emojis if the user explicitly requests it."""
 
 
 WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
 
 Usage:
-    - This tool creates new files only.
-    - To modify existing files, use the edit_file tool instead.
+- The write_file tool will create the a new file.
+- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
-Usage:
-- The glob tool finds files by matching patterns with wildcards
-- Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character)
-- Patterns can be absolute (starting with `/`) or relative
-- Returns a list of absolute file paths that match the pattern
+Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
+Returns a list of absolute file paths that match the pattern."""
 
-Examples:
-- `**/*.py` - Find all Python files
-- `*.txt` - Find all text files in root
-- `/subdir/**/*.md` - Find all markdown files under /subdir"""
+GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
-GREP_TOOL_DESCRIPTION = """Search for a pattern in files.
+Searches for literal text (not regex) and returns matching files or content based on output_mode."""
+
+EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
 Usage:
-- The grep tool searches for text patterns across files
-- The pattern parameter is the text to search for (literal string, not regex)
-- The path parameter filters which directory to search in (default is the current working directory)
-- The glob parameter accepts a glob pattern to filter which files to search (e.g., `*.py`)
-- The output_mode parameter controls the output format:
-  - `files_with_matches`: List only file paths containing matches (default)
-  - `content`: Show matching lines with file path and line numbers
-  - `count`: Show count of matches per file
+- Always quote file paths containing spaces with double quotes
+- Before creating files/directories, verify parent directory exists with ls
+- Returns combined stdout/stderr output with exit code
+- Output may be truncated if very large
+- Use '&&' to chain dependent commands, ';' for independent sequential commands
+- Prefer absolute paths over cd to maintain working directory
 
-Examples:
-- Search all files: `grep(pattern="TODO")`
-- Search Python files only: `grep(pattern="import", glob="*.py")`
-- Show matching lines: `grep(pattern="error", output_mode="content")`"""
-
-EXECUTE_TOOL_DESCRIPTION = """Executes a given command in the sandbox environment with proper handling and security measures.
-
-Before executing the command, please follow these steps:
-
-1. Directory Verification:
-   - If the command will create new directories or files, first use the ls tool to verify the parent directory exists and is the correct location
-   - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
-
-2. Command Execution:
-   - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
-   - Examples of proper quoting:
-     - cd "/Users/name/My Documents" (correct)
-     - cd /Users/name/My Documents (incorrect - will fail)
-     - python "/path/with spaces/script.py" (correct)
-     - python /path/with spaces/script.py (incorrect - will fail)
-   - After ensuring proper quoting, execute the command
-   - Capture the output of the command
-
-Usage notes:
-  - The command parameter is required
-  - Commands run in an isolated sandbox environment
-  - Returns combined stdout/stderr output with exit code
-  - If the output is very large, it may be truncated
-  - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
-  - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
-    - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
-    - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
-  - Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of cd
-
-Examples:
-  Good examples:
-    - execute(command="pytest /foo/bar/tests")
-    - execute(command="python /path/to/script.py")
-    - execute(command="npm install && npm test")
-
-  Bad examples (avoid these):
-    - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
-    - execute(command="cat file.txt")  # Use read_file tool instead
-    - execute(command="find . -name '*.py'")  # Use glob tool instead
-    - execute(command="grep -r 'pattern' .")  # Use grep tool instead
-
-Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
-If execution is not supported, the tool will return an error message."""
+IMPORTANT: Use dedicated tools instead of shell equivalents:
+- Use glob tool instead of find
+- Use grep tool instead of grep/rg
+- Use read_file instead of cat/head/tail"""
 
 FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 
@@ -323,7 +262,10 @@ def _ls_tool_generator(
     """
     tool_description = custom_description or LIST_FILES_TOOL_DESCRIPTION
 
-    def sync_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
+    def sync_ls(
+        runtime: ToolRuntime[None, FilesystemState],
+        path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+    ) -> str:
         """Synchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
         validated_path = _validate_path(path)
@@ -332,7 +274,10 @@ def _ls_tool_generator(
         result = truncate_if_too_long(paths)
         return str(result)
 
-    async def async_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
+    async def async_ls(
+        runtime: ToolRuntime[None, FilesystemState],
+        path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+    ) -> str:
         """Asynchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
         validated_path = _validate_path(path)
@@ -411,10 +356,10 @@ def _read_file_tool_generator(
     tool_description = custom_description or READ_FILE_TOOL_DESCRIPTION
 
     def sync_read_file(
-        file_path: str,
+        file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
         runtime: ToolRuntime[None, FilesystemState],
-        offset: int = DEFAULT_READ_OFFSET,
-        limit: int = DEFAULT_READ_LIMIT,
+        offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
+        limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
     ) -> str:
         """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -423,10 +368,10 @@ def _read_file_tool_generator(
         return _truncate_lines(content, suffix="...[truncated]")
 
     async def async_read_file(
-        file_path: str,
+        file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
         runtime: ToolRuntime[None, FilesystemState],
-        offset: int = DEFAULT_READ_OFFSET,
-        limit: int = DEFAULT_READ_LIMIT,
+        offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
+        limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
     ) -> str:
         """Asynchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -458,8 +403,8 @@ def _write_file_tool_generator(
     tool_description = custom_description or WRITE_FILE_TOOL_DESCRIPTION
 
     def sync_write_file(
-        file_path: Annotated[str, Field(description="Absolute path where the file should be created. Must be absolute, not relative.")],
-        content: Annotated[str, Field(description="The text content to write to the file. This parameter is required.")],
+        file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+        content: Annotated[str, "The text content to write to the file. This parameter is required."],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> Command | str:
         """Synchronous wrapper for write_file tool."""
@@ -484,8 +429,8 @@ def _write_file_tool_generator(
         return f"Updated file {res.path}"
 
     async def async_write_file(
-        file_path: str,
-        content: str,
+        file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+        content: Annotated[str, "The text content to write to the file. This parameter is required."],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> Command | str:
         """Asynchronous wrapper for write_file tool."""
@@ -533,12 +478,12 @@ def _edit_file_tool_generator(
     tool_description = custom_description or EDIT_FILE_TOOL_DESCRIPTION
 
     def sync_edit_file(
-        file_path: str,
-        old_string: str,
-        new_string: str,
+        file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
+        old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
+        new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
         runtime: ToolRuntime[None, FilesystemState],
         *,
-        replace_all: bool = False,
+        replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
     ) -> Command | str:
         """Synchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -561,12 +506,12 @@ def _edit_file_tool_generator(
         return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
     async def async_edit_file(
-        file_path: str,
-        old_string: str,
-        new_string: str,
+        file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
+        old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
+        new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
         runtime: ToolRuntime[None, FilesystemState],
         *,
-        replace_all: bool = False,
+        replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
     ) -> Command | str:
         """Asynchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -611,7 +556,11 @@ def _glob_tool_generator(
     """
     tool_description = custom_description or GLOB_TOOL_DESCRIPTION
 
-    def sync_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+    def sync_glob(
+        pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
+        runtime: ToolRuntime[None, FilesystemState],
+        path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+    ) -> str:
         """Synchronous wrapper for glob tool."""
         resolved_backend = _get_backend(backend, runtime)
         infos = resolved_backend.glob_info(pattern, path=path)
@@ -619,7 +568,11 @@ def _glob_tool_generator(
         result = truncate_if_too_long(paths)
         return str(result)
 
-    async def async_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+    async def async_glob(
+        pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
+        runtime: ToolRuntime[None, FilesystemState],
+        path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+    ) -> str:
         """Asynchronous wrapper for glob tool."""
         resolved_backend = _get_backend(backend, runtime)
         infos = await resolved_backend.aglob_info(pattern, path=path)
@@ -651,11 +604,14 @@ def _grep_tool_generator(
     tool_description = custom_description or GREP_TOOL_DESCRIPTION
 
     def sync_grep(
-        pattern: str,
+        pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
         runtime: ToolRuntime[None, FilesystemState],
-        path: str | None = None,
-        glob: str | None = None,
-        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+        path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
+        glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+        output_mode: Annotated[
+            Literal["files_with_matches", "content", "count"],
+            "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+        ] = "files_with_matches",
     ) -> str:
         """Synchronous wrapper for grep tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -666,11 +622,14 @@ def _grep_tool_generator(
         return truncate_if_too_long(formatted)  # type: ignore[arg-type]
 
     async def async_grep(
-        pattern: str,
+        pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
         runtime: ToolRuntime[None, FilesystemState],
-        path: str | None = None,
-        glob: str | None = None,
-        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+        path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
+        glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+        output_mode: Annotated[
+            Literal["files_with_matches", "content", "count"],
+            "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+        ] = "files_with_matches",
     ) -> str:
         """Asynchronous wrapper for grep tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -727,7 +686,7 @@ def _execute_tool_generator(
     tool_description = custom_description or EXECUTE_TOOL_DESCRIPTION
 
     def sync_execute(
-        command: str,
+        command: Annotated[str, "Shell command to execute in the sandbox environment."],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> str:
         """Synchronous wrapper for execute tool."""
@@ -760,7 +719,7 @@ def _execute_tool_generator(
         return "".join(parts)
 
     async def async_execute(
-        command: str,
+        command: Annotated[str, "Shell command to execute in the sandbox environment."],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> str:
         """Asynchronous wrapper for execute tool."""

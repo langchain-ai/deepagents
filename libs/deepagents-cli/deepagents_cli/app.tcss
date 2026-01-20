@@ -114,14 +114,12 @@ Screen {
 
 .diff-removed {
     height: auto;
-    color: #ff6b6b;
-    background: #3d1f1f;
+    color: $error;
 }
 
 .diff-added {
     height: auto;
-    color: #69db7c;
-    background: #1f3d1f;
+    color: $success;
 }
 
 .diff-range {

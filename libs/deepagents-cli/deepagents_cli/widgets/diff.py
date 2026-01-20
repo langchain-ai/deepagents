@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 from textual.containers import Vertical
 from textual.widgets import Static
 
+from deepagents_cli.themes import theme
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -38,6 +40,12 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     if not diff:
         return "[dim]No changes detected[/dim]"
 
+    # Get theme colors
+    add_color = theme.diff_add
+    add_bg = theme.diff_add_bg
+    remove_color = theme.diff_remove
+    remove_bg = theme.diff_remove_bg
+
     lines = diff.splitlines()
 
     # Compute stats first
@@ -56,9 +64,9 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     # Add stats header
     stats_parts = []
     if additions:
-        stats_parts.append(f"[green]+{additions}[/green]")
+        stats_parts.append(f"[{add_color}]+{additions}[/{add_color}]")
     if deletions:
-        stats_parts.append(f"[red]-{deletions}[/red]")
+        stats_parts.append(f"[{remove_color}]-{deletions}[/{remove_color}]")
     if stats_parts:
         formatted.append(" ".join(stats_parts))
         formatted.append("")  # Blank line after stats
@@ -87,16 +95,16 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
         if line.startswith("-"):
             # Deletion - red gutter bar, subtle red background
             formatted.append(
-                f"[red bold]▌[/red bold][dim]{old_num:>{width}}[/dim] "
-                f"[on #2d1515]{escaped_content}[/on #2d1515]"
+                f"[{remove_color} bold]▌[/{remove_color} bold][dim]{old_num:>{width}}[/dim] "
+                f"[on {remove_bg}]{escaped_content}[/on {remove_bg}]"
             )
             old_num += 1
             line_count += 1
         elif line.startswith("+"):
             # Addition - green gutter bar, subtle green background
             formatted.append(
-                f"[green bold]▌[/green bold][dim]{new_num:>{width}}[/dim] "
-                f"[on #152d15]{escaped_content}[/on #152d15]"
+                f"[{add_color} bold]▌[/{add_color} bold][dim]{new_num:>{width}}[/dim] "
+                f"[on {add_bg}]{escaped_content}[/on {add_bg}]"
             )
             new_num += 1
             line_count += 1
@@ -179,7 +187,9 @@ class EnhancedDiff(Vertical):
 
     def compose(self) -> ComposeResult:
         """Compose the diff widget layout."""
-        yield Static(f"[bold cyan]═══ {self._title} ═══[/bold cyan]", classes="diff-title")
+        primary = theme.primary
+        title_text = f"[bold {primary}]═══ {self._title} ═══[/bold {primary}]"
+        yield Static(title_text, classes="diff-title")
 
         formatted = format_diff_textual(self._diff, self._max_lines)
         yield Static(formatted, classes="diff-content")
@@ -188,7 +198,7 @@ class EnhancedDiff(Vertical):
         if additions or deletions:
             stats_parts = []
             if additions:
-                stats_parts.append(f"[green]+{additions}[/green]")
+                stats_parts.append(f"[{theme.diff_add}]+{additions}[/{theme.diff_add}]")
             if deletions:
-                stats_parts.append(f"[red]-{deletions}[/red]")
+                stats_parts.append(f"[{theme.diff_remove}]-{deletions}[/{theme.diff_remove}]")
             yield Static(" ".join(stats_parts), classes="diff-stats")

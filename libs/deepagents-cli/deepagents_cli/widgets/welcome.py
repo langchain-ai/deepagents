@@ -8,6 +8,7 @@ from typing import Any
 from textual.widgets import Static
 
 from deepagents_cli.config import DEEP_AGENTS_ASCII, settings
+from deepagents_cli.themes import theme
 
 
 class WelcomeBanner(Static):
@@ -23,8 +24,8 @@ class WelcomeBanner(Static):
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the welcome banner."""
-        # Use the same green color as the original UI (#10b981)
-        banner_text = f"[bold #10b981]{DEEP_AGENTS_ASCII}[/bold #10b981]\n"
+        primary = theme.primary
+        banner_text = f"[bold {primary}]{DEEP_AGENTS_ASCII}[/bold {primary}]\n"
 
         # Show LangSmith status if tracing is enabled
         langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY")
@@ -38,8 +39,11 @@ class WelcomeBanner(Static):
                 or os.environ.get("LANGSMITH_PROJECT")
                 or "default"
             )
-            banner_text += f"[green]✓[/green] LangSmith tracing: [cyan]'{project}'[/cyan]\n"
+            success = theme.success
+            banner_text += (
+                f"[{success}]✓[/{success}] LangSmith tracing: [{primary}]'{project}'[/{primary}]\n"
+            )
 
-        banner_text += "[#10b981]Ready to code! What would you like to build?[/#10b981]\n"
+        banner_text += f"[{primary}]Ready to code! What would you like to build?[/{primary}]\n"
         banner_text += "[dim]Enter send • Ctrl+J newline • @ files • / commands[/dim]"
         super().__init__(banner_text, **kwargs)

@@ -10,6 +10,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Markdown, Static
 from textual.widgets._markdown import MarkdownStream
 
+from deepagents_cli.themes import theme
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
@@ -56,7 +57,7 @@ class UserMessage(Static):
         """Compose the user message layout."""
         # Use Text object to combine styled prefix with unstyled user content
         text = Text()
-        text.append("> ", style="bold #10b981")
+        text.append("> ", style=f"bold {theme.primary}")
         text.append(self._content)
         yield Static(text)
 
@@ -425,13 +426,11 @@ class DiffMessage(Static):
     }
 
     DiffMessage .diff-add {
-        color: #10b981;
-        background: #10b98120;
+        color: $success;
     }
 
     DiffMessage .diff-remove {
-        color: #ef4444;
-        background: #ef444420;
+        color: $error;
     }
 
     DiffMessage .diff-context {
@@ -474,8 +473,8 @@ class ErrorMessage(Static):
         height: auto;
         padding: 1;
         margin: 1 0;
-        background: #7f1d1d;
-        color: white;
+        background: $error 20%;
+        color: $text;
         border-left: thick $error;
     }
     """

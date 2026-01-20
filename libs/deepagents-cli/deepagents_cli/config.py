@@ -26,14 +26,18 @@ if _deepagents_project:
 # Now safe to import LangChain modules
 from langchain_core.language_models import BaseChatModel
 
-# Color scheme
+# Theme system - import the theme proxy for easy color access
+from deepagents_cli.themes import theme
+
+# Legacy COLORS dict - deprecated, use theme.* instead
+# Kept for backwards compatibility
 COLORS = {
-    "primary": "#10b981",
-    "dim": "#6b7280",
-    "user": "#ffffff",
-    "agent": "#10b981",
-    "thinking": "#34d399",
-    "tool": "#fbbf24",
+    "primary": theme.primary,
+    "dim": theme.text_muted,
+    "user": theme.text,
+    "agent": theme.primary,
+    "thinking": theme.text_muted,
+    "tool": theme.warning,
 }
 
 # ASCII art banner

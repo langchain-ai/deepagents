@@ -11,85 +11,91 @@ from textual.reactive import reactive
 from textual.widgets import Static
 
 from deepagents_cli.config import settings
+from deepagents_cli.themes import theme
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
-class StatusBar(Horizontal):
-    """Status bar showing mode, auto-approve status, and working directory."""
-
-    DEFAULT_CSS = """
-    StatusBar {
+def _status_bar_css() -> str:
+    """Generate status bar CSS with theme colors."""
+    return f"""
+    StatusBar {{
         height: 1;
         dock: bottom;
         background: $surface;
         padding: 0 1;
-    }
+    }}
 
-    StatusBar .status-mode {
+    StatusBar .status-mode {{
         width: auto;
         padding: 0 1;
-    }
+    }}
 
-    StatusBar .status-mode.normal {
+    StatusBar .status-mode.normal {{
         display: none;
-    }
+    }}
 
-    StatusBar .status-mode.bash {
-        background: #ff1493;
-        color: white;
+    StatusBar .status-mode.bash {{
+        background: {theme.mode_bash};
+        color: $background;
         text-style: bold;
-    }
+    }}
 
-    StatusBar .status-mode.command {
-        background: #8b5cf6;
-        color: white;
-    }
+    StatusBar .status-mode.command {{
+        background: {theme.mode_command};
+        color: $background;
+    }}
 
-    StatusBar .status-auto-approve {
+    StatusBar .status-auto-approve {{
         width: auto;
         padding: 0 1;
-    }
+    }}
 
-    StatusBar .status-auto-approve.on {
-        background: #10b981;
-        color: black;
-    }
+    StatusBar .status-auto-approve.on {{
+        background: {theme.auto_approve_on};
+        color: $background;
+    }}
 
-    StatusBar .status-auto-approve.off {
-        background: #f59e0b;
-        color: black;
-    }
+    StatusBar .status-auto-approve.off {{
+        background: {theme.auto_approve_off};
+        color: $background;
+    }}
 
-    StatusBar .status-message {
+    StatusBar .status-message {{
         width: 1fr;
         padding: 0 1;
         color: $text-muted;
-    }
+    }}
 
-    StatusBar .status-message.thinking {
+    StatusBar .status-message.thinking {{
         color: $warning;
-    }
+    }}
 
-    StatusBar .status-cwd {
+    StatusBar .status-cwd {{
         width: 1fr;
         text-align: right;
         color: $text-muted;
-    }
+    }}
 
-    StatusBar .status-tokens {
+    StatusBar .status-tokens {{
         width: auto;
         padding: 0 1;
         color: $text-muted;
-    }
+    }}
 
-    StatusBar .status-model {
+    StatusBar .status-model {{
         width: auto;
         padding: 0 1;
         color: $text-muted;
-    }
+    }}
     """
+
+
+class StatusBar(Horizontal):
+    """Status bar showing mode, auto-approve status, and working directory."""
+
+    DEFAULT_CSS = _status_bar_css()
 
     mode: reactive[str] = reactive("normal", init=False)
     status_message: reactive[str] = reactive("", init=False)

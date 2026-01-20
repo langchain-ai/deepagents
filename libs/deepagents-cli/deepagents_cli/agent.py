@@ -412,7 +412,7 @@ def create_cli_agent(
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
-        backend = FilesystemBackend()  # Current working directory
+        backend = FilesystemBackend()
 
         # Local context middleware (git info, directory tree, etc.)
         agent_middleware.append(LocalContextMiddleware())

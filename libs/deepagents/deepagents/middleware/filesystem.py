@@ -195,11 +195,21 @@ Usage:
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
 Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
-Returns a list of absolute file paths that match the pattern."""
+Returns a list of absolute file paths that match the pattern.
+
+Examples:
+- `**/*.py` - Find all Python files
+- `*.txt` - Find all text files in root
+- `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
 GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
-Searches for literal text (not regex) and returns matching files or content based on output_mode."""
+Searches for literal text (not regex) and returns matching files or content based on output_mode.
+
+Examples:
+- Search all files: `grep(pattern="TODO")`
+- Search Python files only: `grep(pattern="import", glob="*.py")`
+- Show matching lines: `grep(pattern="error", output_mode="content")`"""
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
@@ -214,7 +224,19 @@ Usage:
 IMPORTANT: Use dedicated tools instead of shell equivalents:
 - Use glob tool instead of find
 - Use grep tool instead of grep/rg
-- Use read_file instead of cat/head/tail"""
+- Use read_file instead of cat/head/tail
+
+Examples:
+  Good examples:
+    - execute(command="pytest /foo/bar/tests")
+    - execute(command="python /path/to/script.py")
+    - execute(command="npm install && npm test")
+
+  Bad examples (avoid these):
+    - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
+    - execute(command="cat file.txt")  # Use read_file tool instead
+    - execute(command="find . -name '*.py'")  # Use glob tool instead
+    - execute(command="grep -r 'pattern' .")  # Use grep tool instead"""
 
 FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 

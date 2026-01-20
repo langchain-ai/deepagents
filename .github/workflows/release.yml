@@ -31,7 +31,6 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  UV_FROZEN: "true"
   UV_NO_SYNC: "true"
   # Map package name to working directory
   WORKING_DIR: ${{ inputs.package == 'deepagents' && 'libs/deepagents' || (inputs.package == 'deepagents-cli' && 'libs/deepagents-cli' || '__invalid__') }}
@@ -296,7 +295,7 @@ jobs:
           uv run python -c "import $IMPORT_NAME; print(dir($IMPORT_NAME))"
 
       - name: Import test dependencies
-        run: uv sync --group test
+        run: uv sync --group test --locked
         working-directory: ${{ env.WORKING_DIR }}
 
       # Overwrite the local version of the package with the built version

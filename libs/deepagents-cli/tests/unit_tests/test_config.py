@@ -50,17 +50,17 @@ class TestProjectRootDetection:
 
 
 class TestProjectAgentMdFinding:
-    """Test finding project-specific agent.md files."""
+    """Test finding project-specific AGENTS.md files."""
 
     def test_find_agent_md_in_deepagents_dir(self, tmp_path: Path) -> None:
-        """Test finding agent.md in .deepagents/ directory."""
+        """Test finding AGENTS.md in .deepagents/ directory."""
         project_root = tmp_path / "project"
         project_root.mkdir()
 
-        # Create .deepagents/agent.md
+        # Create .deepagents/AGENTS.md
         deepagents_dir = project_root / ".deepagents"
         deepagents_dir.mkdir()
-        agent_md = deepagents_dir / "agent.md"
+        agent_md = deepagents_dir / "AGENTS.md"
         agent_md.write_text("Project instructions")
 
         result = _find_project_agent_md(project_root)
@@ -68,12 +68,12 @@ class TestProjectAgentMdFinding:
         assert result[0] == agent_md
 
     def test_find_agent_md_in_root(self, tmp_path: Path) -> None:
-        """Test finding agent.md in project root (fallback)."""
+        """Test finding AGENTS.md in project root (fallback)."""
         project_root = tmp_path / "project"
         project_root.mkdir()
 
-        # Create root-level agent.md (no .deepagents/)
-        agent_md = project_root / "agent.md"
+        # Create root-level AGENTS.md (no .deepagents/)
+        agent_md = project_root / "AGENTS.md"
         agent_md.write_text("Project instructions")
 
         result = _find_project_agent_md(project_root)
@@ -81,17 +81,17 @@ class TestProjectAgentMdFinding:
         assert result[0] == agent_md
 
     def test_both_agent_md_files_combined(self, tmp_path: Path) -> None:
-        """Test that both agent.md files are returned when both exist."""
+        """Test that both AGENTS.md files are returned when both exist."""
         project_root = tmp_path / "project"
         project_root.mkdir()
 
         # Create both locations
         deepagents_dir = project_root / ".deepagents"
         deepagents_dir.mkdir()
-        deepagents_md = deepagents_dir / "agent.md"
+        deepagents_md = deepagents_dir / "AGENTS.md"
         deepagents_md.write_text("In .deepagents/")
 
-        root_md = project_root / "agent.md"
+        root_md = project_root / "AGENTS.md"
         root_md.write_text("In root")
 
         # Should return both, with .deepagents/ first
@@ -101,7 +101,7 @@ class TestProjectAgentMdFinding:
         assert result[1] == root_md
 
     def test_find_agent_md_not_found(self, tmp_path: Path) -> None:
-        """Test that empty list is returned when no agent.md exists."""
+        """Test that empty list is returned when no AGENTS.md exists."""
         project_root = tmp_path / "project"
         project_root.mkdir()
 

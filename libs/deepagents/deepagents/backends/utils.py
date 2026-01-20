@@ -12,11 +12,10 @@ from typing import Any, Literal
 
 import wcmatch.glob as wcglob
 
-from deepagents.backends.protocol import FileInfo as _FileInfo
-from deepagents.backends.protocol import GrepMatch as _GrepMatch
+from deepagents.backends.protocol import FileInfo as _FileInfo, GrepMatch as _GrepMatch
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
-MAX_LINE_LENGTH = 10000
+MAX_LINE_LENGTH = 5000
 LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
 TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your parameters]"

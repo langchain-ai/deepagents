@@ -3,10 +3,11 @@
 The [deepagents](https://github.com/langchain-ai/deepagents) CLI is an open source coding assistant that runs in your terminal, similar to Claude Code.
 
 **Key Features:**
+
 - **Built-in Tools**: File operations (read, write, edit, glob, grep), shell commands, web search, and subagent delegation
 - **Customizable Skills**: Add domain-specific capabilities through a progressive disclosure skill system
 - **Persistent Memory**: Agent remembers your preferences, coding style, and project context across sessions
-- **Project-Aware**: Automatically detects project roots and loads project-specific configurations 
+- **Project-Aware**: Automatically detects project roots and loads project-specific configurations
 
 <img src="cli-banner.jpg" alt="deep agent" width="100%"/>
 
@@ -15,11 +16,13 @@ The [deepagents](https://github.com/langchain-ai/deepagents) CLI is an open sour
 `deepagents-cli` is a Python package that can be installed via pip or uv.
 
 **Install via pip:**
+
 ```bash
 pip install deepagents-cli
 ```
 
 **Or using uv (recommended):**
+
 ```bash
 # Create a virtual environment
 uv venv
@@ -29,19 +32,26 @@ uv pip install deepagents-cli
 ```
 
 **Run the agent in your terminal:**
+
 ```bash
 deepagents
 ```
 
 **Get help:**
+
 ```bash
 deepagents help
 ```
 
 **Common options:**
+
 ```bash
 # Use a specific agent configuration
 deepagents --agent mybot
+
+# Use a specific model (auto-detects provider)
+deepagents --model claude-sonnet-4-5-20250929
+deepagents --model gpt-4o
 
 # Auto-approve tool usage (skip human-in-the-loop prompts)
 deepagents --auto-approve
@@ -51,7 +61,33 @@ deepagents --sandbox modal        # or runloop, daytona
 deepagents --sandbox-id dbx_123   # reuse existing sandbox
 ```
 
-Type naturally as you would in a chat interface. The agent will use its built-in tools, skills, and memory to help you with tasks. 
+Type naturally as you would in a chat interface. The agent will use its built-in tools, skills, and memory to help you with tasks.
+
+## Model Configuration
+
+The CLI supports OpenAI, Anthropic, and Google models. It automatically selects a provider based on which API keys are available. If multiple keys are set, it uses the first match in this order:
+
+| Priority | API key | Default model |
+|----------|---------|---------------|
+| 1st | `OPENAI_API_KEY` | `gpt-5-mini` |
+| 2nd | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` |
+| 3rd | `GOOGLE_API_KEY` | `gemini-3-pro-preview` |
+
+To use a different model, pass the `--model` flag:
+
+```bash
+deepagents --model claude-opus-4-5-20251101
+deepagents --model gpt-4o
+deepagents --model gemini-2.5-pro
+```
+
+The CLI auto-detects the provider from the model name and requires the corresponding API key. The active model is displayed at startup.
+
+**Model name conventions:**
+
+- **OpenAI**: See [OpenAI Models Documentation](https://platform.openai.com/docs/models)
+- **Anthropic**: See [Anthropic Models Documentation](https://docs.anthropic.com/en/docs/about-claude/models)
+- **Google**: See [Google Gemini Models Documentation](https://ai.google.dev/gemini-api/docs/models/gemini)
 
 ## Built-in Tools
 
@@ -76,15 +112,17 @@ The agent comes with the following built-in tools (always available without conf
 > **Human-in-the-Loop (HITL) Approval Required**
 >
 > Potentially destructive operations require user approval before execution:
+>
 > - **File operations**: `write_file`, `edit_file`
 > - **Command execution**: `shell`, `execute`
 > - **External requests**: `web_search`, `fetch_url`
 > - **Delegation**: `task` (subagents)
 >
 > Each operation will prompt for approval showing the action details. Use `--auto-approve` to skip prompts:
+>
 > ```bash
 > deepagents --auto-approve
-> ``` 
+> ```
 
 ## Agent Configuration
 
@@ -98,15 +136,44 @@ deepagents list
 deepagents create <agent_name>
 ```
 
-## Customization 
+### Environment Variables
 
-There are two primary ways to customize any agent: **memory** and **skills**. 
+#### LangSmith Tracing
+
+Enable LangSmith tracing to see agent operations in your LangSmith dashboard:
+
+```bash
+export LANGSMITH_API_KEY="your-api-key"
+export LANGSMITH_TRACING=true
+export DEEPAGENTS_LANGSMITH_PROJECT="my-project"
+
+deepagents
+```
+
+When configured, the CLI displays:
+
+```
+✓ LangSmith tracing: 'my-project'
+```
+
+**Advanced: Separate Projects**
+
+If you're building a LangChain app with deepagents and want to separate agent traces from your app's traces:
+
+```bash
+export DEEPAGENTS_LANGSMITH_PROJECT="agent-traces"  # Deepagents operations
+export LANGSMITH_PROJECT="my-app-traces"            # Your app's LangChain calls
+```
+
+## Customization
+
+There are two primary ways to customize any agent: **memory** and **skills**.
 
 Each agent has its own global configuration directory at `~/.deepagents/<agent_name>/`:
 
 ```
 ~/.deepagents/<agent_name>/
-  ├── agent.md              # Auto-loaded global personality/style
+  ├── AGENTS.md              # Auto-loaded global personality/style
   └── skills/               # Auto-loaded agent-specific skills
       ├── web-research/
       │   └── SKILL.md
@@ -120,45 +187,51 @@ Projects can extend the global configuration with project-specific instructions 
 my-project/
   ├── .git/
   └── .deepagents/
-      ├── agent.md          # Project-specific instructions
+      ├── AGENTS.md          # Project-specific instructions
       └── skills/           # Project-specific skills
           └── custom-tool/
               └── SKILL.md
 ```
 
 The CLI automatically detects project roots (via `.git`) and loads:
-- Project-specific `agent.md` from `[project-root]/.deepagents/agent.md`
+
+- Project-specific `AGENTS.md` from `[project-root]/.deepagents/AGENTS.md`
 - Project-specific skills from `[project-root]/.deepagents/skills/`
 
 Both global and project configurations are loaded together, allowing you to:
-- Keep general coding style/preferences in global agent.md
-- Add project-specific context, conventions, or guidelines in project agent.md
+
+- Keep general coding style/preferences in global AGENTS.md
+- Add project-specific context, conventions, or guidelines in project AGENTS.md
 - Share project-specific skills with your team (committed to version control)
 - Override global skills with project-specific versions (when skill names match)
 
-### agent.md files
+### AGENTS.md files
 
-`agent.md` files provide persistent memory that is always loaded at session start. Both global and project-level `agent.md` files are loaded together and injected into the system prompt.
+`AGENTS.md` files provide persistent memory that is always loaded at session start. Both global and project-level `AGENTS.md` files are loaded together and injected into the system prompt.
 
-**Global `agent.md`** (`~/.deepagents/agent/agent.md`) 
-  - Your personality, style, and universal coding preferences
-  - General tone and communication style
-  - Universal coding preferences (formatting, type hints, etc.)
-  - Tool usage patterns that apply everywhere
-  - Workflows and methodologies that don't change per-project
+**Global `AGENTS.md`** (`~/.deepagents/agent/AGENTS.md`)
 
-**Project `agent.md`** (`.deepagents/agent.md` in project root) 
-  - Project-specific context and conventions
-  - Project architecture and design patterns
-  - Coding conventions specific to this codebase
-  - Testing strategies and deployment processes
-  - Team guidelines and project structure
+- Your personality, style, and universal coding preferences
+- General tone and communication style
+- Universal coding preferences (formatting, type hints, etc.)
+- Tool usage patterns that apply everywhere
+- Workflows and methodologies that don't change per-project
 
-**How it works (AgentMemoryMiddleware):**
-- Loads both files at startup and injects into system prompt as `<user_memory>` and `<project_memory>`
-- Appends [memory management instructions](deepagents_cli/agent_memory.py#L44-L158) on when/how to update memory files
+**Project `AGENTS.md`** (`.deepagents/AGENTS.md` in project root)
+
+- Project-specific context and conventions
+- Project architecture and design patterns
+- Coding conventions specific to this codebase
+- Testing strategies and deployment processes
+- Team guidelines and project structure
+
+**How it works:**
+
+- Loads memory files at startup and injects into system prompt as `<agent_memory>`
+- Includes guidelines on when/how to update memory files via `edit_file`
 
 **When the agent updates memory:**
+
 - IMMEDIATELY when you describe how it should behave
 - IMMEDIATELY when you give feedback on its work
 - When you explicitly ask it to remember something
@@ -168,29 +241,33 @@ The agent uses `edit_file` to update memories when learning preferences or recei
 
 ### Project memory files
 
-Beyond `agent.md`, you can create additional memory files in `.deepagents/` for structured project knowledge. These work similarly to [Anthropic's Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool). The agent receives [detailed instructions](deepagents_cli/agent_memory.py#L123-L158) on when to read and update these files.
+Beyond `AGENTS.md`, you can create additional memory files in `.deepagents/` for structured project knowledge. These work similarly to [Anthropic's Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool). The agent receives instructions on when to read and update these files.
 
 **How it works:**
+
 1. Create markdown files in `[project-root]/.deepagents/` (e.g., `api-design.md`, `architecture.md`, `deployment.md`)
 2. The agent checks these files when relevant to a task (not auto-loaded into every prompt)
 3. The agent uses `write_file` or `edit_file` to create/update memory files when learning project patterns
 
 **Example workflow:**
+
 ```bash
 # Agent discovers deployment pattern and saves it
 .deepagents/
-├── agent.md           # Always loaded (personality + conventions)
+├── AGENTS.md           # Always loaded (personality + conventions)
 ├── architecture.md    # Loaded on-demand (system design)
 └── deployment.md      # Loaded on-demand (deploy procedures)
 ```
 
 **When the agent reads memory files:**
+
 - At the start of new sessions (checks what files exist)
 - Before answering questions about project-specific topics
 - When you reference past work or patterns
 - When performing tasks that match saved knowledge domains
 
 **Benefits:**
+
 - **Persistent learning**: Agent remembers project patterns across sessions
 - **Team collaboration**: Share project knowledge through version control
 - **Contextual retrieval**: Load only relevant memory when needed (reduces token usage)
@@ -210,7 +287,7 @@ mkdir -p ~/.deepagents/agent/skills
 cp -r examples/skills/web-research ~/.deepagents/agent/skills/
 ```
 
-To manage skills: 
+To manage skills:
 
 ```bash
 # List all skills (global + project)
@@ -235,8 +312,8 @@ deepagents skills info my-tool --project
 To use skills (e.g., the langgraph-docs skill), just type a request relevant to a skill and the skill will be used automatically.
 
 ```bash
-$ deepagents 
-$ "create a agent.py script that implements a LangGraph agent" 
+deepagents 
+"create a agent.py script that implements a LangGraph agent" 
 ```
 
 Skills follow Anthropic's [progressive disclosure pattern](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) - the agent knows skills exist but only reads full instructions when needed.

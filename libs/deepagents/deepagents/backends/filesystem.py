@@ -32,7 +32,8 @@ class FilesystemBackend(BackendProtocol):
     resolved relative to the current working directory. Content is read/written
     as plain text, and metadata (timestamps) are derived from filesystem stats.
 
-    Warning:
+    !!! warning "Security Warning"
+
         This backend grants agents direct filesystem read/write access. Use with
         caution and only in appropriate environments.
 

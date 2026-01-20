@@ -31,6 +31,36 @@ class FilesystemBackend(BackendProtocol):
     Files are accessed using their actual filesystem paths. Relative paths are
     resolved relative to the current working directory. Content is read/written
     as plain text, and metadata (timestamps) are derived from filesystem stats.
+
+    Warning:
+        This backend grants agents direct filesystem read/write access. Use with
+        caution and only in appropriate environments.
+
+        **Appropriate use cases:**
+
+        - Local development CLIs (coding assistants, development tools)
+        - CI/CD pipelines (see security considerations below)
+
+        **Inappropriate use cases:**
+
+        - Web servers or HTTP APIs - use StateBackend, StoreBackend, or
+          SandboxBackend instead
+
+        **Security risks:**
+
+        - Agents can read any accessible file, including secrets (API keys,
+          credentials, .env files)
+        - Combined with network tools, secrets may be exfiltrated via SSRF attacks
+        - File modifications are permanent and irreversible
+
+        **Recommended safeguards:**
+
+        1. Enable Human-in-the-Loop (HIL) middleware to review sensitive operations
+        2. Exclude secrets from accessible filesystem paths (especially in CI/CD)
+        3. Use SandboxBackend for production environments requiring filesystem
+           interaction
+        4. Use ``virtual_mode=True`` with ``root_dir`` to restrict access to a
+           specific directory
     """
 
     def __init__(

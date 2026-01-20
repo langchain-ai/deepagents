@@ -15,6 +15,11 @@ Screen {
     background: $background;
 }
 
+/* Spacer fills remaining viewport below input */
+#chat-spacer {
+    height: auto;
+}
+
 /* Welcome banner */
 #welcome-banner {
     height: auto;
@@ -26,11 +31,10 @@ Screen {
     height: auto;
 }
 
-/* Bottom app container - holds ChatInput OR ApprovalMenu */
+/* Bottom app container - holds ChatInput (now inside scroll) */
 #bottom-app-container {
     height: auto;
-    dock: bottom;
-    margin-bottom: 3;
+    margin-top: 1;
     padding: 0 1;
 }
 

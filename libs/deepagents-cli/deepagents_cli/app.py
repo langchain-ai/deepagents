@@ -294,14 +294,13 @@ class DeepAgentsApp(App):
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
         # Main chat area with scrollable messages
+        # Input is inside scroll so it appears right below content initially
         with VerticalScroll(id="chat"):
             yield WelcomeBanner(id="welcome-banner")
-            yield Container(id="messages")  # Container can have children mounted
-
-        # Bottom app container - holds either ChatInput OR ApprovalMenu (swapped)
-        # This is OUTSIDE VerticalScroll so arrow keys work in approval
-        with Container(id="bottom-app-container"):
-            yield ChatInput(cwd=self._cwd, id="input-area")
+            yield Container(id="messages")
+            with Container(id="bottom-app-container"):
+                yield ChatInput(cwd=self._cwd, id="input-area")
+            yield Static(id="chat-spacer")  # Fills remaining space below input
 
         # Status bar at bottom
         yield StatusBar(cwd=self._cwd, id="status-bar")
@@ -338,6 +337,9 @@ class DeepAgentsApp(App):
         # Focus the input (autocomplete is now built into ChatInput)
         self._chat_input.focus_input()
 
+        # Size the spacer to fill remaining viewport below input
+        self.call_after_refresh(self._size_initial_spacer)
+
         # Auto-submit initial prompt if provided
         if self._initial_prompt and self._initial_prompt.strip():
             # Use call_after_refresh to ensure UI is fully mounted before submitting
@@ -368,9 +370,32 @@ class DeepAgentsApp(App):
         """
         try:
             chat = self.query_one("#chat", VerticalScroll)
-            # anchor() locks scroll to bottom and auto-scrolls as content grows
-            # Much smoother than calling scroll_end() on every chunk
-            chat.anchor()
+            # Only scroll/anchor if content exceeds viewport
+            if chat.virtual_size.height > chat.size.height:
+                chat.anchor()
+        except NoMatches:
+            pass
+
+    def _size_initial_spacer(self) -> None:
+        """Size the spacer to fill remaining viewport below input."""
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            welcome = self.query_one("#welcome-banner", WelcomeBanner)
+            input_container = self.query_one("#bottom-app-container", Container)
+            spacer = self.query_one("#chat-spacer", Static)
+            # Spacer fills space below input: viewport - welcome - input - padding
+            content_height = welcome.size.height + input_container.size.height + 4
+            spacer_height = chat.size.height - content_height
+            if spacer_height > 0:
+                spacer.styles.height = spacer_height
+        except NoMatches:
+            pass
+
+    async def _remove_spacer(self) -> None:
+        """Remove the initial spacer when first message is sent."""
+        try:
+            spacer = self.query_one("#chat-spacer", Static)
+            await spacer.remove()
         except NoMatches:
             pass
 
@@ -674,11 +699,14 @@ class DeepAgentsApp(App):
             widget: The message widget to mount
         """
         try:
+            # Remove spacer on first message
+            await self._remove_spacer()
             messages = self.query_one("#messages", Container)
             await messages.mount(widget)
-            # Scroll to bottom
+            # Only scroll if content exceeds viewport (prevents jarring jump)
             chat = self.query_one("#chat", VerticalScroll)
-            chat.scroll_end(animate=False)
+            if chat.virtual_size.height > chat.size.height:
+                chat.scroll_end(animate=False)
         except NoMatches:
             pass
 

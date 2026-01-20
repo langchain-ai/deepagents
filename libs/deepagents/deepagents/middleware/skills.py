@@ -560,6 +560,8 @@ class SkillsMiddleware(AgentMiddleware):
         lines = []
         for skill in skills:
             lines.append(f"- **{skill['name']}**: {skill['description']}")
+            if skill["allowed_tools"]:
+                lines.append(f"  -> Allowed tools: {', '.join(skill['allowed_tools'])}")
             lines.append(f"  -> Read `{skill['path']}` for full instructions")
 
         return "\n".join(lines)
@@ -601,7 +603,7 @@ class SkillsMiddleware(AgentMiddleware):
             config: Runnable config.
 
         Returns:
-            State update with skills_metadata populated, or None if already present
+            State update with `skills_metadata` populated, or `None` if already present
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:
@@ -636,7 +638,7 @@ class SkillsMiddleware(AgentMiddleware):
             config: Runnable config.
 
         Returns:
-            State update with skills_metadata populated, or None if already present
+            State update with `skills_metadata` populated, or `None` if already present
         """
         # Skip if skills_metadata is already present in state (even if empty)
         if "skills_metadata" in state:

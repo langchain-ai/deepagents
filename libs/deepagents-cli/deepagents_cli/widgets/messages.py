@@ -220,6 +220,10 @@ class ToolCallMessage(Vertical):
         color: $primary;
         text-style: italic;
     }
+
+    ToolCallMessage:hover {
+        background: $surface-lighten-1;
+    }
     """
 
     # Max lines/chars to show in preview mode
@@ -259,11 +263,8 @@ class ToolCallMessage(Vertical):
             if len(args) > _MAX_INLINE_ARGS:
                 args_str += ", ..."
             yield Static(f"({args_str})", classes="tool-args")
-        yield Static(
-            "[yellow]Pending...[/yellow]",
-            classes="tool-status pending",
-            id="status",
-        )
+        # Status - hidden by default, only shown for errors/rejections
+        yield Static("", classes="tool-status", id="status")
         # Output area - hidden initially, shown when output is set
         # Use markup=False for output content to prevent Rich markup injection
         yield Static("", classes="tool-output-preview", id="output-preview", markup=False)
@@ -271,8 +272,9 @@ class ToolCallMessage(Vertical):
         yield Static("", classes="tool-output", id="output-full", markup=False)
 
     def on_mount(self) -> None:
-        """Hide output areas initially."""
+        """Hide status and output areas initially."""
         try:
+            self.query_one("#status").display = False
             self.query_one("#output-preview").display = False
             self.query_one("#output-hint").display = False
             self.query_one("#output-full").display = False
@@ -287,13 +289,7 @@ class ToolCallMessage(Vertical):
         """
         self._status = "success"
         self._output = result
-        try:
-            status = self.query_one("#status", Static)
-            status.remove_class("pending", "error")
-            status.add_class("success")
-            status.update("[green]✓ Success[/green]")
-        except NoMatches:
-            pass
+        # No status label for success - just show output
         self._update_output_display()
 
     def set_error(self, error: str) -> None:
@@ -306,9 +302,9 @@ class ToolCallMessage(Vertical):
         self._output = error
         try:
             status = self.query_one("#status", Static)
-            status.remove_class("pending", "success")
             status.add_class("error")
             status.update("[red]✗ Error[/red]")
+            status.display = True
         except NoMatches:
             pass
         # Always show full error - errors should be visible
@@ -320,9 +316,20 @@ class ToolCallMessage(Vertical):
         self._status = "rejected"
         try:
             status = self.query_one("#status", Static)
-            status.remove_class("pending", "success", "error")
             status.add_class("rejected")
             status.update("[yellow]✗ Rejected[/yellow]")
+            status.display = True
+        except NoMatches:
+            pass
+
+    def set_skipped(self) -> None:
+        """Mark the tool call as skipped (due to another rejection)."""
+        self._status = "skipped"
+        try:
+            status = self.query_one("#status", Static)
+            status.add_class("rejected")  # Use same styling as rejected
+            status.update("[dim]– Skipped[/dim]")
+            status.display = True
         except NoMatches:
             pass
 
@@ -332,6 +339,10 @@ class ToolCallMessage(Vertical):
             return
         self._expanded = not self._expanded
         self._update_output_display()
+
+    def on_click(self) -> None:
+        """Handle click to toggle output expansion."""
+        self.toggle_output()
 
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""
@@ -377,7 +388,7 @@ class ToolCallMessage(Vertical):
                     preview.display = True
 
                     # Show expand hint
-                    hint.update("[dim]... (Ctrl+O to expand)[/dim]")
+                    hint.update("[dim]... (click to expand)[/dim]")
                     hint.display = True
                 elif output_stripped:
                     # Output fits in preview, just show it

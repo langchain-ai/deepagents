@@ -283,7 +283,6 @@ class DeepAgentsApp(App):
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
-        self._pending_approval: asyncio.Future | None = None
         self._pending_approval_widget: Any = None
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
@@ -331,6 +330,8 @@ class DeepAgentsApp(App):
                 request_approval=self._request_approval,
                 on_auto_approve_enabled=self._on_auto_approve_enabled,
                 scroll_to_bottom=self._scroll_chat_to_bottom,
+                show_thinking=self._show_thinking,
+                hide_thinking=self._hide_thinking,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -371,6 +372,23 @@ class DeepAgentsApp(App):
         chat = self.query_one("#chat", VerticalScroll)
         if chat.virtual_size.height > chat.size.height:
             chat.anchor()
+
+    async def _show_thinking(self) -> None:
+        """Show or reposition the thinking spinner at the bottom of messages."""
+        if self._loading_widget:
+            await self._loading_widget.remove()
+            self._loading_widget = None
+
+        self._loading_widget = LoadingWidget("Thinking")
+        messages = self.query_one("#messages", Container)
+        await messages.mount(self._loading_widget)
+        self._scroll_chat_to_bottom()
+
+    async def _hide_thinking(self) -> None:
+        """Hide the thinking spinner."""
+        if self._loading_widget:
+            await self._loading_widget.remove()
+            self._loading_widget = None
 
     def _size_initial_spacer(self) -> None:
         """Size the spacer to fill remaining viewport below input."""
@@ -419,10 +437,6 @@ class DeepAgentsApp(App):
 
         # Store reference
         self._pending_approval_widget = menu
-
-        # Pause the loading spinner during approval
-        if self._loading_widget:
-            self._loading_widget.pause("Awaiting decision")
 
         # Update status to show we're waiting for approval
         self._update_status("Waiting for approval...")
@@ -482,10 +496,6 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             await self._pending_approval_widget.remove()
             self._pending_approval_widget = None
-
-        # Resume the loading spinner after approval
-        if self._loading_widget:
-            self._loading_widget.resume()
 
         # Clear status message
         self._update_status("")
@@ -623,9 +633,6 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
-            # Show loading widget
-            self._loading_widget = LoadingWidget("Thinking")
-            await self._mount_message(self._loading_widget)
             self._agent_running = True
 
             # Disable submission while agent is working (user can still type)
@@ -669,11 +676,8 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
 
-        # Remove loading widget if present
-        if self._loading_widget:
-            with contextlib.suppress(Exception):
-                await self._loading_widget.remove()
-            self._loading_widget = None
+        # Remove thinking spinner if present
+        await self._hide_thinking()
 
         # Re-enable submission now that agent is done
         if self._chat_input:
@@ -693,9 +697,9 @@ class DeepAgentsApp(App):
         await self._remove_spacer()
         messages = self.query_one("#messages", Container)
         await messages.mount(widget)
-        chat = self.query_one("#chat", VerticalScroll)
-        if chat.virtual_size.height > chat.size.height:
-            chat.scroll_end(animate=False)
+        # Scroll to keep input bar visible
+        input_container = self.query_one("#bottom-app-container", Container)
+        input_container.scroll_visible()
 
     async def _clear_messages(self) -> None:
         """Clear the messages area."""

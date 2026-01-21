@@ -49,7 +49,7 @@ Screen {
 .approval-menu {
     height: auto;
     margin: 1 0;
-    padding: 1 2;
+    padding: 0 1;
     background: $surface;
     border: solid $warning;
 }
@@ -57,7 +57,7 @@ Screen {
 .approval-menu .approval-title {
     text-style: bold;
     color: $warning;
-    margin-bottom: 1;
+    margin-bottom: 0;
 }
 
 .approval-menu .approval-info {
@@ -93,8 +93,6 @@ Screen {
 /* Tool approval widgets */
 .tool-approval-widget {
     height: auto;
-    max-height: 20;
-    overflow-y: auto;
 }
 
 .approval-file-path {
@@ -114,14 +112,16 @@ Screen {
 
 .diff-removed {
     height: auto;
-    color: #ff6b6b;
-    background: #3d1f1f;
+    color: #ff8787;
+    background: #4a2020;
+    padding: 0 1;
 }
 
 .diff-added {
     height: auto;
-    color: #69db7c;
-    background: #1f3d1f;
+    color: #8ce99a;
+    background: #1e4620;
+    padding: 0 1;
 }
 
 .diff-range {
@@ -133,28 +133,32 @@ Screen {
 .diff-context {
     height: auto;
     color: $text-muted;
+    padding: 0 1;
 }
 
-/* Separator line between options and tool details */
+/* Separator line between tool details and options */
 .approval-menu .approval-separator {
     height: 1;
     color: $warning;
-    margin: 1 0 0 0;
+    margin: 0;
 }
 
-/* Scrollable tool info area in approval menu - at bottom */
+/* Scrollable tool info area in approval menu */
 .approval-menu .tool-info-scroll {
-    height: auto;
-    max-height: 15;
-    overflow-y: auto;
+    height: 10;
     margin-top: 0;
+}
+
+/* Inner container for tool info - allows content to expand for scrolling */
+.approval-menu .tool-info-container {
+    height: auto;
 }
 
 /* Options container with background */
 .approval-menu .approval-options-container {
     height: auto;
     background: $surface-darken-1;
-    padding: 1;
+    padding: 0 1;
     margin-top: 0;
 }
 

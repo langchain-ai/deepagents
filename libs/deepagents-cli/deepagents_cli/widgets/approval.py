@@ -53,23 +53,24 @@ class ApprovalMenu(Container):
             super().__init__()
             self.decision = decision
 
+    # Tools that don't need detailed info display (already shown in tool call)
+    _MINIMAL_TOOLS = {"bash", "shell"}
+
     def __init__(
         self,
         action_request: dict[str, Any],
-        assistant_id: str | None = None,
+        _assistant_id: str | None = None,  # noqa: ARG002
         id: str | None = None,  # noqa: A002
         **kwargs: Any,
     ) -> None:
         super().__init__(id=id or "approval-menu", classes="approval-menu", **kwargs)
-        self._action_request = action_request
-        self._assistant_id = assistant_id
         self._tool_name = action_request.get("name", "unknown")
         self._tool_args = action_request.get("args", {})
-        self._description = action_request.get("description", "")
         self._selected = 0
         self._future: asyncio.Future[dict[str, str]] | None = None
         self._option_widgets: list[Static] = []
         self._tool_info_container: Vertical | None = None
+        self._is_minimal = self._tool_name in self._MINIMAL_TOOLS
 
     def set_future(self, future: asyncio.Future[dict[str, str]]) -> None:
         """Set the future to resolve when user decides."""
@@ -78,8 +79,8 @@ class ApprovalMenu(Container):
     def compose(self) -> ComposeResult:
         """Compose the widget with Static children.
 
-        Layout prioritizes options visibility - they appear at the top so users
-        always see them even in small terminals.
+        Layout: Tool info first (what's being approved), then options at bottom.
+        For bash/shell, skip tool info since it's already shown in tool call.
         """
         # Title
         yield Static(
@@ -87,7 +88,16 @@ class ApprovalMenu(Container):
             classes="approval-title",
         )
 
-        # Options container FIRST - always visible at top
+        # Tool info - only for non-minimal tools (diffs, writes show actual content)
+        if not self._is_minimal:
+            with VerticalScroll(classes="tool-info-scroll"):
+                self._tool_info_container = Vertical(classes="tool-info-container")
+                yield self._tool_info_container
+
+            # Separator between tool details and options
+            yield Static("─" * 40, classes="approval-separator")
+
+        # Options container at bottom
         with Container(classes="approval-options-container"):
             # Options - create 3 Static widgets
             for i in range(3):
@@ -95,23 +105,16 @@ class ApprovalMenu(Container):
                 self._option_widgets.append(widget)
                 yield widget
 
-        # Help text right after options
+        # Help text at the very bottom
         yield Static(
             "↑/↓ navigate • Enter select • y/n/a quick keys",
             classes="approval-help",
         )
 
-        # Separator between options and tool details
-        yield Static("─" * 40, classes="approval-separator")
-
-        # Tool info in scrollable container BELOW options
-        with VerticalScroll(classes="tool-info-scroll"):
-            self._tool_info_container = Vertical(classes="tool-info-container")
-            yield self._tool_info_container
-
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
-        await self._update_tool_info()
+        if not self._is_minimal:
+            await self._update_tool_info()
         self._update_options()
         self.focus()
 
@@ -195,5 +198,6 @@ class ApprovalMenu(Container):
         self.post_message(self.Decided(decision))
 
     def on_blur(self, event: events.Blur) -> None:
-        """Re-focus on blur to keep focus trapped."""
+        """Re-focus on blur to keep focus trapped until decision is made."""
         self.call_after_refresh(self.focus)
+

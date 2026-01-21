@@ -362,6 +362,7 @@ async def execute_task_textual(
                                     # Hide thinking spinner when assistant starts responding
                                     if adapter._hide_thinking:
                                         await adapter._hide_thinking()
+                                    adapter._update_status("")
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg

@@ -150,8 +150,8 @@ def create_deep_agent(
         trigger = ("fraction", 0.85)
         keep = ("fraction", 0.10)
         truncate_args_settings = {
-            "trigger": ("fraction", 0.60),
-            "keep": ("fraction", 0.20),
+            "trigger": ("fraction", 0.85),
+            "keep": ("fraction", 0.10),
         }
     else:
         trigger = ("tokens", 170000)

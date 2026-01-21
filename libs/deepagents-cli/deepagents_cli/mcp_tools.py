@@ -7,14 +7,54 @@ using langchain-mcp-adapters, supporting Claude Desktop style JSON configs.
 import json
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 
 
-async def load_mcp_config(config_path: str) -> dict:
+def _validate_server_config(server_name: str, server_config: dict) -> None:
+    """Validate a single server configuration.
+
+    Args:
+        server_name: Name of the server
+        server_config: Server configuration dictionary
+
+    Raises:
+        TypeError: If config fields have wrong types
+        ValueError: If required fields are missing
+    """
+    if not isinstance(server_config, dict):
+        error_msg = f"Server '{server_name}' config must be a dictionary"
+        raise TypeError(error_msg)
+
+    # Determine server type
+    server_type = server_config.get("type", "stdio")
+
+    if server_type in ("sse", "http"):
+        # SSE/HTTP server validation - requires url field
+        if "url" not in server_config:
+            error_msg = (
+                f"Server '{server_name}' with type '{server_type}' missing required 'url' field"
+            )
+            raise ValueError(error_msg)
+    else:
+        # stdio server validation (default)
+        if "command" not in server_config:
+            error_msg = f"Server '{server_name}' missing required 'command' field"
+            raise ValueError(error_msg)
+
+        # args and env are optional but must be correct type if present
+        if "args" in server_config and not isinstance(server_config["args"], list):
+            error_msg = f"Server '{server_name}' 'args' must be a list"
+            raise TypeError(error_msg)
+
+        if "env" in server_config and not isinstance(server_config["env"], dict):
+            error_msg = f"Server '{server_name}' 'env' must be a dictionary"
+            raise TypeError(error_msg)
+
+
+def load_mcp_config(config_path: str) -> dict:
     """Load and validate MCP configuration from JSON file.
 
     Supports multiple server types:
@@ -36,52 +76,35 @@ async def load_mcp_config(config_path: str) -> dict:
     path = Path(config_path)
 
     if not path.exists():
-        raise FileNotFoundError(f"MCP config file not found: {config_path}")
+        error_msg = f"MCP config file not found: {config_path}"
+        raise FileNotFoundError(error_msg)
 
     try:
-        with open(path, "r") as f:
+        with path.open() as f:
             config = json.load(f)
     except json.JSONDecodeError as e:
-        raise json.JSONDecodeError(f"Invalid JSON in MCP config file: {e.msg}", e.doc, e.pos) from e
+        error_msg = f"Invalid JSON in MCP config file: {e.msg}"
+        raise json.JSONDecodeError(error_msg, e.doc, e.pos) from e
 
     # Validate required fields
     if "mcpServers" not in config:
-        raise ValueError(
+        error_msg = (
             "MCP config must contain 'mcpServers' field. "
             'Expected format: {"mcpServers": {"server-name": {...}}}'
         )
+        raise ValueError(error_msg)
 
     if not isinstance(config["mcpServers"], dict):
-        raise ValueError("'mcpServers' field must be a dictionary")
+        error_msg = "'mcpServers' field must be a dictionary"
+        raise TypeError(error_msg)
 
     if not config["mcpServers"]:
-        raise ValueError("'mcpServers' field is empty - no servers configured")
+        error_msg = "'mcpServers' field is empty - no servers configured"
+        raise ValueError(error_msg)
 
     # Validate each server config
     for server_name, server_config in config["mcpServers"].items():
-        if not isinstance(server_config, dict):
-            raise ValueError(f"Server '{server_name}' config must be a dictionary")
-
-        # Determine server type
-        server_type = server_config.get("type", "stdio")
-
-        if server_type in ("sse", "http"):
-            # SSE/HTTP server validation - requires url field
-            if "url" not in server_config:
-                raise ValueError(
-                    f"Server '{server_name}' with type '{server_type}' missing required 'url' field"
-                )
-        else:
-            # stdio server validation (default)
-            if "command" not in server_config:
-                raise ValueError(f"Server '{server_name}' missing required 'command' field")
-
-            # args and env are optional but must be correct type if present
-            if "args" in server_config and not isinstance(server_config["args"], list):
-                raise ValueError(f"Server '{server_name}' 'args' must be a list")
-
-            if "env" in server_config and not isinstance(server_config["env"], dict):
-                raise ValueError(f"Server '{server_name}' 'env' must be a dictionary")
+        _validate_server_config(server_name, server_config)
 
     return config
 
@@ -94,11 +117,12 @@ class MCPSessionManager:
     explicitly cleaned up.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize the session manager."""
         self.client: MultiServerMCPClient | None = None
         self.exit_stack = AsyncExitStack()
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Clean up all managed sessions and close connections."""
         await self.exit_stack.aclose()
 
@@ -128,7 +152,7 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
         RuntimeError: If MCP server fails to spawn or connect
     """
     # Load and validate config
-    config = await load_mcp_config(config_path)
+    config = load_mcp_config(config_path)
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format
@@ -170,21 +194,21 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
                 session = await manager.exit_stack.enter_async_context(client.session(server_name))
                 # Load tools from the persistent session
                 tools = await load_mcp_tools(session)
-                all_tools.extend(tools)
             else:
                 # For sse/http servers, create a temporary session
                 # These are stateless by nature, so no need to persist
                 async with client.session(server_name) as session:
                     tools = await load_mcp_tools(session)
-                    all_tools.extend(tools)
+            all_tools.extend(tools)
 
-        return all_tools, manager
+        return all_tools, manager  # noqa: TRY300
 
     except Exception as e:
         # Provide helpful error message if server fails to spawn or connect
-        raise RuntimeError(
+        error_msg = (
             f"Failed to connect to MCP servers: {e}\n"
             "For stdio servers: Check that the command and args are correct, and that "
             "the MCP server is installed (e.g., run 'npx -y <package>' manually to test).\n"
             "For sse/http servers: Check that the URL is correct and the server is running."
-        ) from e
+        )
+        raise RuntimeError(error_msg) from e

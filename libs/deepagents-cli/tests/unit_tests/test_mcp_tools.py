@@ -8,7 +8,6 @@ import pytest
 
 from deepagents_cli.mcp_tools import MCPSessionManager, get_mcp_tools, load_mcp_config
 
-
 # Test Fixtures
 
 
@@ -19,7 +18,7 @@ def valid_config_data() -> dict:
         "mcpServers": {
             "filesystem": {
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],  # noqa: S108
                 "env": {},
             }
         }
@@ -37,7 +36,9 @@ def mock_mcp_session():
 
 
 @pytest.fixture
-def mock_mcp_client(mock_mcp_session):
+def mock_mcp_client(
+    mock_mcp_session: tuple[AsyncMock, MagicMock],
+) -> tuple[MagicMock, AsyncMock]:
     """Fixture for creating a mock MultiServerMCPClient."""
     mock_session, mock_session_cm = mock_mcp_session
     mock_client = MagicMock()
@@ -68,7 +69,7 @@ class TestLoadMCPConfig:
         config_file = tmp_path / "mcp-config.json"
         config_file.write_text(json.dumps(valid_config_data))
 
-        config = await load_mcp_config(str(config_file))
+        config = load_mcp_config(str(config_file))
 
         assert config == valid_config_data
 
@@ -78,7 +79,7 @@ class TestLoadMCPConfig:
         nonexistent_file = tmp_path / "nonexistent.json"
 
         with pytest.raises(FileNotFoundError, match="MCP config file not found"):
-            await load_mcp_config(str(nonexistent_file))
+            load_mcp_config(str(nonexistent_file))
 
     @pytest.mark.asyncio
     async def test_load_config_invalid_json(self, tmp_path: Path) -> None:
@@ -87,7 +88,7 @@ class TestLoadMCPConfig:
         config_file.write_text("{invalid json")
 
         with pytest.raises(json.JSONDecodeError, match="Invalid JSON in MCP config file"):
-            await load_mcp_config(str(config_file))
+            load_mcp_config(str(config_file))
 
     @pytest.mark.asyncio
     async def test_load_config_missing_mcpservers_field(self, tmp_path: Path) -> None:
@@ -97,25 +98,33 @@ class TestLoadMCPConfig:
         config_file.write_text(json.dumps(config_data))
 
         with pytest.raises(ValueError, match="must contain 'mcpServers' field"):
-            await load_mcp_config(str(config_file))
+            load_mcp_config(str(config_file))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "config_data,expected_error",
+        ("config_data", "expected_error", "exception_type"),
         [
-            ({"mcpServers": ["not", "a", "dict"]}, "'mcpServers' field must be a dictionary"),
-            ({"mcpServers": {}}, "'mcpServers' field is empty"),
+            (
+                {"mcpServers": ["not", "a", "dict"]},
+                "'mcpServers' field must be a dictionary",
+                TypeError,
+            ),
+            ({"mcpServers": {}}, "'mcpServers' field is empty", ValueError),
         ],
     )
     async def test_load_config_invalid_mcpservers(
-        self, tmp_path: Path, config_data: dict, expected_error: str
+        self,
+        tmp_path: Path,
+        config_data: dict,
+        expected_error: str,
+        exception_type: type[Exception],
     ) -> None:
-        """Test that ValueError is raised for invalid mcpServers field."""
+        """Test that appropriate exception is raised for invalid mcpServers field."""
         config_file = tmp_path / "invalid.json"
         config_file.write_text(json.dumps(config_data))
 
-        with pytest.raises(ValueError, match=expected_error):
-            await load_mcp_config(str(config_file))
+        with pytest.raises(exception_type, match=expected_error):
+            load_mcp_config(str(config_file))
 
     @pytest.mark.asyncio
     async def test_load_config_server_missing_command(self, tmp_path: Path) -> None:
@@ -124,38 +133,38 @@ class TestLoadMCPConfig:
         config_data = {
             "mcpServers": {
                 "filesystem": {
-                    "args": ["/tmp"],
+                    "args": ["/tmp"],  # noqa: S108
                     # Missing "command" field
                 }
             }
         }
         config_file.write_text(json.dumps(config_data))
 
-        with pytest.raises(ValueError, match="filesystem.*missing required 'command' field"):
-            await load_mcp_config(str(config_file))
+        with pytest.raises(ValueError, match=r"filesystem.*missing required 'command' field"):
+            load_mcp_config(str(config_file))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "server_config,expected_error",
+        ("server_config", "expected_error"),
         [
             ("not a dict", "filesystem.*config must be a dictionary"),
             ({"command": "npx", "args": "not a list"}, "filesystem.*'args' must be a list"),
             (
-                {"command": "npx", "args": ["/tmp"], "env": ["not", "a", "dict"]},
+                {"command": "npx", "args": ["/tmp"], "env": ["not", "a", "dict"]},  # noqa: S108
                 "filesystem.*'env' must be a dictionary",
             ),
         ],
     )
     async def test_load_config_invalid_field_types(
-        self, tmp_path: Path, server_config: any, expected_error: str
+        self, tmp_path: Path, server_config: dict | str, expected_error: str
     ) -> None:
-        """Test that ValueError is raised for invalid server config field types."""
+        """Test that TypeError is raised for invalid server config field types."""
         config_file = tmp_path / "invalid-field.json"
         config_data = {"mcpServers": {"filesystem": server_config}}
         config_file.write_text(json.dumps(config_data))
 
-        with pytest.raises(ValueError, match=expected_error):
-            await load_mcp_config(str(config_file))
+        with pytest.raises(TypeError, match=expected_error):
+            load_mcp_config(str(config_file))
 
     @pytest.mark.asyncio
     async def test_load_config_optional_fields(self, tmp_path: Path) -> None:
@@ -171,7 +180,7 @@ class TestLoadMCPConfig:
         }
         config_file.write_text(json.dumps(config_data))
 
-        config = await load_mcp_config(str(config_file))
+        config = load_mcp_config(str(config_file))
 
         assert config == config_data
         assert "simple" in config["mcpServers"]
@@ -184,7 +193,7 @@ class TestLoadMCPConfig:
             "mcpServers": {
                 "filesystem": {
                     "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],  # noqa: S108
                     "env": {},
                 },
                 "brave-search": {
@@ -201,7 +210,7 @@ class TestLoadMCPConfig:
         }
         config_file.write_text(json.dumps(config_data))
 
-        config = await load_mcp_config(str(config_file))
+        config = load_mcp_config(str(config_file))
 
         assert len(config["mcpServers"]) == 3
         assert "filesystem" in config["mcpServers"]
@@ -222,7 +231,7 @@ class TestLoadMCPConfig:
         }
         config_file.write_text(json.dumps(config_data))
 
-        config = await load_mcp_config(str(config_file))
+        config = load_mcp_config(str(config_file))
 
         assert config == config_data
         assert config["mcpServers"]["remote-api"]["type"] == "sse"
@@ -242,14 +251,14 @@ class TestLoadMCPConfig:
         }
         config_file.write_text(json.dumps(config_data))
 
-        config = await load_mcp_config(str(config_file))
+        config = load_mcp_config(str(config_file))
 
         assert config == config_data
         assert config["mcpServers"]["web-api"]["type"] == "http"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "server_name,server_type",
+        ("server_name", "server_type"),
         [
             ("remote-api", "sse"),
             ("web-api", "http"),
@@ -264,7 +273,7 @@ class TestLoadMCPConfig:
         config_file.write_text(json.dumps(config_data))
 
         with pytest.raises(ValueError, match=f"{server_name}.*missing required 'url' field"):
-            await load_mcp_config(str(config_file))
+            load_mcp_config(str(config_file))
 
     @pytest.mark.asyncio
     async def test_load_config_mixed_server_types(self, tmp_path: Path) -> None:
@@ -274,7 +283,7 @@ class TestLoadMCPConfig:
             "mcpServers": {
                 "filesystem": {
                     "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],  # noqa: S108
                 },
                 "remote-sse": {
                     "type": "sse",
@@ -288,7 +297,7 @@ class TestLoadMCPConfig:
         }
         config_file.write_text(json.dumps(config_data))
 
-        config = await load_mcp_config(str(config_file))
+        config = load_mcp_config(str(config_file))
 
         assert len(config["mcpServers"]) == 3
         assert "command" in config["mcpServers"]["filesystem"]
@@ -331,7 +340,7 @@ class TestGetMCPTools:
         assert connections["filesystem"]["args"] == [
             "-y",
             "@modelcontextprotocol/server-filesystem",
-            "/tmp",
+            "/tmp",  # noqa: S108
         ]
 
         # Verify session was created and tools were loaded
@@ -345,11 +354,10 @@ class TestGetMCPTools:
         # Clean up
         await manager.cleanup()
 
-    @patch("deepagents_cli.mcp_tools.load_mcp_tools")
     @patch("deepagents_cli.mcp_tools.MultiServerMCPClient")
     @pytest.mark.asyncio
     async def test_get_mcp_tools_server_spawn_failure(
-        self, mock_client_class: MagicMock, mock_load_tools: AsyncMock, tmp_path: Path
+        self, mock_client_class: MagicMock, tmp_path: Path
     ) -> None:
         """Test handling of MCP server spawn failure."""
         # Create a valid config file
@@ -369,7 +377,7 @@ class TestGetMCPTools:
         mock_client_class.side_effect = Exception("Command not found")
 
         with pytest.raises(
-            RuntimeError, match="Failed to connect to MCP servers.*Command not found"
+            RuntimeError, match=r"Failed to connect to MCP servers.*Command not found"
         ):
             await get_mcp_tools(str(config_file))
 
@@ -390,12 +398,12 @@ class TestGetMCPTools:
         config_file.write_text(json.dumps(valid_config_data))
 
         # Setup mocks
-        mock_client, mock_session = mock_mcp_client
+        mock_client, _ = mock_mcp_client
         mock_client_class.return_value = mock_client
         mock_load_tools.side_effect = Exception("Server protocol error")
 
         with pytest.raises(
-            RuntimeError, match="Failed to connect to MCP servers.*Server protocol error"
+            RuntimeError, match=r"Failed to connect to MCP servers.*Server protocol error"
         ):
             await get_mcp_tools(str(config_file))
 
@@ -412,7 +420,7 @@ class TestGetMCPTools:
             "mcpServers": {
                 "filesystem": {
                     "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],  # noqa: S108
                     "env": {},
                 },
                 "brave-search": {
@@ -433,7 +441,7 @@ class TestGetMCPTools:
         mock_session_search = AsyncMock()
 
         # Mock session context managers for both servers
-        def mock_session_cm(server_name):
+        def mock_session_cm(server_name: str) -> MagicMock:
             session = mock_session_fs if server_name == "filesystem" else mock_session_search
             cm = MagicMock()
             cm.__aenter__ = AsyncMock(return_value=session)
@@ -445,11 +453,10 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
 
         # Mock load_mcp_tools to return different tools for each session
-        async def mock_load_side_effect(session):
+        async def mock_load_side_effect(session: AsyncMock) -> list[MagicMock]:
             if session == mock_session_fs:
                 return mock_tools_fs
-            else:
-                return mock_tools_search
+            return mock_tools_search
 
         mock_load_tools.side_effect = mock_load_side_effect
 
@@ -480,7 +487,7 @@ class TestGetMCPTools:
         config_data = {
             "mcpServers": {
                 "filesystem": {
-                    "args": ["/tmp"],
+                    "args": ["/tmp"],  # noqa: S108
                     # Missing command field
                 }
             }
@@ -521,11 +528,11 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.return_value = []
 
-        tools, manager = await get_mcp_tools(str(config_file))
+        _, manager = await get_mcp_tools(str(config_file))
 
         # Verify env variables were passed correctly
         connections = mock_client_class.call_args.kwargs["connections"]
-        assert connections["github"]["env"]["GITHUB_TOKEN"] == "ghp_test123"
+        assert connections["github"]["env"]["GITHUB_TOKEN"] == "ghp_test123"  # noqa: S105
         assert connections["github"]["env"]["GITHUB_API_URL"] == "https://api.github.com"
 
         # Clean up

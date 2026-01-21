@@ -14,7 +14,7 @@ from langchain.agents.middleware.human_in_the_loop import (
     HITLRequest,
     HITLResponse,
 )
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 
@@ -89,6 +89,42 @@ class TextualUIAdapter:
     def set_token_tracker(self, tracker: Any) -> None:
         """Set the token tracker for usage tracking."""
         self._token_tracker = tracker
+
+
+def _build_interrupted_ai_message(
+    pending_text_by_namespace: dict[tuple, str],
+    current_tool_messages: dict[str, Any],
+) -> AIMessage | None:
+    """Build an AIMessage capturing interrupted state (text + tool calls).
+
+    Args:
+        pending_text_by_namespace: Dict of accumulated text by namespace
+        current_tool_messages: Dict of tool_id -> ToolCallMessage widget
+
+    Returns:
+        AIMessage with accumulated content and tool calls, or None if empty
+    """
+    main_ns_key = ()
+    accumulated_text = pending_text_by_namespace.get(main_ns_key, "").strip()
+
+    # Reconstruct tool_calls from displayed tool messages
+    tool_calls = []
+    for tool_id, tool_widget in current_tool_messages.items():
+        tool_calls.append(
+            {
+                "id": tool_id,
+                "name": tool_widget._tool_name,
+                "args": tool_widget._args,
+            }
+        )
+
+    if not accumulated_text and not tool_calls:
+        return None
+
+    return AIMessage(
+        content=accumulated_text,
+        tool_calls=tool_calls if tool_calls else [],
+    )
 
 
 async def execute_task_textual(
@@ -552,22 +588,29 @@ async def execute_task_textual(
     except asyncio.CancelledError:
         adapter._update_status("Interrupted")
 
-        # Mark any pending tools as rejected
-        for tool_msg in list(adapter._current_tool_messages.values()):
-            tool_msg.set_rejected()
-        adapter._current_tool_messages.clear()
-
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
-        # Append cancellation message to agent state so LLM knows what happened
-        # This preserves context rather than rolling back
+        # Save accumulated state before marking tools as rejected
         try:
+            interrupted_msg = _build_interrupted_ai_message(
+                pending_text_by_namespace,
+                adapter._current_tool_messages,
+            )
+            if interrupted_msg:
+                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+
             cancellation_msg = HumanMessage(
                 content="[SYSTEM] Task interrupted by user. Previous operation was cancelled."
             )
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
         except Exception:  # noqa: S110
             pass  # State update is best-effort
+
+        # Mark tools as rejected AFTER saving state
+        for tool_msg in list(adapter._current_tool_messages.values()):
+            tool_msg.set_rejected()
+        adapter._current_tool_messages.clear()
+
         # Report tokens even on interrupt (or restore display if none captured)
         if adapter._token_tracker:
             if captured_input_tokens or captured_output_tokens:
@@ -579,21 +622,29 @@ async def execute_task_textual(
     except KeyboardInterrupt:
         adapter._update_status("Interrupted")
 
-        # Mark any pending tools as rejected
-        for tool_msg in list(adapter._current_tool_messages.values()):
-            tool_msg.set_rejected()
-        adapter._current_tool_messages.clear()
-
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
-        # Append cancellation message to agent state
+        # Save accumulated state before marking tools as rejected
         try:
+            interrupted_msg = _build_interrupted_ai_message(
+                pending_text_by_namespace,
+                adapter._current_tool_messages,
+            )
+            if interrupted_msg:
+                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+
             cancellation_msg = HumanMessage(
                 content="[SYSTEM] Task interrupted by user. Previous operation was cancelled."
             )
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
         except Exception:  # noqa: S110
             pass  # State update is best-effort
+
+        # Mark tools as rejected AFTER saving state
+        for tool_msg in list(adapter._current_tool_messages.values()):
+            tool_msg.set_rejected()
+        adapter._current_tool_messages.clear()
+
         # Report tokens even on interrupt (or restore display if none captured)
         if adapter._token_tracker:
             if captured_input_tokens or captured_output_tokens:

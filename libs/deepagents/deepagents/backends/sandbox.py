@@ -23,8 +23,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 
-# The 'set +m' disables job control to prevent ioctl errors in containers
-_GLOB_COMMAND_TEMPLATE = """set +m; python3 -c "
+_GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
 import os
 import json
@@ -48,9 +47,7 @@ for m in matches:
 " 2>/dev/null"""
 
 # Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files
-# The 'set +m' disables job control to prevent "Inappropriate ioctl for device" errors
-# in containerized environments without a TTY
-_WRITE_COMMAND_TEMPLATE = """set +m; python3 -c "
+_WRITE_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
 import base64
@@ -77,8 +74,7 @@ __DEEPAGENTS_EOF__"""
 
 # Use heredoc to pass old/new strings via stdin to avoid ARG_MAX limits
 # Stdin format: first line is old_b64, second line is new_b64
-# The 'set +m' disables job control to prevent ioctl errors in containers
-_EDIT_COMMAND_TEMPLATE = """set +m; python3 -c "
+_EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys
 import base64
 
@@ -116,8 +112,7 @@ print(count)
 {new_b64}
 __DEEPAGENTS_EOF__"""
 
-# The 'set +m' disables job control to prevent ioctl errors in containers
-_READ_COMMAND_TEMPLATE = """set +m; python3 -c "
+_READ_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
 
@@ -177,8 +172,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """Structured listing with file metadata using os.scandir."""
-        # The 'set +m' disables job control to prevent ioctl errors in containers
-        cmd = f"""set +m; python3 -c "
+        cmd = f"""python3 -c "
 import os
 import json
 
@@ -302,8 +296,7 @@ except PermissionError:
         # Escape pattern for shell
         pattern_escaped = shlex.quote(pattern)
 
-        # The 'set +m' disables job control to prevent ioctl errors in containers
-        cmd = f"set +m; grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
+        cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
         result = self.execute(cmd)
 
         output = result.output.rstrip()

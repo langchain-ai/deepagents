@@ -351,9 +351,7 @@ class ToolCallMessage(Vertical):
         total_chars = len(output_stripped)
 
         # Truncate if too many lines OR too many characters
-        needs_truncation = (
-            total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
-        )
+        needs_truncation = total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
 
         if self._expanded:
             # Show full output

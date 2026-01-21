@@ -200,4 +200,3 @@ class ApprovalMenu(Container):
     def on_blur(self, event: events.Blur) -> None:
         """Re-focus on blur to keep focus trapped until decision is made."""
         self.call_after_refresh(self.focus)
-

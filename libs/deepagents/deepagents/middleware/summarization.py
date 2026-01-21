@@ -35,7 +35,6 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from textwrap import dedent
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.summarization import (
@@ -276,16 +275,16 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             List containing the summary `HumanMessage`.
         """
         if file_path is not None:
-            content = dedent(f"""\
-                You are in the middle of a conversation that has been summarized.
+            content = f"""\
+You are in the middle of a conversation that has been summarized.
 
-                The full conversation history has been saved to {file_path} should you need to refer back to it for details.
+The full conversation history has been saved to {file_path} should you need to refer back to it for details.
 
-                A condensed summary follows:
+A condensed summary follows:
 
-                <summary>
-                {summary}
-                </summary>""")
+<summary>
+{summary}
+</summary>"""
         else:
             content = f"Here is a summary of the conversation to date:\n\n{summary}"
 

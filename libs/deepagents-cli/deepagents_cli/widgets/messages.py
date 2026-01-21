@@ -326,7 +326,7 @@ class ToolCallMessage(Vertical):
         self._status = "skipped"
         if self._status_widget:
             self._status_widget.add_class("rejected")  # Use same styling as rejected
-            self._status_widget.update("[dim]– Skipped[/dim]")
+            self._status_widget.update("[dim]- Skipped[/dim]")
             self._status_widget.display = True
 
     def toggle_output(self) -> None:

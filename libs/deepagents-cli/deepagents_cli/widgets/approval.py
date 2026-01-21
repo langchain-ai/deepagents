@@ -54,12 +54,12 @@ class ApprovalMenu(Container):
             self.decision = decision
 
     # Tools that don't need detailed info display (already shown in tool call)
-    _MINIMAL_TOOLS = {"bash", "shell"}
+    _MINIMAL_TOOLS: ClassVar[set[str]] = {"bash", "shell"}
 
     def __init__(
         self,
         action_request: dict[str, Any],
-        _assistant_id: str | None = None,  # noqa: ARG002
+        _assistant_id: str | None = None,
         id: str | None = None,  # noqa: A002
         **kwargs: Any,
     ) -> None:

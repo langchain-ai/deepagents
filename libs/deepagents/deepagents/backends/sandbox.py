@@ -23,7 +23,8 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 
-_GLOB_COMMAND_TEMPLATE = """python3 -c "
+# The 'set +m' disables job control to prevent ioctl errors in containers
+_GLOB_COMMAND_TEMPLATE = """set +m; python3 -c "
 import glob
 import os
 import json
@@ -46,7 +47,10 @@ for m in matches:
     print(json.dumps(result))
 " 2>/dev/null"""
 
-_WRITE_COMMAND_TEMPLATE = """python3 -c "
+# Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files
+# The 'set +m' disables job control to prevent "Inappropriate ioctl for device" errors
+# in containerized environments without a TTY
+_WRITE_COMMAND_TEMPLATE = """set +m; python3 -c "
 import os
 import sys
 import base64
@@ -62,13 +66,19 @@ if os.path.exists(file_path):
 parent_dir = os.path.dirname(file_path) or '.'
 os.makedirs(parent_dir, exist_ok=True)
 
-# Decode and write content
-content = base64.b64decode('{content_b64}').decode('utf-8')
+# Read base64 content from stdin and decode
+content_b64 = sys.stdin.read().strip()
+content = base64.b64decode(content_b64).decode('utf-8')
 with open(file_path, 'w') as f:
     f.write(content)
-" 2>&1"""
+" <<'__DEEPAGENTS_EOF__'
+{content_b64}
+__DEEPAGENTS_EOF__"""
 
-_EDIT_COMMAND_TEMPLATE = """python3 -c "
+# Use heredoc to pass old/new strings via stdin to avoid ARG_MAX limits
+# Stdin format: first line is old_b64, second line is new_b64
+# The 'set +m' disables job control to prevent ioctl errors in containers
+_EDIT_COMMAND_TEMPLATE = """set +m; python3 -c "
 import sys
 import base64
 
@@ -76,9 +86,10 @@ import base64
 with open('{file_path}', 'r') as f:
     text = f.read()
 
-# Decode base64-encoded strings
-old = base64.b64decode('{old_b64}').decode('utf-8')
-new = base64.b64decode('{new_b64}').decode('utf-8')
+# Read base64-encoded strings from stdin (old on first line, new on second)
+lines = sys.stdin.read().strip().split('\\n')
+old = base64.b64decode(lines[0]).decode('utf-8')
+new = base64.b64decode(lines[1]).decode('utf-8')
 
 # Count occurrences
 count = text.count(old)
@@ -100,9 +111,13 @@ with open('{file_path}', 'w') as f:
     f.write(result)
 
 print(count)
-" 2>&1"""
+" <<'__DEEPAGENTS_EOF__'
+{old_b64}
+{new_b64}
+__DEEPAGENTS_EOF__"""
 
-_READ_COMMAND_TEMPLATE = """python3 -c "
+# The 'set +m' disables job control to prevent ioctl errors in containers
+_READ_COMMAND_TEMPLATE = """set +m; python3 -c "
 import os
 import sys
 
@@ -162,7 +177,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """Structured listing with file metadata using os.scandir."""
-        cmd = f"""python3 -c "
+        # The 'set +m' disables job control to prevent ioctl errors in containers
+        cmd = f"""set +m; python3 -c "
 import os
 import json
 
@@ -286,7 +302,8 @@ except PermissionError:
         # Escape pattern for shell
         pattern_escaped = shlex.quote(pattern)
 
-        cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
+        # The 'set +m' disables job control to prevent ioctl errors in containers
+        cmd = f"set +m; grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
         result = self.execute(cmd)
 
         output = result.output.rstrip()

@@ -42,17 +42,13 @@ async def load_mcp_config(config_path: str) -> dict:
         with open(path, "r") as f:
             config = json.load(f)
     except json.JSONDecodeError as e:
-        raise json.JSONDecodeError(
-            f"Invalid JSON in MCP config file: {e.msg}",
-            e.doc,
-            e.pos
-        ) from e
+        raise json.JSONDecodeError(f"Invalid JSON in MCP config file: {e.msg}", e.doc, e.pos) from e
 
     # Validate required fields
     if "mcpServers" not in config:
         raise ValueError(
             "MCP config must contain 'mcpServers' field. "
-            "Expected format: {\"mcpServers\": {\"server-name\": {...}}}"
+            'Expected format: {"mcpServers": {"server-name": {...}}}'
         )
 
     if not isinstance(config["mcpServers"], dict):
@@ -72,7 +68,9 @@ async def load_mcp_config(config_path: str) -> dict:
         if server_type in ("sse", "http"):
             # SSE/HTTP server validation - requires url field
             if "url" not in server_config:
-                raise ValueError(f"Server '{server_name}' with type '{server_type}' missing required 'url' field")
+                raise ValueError(
+                    f"Server '{server_name}' with type '{server_type}' missing required 'url' field"
+                )
         else:
             # stdio server validation (default)
             if "command" not in server_config:
@@ -169,9 +167,7 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionMan
             if server_type == "stdio":
                 # Create persistent session for stdio server
                 # Use AsyncExitStack to manage the context manager lifecycle
-                session = await manager.exit_stack.enter_async_context(
-                    client.session(server_name)
-                )
+                session = await manager.exit_stack.enter_async_context(client.session(server_name))
                 # Load tools from the persistent session
                 tools = await load_mcp_tools(session)
                 all_tools.extend(tools)

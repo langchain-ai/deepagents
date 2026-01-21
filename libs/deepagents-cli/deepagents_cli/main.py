@@ -232,6 +232,7 @@ async def run_textual_cli_async(
         if mcp_config_path:
             try:
                 from deepagents_cli.mcp_tools import get_mcp_tools
+
                 mcp_tools, mcp_session_manager = await get_mcp_tools(mcp_config_path)
                 tools.extend(mcp_tools)
                 console.print(f"[green]✓ Loaded {len(mcp_tools)} MCP tools[/green]")
@@ -289,7 +290,7 @@ async def run_textual_cli_async(
         finally:
             # Clean up MCP session manager if initialized
             # This closes persistent stdio server sessions
-            if 'mcp_session_manager' in locals() and mcp_session_manager is not None:
+            if "mcp_session_manager" in locals() and mcp_session_manager is not None:
                 with contextlib.suppress(Exception):
                     await mcp_session_manager.cleanup()
 

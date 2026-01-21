@@ -368,7 +368,9 @@ class TestGetMCPTools:
         # Setup mock client to raise an exception
         mock_client_class.side_effect = Exception("Command not found")
 
-        with pytest.raises(RuntimeError, match="Failed to connect to MCP servers.*Command not found"):
+        with pytest.raises(
+            RuntimeError, match="Failed to connect to MCP servers.*Command not found"
+        ):
             await get_mcp_tools(str(config_file))
 
     @patch("deepagents_cli.mcp_tools.load_mcp_tools")
@@ -392,7 +394,9 @@ class TestGetMCPTools:
         mock_client_class.return_value = mock_client
         mock_load_tools.side_effect = Exception("Server protocol error")
 
-        with pytest.raises(RuntimeError, match="Failed to connect to MCP servers.*Server protocol error"):
+        with pytest.raises(
+            RuntimeError, match="Failed to connect to MCP servers.*Server protocol error"
+        ):
             await get_mcp_tools(str(config_file))
 
     @patch("deepagents_cli.mcp_tools.load_mcp_tools")

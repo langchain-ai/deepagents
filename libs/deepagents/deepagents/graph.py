@@ -149,9 +149,17 @@ def create_deep_agent(
     ):
         trigger = ("fraction", 0.85)
         keep = ("fraction", 0.10)
+        truncate_args_settings = {
+            "trigger": ("fraction", 0.85),
+            "keep": ("fraction", 0.10),
+        }
     else:
         trigger = ("tokens", 170000)
         keep = ("messages", 6)
+        truncate_args_settings = {
+            "trigger": ("messages", 20),
+            "keep": ("messages", 20),
+        }
 
     # Build middleware stack for subagents (includes skills if provided)
     subagent_middleware: list[AgentMiddleware] = [
@@ -171,6 +179,7 @@ def create_deep_agent(
                 trigger=trigger,
                 keep=keep,
                 trim_tokens_to_summarize=None,
+                truncate_args_settings=truncate_args_settings,
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),
@@ -202,6 +211,7 @@ def create_deep_agent(
                 trigger=trigger,
                 keep=keep,
                 trim_tokens_to_summarize=None,
+                truncate_args_settings=truncate_args_settings,
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),

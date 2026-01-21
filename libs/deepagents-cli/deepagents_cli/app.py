@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import subprocess
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
@@ -283,7 +283,6 @@ class DeepAgentsApp(App):
         self._quit_pending = False
         self._session_state: TextualSessionState | None = None
         self._ui_adapter: TextualUIAdapter | None = None
-        self._pending_approval: asyncio.Future | None = None
         self._pending_approval_widget: Any = None
         # Agent task tracking for interruption
         self._agent_worker: Worker[None] | None = None
@@ -331,6 +330,8 @@ class DeepAgentsApp(App):
                 request_approval=self._request_approval,
                 on_auto_approve_enabled=self._on_auto_approve_enabled,
                 scroll_to_bottom=self._scroll_chat_to_bottom,
+                show_thinking=self._show_thinking,
+                hide_thinking=self._hide_thinking,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -340,8 +341,11 @@ class DeepAgentsApp(App):
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
 
-        # Auto-submit initial prompt if provided
-        if self._initial_prompt and self._initial_prompt.strip():
+        # Load thread history if resuming a session
+        if self._lc_thread_id and self._agent:
+            self.call_after_refresh(lambda: asyncio.create_task(self._load_thread_history()))
+        # Auto-submit initial prompt if provided (but not when resuming - let user see history first)
+        elif self._initial_prompt and self._initial_prompt.strip():
             # Use call_after_refresh to ensure UI is fully mounted before submitting
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._handle_user_message(self._initial_prompt))
@@ -371,6 +375,23 @@ class DeepAgentsApp(App):
         chat = self.query_one("#chat", VerticalScroll)
         if chat.virtual_size.height > chat.size.height:
             chat.anchor()
+
+    async def _show_thinking(self) -> None:
+        """Show or reposition the thinking spinner at the bottom of messages."""
+        if self._loading_widget:
+            await self._loading_widget.remove()
+            self._loading_widget = None
+
+        self._loading_widget = LoadingWidget("Thinking")
+        messages = self.query_one("#messages", Container)
+        await messages.mount(self._loading_widget)
+        self._scroll_chat_to_bottom()
+
+    async def _hide_thinking(self) -> None:
+        """Hide the thinking spinner."""
+        if self._loading_widget:
+            await self._loading_widget.remove()
+            self._loading_widget = None
 
     def _size_initial_spacer(self) -> None:
         """Size the spacer to fill remaining viewport below input."""
@@ -419,10 +440,6 @@ class DeepAgentsApp(App):
 
         # Store reference
         self._pending_approval_widget = menu
-
-        # Pause the loading spinner during approval
-        if self._loading_widget:
-            self._loading_widget.pause("Awaiting decision")
 
         # Update status to show we're waiting for approval
         self._update_status("Waiting for approval...")
@@ -482,10 +499,6 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             await self._pending_approval_widget.remove()
             self._pending_approval_widget = None
-
-        # Resume the loading spinner after approval
-        if self._loading_widget:
-            self._loading_widget.resume()
 
         # Clear status message
         self._update_status("")
@@ -623,9 +636,6 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
-            # Show loading widget
-            self._loading_widget = LoadingWidget("Thinking")
-            await self._mount_message(self._loading_widget)
             self._agent_running = True
 
             # Disable submission while agent is working (user can still type)
@@ -669,11 +679,8 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
 
-        # Remove loading widget if present
-        if self._loading_widget:
-            with contextlib.suppress(Exception):
-                await self._loading_widget.remove()
-            self._loading_widget = None
+        # Remove thinking spinner if present
+        await self._hide_thinking()
 
         # Re-enable submission now that agent is done
         if self._chat_input:
@@ -684,6 +691,100 @@ class DeepAgentsApp(App):
         if self._token_tracker:
             self._token_tracker.show()
 
+    async def _load_thread_history(self) -> None:
+        """Load and render message history when resuming a thread.
+
+        This retrieves the checkpoint state from the agent and converts
+        stored messages into UI widgets.
+        """
+        if not self._agent or not self._lc_thread_id:
+            return
+
+        config = {"configurable": {"thread_id": self._lc_thread_id}}
+
+        try:
+            # Get the state snapshot from the agent
+            state = await self._agent.aget_state(config)
+            if not state or not state.values:
+                return
+
+            messages = state.values.get("messages", [])
+            if not messages:
+                return
+
+            # Track tool calls from AIMessages to match with ToolMessages
+            pending_tool_calls: dict[str, dict] = {}
+
+            for msg in messages:
+                if isinstance(msg, HumanMessage):
+                    # Skip system messages that were auto-injected
+                    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    if content.startswith("[SYSTEM]"):
+                        continue
+                    await self._mount_message(UserMessage(content))
+
+                elif isinstance(msg, AIMessage):
+                    # Render text content if present
+                    content = msg.content
+                    if isinstance(content, str) and content.strip():
+                        widget = AssistantMessage(content)
+                        await self._mount_message(widget)
+                        await widget.write_initial_content()
+
+                    # Track tool calls for later matching with ToolMessages
+                    tool_calls = getattr(msg, "tool_calls", [])
+                    for tc in tool_calls:
+                        tc_id = tc.get("id")
+                        if tc_id:
+                            pending_tool_calls[tc_id] = {
+                                "name": tc.get("name", "unknown"),
+                                "args": tc.get("args", {}),
+                            }
+                            # Mount tool call widget
+                            tool_widget = ToolCallMessage(
+                                tc.get("name", "unknown"),
+                                tc.get("args", {}),
+                            )
+                            await self._mount_message(tool_widget)
+                            # Store widget reference for result matching
+                            pending_tool_calls[tc_id]["widget"] = tool_widget
+
+                elif isinstance(msg, ToolMessage):
+                    # Match with pending tool call and show result
+                    tc_id = getattr(msg, "tool_call_id", None)
+                    if tc_id and tc_id in pending_tool_calls:
+                        tool_info = pending_tool_calls.pop(tc_id)
+                        widget = tool_info.get("widget")
+                        if widget:
+                            status = getattr(msg, "status", "success")
+                            content = (
+                                msg.content if isinstance(msg.content, str) else str(msg.content)
+                            )
+                            if status == "success":
+                                widget.set_success(content)
+                            else:
+                                widget.set_error(content)
+
+            # Mark any unmatched tool calls as interrupted (no ToolMessage result)
+            for tool_info in pending_tool_calls.values():
+                widget = tool_info.get("widget")
+                if widget:
+                    widget.set_rejected()  # Shows as interrupted/rejected in UI
+
+            # Show system message indicating this is a resumed session
+            await self._mount_message(SystemMessage(f"Resumed session: {self._lc_thread_id}"))
+
+            # Scroll to bottom after UI renders
+            def scroll_to_end() -> None:
+                chat = self.query_one("#chat", VerticalScroll)
+                chat.scroll_end(animate=False)
+
+            self.call_after_refresh(scroll_to_end)
+
+        except Exception as e:
+            # Don't fail the app if history loading fails
+            await self._mount_message(SystemMessage(f"Could not load history: {e}"))
+
     async def _mount_message(self, widget: Static) -> None:
         """Mount a message widget to the messages area.
 
@@ -693,9 +794,9 @@ class DeepAgentsApp(App):
         await self._remove_spacer()
         messages = self.query_one("#messages", Container)
         await messages.mount(widget)
-        chat = self.query_one("#chat", VerticalScroll)
-        if chat.virtual_size.height > chat.size.height:
-            chat.scroll_end(animate=False)
+        # Scroll to keep input bar visible
+        input_container = self.query_one("#bottom-app-container", Container)
+        input_container.scroll_visible()
 
     async def _clear_messages(self) -> None:
         """Clear the messages area."""

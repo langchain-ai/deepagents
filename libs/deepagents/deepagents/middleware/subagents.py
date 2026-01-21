@@ -1,7 +1,7 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -403,8 +403,11 @@ def _create_task_tool(
         )
 
     def task(
-        description: str,
-        subagent_type: str,
+        description: Annotated[
+            str,
+            "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
+        ],
+        subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
@@ -418,8 +421,11 @@ def _create_task_tool(
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
-        description: str,
-        subagent_type: str,
+        description: Annotated[
+            str,
+            "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
+        ],
+        subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:

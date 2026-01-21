@@ -5,11 +5,13 @@ using langchain-mcp-adapters, supporting Claude Desktop style JSON configs.
 """
 
 import json
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 
 async def load_mcp_config(config_path: str) -> dict:
@@ -86,20 +88,41 @@ async def load_mcp_config(config_path: str) -> dict:
     return config
 
 
-async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MultiServerMCPClient]:
-    """Load MCP tools from configuration file.
+class MCPSessionManager:
+    """Manages persistent MCP sessions for stateful stdio servers.
+
+    This manager creates and maintains persistent sessions for stdio MCP servers,
+    preventing server restarts on every tool call. Sessions are kept alive until
+    explicitly cleaned up.
+    """
+
+    def __init__(self):
+        self.client: MultiServerMCPClient | None = None
+        self.exit_stack = AsyncExitStack()
+
+    async def cleanup(self):
+        """Clean up all managed sessions and close connections."""
+        await self.exit_stack.aclose()
+
+
+async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MCPSessionManager]:
+    """Load MCP tools from configuration file with stateful sessions.
 
     Supports multiple server types:
-    - stdio: Spawns MCP servers as subprocesses
+    - stdio: Spawns MCP servers as subprocesses with persistent sessions
     - sse/http: Connects to remote MCP servers via URL
+
+    For stdio servers, this creates persistent sessions that remain active across
+    tool calls, avoiding server restarts. Sessions are managed by MCPSessionManager
+    and should be cleaned up with session_manager.cleanup() when done.
 
     Args:
         config_path: Path to MCP JSON configuration file
 
     Returns:
-        Tuple of (tools_list, mcp_client) where:
+        Tuple of (tools_list, session_manager) where:
         - tools_list: List of LangChain BaseTool objects
-        - mcp_client: MultiServerMCPClient instance (no cleanup needed for get_tools API)
+        - session_manager: MCPSessionManager instance (call cleanup() when done)
 
     Raises:
         FileNotFoundError: If config file doesn't exist
@@ -134,10 +157,32 @@ async def get_mcp_tools(config_path: str) -> tuple[list[BaseTool], MultiServerMC
         # Initialize MultiServerMCPClient with all servers
         client = MultiServerMCPClient(connections=connections)
 
-        # Get all tools from all connected servers
-        tools = await client.get_tools()
+        # Create session manager to track persistent sessions
+        manager = MCPSessionManager()
+        manager.client = client
 
-        return tools, client
+        # Load tools using persistent sessions for stdio servers
+        all_tools = []
+        for server_name, server_config in config["mcpServers"].items():
+            server_type = server_config.get("type", "stdio")
+
+            if server_type == "stdio":
+                # Create persistent session for stdio server
+                # Use AsyncExitStack to manage the context manager lifecycle
+                session = await manager.exit_stack.enter_async_context(
+                    client.session(server_name)
+                )
+                # Load tools from the persistent session
+                tools = await load_mcp_tools(session)
+                all_tools.extend(tools)
+            else:
+                # For sse/http servers, create a temporary session
+                # These are stateless by nature, so no need to persist
+                async with client.session(server_name) as session:
+                    tools = await load_mcp_tools(session)
+                    all_tools.extend(tools)
+
+        return all_tools, manager
 
     except Exception as e:
         # Provide helpful error message if server fails to spawn or connect

@@ -82,19 +82,32 @@ class EditFileApprovalWidget(ToolApprovalWidget):
 
     DEFAULT_CSS = """
     EditFileApprovalWidget .diff-removed-line {
-        color: #ff6b6b;
-        background: #3d1f1f;
+        color: $error;
+        background: $surface;
     }
     EditFileApprovalWidget .diff-added-line {
-        color: #69db7c;
-        background: #1f3d1f;
+        color: $success;
+        background: $surface;
     }
     EditFileApprovalWidget .diff-context-line {
-        color: #888888;
+        color: $text-muted;
     }
     EditFileApprovalWidget .diff-stats {
-        color: #888888;
+        color: $text-muted;
         margin-top: 1;
+    }
+    EditFileApprovalWidget .diff-file-path {
+        color: $text;
+        text-style: bold;
+    }
+    EditFileApprovalWidget .diff-label {
+        color: $text-muted;
+    }
+    EditFileApprovalWidget .diff-stat-add {
+        color: $success;
+    }
+    EditFileApprovalWidget .diff-stat-remove {
+        color: $error;
     }
     """
 
@@ -108,9 +121,10 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         # Calculate stats first for header
         additions, deletions = self._count_stats(diff_lines, old_string, new_string)
 
-        # File path header with stats
-        stats_str = self._format_stats(additions, deletions)
-        yield Static(f"[bold cyan]File:[/bold cyan] {file_path}  {stats_str}")
+        # File path header with stats - use CSS classes
+        yield Static("File: ", classes="diff-label")
+        yield Static(file_path, classes="diff-file-path", markup=False)
+        yield from self._render_stats(additions, deletions)
         yield Static("")
 
         if not diff_lines and not old_string and not new_string:
@@ -139,14 +153,12 @@ class EditFileApprovalWidget(ToolApprovalWidget):
             deletions = old_string.count("\n") + 1 if old_string else 0
         return additions, deletions
 
-    def _format_stats(self, additions: int, deletions: int) -> str:
-        """Format stats as colored string."""
-        parts = []
+    def _render_stats(self, additions: int, deletions: int) -> ComposeResult:
+        """Render stats with CSS classes."""
         if additions:
-            parts.append(f"[green]+{additions}[/green]")
+            yield Static(f"  +{additions}", classes="diff-stat-add")
         if deletions:
-            parts.append(f"[red]-{deletions}[/red]")
-        return " ".join(parts)
+            yield Static(f"  -{deletions}", classes="diff-stat-remove")
 
     def _render_diff_lines_only(self, diff_lines: list[str]) -> ComposeResult:
         """Render unified diff lines without returning stats."""
@@ -154,7 +166,10 @@ class EditFileApprovalWidget(ToolApprovalWidget):
 
         for line in diff_lines:
             if lines_shown >= _MAX_DIFF_LINES:
-                yield Static(f"[dim]... ({len(diff_lines) - lines_shown} more lines)[/dim]")
+                yield Static(
+                    f"... ({len(diff_lines) - lines_shown} more lines)",
+                    classes="diff-context-line",
+                )
                 break
 
             if line.startswith(("@@", "---", "+++")):
@@ -168,24 +183,24 @@ class EditFileApprovalWidget(ToolApprovalWidget):
     def _render_strings_only(self, old_string: str, new_string: str) -> ComposeResult:
         """Render old/new strings without returning stats."""
         if old_string:
-            yield Static("[bold red]Removing:[/bold red]")
+            yield Static("Removing:", classes="diff-stat-remove")
             yield from self._render_string_lines(old_string, is_addition=False)
             yield Static("")
 
         if new_string:
-            yield Static("[bold green]Adding:[/bold green]")
+            yield Static("Adding:", classes="diff-stat-add")
             yield from self._render_string_lines(new_string, is_addition=True)
 
     def _render_diff_line(self, line: str) -> Static | None:
         """Render a single diff line with appropriate styling."""
-        content = _escape_markup(line[1:] if len(line) > 1 else "")
+        content = line[1:] if len(line) > 1 else ""
 
         if line.startswith("-"):
-            return Static(f"[on #3d1f1f][red]- {content}[/red][/on #3d1f1f]")
+            return Static(f"- {content}", classes="diff-removed-line", markup=False)
         if line.startswith("+"):
-            return Static(f"[on #1f3d1f][green]+ {content}[/green][/on #1f3d1f]")
+            return Static(f"+ {content}", classes="diff-added-line", markup=False)
         if line.startswith(" "):
-            return Static(f"[dim]  {content}[/dim]")
+            return Static(f"  {content}", classes="diff-context-line", markup=False)
         if line.strip():
             return Static(line, markup=False)
         return None
@@ -193,16 +208,15 @@ class EditFileApprovalWidget(ToolApprovalWidget):
     def _render_string_lines(self, text: str, *, is_addition: bool) -> ComposeResult:
         """Render lines from a string with appropriate styling."""
         lines = text.split("\n")
-        style = "[on #1f3d1f][green]+" if is_addition else "[on #3d1f1f][red]-"
-        end_style = "[/green][/on #1f3d1f]" if is_addition else "[/red][/on #3d1f1f]"
+        css_class = "diff-added-line" if is_addition else "diff-removed-line"
+        prefix = "+" if is_addition else "-"
 
         for line in lines[:_MAX_PREVIEW_LINES]:
-            escaped = _escape_markup(line)
-            yield Static(f"{style} {escaped}{end_style}")
+            yield Static(f"{prefix} {line}", classes=css_class, markup=False)
 
         if len(lines) > _MAX_PREVIEW_LINES:
             remaining = len(lines) - _MAX_PREVIEW_LINES
-            yield Static(f"[dim]... ({remaining} more lines)[/dim]")
+            yield Static(f"... ({remaining} more lines)", classes="diff-context-line")
 
 
 class BashApprovalWidget(ToolApprovalWidget):

@@ -8,27 +8,19 @@ from typing import TYPE_CHECKING, Any
 from textual.containers import Vertical
 from textual.widgets import Static
 
-from deepagents_cli.themes import theme
-
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
 def _escape_markup(text: str) -> str:
-    """Escape Rich markup characters in text.
-
-    Args:
-        text: Text that may contain Rich markup
-
-    Returns:
-        Escaped text safe for Rich rendering
-    """
-    # Escape brackets that could be interpreted as markup
+    """Escape Rich markup characters in text."""
     return text.replace("[", r"\[").replace("]", r"\]")
 
 
 def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     """Format a unified diff with line numbers and colors.
+
+    Uses standard Rich color names that work with any theme.
 
     Args:
         diff: Unified diff string
@@ -39,12 +31,6 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     """
     if not diff:
         return "[dim]No changes detected[/dim]"
-
-    # Get theme colors
-    add_color = theme.diff_add
-    add_bg = theme.diff_add_bg
-    remove_color = theme.diff_remove
-    remove_bg = theme.diff_remove_bg
 
     lines = diff.splitlines()
 
@@ -64,9 +50,9 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     # Add stats header
     stats_parts = []
     if additions:
-        stats_parts.append(f"[{add_color}]+{additions}[/{add_color}]")
+        stats_parts.append(f"[green]+{additions}[/green]")
     if deletions:
-        stats_parts.append(f"[{remove_color}]-{deletions}[/{remove_color}]")
+        stats_parts.append(f"[red]-{deletions}[/red]")
     if stats_parts:
         formatted.append(" ".join(stats_parts))
         formatted.append("")  # Blank line after stats
@@ -88,28 +74,28 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
             old_num, new_num = int(m.group(1)), int(m.group(2))
             continue
 
-        # Handle diff lines - use gutter bar instead of +/- prefix
+        # Handle diff lines
         content = line[1:] if line else ""
         escaped_content = _escape_markup(content)
 
         if line.startswith("-"):
-            # Deletion - red gutter bar, subtle red background
+            # Deletion - red
             formatted.append(
-                f"[{remove_color} bold]▌[/{remove_color} bold][dim]{old_num:>{width}}[/dim] "
-                f"[on {remove_bg}]{escaped_content}[/on {remove_bg}]"
+                f"[red bold]▌[/red bold][dim]{old_num:>{width}}[/dim] "
+                f"[red]{escaped_content}[/red]"
             )
             old_num += 1
             line_count += 1
         elif line.startswith("+"):
-            # Addition - green gutter bar, subtle green background
+            # Addition - green
             formatted.append(
-                f"[{add_color} bold]▌[/{add_color} bold][dim]{new_num:>{width}}[/dim] "
-                f"[on {add_bg}]{escaped_content}[/on {add_bg}]"
+                f"[green bold]▌[/green bold][dim]{new_num:>{width}}[/dim] "
+                f"[green]{escaped_content}[/green]"
             )
             new_num += 1
             line_count += 1
         elif line.startswith(" "):
-            # Context line - dim gutter
+            # Context line - dim
             formatted.append(f"[dim]│{old_num:>{width}}[/dim]  {escaped_content}")
             old_num += 1
             new_num += 1
@@ -130,11 +116,11 @@ class EnhancedDiff(Vertical):
         height: auto;
         padding: 1;
         background: $surface-darken-1;
-        border: round $primary;
+        border: round gray;
     }
 
     EnhancedDiff .diff-title {
-        color: $primary;
+        color: $text;
         text-style: bold;
         margin-bottom: 1;
     }
@@ -156,14 +142,7 @@ class EnhancedDiff(Vertical):
         max_lines: int | None = 100,
         **kwargs: Any,
     ) -> None:
-        """Initialize the diff widget.
-
-        Args:
-            diff: Unified diff string
-            title: Title to display above the diff
-            max_lines: Maximum number of diff lines to show
-            **kwargs: Additional arguments passed to parent
-        """
+        """Initialize the diff widget."""
         super().__init__(**kwargs)
         self._diff = diff
         self._title = title
@@ -171,11 +150,7 @@ class EnhancedDiff(Vertical):
         self._stats = self._compute_stats()
 
     def _compute_stats(self) -> tuple[int, int]:
-        """Compute additions and deletions count.
-
-        Returns:
-            Tuple of (additions, deletions)
-        """
+        """Compute additions and deletions count."""
         additions = 0
         deletions = 0
         for line in self._diff.splitlines():
@@ -187,9 +162,7 @@ class EnhancedDiff(Vertical):
 
     def compose(self) -> ComposeResult:
         """Compose the diff widget layout."""
-        primary = theme.primary
-        title_text = f"[bold {primary}]═══ {self._title} ═══[/bold {primary}]"
-        yield Static(title_text, classes="diff-title")
+        yield Static(f"═══ {self._title} ═══", classes="diff-title")
 
         formatted = format_diff_textual(self._diff, self._max_lines)
         yield Static(formatted, classes="diff-content")
@@ -198,7 +171,7 @@ class EnhancedDiff(Vertical):
         if additions or deletions:
             stats_parts = []
             if additions:
-                stats_parts.append(f"[{theme.diff_add}]+{additions}[/{theme.diff_add}]")
+                stats_parts.append(f"[green]+{additions}[/green]")
             if deletions:
-                stats_parts.append(f"[{theme.diff_remove}]-{deletions}[/{theme.diff_remove}]")
+                stats_parts.append(f"[red]-{deletions}[/red]")
             yield Static(" ".join(stats_parts), classes="diff-stats")

@@ -192,6 +192,9 @@ def show_help() -> None:
     console.print(
         "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"
     )
+    console.print(
+        "  --theme NAME                  Color theme (default, tokyo-night, catppuccin)"
+    )
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])

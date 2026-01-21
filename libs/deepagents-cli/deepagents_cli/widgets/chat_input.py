@@ -238,7 +238,7 @@ class ChatInput(Vertical):
         max-height: 12;
         padding: 0;
         background: $surface;
-        border: solid $primary;
+        border: solid blue;
     }
 
     ChatInput .input-row {

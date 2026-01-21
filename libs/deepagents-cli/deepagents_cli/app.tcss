@@ -51,12 +51,12 @@ Screen {
     margin: 1 0;
     padding: 1 2;
     background: $surface;
-    border: solid $warning;
+    border: solid gray;
 }
 
 .approval-menu .approval-title {
     text-style: bold;
-    color: $warning;
+    color: $text;
     margin-bottom: 1;
 }
 
@@ -136,7 +136,7 @@ Screen {
 /* Separator line between options and tool details */
 .approval-menu .approval-separator {
     height: 1;
-    color: $warning;
+    color: $text-muted;
     margin: 1 0 0 0;
 }
 

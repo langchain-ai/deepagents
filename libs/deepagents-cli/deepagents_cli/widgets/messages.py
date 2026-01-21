@@ -10,7 +10,6 @@ from textual.css.query import NoMatches
 from textual.widgets import Markdown, Static
 from textual.widgets._markdown import MarkdownStream
 
-from deepagents_cli.themes import theme
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
@@ -30,7 +29,7 @@ class UserMessage(Static):
         padding: 0 1;
         margin: 1 0;
         background: $surface;
-        border-left: thick $primary;
+        border-left: thick blue;
     }
 
     UserMessage .user-prefix {
@@ -57,7 +56,7 @@ class UserMessage(Static):
         """Compose the user message layout."""
         # Use Text object to combine styled prefix with unstyled user content
         text = Text()
-        text.append("> ", style=f"bold {theme.primary}")
+        text.append("> ", style="bold blue")
         text.append(self._content)
         yield Static(text)
 
@@ -168,7 +167,7 @@ class ToolCallMessage(Vertical):
         padding: 0 1;
         margin: 1 0;
         background: $surface;
-        border-left: thick $secondary;
+        border-left: thick cyan;
     }
 
     ToolCallMessage .tool-header {
@@ -250,21 +249,14 @@ class ToolCallMessage(Vertical):
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout."""
         tool_label = format_tool_display(self._tool_name, self._args)
-        yield Static(
-            f"[bold yellow]Tool:[/bold yellow] {tool_label}",
-            classes="tool-header",
-        )
+        yield Static(f"Tool: {tool_label}", classes="tool-header")
         args = self._filtered_args()
         if args:
             args_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:_MAX_INLINE_ARGS])
             if len(args) > _MAX_INLINE_ARGS:
                 args_str += ", ..."
             yield Static(f"({args_str})", classes="tool-args")
-        yield Static(
-            "[yellow]Pending...[/yellow]",
-            classes="tool-status pending",
-            id="status",
-        )
+        yield Static("...", classes="tool-status pending", id="status")
         # Output area - hidden initially, shown when output is set
         # Use markup=False for output content to prevent Rich markup injection
         yield Static("", classes="tool-output-preview", id="output-preview", markup=False)
@@ -292,7 +284,7 @@ class ToolCallMessage(Vertical):
             status = self.query_one("#status", Static)
             status.remove_class("pending", "error")
             status.add_class("success")
-            status.update("[green]✓ Success[/green]")
+            status.update("✓")
         except NoMatches:
             pass
         self._update_output_display()
@@ -309,7 +301,7 @@ class ToolCallMessage(Vertical):
             status = self.query_one("#status", Static)
             status.remove_class("pending", "success")
             status.add_class("error")
-            status.update("[red]✗ Error[/red]")
+            status.update("✗ Error")
         except NoMatches:
             pass
         # Always show full error - errors should be visible
@@ -323,7 +315,7 @@ class ToolCallMessage(Vertical):
             status = self.query_one("#status", Static)
             status.remove_class("pending", "success", "error")
             status.add_class("rejected")
-            status.update("[yellow]✗ Rejected[/yellow]")
+            status.update("✗ Rejected")
         except NoMatches:
             pass
 
@@ -417,7 +409,7 @@ class DiffMessage(Static):
         padding: 1;
         margin: 1 0;
         background: $surface;
-        border: solid $primary;
+        border: solid blue;
     }
 
     DiffMessage .diff-header {
@@ -475,7 +467,7 @@ class ErrorMessage(Static):
         margin: 1 0;
         background: $error 20%;
         color: $text;
-        border-left: thick $error;
+        border-left: thick red;
     }
     """
 

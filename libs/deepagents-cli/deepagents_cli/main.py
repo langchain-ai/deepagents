@@ -42,6 +42,7 @@ from deepagents_cli.sessions import (
     thread_exists,
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
+from deepagents_cli.themes import THEMES, set_theme
 from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.ui import show_help
 
@@ -178,6 +179,12 @@ def parse_args() -> argparse.Namespace:
         "--sandbox-setup",
         help="Path to setup script to run in sandbox after creation",
     )
+    parser.add_argument(
+        "--theme",
+        choices=list(THEMES.keys()),
+        default="default",
+        help=f"Color theme ({', '.join(THEMES.keys())})",
+    )
     return parser.parse_args()
 
 
@@ -285,6 +292,10 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+
+        # Set theme before any UI rendering
+        if hasattr(args, "theme") and args.theme:
+            set_theme(args.theme)
 
         if args.command == "help":
             show_help()

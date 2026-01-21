@@ -19,6 +19,7 @@ from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
+from deepagents_cli.themes import CUSTOM_THEMES, get_textual_theme
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
@@ -270,6 +271,11 @@ class DeepAgentsApp(App):
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
+        # Register custom themes before setting the active theme
+        for custom_theme in CUSTOM_THEMES:
+            self.register_theme(custom_theme)
+        # Set Textual theme to match our theme system
+        self.theme = get_textual_theme()
         self._agent = agent
         self._assistant_id = assistant_id
         self._backend = backend

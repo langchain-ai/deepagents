@@ -156,7 +156,7 @@ class DeepAgentsWrapper(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        """Execute the DeepAgent on the given instruction.
+        """Execute the Deep Agent on the given instruction.
 
         Args:
             instruction: The task to complete

@@ -36,6 +36,20 @@ if TYPE_CHECKING:
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 
 
+def _is_summarization_chunk(metadata: dict | None) -> bool:
+    """Check if a message chunk is from summarization middleware.
+
+    Args:
+        metadata: The metadata dict from the stream chunk.
+
+    Returns:
+        Whether the chunk is from summarization and should be filtered.
+    """
+    if metadata is None:
+        return False
+    return metadata.get("lc_source") == "summarization"
+
+
 class TextualUIAdapter:
     """Adapter for rendering agent output to Textual widgets.
 
@@ -237,6 +251,11 @@ async def execute_task_textual(
                         continue
 
                     message, _metadata = data
+
+                    # Filter out summarization LLM output & update status to reflect
+                    if _is_summarization_chunk(_metadata):
+                        adapter._update_status("Summarizing conversation...")
+                        continue
 
                     if isinstance(message, HumanMessage):
                         content = message.text

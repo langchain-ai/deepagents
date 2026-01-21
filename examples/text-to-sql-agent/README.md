@@ -26,18 +26,21 @@ Uses the [Chinook database](https://github.com/lerocha/chinook-database) - a sam
 ### Installation
 
 1. Clone the deepagents repository and navigate to this example:
+
 ```bash
 git clone https://github.com/langchain-ai/deepagents.git
 cd deepagents/examples/text-to-sql-agent
 ```
 
-2. Download the Chinook database:
+1. Download the Chinook database:
+
 ```bash
 # Download the SQLite database file
 curl -L -o chinook.db https://github.com/lerocha/chinook-database/raw/master/ChinookDatabase/DataSources/Chinook_Sqlite.sqlite
 ```
 
-3. Create a virtual environment and install dependencies:
+1. Create a virtual environment and install dependencies:
+
 ```bash
 # Using uv (recommended)
 uv venv --python 3.11
@@ -45,18 +48,21 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv pip install -e .
 ```
 
-4. Set up your environment variables:
+1. Set up your environment variables:
+
 ```bash
 cp .env.example .env
 # Edit .env and add your API keys
 ```
 
 Required in `.env`:
+
 ```
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
 Optional:
+
 ```
 LANGCHAIN_TRACING_V2=true
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
@@ -100,15 +106,14 @@ result = agent.invoke({
 print(result["messages"][-1].content)
 ```
 
-
-## How DeepAgent Works
+## How the Deep Agent Works
 
 ### Architecture
 
 ```
 User Question
      ↓
-DeepAgent (with planning)
+Deep Agent (with planning)
      ├─ write_todos (plan the approach)
      ├─ SQL Tools
      │  ├─ list_tables
@@ -129,15 +134,17 @@ Formatted Answer
 
 ### Configuration
 
-DeepAgent uses **progressive disclosure** with memory files and skills:
+Deep Agents uses **progressive disclosure** with memory files and skills:
 
 **AGENTS.md** (always loaded) - Contains:
+
 - Agent identity and role
 - Core principles and safety rules
 - General guidelines
 - Communication style
 
 **skills/** (loaded on-demand) - Specialized workflows:
+
 - **query-writing** - How to write and execute SQL queries (simple and complex)
 - **schema-exploration** - How to discover database structure and relationships
 
@@ -146,25 +153,30 @@ The agent sees skill descriptions in its context but only loads the full SKILL.m
 ## Example Queries
 
 ### Simple Query
+
 ```
 "How many customers are from Canada?"
 ```
+
 The agent will directly query and return the count.
 
 ### Complex Query with Planning
+
 ```
 "Which employee generated the most revenue and from which countries?"
 ```
+
 The agent will:
+
 1. Use `write_todos` to plan the approach
 2. Identify required tables (Employee, Invoice, Customer)
 3. Plan the JOIN structure
 4. Execute the query
 5. Format results with analysis
 
-## DeepAgent Output Example
+## Deep Agent Output Example
 
-DeepAgent shows its reasoning process:
+The Deep Agent shows its reasoning process:
 
 ```
 Question: Which employee generated the most revenue by country?
@@ -230,6 +242,7 @@ All dependencies are specified in `pyproject.toml`:
 1. Sign up for a free account at [LangSmith](https://smith.langchain.com/)
 2. Create an API key from your account settings
 3. Add these variables to your `.env` file:
+
 ```
 LANGCHAIN_TRACING_V2=true
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
@@ -241,9 +254,10 @@ LANGCHAIN_PROJECT=text2sql-deepagent
 
 When configured, every query is automatically traced:
 
-![DeepAgent LangSmith Trace Example](text-to-sql-langsmith-trace.png)
+![Deep Agent LangSmith Trace Example](text-to-sql-langsmith-trace.png)
 
 You can view:
+
 - Complete execution trace with all tool calls
 - Planning steps (write_todos)
 - Filesystem operations
@@ -251,7 +265,7 @@ You can view:
 - Generated SQL queries
 - Error messages and retry attempts
 
-View your traces at: https://smith.langchain.com/
+View your traces at: <https://smith.langchain.com/>
 
 ## Resources
 

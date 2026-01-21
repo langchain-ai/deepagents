@@ -53,7 +53,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
-from langchain.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 if TYPE_CHECKING:
@@ -69,11 +68,13 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langgraph.runtime import Runtime
 
+from deepagents.middleware._utils import append_to_system_message
+
 logger = logging.getLogger(__name__)
 
 
 class MemoryState(AgentState):
-    """State schema for MemoryMiddleware.
+    """State schema for `MemoryMiddleware`.
 
     Attributes:
         memory_contents: Dict mapping source paths to their loaded content.
@@ -84,7 +85,7 @@ class MemoryState(AgentState):
 
 
 class MemoryStateUpdate(TypedDict):
-    """State update for MemoryMiddleware."""
+    """State update for `MemoryMiddleware`."""
 
     memory_contents: dict[str, str]
 
@@ -152,14 +153,15 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 
 
 class MemoryMiddleware(AgentMiddleware):
-    """Middleware for loading agent memory from AGENTS.md files.
+    """Middleware for loading agent memory from `AGENTS.md` files.
 
     Loads memory content from configured sources and injects into the system prompt.
+
     Supports multiple sources that are combined together.
 
     Args:
         backend: Backend instance or factory function for file operations.
-        sources: List of MemorySource configurations specifying paths and names.
+        sources: List of `MemorySource` configurations specifying paths and names.
     """
 
     state_schema = MemoryState
@@ -175,9 +177,12 @@ class MemoryMiddleware(AgentMiddleware):
         Args:
             backend: Backend instance or factory function that takes runtime
                      and returns a backend. Use a factory for StateBackend.
-            sources: List of memory file paths to load (e.g., ["~/.deepagents/AGENTS.md",
-                     "./.deepagents/AGENTS.md"]). Display names are automatically derived
-                     from the paths. Sources are loaded in order.
+            sources: List of memory file paths to load (e.g., `["~/.deepagents/AGENTS.md",
+                     "./.deepagents/AGENTS.md"]`).
+
+                     Display names are automatically derived from the paths.
+
+                     Sources are loaded in order.
         """
         self._backend = backend
         self.sources = sources
@@ -354,23 +359,20 @@ class MemoryMiddleware(AgentMiddleware):
         return MemoryStateUpdate(memory_contents=contents)
 
     def modify_request(self, request: ModelRequest) -> ModelRequest:
-        """Inject memory content into the system prompt.
+        """Inject memory content into the system message.
 
         Args:
             request: Model request to modify.
 
         Returns:
-            Modified request with memory injected into system prompt.
+            Modified request with memory injected into system message.
         """
         contents = request.state.get("memory_contents", {})
         agent_memory = self._format_agent_memory(contents)
 
-        if request.system_prompt:
-            system_prompt = agent_memory + "\n\n" + request.system_prompt
-        else:
-            system_prompt = agent_memory
+        new_system_message = append_to_system_message(request.system_message, agent_memory)
 
-        return request.override(system_message=SystemMessage(system_prompt))
+        return request.override(system_message=new_system_message)
 
     def wrap_model_call(
         self,

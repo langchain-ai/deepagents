@@ -16,7 +16,7 @@ __pycache__/
 *.so
 .Python
 
-# DeepAgent filesystem (if using local backend)
+# Deep Agent filesystem (if using local backend)
 .deepagent_fs/
 agent_files/
 agent_workspace/

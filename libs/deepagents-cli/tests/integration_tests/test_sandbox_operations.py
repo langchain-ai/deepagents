@@ -25,8 +25,8 @@ class TestSandboxOperations:
 
     @pytest.fixture(scope="class")
     def sandbox(self) -> Iterator[SandboxBackendProtocol]:
-        """Provide a single sandbox instance for all tests."""
-        with create_sandbox("runloop") as sandbox:
+        """Provide a single Daytona sandbox instance for all tests."""
+        with create_sandbox("daytona") as sandbox:
             yield sandbox
 
     @pytest.fixture(autouse=True)
@@ -531,6 +531,15 @@ class TestSandboxOperations:
         assert "The quick red cat jumps" in file_content
 
     # ==================== ls_info() tests ====================
+
+    def test_ls_info_path_is_absolute(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that files returned from ls_info have absolute paths."""
+        base_dir = "/tmp/test_sandbox_ops/ls_absolute"
+        sandbox.execute(f"mkdir -p {base_dir}")
+        sandbox.write(f"{base_dir}/file.txt", "content")
+        result = sandbox.ls_info(base_dir)
+        assert len(result) == 1
+        assert result[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
 
     def test_ls_info_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory with files and subdirectories."""

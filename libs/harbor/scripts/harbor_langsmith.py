@@ -20,7 +20,7 @@ import aiohttp
 import toml
 from dotenv import load_dotenv
 from harbor.models.dataset_item import DownloadedDatasetItem
-from harbor.registry.client import RegistryClient
+from harbor.registry.client import RegistryClientFactory
 from langsmith import Client
 
 from deepagents_harbor.tracing import create_example_id_from_instruction
@@ -130,7 +130,7 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
 
     # Download from Harbor registry
     print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
-    registry_client = RegistryClient()
+    registry_client = RegistryClientFactory()
     downloaded_tasks = registry_client.download_dataset(
         name=dataset_name,
         version=version,

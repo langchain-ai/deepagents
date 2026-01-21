@@ -52,6 +52,7 @@ def create_deep_agent(
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     response_format: ResponseFormat | None = None,
+    state_schema: type[Any] | None = None,
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
@@ -117,6 +118,7 @@ def create_deep_agent(
 
             Memory is loaded at agent startup and added into the system prompt.
         response_format: A structured output response format to use for the agent.
+        state_schema: Optional custom state schema for the agent (must extend AgentState).
         context_schema: The schema of the deep agent.
         checkpointer: Optional `Checkpointer` for persisting agent state between runs.
         store: Optional store for persistent storage (required if backend uses `StoreBackend`).
@@ -232,6 +234,7 @@ def create_deep_agent(
         tools=tools,
         middleware=deepagent_middleware,
         response_format=response_format,
+        state_schema=state_schema,
         context_schema=context_schema,
         checkpointer=checkpointer,
         store=store,

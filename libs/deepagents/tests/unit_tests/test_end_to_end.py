@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, AgentState
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import LanguageModelInput
@@ -505,3 +505,34 @@ class TestDeepAgentEndToEnd:
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful research assistant." in content
         assert "you have access to a number of standard tools" in content
+
+    def test_deep_agent_with_state_schema(self) -> None:
+        """Test that state_schema parameter is properly passed through.
+
+        This test verifies that when a custom state_schema is provided,
+        the agent correctly includes the custom state fields in its channels.
+        """
+
+        class CustomState(AgentState):
+            custom_field: str
+
+        # Create a fake model
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="Task completed.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with custom state_schema
+        agent = create_deep_agent(model=model, state_schema=CustomState)
+
+        # Verify the custom field is in the agent's stream channels
+        assert "custom_field" in agent.stream_channels
+
+        # Verify standard deepagent qualities are still present
+        assert "todos" in agent.stream_channels
+        assert "files" in agent.stream_channels

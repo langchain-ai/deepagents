@@ -502,17 +502,18 @@ class SkillsMiddleware(AgentMiddleware):
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str]) -> None:
+    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str], system_prompt: str | None = SKILLS_SYSTEM_PROMPT) -> None:
         """Initialize the skills middleware.
 
         Args:
             backend: Backend instance or factory function that takes runtime and returns a backend.
                      Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
             sources: List of skill source paths (e.g., ["/skills/user/", "/skills/project/"]).
+            system_prompt: Optional custom system prompt override.
         """
         self._backend = backend
         self.sources = sources
-        self.system_prompt_template = SKILLS_SYSTEM_PROMPT
+        self.system_prompt_template = system_prompt
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.

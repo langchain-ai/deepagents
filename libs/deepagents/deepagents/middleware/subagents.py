@@ -286,7 +286,7 @@ def _get_subagents(
     subagent_descriptions = []
 
     # Create general-purpose agent if enabled
-    if general_purpose_agent:
+    if general_purpose_agent and default_tools:
         general_purpose_middleware = [*default_subagent_middleware]
         if default_interrupt_on:
             general_purpose_middleware.append(HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on))

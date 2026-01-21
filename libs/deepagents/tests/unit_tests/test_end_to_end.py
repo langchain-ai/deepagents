@@ -505,3 +505,315 @@ class TestDeepAgentEndToEnd:
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful research assistant." in content
         assert "you have access to a number of standard tools" in content
+
+    def test_deep_agent_two_turns_no_initial_files(self) -> None:
+        """Test deepagent with two conversation turns without specifying files on invoke.
+
+        This test reproduces the edge case from issue #731 where the files state
+        can become corrupted (turning into a list) during the second message in a
+        conversation when files are not explicitly provided in the initial invoke.
+        """
+        # Create a model that handles both turns
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Turn 1: write a file
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/test.txt", "content": "Hello World"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've created the file.",
+                    ),
+                    # Turn 2: glob files
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "*.txt"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've listed the files.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent - IMPORTANT: don't specify files in initial state
+        agent = create_deep_agent(model=model)
+
+        # First invoke - no files key in input
+        result1 = agent.invoke({"messages": [HumanMessage(content="Create a test file")]})
+
+        # Verify first turn succeeded
+        assert "messages" in result1
+        tool_messages = [msg for msg in result1["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        # Second invoke using same agent instance - this is where the bug might occur
+        # Continue from previous state but don't pass files key
+        result2 = agent.invoke(
+            {
+                "messages": result1["messages"] + [HumanMessage(content="List all text files")],
+                # Explicitly not providing "files" key to test state initialization
+            }
+        )
+
+        # Verify second turn succeeded without AttributeError
+        assert "messages" in result2
+        tool_messages2 = [msg for msg in result2["messages"] if msg.type == "tool"]
+        assert len(tool_messages2) > 0
+
+        # The glob tool should not crash with "AttributeError: 'list' object has no attribute 'items'"
+        # Check that we got a valid response (not an error)
+        glob_result = tool_messages2[-1].content
+        assert isinstance(glob_result, str)
+        # Should either find files or return "No files found", not crash
+        assert "AttributeError" not in glob_result
+
+    def test_deep_agent_two_turns_state_backend_edge_case(self) -> None:
+        """Test StateBackend with two turns to reproduce potential state corruption.
+
+        This test specifically targets the edge case where the files state might
+        become corrupted into a list instead of a dict, causing AttributeError
+        when tools try to access .items().
+        """
+        # Create a StateBackend with an explicitly initialized runtime
+        runtime = make_runtime()
+
+        # IMPORTANT: Initialize files as empty dict, not missing
+        # This is key to potentially trigger the reducer issue
+        runtime.state["files"] = {}
+
+        backend = StateBackend(runtime)
+
+        # Create a model that writes then globs
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Turn 1: write a file
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/test.txt", "content": "Test content"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="File created."),
+                    # Turn 2: glob for files
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "*.txt"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Files listed."),
+                ]
+            )
+        )
+
+        # Create agent with StateBackend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # First turn
+        result1 = agent.invoke({"messages": [HumanMessage(content="Create a file")]})
+        assert "messages" in result1
+
+        # Verify files state is still a dict after first turn
+        if "files" in result1:
+            assert isinstance(result1["files"], dict), f"files is {type(result1['files'])}, expected dict"
+
+        # Second turn - this should trigger glob on the files state
+        result2 = agent.invoke(
+            {
+                "messages": result1["messages"] + [HumanMessage(content="List files")],
+            }
+        )
+        assert "messages" in result2
+
+        # Verify glob succeeded without AttributeError
+        tool_messages = [msg for msg in result2["messages"] if msg.type == "tool"]
+        glob_messages = [msg for msg in tool_messages if "glob" in msg.name or "*.txt" in str(msg)]
+
+        if glob_messages:
+            # Check that glob result doesn't contain error
+            glob_result = glob_messages[-1].content
+            assert "AttributeError" not in glob_result
+            assert "'list' object has no attribute 'items'" not in glob_result
+
+    @pytest.mark.asyncio
+    async def test_deep_agent_two_turns_no_initial_files_async(self) -> None:
+        """Async version: Test deepagent with two conversation turns without specifying files.
+
+        This async test reproduces the edge case from issue #731 where the files state
+        can become corrupted during async execution.
+        """
+        # Create a model that handles both turns
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Turn 1: write a file
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/test.txt", "content": "Hello World"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've created the file.",
+                    ),
+                    # Turn 2: glob files
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "*.txt"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've listed the files.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent - IMPORTANT: don't specify files in initial state
+        agent = create_deep_agent(model=model)
+
+        # First invoke - no files key in input
+        result1 = await agent.ainvoke({"messages": [HumanMessage(content="Create a test file")]})
+
+        # Verify first turn succeeded
+        assert "messages" in result1
+        tool_messages = [msg for msg in result1["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        # Second invoke using same agent instance - this is where the bug might occur
+        # Continue from previous state but don't pass files key
+        result2 = await agent.ainvoke(
+            {
+                "messages": result1["messages"] + [HumanMessage(content="List all text files")],
+                # Explicitly not providing "files" key to test state initialization
+            }
+        )
+
+        # Verify second turn succeeded without AttributeError
+        assert "messages" in result2
+        tool_messages2 = [msg for msg in result2["messages"] if msg.type == "tool"]
+        assert len(tool_messages2) > 0
+
+        # The glob tool should not crash with "AttributeError: 'list' object has no attribute 'items'"
+        # Check that we got a valid response (not an error)
+        glob_result = tool_messages2[-1].content
+        assert isinstance(glob_result, str)
+        # Should either find files or return "No files found", not crash
+        assert "AttributeError" not in glob_result
+
+    @pytest.mark.asyncio
+    async def test_deep_agent_two_turns_state_backend_edge_case_async(self) -> None:
+        """Async version: Test StateBackend with two turns to reproduce potential state corruption.
+
+        This async test specifically targets the edge case where concurrent async operations
+        might cause the files state to become corrupted into a list instead of a dict.
+        """
+        # Create a StateBackend with an explicitly initialized runtime
+        runtime = make_runtime()
+
+        # IMPORTANT: Initialize files as empty dict, not missing
+        # This is key to potentially trigger the reducer issue
+        runtime.state["files"] = {}
+
+        backend = StateBackend(runtime)
+
+        # Create a model that writes then globs
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Turn 1: write a file
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/test.txt", "content": "Test content"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="File created."),
+                    # Turn 2: glob for files
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "*.txt"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Files listed."),
+                ]
+            )
+        )
+
+        # Create agent with StateBackend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # First turn (async)
+        result1 = await agent.ainvoke({"messages": [HumanMessage(content="Create a file")]})
+        assert "messages" in result1
+
+        # Verify files state is still a dict after first turn
+        if "files" in result1:
+            assert isinstance(result1["files"], dict), f"files is {type(result1['files'])}, expected dict"
+
+        # Second turn (async) - this should trigger glob on the files state
+        result2 = await agent.ainvoke(
+            {
+                "messages": result1["messages"] + [HumanMessage(content="List files")],
+            }
+        )
+        assert "messages" in result2
+
+        # Verify glob succeeded without AttributeError
+        tool_messages = [msg for msg in result2["messages"] if msg.type == "tool"]
+        glob_messages = [msg for msg in tool_messages if "glob" in msg.name or "*.txt" in str(msg)]
+
+        if glob_messages:
+            # Check that glob result doesn't contain error
+            glob_result = glob_messages[-1].content
+            assert "AttributeError" not in glob_result
+            assert "'list' object has no attribute 'items'" not in glob_result

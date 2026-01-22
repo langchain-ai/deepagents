@@ -1,8 +1,8 @@
-# Building DeepAgent Harnesses for Terminal Bench 2.0 with Harbor
+# Building Deep Agent Harnesses for Terminal Bench 2.0 with Harbor
 
 ## Overview
 
-This repository demonstrates how to evaluate and improve your DeepAgent harness using [Harbor](https://github.com/laude-institute/harbor) and [LangSmith](https://smith.langchain.com).
+This repository demonstrates how to evaluate and improve your Deep Agent harness using [Harbor](https://harborframework.com/) and [LangSmith](https://www.langchain.com/langsmith/observability).
 
 ### What is Harbor?
 
@@ -11,21 +11,22 @@ Harbor is an evaluation framework that simplifies running agents on challenging 
 - **Sandbox environments** (Docker, Modal, Daytona, E2B, etc.)
 - **Automatic test execution** and verification
 - **Reward scoring** (0.0 - 1.0 based on test pass rate)
-- **Trajectory logging** in ATIF format (Agent Trajectory Interchange Format)
+- **Trajectory logging** in ATIF format [(Agent Trajectory Interchange Format)](https://harborframework.com/docs/trajectory-format)
 
 ### What is Terminal Bench 2.0?
 
 [Terminal Bench 2.0](https://github.com/laude-institute/terminal-bench-2) is an evaluation benchmark that measures agent capabilities across several domains, testing how well an agent operates using a computer environment, primarily via the terminal. The benchmark includes 90+ tasks across domains like software engineering, biology, security, gaming, and more.
 
 **Example tasks:**
+
 - `path-tracing`: Reverse-engineer C program from rendered image
 - `chess-best-move`: Find optimal move using chess engine
 - `git-multibranch`: Complex git operations with merge conflicts
 - `sqlite-with-gcov`: Build SQLite with code coverage, analyze reports
 
-### The DeepAgent Architecture
+### The Deep Agent Architecture
 
-The DeepAgent harness ships with design patterns validated as good defaults across agentic tasks:
+The Deep Agent harness ships with design patterns validated as good defaults across agentic tasks:
 
 1. **Detailed System Prompt**: Expansive, instructional prompts with tool guidance and examples
 2. **Planning Middleware**: The `write_todos` tool helps the agent structure thinking and track progress
@@ -148,6 +149,7 @@ Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 - `runloop` - Runloop sandboxes
 
 Makefile shortcuts are available for common workflows:
+
 - `make run-terminal-bench-docker` - Run 1 task locally with Docker
 - `make run-terminal-bench-daytona` - Run 10 tasks on Daytona
 - `make run-terminal-bench-modal` - Run 4 tasks on Modal

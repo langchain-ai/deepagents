@@ -311,6 +311,7 @@ class ChatInput(Vertical):
         if history_file is None:
             history_file = Path.home() / ".deepagents" / "history.jsonl"
         self._history = HistoryManager(history_file)
+        self._submit_enabled = True
 
     def compose(self) -> ComposeResult:
         """Compose the chat input layout."""
@@ -359,6 +360,8 @@ class ChatInput(Vertical):
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission."""
+        if not self._submit_enabled:
+            return  # Submission disabled while agent is working
         value = event.value
         if value:
             if self._completion_manager:
@@ -473,6 +476,10 @@ class ChatInput(Vertical):
                 self._text_area.blur()
                 if self._completion_manager:
                     self._completion_manager.reset()
+
+    def set_submit_enabled(self, *, enabled: bool) -> None:
+        """Enable or disable submission (Enter key). User can still type."""
+        self._submit_enabled = enabled
 
     def set_cursor_active(self, *, active: bool) -> None:
         """Set whether the cursor should be actively blinking.

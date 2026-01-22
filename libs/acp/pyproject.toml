@@ -54,5 +54,17 @@ Issues = "https://github.com/langchain-ai/deepagents/issues"
 deepacp = "deepagents_acp.server:cli_main"
 
 
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = []
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_acp"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto" # or "strict"

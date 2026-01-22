@@ -1,22 +1,93 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain.tools import ToolRuntime
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langgraph.store.memory import InMemoryStore
 
+from deepagents.backends import FilesystemBackend
+from deepagents.backends.protocol import BackendProtocol
+from deepagents.backends.state import StateBackend
+from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
+from tests.utils import assert_all_deepagent_qualities
+
+
+class SystemMessageCapturingMiddleware(AgentMiddleware):
+    """Middleware that captures the system message for testing purposes."""
+
+    def __init__(self) -> None:
+        self.captured_system_messages: list = []
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        if request.system_message is not None:
+            self.captured_system_messages.append(request.system_message)
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        if request.system_message is not None:
+            self.captured_system_messages.append(request.system_message)
+        return await handler(request)
 
 
 @tool(description="Sample tool")
 def sample_tool(sample_input: str) -> str:
     """A sample tool that returns the input string."""
     return sample_input
+
+
+def make_runtime(tid: str = "tc") -> ToolRuntime:
+    """Create a ToolRuntime for testing."""
+    return ToolRuntime(
+        state={"messages": [], "files": {}},
+        context=None,
+        tool_call_id=tid,
+        store=InMemoryStore(),
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+
+def create_filesystem_backend_virtual(tmp_path: Path) -> BackendProtocol:
+    """Create a FilesystemBackend in virtual mode."""
+    return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+
+def create_state_backend(tmp_path: Path) -> BackendProtocol:  # noqa: ARG001
+    """Create a StateBackend."""
+    return StateBackend(make_runtime())
+
+
+def create_store_backend(tmp_path: Path) -> BackendProtocol:  # noqa: ARG001
+    """Create a StoreBackend."""
+    return StoreBackend(make_runtime())
+
+
+# Backend factories for parametrization
+BACKEND_FACTORIES = [
+    pytest.param(create_filesystem_backend_virtual, id="filesystem_virtual"),
+    pytest.param(create_state_backend, id="state"),
+    pytest.param(create_store_backend, id="store"),
+]
 
 
 class FixedGenericFakeChatModel(GenericFakeChatModel):
@@ -255,3 +326,494 @@ class TestDeepAgentEndToEnd:
             # Verify the agent executed correctly
             assert "messages" in result
             assert len(result["messages"]) > 0
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_truncate_lines(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test line count limiting in read_file tool with very long lines."""
+        # Create a file with a very long line (18,000 chars) that will be split into continuation lines
+        # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
+        very_long_line = "x" * 18000  # 18,000 characters -> will split into 4 continuation lines (5k each)
+
+        # Add some normal lines before and after
+        lines = [
+            "short line 0",
+            very_long_line,  # This becomes lines 2, 2.1, 2.2, 2.3 (4 output lines)
+            "short line 2",
+            "short line 3",
+            "short line 4",
+        ]
+        content = "\n".join(lines)
+
+        # Create backend and write file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/my_file"
+        res = backend.write(file_path, content)
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
+
+        # Create a fake model that calls read_file with limit=3
+        # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "limit": 3},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the file successfully.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Should have the first short line
+        assert "short line 0" in file_content
+
+        # Should have the beginning of the very long line (line 2 with continuation)
+        assert "xxx" in file_content  # The very long line should be present
+
+        # Should NOT have the later short lines because the limit cuts off after 3 output lines
+        # (line 1, line 2, line 2.1)
+        assert "short line 2" not in file_content
+        assert "short line 3" not in file_content
+        assert "short line 4" not in file_content
+
+        # Count actual lines in the output (excluding empty lines from formatting)
+        output_lines = [line for line in file_content.split("\n") if line.strip()]
+        # Should be at most 3 lines (the limit we specified)
+        # This includes continuation lines as separate lines
+        assert len(output_lines) <= 3
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_empty_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test reading an empty file through the agent."""
+        # Create backend and write empty file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/my_file"
+        res = backend.write(file_path, "")
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
+
+        # Create a fake model that calls read_file
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the empty file.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Empty file should return empty or minimal content
+        # (Backend might add warnings or format)
+        assert isinstance(file_content, str)
+
+    def test_deep_agent_with_system_message(self) -> None:
+        """Test that create_deep_agent accepts a SystemMessage for system_prompt."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello! How can I help you today?"),
+                ]
+            )
+        )
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        system_msg = SystemMessage(
+            content=[
+                {"type": "text", "text": "You are a helpful assistant."},
+                {"type": "text", "text": "Always be polite."},
+            ]
+        )
+        agent = create_deep_agent(model=model, system_prompt=system_msg, middleware=[capturing_middleware])
+        assert_all_deepagent_qualities(agent)
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "You are a helpful assistant." in content
+        assert "Always be polite." in content
+        assert "you have access to a number of standard tools" in content
+
+    def test_deep_agent_with_system_message_string_content(self) -> None:
+        """Test that create_deep_agent accepts a SystemMessage with string content."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="Hello! I'm your research assistant."),
+                ]
+            )
+        )
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        system_msg = SystemMessage(content="You are a helpful research assistant.")
+        agent = create_deep_agent(model=model, system_prompt=system_msg, middleware=[capturing_middleware])
+        assert_all_deepagent_qualities(agent)
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "You are a helpful research assistant." in content
+        assert "you have access to a number of standard tools" in content
+
+    def test_deep_agent_two_turns_no_initial_files(self) -> None:
+        """Test deepagent with two conversation turns without specifying files on invoke.
+
+        This test reproduces the edge case from issue #731 where the files state
+        can become corrupted (turning into a list) during the second message in a
+        conversation when files are not explicitly provided in the initial invoke.
+        """
+        # Create a model that handles both turns
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Turn 1: write a file
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/test.txt", "content": "Hello World"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've created the file.",
+                    ),
+                    # Turn 2: glob files
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "*.txt"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've listed the files.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent - IMPORTANT: don't specify files in initial state
+        agent = create_deep_agent(model=model)
+
+        # First invoke - no files key in input
+        result1 = agent.invoke({"messages": [HumanMessage(content="Create a test file")]})
+
+        # Verify first turn succeeded
+        assert "messages" in result1
+        tool_messages = [msg for msg in result1["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        # Second invoke using same agent instance - this is where the bug might occur
+        # Continue from previous state but don't pass files key
+        result2 = agent.invoke(
+            {
+                "messages": result1["messages"] + [HumanMessage(content="List all text files")],
+                # Explicitly not providing "files" key to test state initialization
+            }
+        )
+
+        # Verify second turn succeeded without AttributeError
+        assert "messages" in result2
+        tool_messages2 = [msg for msg in result2["messages"] if msg.type == "tool"]
+        assert len(tool_messages2) > 0
+
+        # The glob tool should not crash with "AttributeError: 'list' object has no attribute 'items'"
+        # Check that we got a valid response (not an error)
+        glob_result = tool_messages2[-1].content
+        assert isinstance(glob_result, str)
+        # Should either find files or return "No files found", not crash
+        assert "AttributeError" not in glob_result
+
+    def test_deep_agent_two_turns_state_backend_edge_case(self) -> None:
+        """Test StateBackend with two turns to reproduce potential state corruption.
+
+        This test specifically targets the edge case where the files state might
+        become corrupted into a list instead of a dict, causing AttributeError
+        when tools try to access .items().
+        """
+        # Create a StateBackend with an explicitly initialized runtime
+        runtime = make_runtime()
+
+        # IMPORTANT: Initialize files as empty dict, not missing
+        # This is key to potentially trigger the reducer issue
+        runtime.state["files"] = {}
+
+        backend = StateBackend(runtime)
+
+        # Create a model that writes then globs
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Turn 1: write a file
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/test.txt", "content": "Test content"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="File created."),
+                    # Turn 2: glob for files
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "*.txt"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Files listed."),
+                ]
+            )
+        )
+
+        # Create agent with StateBackend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # First turn
+        result1 = agent.invoke({"messages": [HumanMessage(content="Create a file")]})
+        assert "messages" in result1
+
+        # Verify files state is still a dict after first turn
+        if "files" in result1:
+            assert isinstance(result1["files"], dict), f"files is {type(result1['files'])}, expected dict"
+
+        # Second turn - this should trigger glob on the files state
+        result2 = agent.invoke(
+            {
+                "messages": result1["messages"] + [HumanMessage(content="List files")],
+            }
+        )
+        assert "messages" in result2
+
+        # Verify glob succeeded without AttributeError
+        tool_messages = [msg for msg in result2["messages"] if msg.type == "tool"]
+        glob_messages = [msg for msg in tool_messages if "glob" in msg.name or "*.txt" in str(msg)]
+
+        if glob_messages:
+            # Check that glob result doesn't contain error
+            glob_result = glob_messages[-1].content
+            assert "AttributeError" not in glob_result
+            assert "'list' object has no attribute 'items'" not in glob_result
+
+    @pytest.mark.asyncio
+    async def test_deep_agent_two_turns_no_initial_files_async(self) -> None:
+        """Async version: Test deepagent with two conversation turns without specifying files.
+
+        This async test reproduces the edge case from issue #731 where the files state
+        can become corrupted during async execution.
+        """
+        # Create a model that handles both turns
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Turn 1: write a file
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/test.txt", "content": "Hello World"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've created the file.",
+                    ),
+                    # Turn 2: glob files
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "*.txt"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've listed the files.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent - IMPORTANT: don't specify files in initial state
+        agent = create_deep_agent(model=model)
+
+        # First invoke - no files key in input
+        result1 = await agent.ainvoke({"messages": [HumanMessage(content="Create a test file")]})
+
+        # Verify first turn succeeded
+        assert "messages" in result1
+        tool_messages = [msg for msg in result1["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        # Second invoke using same agent instance - this is where the bug might occur
+        # Continue from previous state but don't pass files key
+        result2 = await agent.ainvoke(
+            {
+                "messages": result1["messages"] + [HumanMessage(content="List all text files")],
+                # Explicitly not providing "files" key to test state initialization
+            }
+        )
+
+        # Verify second turn succeeded without AttributeError
+        assert "messages" in result2
+        tool_messages2 = [msg for msg in result2["messages"] if msg.type == "tool"]
+        assert len(tool_messages2) > 0
+
+        # The glob tool should not crash with "AttributeError: 'list' object has no attribute 'items'"
+        # Check that we got a valid response (not an error)
+        glob_result = tool_messages2[-1].content
+        assert isinstance(glob_result, str)
+        # Should either find files or return "No files found", not crash
+        assert "AttributeError" not in glob_result
+
+    @pytest.mark.asyncio
+    async def test_deep_agent_two_turns_state_backend_edge_case_async(self) -> None:
+        """Async version: Test StateBackend with two turns to reproduce potential state corruption.
+
+        This async test specifically targets the edge case where concurrent async operations
+        might cause the files state to become corrupted into a list instead of a dict.
+        """
+        # Create a StateBackend with an explicitly initialized runtime
+        runtime = make_runtime()
+
+        # IMPORTANT: Initialize files as empty dict, not missing
+        # This is key to potentially trigger the reducer issue
+        runtime.state["files"] = {}
+
+        backend = StateBackend(runtime)
+
+        # Create a model that writes then globs
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Turn 1: write a file
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/test.txt", "content": "Test content"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="File created."),
+                    # Turn 2: glob for files
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "glob",
+                                "args": {"pattern": "*.txt"},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Files listed."),
+                ]
+            )
+        )
+
+        # Create agent with StateBackend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # First turn (async)
+        result1 = await agent.ainvoke({"messages": [HumanMessage(content="Create a file")]})
+        assert "messages" in result1
+
+        # Verify files state is still a dict after first turn
+        if "files" in result1:
+            assert isinstance(result1["files"], dict), f"files is {type(result1['files'])}, expected dict"
+
+        # Second turn (async) - this should trigger glob on the files state
+        result2 = await agent.ainvoke(
+            {
+                "messages": result1["messages"] + [HumanMessage(content="List files")],
+            }
+        )
+        assert "messages" in result2
+
+        # Verify glob succeeded without AttributeError
+        tool_messages = [msg for msg in result2["messages"] if msg.type == "tool"]
+        glob_messages = [msg for msg in tool_messages if "glob" in msg.name or "*.txt" in str(msg)]
+
+        if glob_messages:
+            # Check that glob result doesn't contain error
+            glob_result = glob_messages[-1].content
+            assert "AttributeError" not in glob_result
+            assert "'list' object has no attribute 'items'" not in glob_result

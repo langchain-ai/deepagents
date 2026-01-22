@@ -10,6 +10,8 @@ from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import Static
 
+from deepagents_cli.config import settings
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -61,7 +63,7 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-message {
-        width: auto;
+        width: 1fr;
         padding: 0 1;
         color: $text-muted;
     }
@@ -77,6 +79,12 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-tokens {
+        width: auto;
+        padding: 0 1;
+        color: $text-muted;
+    }
+
+    StatusBar .status-model {
         width: auto;
         padding: 0 1;
         color: $text-muted;
@@ -108,7 +116,7 @@ class StatusBar(Horizontal):
             id="auto-approve-indicator",
         )
         yield Static("", classes="status-tokens", id="tokens-display")
-        # CWD shown in welcome banner, not pinned in status bar
+        yield Static(settings.model_name or "", classes="status-model", id="model-display")
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -206,3 +214,7 @@ class StatusBar(Horizontal):
             count: Current context token count
         """
         self.tokens = count
+
+    def hide_tokens(self) -> None:
+        """Hide the token display (e.g., during streaming)."""
+        self.query_one("#tokens-display", Static).update("")

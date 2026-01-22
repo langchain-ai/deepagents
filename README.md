@@ -52,7 +52,7 @@ There are several parameters you can pass to [`create_deep_agent`](https://refer
 
 ### `model`
 
-By default, `deepagents` uses `claude-sonnet-4-5-20250929`. You can customize this by passing any [LangChain model object](https://python.langchain.com/docs/integrations/chat/).
+By default, `deepagents` uses `claude-sonnet-4-5-20250929`. You can customize this by passing any [LangChain model object](https://docs.langchain.com/oss/python/integrations/providers/overview).
 
 ```python
 from langchain.chat_models import init_chat_model

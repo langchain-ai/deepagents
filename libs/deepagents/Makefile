@@ -1,4 +1,4 @@
-.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests lint_imports coverage
+.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -59,8 +59,8 @@ format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check --fix $(PYTHON_FILES)
 
-lint_imports: $(shell find deepagents -name '*.py')
-	uv run --all-groups python ./scripts/lint_imports.py $^
+check_imports: $(shell find deepagents -name '*.py')
+	uv run --all-groups python ./scripts/check_imports.py $^
 
 ######################
 # HELP
@@ -71,7 +71,7 @@ help:
 	@echo 'coverage                     - run unit tests and generate coverage report'
 	@echo 'format                       - run code formatters'
 	@echo 'lint                         - run linters'
-	@echo 'lint_imports                 - check imports'
+	@echo 'check_imports                - check imports'
 	@echo 'lint_package                 - lint only the package'
 	@echo 'lint_tests                   - lint only tests'
 	@echo 'test                         - run unit tests'

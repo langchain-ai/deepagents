@@ -31,6 +31,10 @@ test = [
   "ruff>=0.12.2,<0.13.0",
   "mypy>=1.18.1,<1.19.0",
   "pytest-asyncio>=1.3.0",
+  "mcp>=1.0.0",
+  "uvicorn",
+  "starlette",
+  "langchain-mcp-adapters>=0.1.0",
 ]
 
 dev = [

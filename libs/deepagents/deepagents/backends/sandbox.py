@@ -46,12 +46,32 @@ for m in matches:
     print(json.dumps(result))
 " 2>/dev/null"""
 
+# Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files.
+# ARG_MAX limits the total size of command-line arguments.
+# Previously, base64-encoded content was interpolated directly into the command
+# string, which would fail for files larger than ~100KB after base64 expansion.
+# Heredocs bypass this by passing data through stdin rather than as arguments.
+# Stdin format: first line is base64-encoded file path, second line is base64-encoded content.
 _WRITE_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
 import base64
+import json
 
-file_path = '{file_path}'
+# Read JSON payload from stdin containing file_path and content (both base64-encoded)
+payload_b64 = sys.stdin.read().strip()
+if not payload_b64:
+    print('Error: No payload received for write operation', file=sys.stderr)
+    sys.exit(1)
+
+try:
+    payload = base64.b64decode(payload_b64).decode('utf-8')
+    data = json.loads(payload)
+    file_path = data['path']
+    content = base64.b64decode(data['content']).decode('utf-8')
+except Exception as e:
+    print(f'Error: Failed to decode write payload: {e}', file=sys.stderr)
+    sys.exit(1)
 
 # Check if file already exists (atomic with write)
 if os.path.exists(file_path):
@@ -62,23 +82,45 @@ if os.path.exists(file_path):
 parent_dir = os.path.dirname(file_path) or '.'
 os.makedirs(parent_dir, exist_ok=True)
 
-# Decode and write content
-content = base64.b64decode('{content_b64}').decode('utf-8')
 with open(file_path, 'w') as f:
     f.write(content)
-" 2>&1"""
+" <<'__DEEPAGENTS_EOF__'
+{payload_b64}
+__DEEPAGENTS_EOF__"""
 
+# Use heredoc to pass edit parameters via stdin to avoid ARG_MAX limits.
+# Stdin format: base64-encoded JSON with {"path": str, "old": str, "new": str}.
+# JSON bundles all parameters; base64 ensures safe transport of arbitrary content
+# (special chars, newlines, etc.) through the heredoc without escaping issues.
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys
 import base64
+import json
+import os
+
+# Read and decode JSON payload from stdin
+payload_b64 = sys.stdin.read().strip()
+if not payload_b64:
+    print('Error: No payload received for edit operation', file=sys.stderr)
+    sys.exit(4)
+
+try:
+    payload = base64.b64decode(payload_b64).decode('utf-8')
+    data = json.loads(payload)
+    file_path = data['path']
+    old = data['old']
+    new = data['new']
+except Exception as e:
+    print(f'Error: Failed to decode edit payload: {e}', file=sys.stderr)
+    sys.exit(4)
+
+# Check if file exists
+if not os.path.isfile(file_path):
+    sys.exit(3)  # File not found
 
 # Read file content
-with open('{file_path}', 'r') as f:
+with open(file_path, 'r') as f:
     text = f.read()
-
-# Decode base64-encoded strings
-old = base64.b64decode('{old_b64}').decode('utf-8')
-new = base64.b64decode('{new_b64}').decode('utf-8')
 
 # Count occurrences
 count = text.count(old)
@@ -96,11 +138,13 @@ else:
     result = text.replace(old, new, 1)
 
 # Write back to file
-with open('{file_path}', 'w') as f:
+with open(file_path, 'w') as f:
     f.write(result)
 
 print(count)
-" 2>&1"""
+" <<'__DEEPAGENTS_EOF__'
+{payload_b64}
+__DEEPAGENTS_EOF__"""
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os
@@ -221,11 +265,14 @@ except PermissionError:
         content: str,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
-        # Encode content as base64 to avoid any escaping issues
+        # Create JSON payload with file path and base64-encoded content
+        # This avoids shell injection via file_path and ARG_MAX limits on content
         content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        payload = json.dumps({"path": file_path, "content": content_b64})
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
         # Single atomic check + write command
-        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content_b64=content_b64)
+        cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
         result = self.execute(cmd)
 
         # Check for errors (exit code or error message in output)
@@ -244,23 +291,29 @@ except PermissionError:
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
-        # Encode strings as base64 to avoid any escaping issues
-        old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
-        new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
+        # Create JSON payload with file path, old string, and new string
+        # This avoids shell injection via file_path and ARG_MAX limits on strings
+        payload = json.dumps({"path": file_path, "old": old_string, "new": new_string})
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
         # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_b64=old_b64, new_b64=new_b64, replace_all=replace_all)
+        cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64, replace_all=replace_all)
         result = self.execute(cmd)
 
         exit_code = result.exit_code
         output = result.output.strip()
 
-        if exit_code == 1:
-            return EditResult(error=f"Error: String not found in file: '{old_string}'")
-        if exit_code == 2:
-            return EditResult(error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.")
+        # Map exit codes to error messages
+        error_messages = {
+            1: f"Error: String not found in file: '{old_string}'",
+            2: f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
+            3: f"Error: File '{file_path}' not found",
+            4: f"Error: Failed to decode edit payload: {output}",
+        }
+        if exit_code in error_messages:
+            return EditResult(error=error_messages[exit_code])
         if exit_code != 0:
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            return EditResult(error=f"Error editing file (exit code {exit_code}): {output or 'Unknown error'}")
 
         count = int(output)
         # External storage - no files_update needed

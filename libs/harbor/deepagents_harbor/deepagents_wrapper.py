@@ -105,7 +105,7 @@ class DeepAgentsWrapper(BaseAgent):
 
                 # Build mapping from instruction to example ID
                 for example in examples:
-                    instruction = example.inputs.get("instruction")
+                    instruction = example.inputs.get("instruction") if example.inputs else None
                     if instruction:
                         self._instruction_to_example_id[instruction] = str(example.id)
             except Exception as e:
@@ -256,7 +256,7 @@ class DeepAgentsWrapper(BaseAgent):
             ) as run_tree:
                 # Invoke deep agent with LangSmith tracing
                 result = await deep_agent.ainvoke(
-                    {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                    {"messages": [{"role": "user", "content": instruction}]},
                     config=config,
                 )
                 # Extract last AI message and add as output
@@ -266,7 +266,7 @@ class DeepAgentsWrapper(BaseAgent):
         else:
             config["metadata"] = metadata
             result = await deep_agent.ainvoke(
-                {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                {"messages": [{"role": "user", "content": instruction}]},
                 config=config,
             )
 

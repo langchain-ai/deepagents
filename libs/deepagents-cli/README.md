@@ -312,8 +312,8 @@ deepagents skills info my-tool --project
 To use skills (e.g., the langgraph-docs skill), just type a request relevant to a skill and the skill will be used automatically.
 
 ```bash
-deepagents 
-"create a agent.py script that implements a LangGraph agent" 
+deepagents
+"create a agent.py script that implements a LangGraph agent"
 ```
 
 Skills follow Anthropic's [progressive disclosure pattern](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) - the agent knows skills exist but only reads full instructions when needed.

@@ -670,7 +670,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [
+test = [
     { name = "build" },
     { name = "langchain-openai" },
     { name = "mypy", specifier = ">=1.18.1,<1.19.0" },
@@ -679,6 +679,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-socket" },
     { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },
+    { name = "pytest-watcher", specifier = ">=0.3.4,<1.0.0" },
     { name = "pytest-xdist" },
     { name = "ruff", specifier = ">=0.12.2,<0.13.0" },
     { name = "twine" },
@@ -710,7 +711,7 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-dev = [
+test = [
     { name = "build" },
     { name = "langchain-openai" },
     { name = "mypy" },
@@ -750,7 +751,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [
+test = [
     { name = "build" },
     { name = "langchain-openai" },
     { name = "mypy", specifier = ">=1.10.0,<2.0.0" },

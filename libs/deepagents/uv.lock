@@ -354,7 +354,7 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-dev = [
+test = [
     { name = "build" },
     { name = "langchain-openai" },
     { name = "mypy" },
@@ -379,7 +379,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [
+test = [
     { name = "build" },
     { name = "langchain-openai" },
     { name = "mypy", specifier = ">=1.18.1,<1.19.0" },

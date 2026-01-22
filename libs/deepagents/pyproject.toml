@@ -24,7 +24,7 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 
 
 [dependency-groups]
-dev = [
+test = [
   "pytest",
   "pytest-cov",
   "pytest-xdist",

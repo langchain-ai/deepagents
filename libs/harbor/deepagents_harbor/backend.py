@@ -133,6 +133,7 @@ awk -v offset={offset} -v limit={limit} '
         content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
         safe_path = shlex.quote(file_path)
 
+        # Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files
         cmd = f"""
 if [ -e {safe_path} ]; then
     echo "Error: File '{file_path}' already exists" >&2
@@ -140,7 +141,9 @@ if [ -e {safe_path} ]; then
 fi
 parent_dir=$(dirname {safe_path})
 mkdir -p "$parent_dir" 2>/dev/null
-echo '{content_b64}' | base64 -d > {safe_path}
+base64 -d > {safe_path} <<'__DEEPAGENTS_EOF__'
+{content_b64}
+__DEEPAGENTS_EOF__
 """
         result = await self.aexecute(cmd)
 
@@ -172,32 +175,42 @@ echo '{content_b64}' | base64 -d > {safe_path}
         safe_path = shlex.quote(file_path)
         replace_all_str = "true" if replace_all else "false"
 
-        # Use a shell script with perl for reliable string replacement
+        # Use heredoc to pass old/new strings via stdin to avoid ARG_MAX limits.
+        # Format: first line is old_b64, second line is new_b64.
+        # The heredoc feeds into the brace group which contains the read commands.
         cmd = f"""
 if [ ! -f {safe_path} ]; then
     exit 3
 fi
 
-old=$(echo '{old_b64}' | base64 -d)
-new=$(echo '{new_b64}' | base64 -d)
+{{
+    # Read base64-encoded strings from heredoc
+    read old_b64
+    read new_b64
+    old=$(echo "$old_b64" | base64 -d)
+    new=$(echo "$new_b64" | base64 -d)
 
-# Count occurrences using grep -F (fixed strings)
-count=$(grep -o -F "$old" {safe_path} | wc -l)
+    # Count occurrences using grep -F (fixed strings)
+    count=$(grep -o -F "$old" {safe_path} | wc -l)
 
-if [ "$count" -eq 0 ]; then
-    exit 1
-elif [ "$count" -gt 1 ] && [ "{replace_all_str}" = "false" ]; then
-    exit 2
-fi
+    if [ "$count" -eq 0 ]; then
+        exit 1
+    elif [ "$count" -gt 1 ] && [ "{replace_all_str}" = "false" ]; then
+        exit 2
+    fi
 
-# Use perl for reliable string replacement (handles special chars)
-if [ "{replace_all_str}" = "true" ]; then
-    perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/g' {safe_path}
-else
-    perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/' {safe_path}
-fi
+    # Use perl for reliable string replacement (handles special chars)
+    if [ "{replace_all_str}" = "true" ]; then
+        perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/g' {safe_path}
+    else
+        perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/' {safe_path}
+    fi
 
-echo "$count"
+    echo "$count"
+}} <<'__DEEPAGENTS_EOF__'
+{old_b64}
+{new_b64}
+__DEEPAGENTS_EOF__
 """
         result = await self.aexecute(cmd)
 

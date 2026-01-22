@@ -1,0 +1,124 @@
+"""Koyeb sandbox backend implementation."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+)
+from deepagents.backends.sandbox import BaseSandbox
+
+if TYPE_CHECKING:
+    from koyeb import Sandbox
+
+
+class KoyebBackend(BaseSandbox):
+    """Koyeb backend implementation conforming to SandboxBackendProtocol.
+
+    This implementation inherits all file operation methods from BaseSandbox
+    and only implements the execute() method using Koyeb's Sandbox API.
+    """
+
+    def __init__(self, sandbox: Sandbox) -> None:
+        """Initialize the KoyebBackend with a Koyeb Sandbox instance.
+
+        Args:
+            sandbox: Koyeb Sandbox instance
+        """
+        self._sandbox = sandbox
+        self._timeout: int = 30 * 60  # 30 mins
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend."""
+        return self._sandbox.id
+
+    def execute(
+        self,
+        command: str,
+    ) -> ExecuteResponse:
+        """Execute a command in the sandbox and return ExecuteResponse.
+
+        Args:
+            command: Full shell command string to execute.
+
+        Returns:
+            ExecuteResponse with combined output, exit code, and truncation flag.
+        """
+        # Execute command using Koyeb's exec API
+        result = self._sandbox.exec(command, timeout=self._timeout)
+
+        # Koyeb's CommandResult combines stdout and stderr via the output property
+        return ExecuteResponse(
+            output=result.output,
+            exit_code=result.exit_code,
+            truncated=False,  # Koyeb doesn't provide truncation info
+        )
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the Koyeb sandbox.
+
+        Supports partial success - individual downloads may fail without
+        affecting others.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+
+        TODO: Implement proper error handling with standardized FileOperationError codes.
+        Need to determine what exceptions Koyeb's filesystem.read_file() raises.
+        Currently only implements happy path.
+        """
+        responses = []
+        for path in paths:
+            # Try base64 first (handles both binary and text files stored with base64)
+            # Fall back to UTF-8 for files explicitly written as text
+            try:
+                file_info = self._sandbox.filesystem.read_file(path, encoding="base64")
+                # Koyeb's base64 encoding returns the decoded bytes
+                content = file_info.content if isinstance(file_info.content, bytes) else file_info.content.encode()
+                responses.append(FileDownloadResponse(path=path, content=content, error=None))
+            except Exception:
+                # Fall back to UTF-8 for text files
+                file_info = self._sandbox.filesystem.read_file(path, encoding="utf-8")
+                # Convert string content to bytes
+                content = file_info.content.encode('utf-8') if isinstance(file_info.content, str) else file_info.content
+                responses.append(FileDownloadResponse(path=path, content=content, error=None))
+        return responses
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the Koyeb sandbox.
+
+        Supports partial success - individual uploads may fail without
+        affecting others.
+
+        Args:
+            files: List of (path, content) tuples to upload.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order.
+
+        TODO: Implement proper error handling with standardized FileOperationError codes.
+        Need to determine what exceptions Koyeb's filesystem.write_file() raises.
+        Currently only implements happy path.
+        """
+        responses = []
+        for path, content in files:
+            # Try to decode as UTF-8 text; if successful, write as text
+            # Otherwise, use base64 encoding for binary content
+            try:
+                text_content = content.decode('utf-8')
+                # Successfully decoded as UTF-8, write as text
+                self._sandbox.filesystem.write_file(path, text_content, encoding="utf-8")
+            except UnicodeDecodeError:
+                # Binary content that can't be decoded as UTF-8, use base64
+                self._sandbox.filesystem.write_file(path, content, encoding="base64")
+            responses.append(FileUploadResponse(path=path, error=None))
+        return responses

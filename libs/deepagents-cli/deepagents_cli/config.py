@@ -558,7 +558,7 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
 
     # Warn about potentially limited context (< 8k tokens)
     max_input_tokens = profile.get("max_input_tokens")
-    if max_input_tokens and max_input_tokens < 8000:
+    if max_input_tokens and max_input_tokens < 8000:  # noqa: PLR2004
         console.print(
             f"[dim][yellow]Warning:[/yellow] Model '{model_name}' has limited context "
             f"({max_input_tokens:,} tokens). Agent performance may be affected.[/dim]"

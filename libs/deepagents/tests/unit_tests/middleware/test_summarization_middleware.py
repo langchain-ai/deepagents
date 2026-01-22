@@ -1108,3 +1108,692 @@ class TestCutoffIndexEdgeCases:
         assert result is None
         # No writes should occur
         assert len(backend.write_calls) == 0
+
+
+# -----------------------------------------------------------------------------
+# Argument truncation tests
+# -----------------------------------------------------------------------------
+
+
+def test_no_truncation_when_trigger_is_none() -> None:
+    """Test that no truncation occurs when truncate_args_settings is None."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),  # High threshold, no summarization
+        truncate_args_settings=None,  # Truncation disabled
+    )
+
+    # Create messages with large tool calls
+    large_content = "x" * 200
+    messages = [
+        HumanMessage(content="Write a file", id="h1"),
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    # Should return None (no truncation, no summarization)
+    assert result is None
+
+
+def test_truncate_old_write_file_tool_call() -> None:
+    """Test that old write_file tool calls with large arguments get truncated."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),  # High threshold, no summarization
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 100,
+        },
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        # Old message with write_file tool call (will be cleaned)
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
+
+    # Check that the old tool call was cleaned
+    first_ai_msg = cleaned_messages[0]
+    assert isinstance(first_ai_msg, AIMessage)
+    assert len(first_ai_msg.tool_calls) == 1
+    assert first_ai_msg.tool_calls[0]["name"] == "write_file"
+    # Content should be first 20 chars + truncation text
+    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+def test_truncate_old_edit_file_tool_call() -> None:
+    """Test that old edit_file tool calls with large arguments get truncated."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 50,
+        },
+    )
+
+    large_old_string = "a" * 100
+    large_new_string = "b" * 100
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "edit_file",
+                    "args": {
+                        "file_path": "/test.py",
+                        "old_string": large_old_string,
+                        "new_string": large_new_string,
+                    },
+                }
+            ],
+        ),
+        ToolMessage(content="File edited", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
+
+    first_ai_msg = cleaned_messages[0]
+    assert first_ai_msg.tool_calls[0]["name"] == "edit_file"
+    assert first_ai_msg.tool_calls[0]["args"]["old_string"] == "a" * 20 + "...(argument truncated)"
+    assert first_ai_msg.tool_calls[0]["args"]["new_string"] == "b" * 20 + "...(argument truncated)"
+
+
+def test_truncate_ignores_other_tool_calls() -> None:
+    """Test that tool calls other than write_file and edit_file are not affected."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 50,
+        },
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "read_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File content", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    # Should return None since read_file is not cleaned
+    assert result is None
+
+
+def test_truncate_respects_recent_messages() -> None:
+    """Test that recent messages are not cleaned."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 4),  # Keep last 4 messages
+            "max_length": 100,
+        },
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a1"),
+        # Recent message with write_file (should NOT be cleaned - it's in the last 4)
+        AIMessage(
+            content="",
+            id="a2",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    # No truncation should happen since the tool call is in the keep window (last 4 messages)
+    assert result is None
+
+
+def test_truncate_with_token_keep_policy() -> None:
+    """Test truncation with token-based keep policy."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    # Custom token counter that returns predictable counts
+    def simple_token_counter(msgs: list) -> int:
+        return len(msgs) * 100  # 100 tokens per message
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("tokens", 250),  # Keep ~2-3 messages
+            "max_length": 100,
+        },
+        token_counter=simple_token_counter,
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
+
+    # First message should be cleaned since it's outside the token window
+    first_ai_msg = cleaned_messages[0]
+    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+def test_truncate_with_fraction_trigger_and_keep() -> None:
+    """Test truncation with fraction-based trigger and keep policy."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+    mock_model.profile = {"max_input_tokens": 1000}
+
+    # Custom token counter: 200 tokens per message
+    def token_counter(msgs: list) -> int:
+        return len(msgs) * 200
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),  # High threshold for summarization
+        truncate_args_settings={
+            "trigger": ("fraction", 0.5),  # Trigger at 50% of 1000 = 500 tokens
+            "keep": ("fraction", 0.2),  # Keep 20% of 1000 = 200 tokens (~1 message)
+            "max_length": 100,
+        },
+        token_counter=token_counter,
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Message 1", id="h1"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    # Should trigger truncation: 3 messages * 200 = 600 tokens > 500 threshold
+    # Should keep only ~200 tokens (1 message) from the end
+    # So first 2 messages should be in truncation zone
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
+    first_ai_msg = cleaned_messages[0]
+    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+def test_truncate_before_summarization() -> None:
+    """Test that truncation happens before summarization."""
+    backend = MockBackend()
+    mock_model = make_mock_model(summary_response="Test summary")
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 10),  # Trigger summarization
+        keep=("messages", 2),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 3),
+            "max_length": 100,
+        },
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        # Old message that will be cleaned and summarized
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+    ] + [HumanMessage(content=f"Message {i}", id=f"h{i}") for i in range(10)]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    with mock_get_config(thread_id="test-thread"):
+        result = middleware.before_model(state, runtime)
+
+    assert result is not None
+
+    # Should have triggered both truncation and summarization
+    # Backend should have received a write call for offloading
+    assert len(backend.write_calls) == 1
+
+    # Result should contain summary message (skip RemoveMessage at index 0)
+    new_messages = result["messages"][1:]
+    assert any("summary" in str(msg.content).lower() for msg in new_messages)
+
+
+def test_truncate_without_summarization() -> None:
+    """Test that truncation can happen independently of summarization."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),  # High threshold, no summarization
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 100,
+        },
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    assert result is not None
+
+    # No backend write (no summarization)
+    assert len(backend.write_calls) == 0
+
+    # But truncation should have happened
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
+    first_ai_msg = cleaned_messages[0]
+    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+def test_truncate_preserves_small_arguments() -> None:
+    """Test that small arguments are not truncated even in old messages."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 100,
+        },
+    )
+
+    small_content = "short"
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": small_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    # No modification should happen since content is small
+    assert result is None
+
+
+def test_truncate_mixed_tool_calls() -> None:
+    """Test that only write_file and edit_file are cleaned in a message with multiple tool calls."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 50,
+        },
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "read_file",
+                    "args": {"file_path": "/test.txt"},
+                },
+                {
+                    "id": "tc2",
+                    "name": "write_file",
+                    "args": {"file_path": "/output.txt", "content": large_content},
+                },
+                {
+                    "id": "tc3",
+                    "name": "shell",
+                    "args": {"command": "ls -la"},
+                },
+            ],
+        ),
+        ToolMessage(content="File content", tool_call_id="tc1", id="t1"),
+        ToolMessage(content="File written", tool_call_id="tc2", id="t2"),
+        ToolMessage(content="Output", tool_call_id="tc3", id="t3"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
+
+    first_ai_msg = cleaned_messages[0]
+    assert len(first_ai_msg.tool_calls) == 3  # noqa: PLR2004
+
+    # read_file should be unchanged
+    assert first_ai_msg.tool_calls[0]["name"] == "read_file"
+    assert first_ai_msg.tool_calls[0]["args"]["file_path"] == "/test.txt"
+
+    # write_file should be cleaned
+    assert first_ai_msg.tool_calls[1]["name"] == "write_file"
+    assert first_ai_msg.tool_calls[1]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+    # shell should be unchanged
+    assert first_ai_msg.tool_calls[2]["name"] == "shell"
+    assert first_ai_msg.tool_calls[2]["args"]["command"] == "ls -la"
+
+
+def test_truncate_custom_truncation_text() -> None:
+    """Test that custom truncation text is used."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 50,
+            "truncation_text": "[TRUNCATED]",
+        },
+    )
+
+    large_content = "y" * 100
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = middleware.before_model(state, runtime)
+
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
+
+    first_ai_msg = cleaned_messages[0]
+    assert first_ai_msg.tool_calls[0]["args"]["content"] == "y" * 20 + "[TRUNCATED]"
+
+
+@pytest.mark.anyio
+async def test_truncate_async_works() -> None:
+    """Test that async argument truncation works correctly."""
+    backend = MockBackend()
+    mock_model = make_mock_model()
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        truncate_args_settings={
+            "trigger": ("messages", 5),
+            "keep": ("messages", 2),
+            "max_length": 100,
+        },
+    )
+
+    large_content = "x" * 200
+
+    messages = [
+        AIMessage(
+            content="",
+            id="a1",
+            tool_calls=[
+                {
+                    "id": "tc1",
+                    "name": "write_file",
+                    "args": {"file_path": "/test.txt", "content": large_content},
+                }
+            ],
+        ),
+        ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+        HumanMessage(content="Request 1", id="h1"),
+        AIMessage(content="Response 1", id="a2"),
+        HumanMessage(content="Request 2", id="h2"),
+        AIMessage(content="Response 2", id="a3"),
+    ]
+
+    state = {"messages": messages}
+    runtime = make_mock_runtime()
+
+    result = await middleware.abefore_model(state, runtime)
+
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
+
+    first_ai_msg = cleaned_messages[0]
+    assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"

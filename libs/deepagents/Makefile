@@ -1,4 +1,4 @@
-.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports
+.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests lint_imports coverage
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -16,6 +16,13 @@ integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test tests:
 	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
+
+coverage:
+	uv run --group test pytest --cov \
+		--cov-config=.coveragerc \
+		--cov-report xml \
+		--cov-report term-missing:skip-covered \
+		$(TEST_FILE)
 
 integration_test integration_tests:
 	uv run --group test --group test_integration pytest -n auto -vvv --timeout 30 $(TEST_FILE)
@@ -52,8 +59,8 @@ format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check --fix $(PYTHON_FILES)
 
-check_imports: $(shell find deepagents -name '*.py')
-	uv run --all-groups python ./scripts/check_imports.py $^
+lint_imports: $(shell find deepagents -name '*.py')
+	uv run --all-groups python ./scripts/lint_imports.py $^
 
 ######################
 # HELP
@@ -61,9 +68,10 @@ check_imports: $(shell find deepagents -name '*.py')
 
 help:
 	@echo '----'
-	@echo 'check_imports                - check imports'
+	@echo 'coverage                     - run unit tests and generate coverage report'
 	@echo 'format                       - run code formatters'
 	@echo 'lint                         - run linters'
+	@echo 'lint_imports                 - check imports'
 	@echo 'lint_package                 - lint only the package'
 	@echo 'lint_tests                   - lint only tests'
 	@echo 'test                         - run unit tests'

@@ -441,9 +441,6 @@ class DeepAgentsApp(App):
         # Store reference
         self._pending_approval_widget = menu
 
-        # Update status to show we're waiting for approval
-        self._update_status("Waiting for approval...")
-
         # Mount approval inline in messages area (not replacing ChatInput)
         try:
             messages = self.query_one("#messages", Container)
@@ -499,9 +496,6 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             await self._pending_approval_widget.remove()
             self._pending_approval_widget = None
-
-        # Clear status message
-        self._update_status("")
 
         # Refocus the chat input
         if self._chat_input:

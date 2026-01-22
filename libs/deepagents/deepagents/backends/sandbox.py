@@ -73,19 +73,22 @@ with open(file_path, 'w') as f:
 __DEEPAGENTS_EOF__"""
 
 # Use heredoc to pass old/new strings via stdin to avoid ARG_MAX limits
-# Stdin format: first line is old_b64, second line is new_b64
+# Stdin format: base64-encoded JSON with {"old": str, "new": str}
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys
 import base64
+import json
 
 # Read file content
 with open('{file_path}', 'r') as f:
     text = f.read()
 
-# Read base64-encoded strings from stdin (old on first line, new on second)
-lines = sys.stdin.read().strip().split('\\n')
-old = base64.b64decode(lines[0]).decode('utf-8')
-new = base64.b64decode(lines[1]).decode('utf-8')
+# Read and decode JSON payload from stdin
+payload_b64 = sys.stdin.read().strip()
+payload = base64.b64decode(payload_b64).decode('utf-8')
+data = json.loads(payload)
+old = data['old']
+new = data['new']
 
 # Count occurrences
 count = text.count(old)
@@ -108,8 +111,7 @@ with open('{file_path}', 'w') as f:
 
 print(count)
 " <<'__DEEPAGENTS_EOF__'
-{old_b64}
-{new_b64}
+{payload_b64}
 __DEEPAGENTS_EOF__"""
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
@@ -254,12 +256,12 @@ except PermissionError:
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
-        # Encode strings as base64 to avoid any escaping issues
-        old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
-        new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
+        # Create JSON payload with old and new strings
+        payload = json.dumps({"old": old_string, "new": new_string})
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
         # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_b64=old_b64, new_b64=new_b64, replace_all=replace_all)
+        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, payload_b64=payload_b64, replace_all=replace_all)
         result = self.execute(cmd)
 
         exit_code = result.exit_code

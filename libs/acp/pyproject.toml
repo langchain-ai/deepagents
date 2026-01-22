@@ -58,7 +58,7 @@ deepacp = "deepagents_acp.server:cli_main"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "TID252"]
 ignore = []
 
 [tool.ruff.lint.isort]

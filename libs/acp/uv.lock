@@ -310,8 +310,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "batrachian-toad" },
-]
-test = [
     { name = "dirty-equals" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -330,8 +328,8 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "batrachian-toad", specifier = ">=0.5.2" }]
-test = [
+dev = [
+    { name = "batrachian-toad", specifier = ">=0.5.2" },
     { name = "dirty-equals", specifier = ">=0.11" },
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-asyncio", specifier = ">=0.25.3" },

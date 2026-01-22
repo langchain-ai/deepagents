@@ -51,20 +51,20 @@ lint format: PYTHON_FILES=deepagents_harbor/ tests/
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
 
 lint lint_diff:
-	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff format $(PYTHON_FILES) --diff
+	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group dev ruff format $(PYTHON_FILES) --diff
 	@if [ "$(LINT)" != "minimal" ]; then \
 		if [ "$(PYTHON_FILES)" != "" ]; then \
-			uv run --group test ruff check $(PYTHON_FILES) --diff; \
+			uv run --group dev ruff check $(PYTHON_FILES) --diff; \
 		fi; \
 	fi
-	# [ "$(PYTHON_FILES)" = "" ] || uv run --group test mypy $(PYTHON_FILES)
+	# [ "$(PYTHON_FILES)" = "" ] || uv run --group dev mypy $(PYTHON_FILES)
 
 format format_diff:
-	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff format $(PYTHON_FILES)
-	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff check --fix $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group dev ruff format $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group dev ruff check --fix $(PYTHON_FILES)
 
 format_unsafe:
-	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff format --unsafe-fixes $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group dev ruff format --unsafe-fixes $(PYTHON_FILES)
 
 
 ######################

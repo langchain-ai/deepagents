@@ -21,11 +21,10 @@ from pydantic import TypeAdapter, ValidationError
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
-from deepagents_cli.ui import format_tool_display, format_tool_message_content
+from deepagents_cli.ui import format_tool_message_content
 from deepagents_cli.widgets.messages import (
     AssistantMessage,
     DiffMessage,
-    ErrorMessage,
     SystemMessage,
     ToolCallMessage,
 )
@@ -211,8 +210,7 @@ async def execute_task_textual(
     captured_input_tokens = 0
     captured_output_tokens = 0
 
-    # Update status to show thinking and show spinner
-    adapter._update_status("Agent is thinking...")
+    # Show thinking spinner
     if adapter._show_thinking:
         await adapter._show_thinking()
 
@@ -296,9 +294,8 @@ async def execute_task_textual(
 
                     message, _metadata = data
 
-                    # Filter out summarization LLM output & update status to reflect
+                    # Filter out summarization LLM output
                     if _is_summarization_chunk(_metadata):
-                        adapter._update_status("Summarizing conversation...")
                         continue
 
                     if isinstance(message, HumanMessage):
@@ -318,7 +315,6 @@ async def execute_task_textual(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        adapter._update_status("Agent is thinking...")
                         # Reshow thinking spinner after tool result
                         if adapter._show_thinking:
                             await adapter._show_thinking()
@@ -334,17 +330,6 @@ async def execute_task_textual(
                                 tool_msg.set_error(output_str or "Error")
                             # Clean up - remove from tracking dict after status update
                             del adapter._current_tool_messages[tool_id]
-
-                        # Show shell errors
-                        if tool_name == "shell" and tool_status != "success":
-                            pending_text = pending_text_by_namespace.get(ns_key, "")
-                            if pending_text:
-                                await _flush_assistant_text_ns(
-                                    adapter, pending_text, ns_key, assistant_message_by_namespace
-                                )
-                                pending_text_by_namespace[ns_key] = ""
-                            if tool_content:
-                                await adapter._mount_message(ErrorMessage(str(tool_content)))
 
                         # Show file operation results - always show diffs in chat
                         if record:
@@ -398,7 +383,6 @@ async def execute_task_textual(
                                     # Hide thinking spinner when assistant starts responding
                                     if adapter._hide_thinking:
                                         await adapter._hide_thinking()
-                                    adapter._update_status("")
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
@@ -489,8 +473,6 @@ async def execute_task_textual(
                                 adapter._current_tool_messages[buffer_id] = tool_msg
 
                             tool_call_buffers.pop(buffer_key, None)
-                            display_str = format_tool_display(buffer_name, parsed_args)
-                            adapter._update_status(f"Executing {display_str}...")
 
                     if getattr(message, "chunk_position", None) == "last":
                         pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -615,8 +597,6 @@ async def execute_task_textual(
                 break
 
     except asyncio.CancelledError:
-        adapter._update_status("Interrupted")
-
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected
@@ -649,8 +629,6 @@ async def execute_task_textual(
         return
 
     except KeyboardInterrupt:
-        adapter._update_status("Interrupted")
-
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected
@@ -681,8 +659,6 @@ async def execute_task_textual(
             else:
                 adapter._token_tracker.show()  # Restore previous value
         return
-
-    adapter._update_status("Ready")
 
     # Update token tracker
     if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):

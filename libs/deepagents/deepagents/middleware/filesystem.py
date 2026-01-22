@@ -777,7 +777,7 @@ def _execute_tool_generator(
 #    its search criteria instead.
 #
 # 2. Tools with problematic truncation behavior (read_file):
-#    read_file is tricky to handle as the failure mode here are single long lines
+#    read_file is tricky to handle as the failure mode here is single long lines
 #    (e.g., imagine a jsonl file with very long payloads on each line). If we try to
 #    truncate the result of read_file, the agent may then attempt to re-read the
 #    truncated file using read_file again, which won't help.

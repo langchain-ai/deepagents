@@ -38,6 +38,7 @@ dev = [
     "pytest-mock>=3.14.0",
     "pytest-socket>=0.7.0",
     "pytest-timeout>=2.3.1",
+    "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.9.7",
 ]
 

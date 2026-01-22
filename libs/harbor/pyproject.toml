@@ -20,6 +20,7 @@ dependencies = [
 dev = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.8.0",
     "python-dotenv>=1.0.0",
     "pytest-socket>=0.7.0",

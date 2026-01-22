@@ -31,7 +31,7 @@ deepagents = "deepagents_cli:cli_main"
 deepagents-cli = "deepagents_cli:cli_main"
 
 [dependency-groups]
-test = [
+dev = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
@@ -41,26 +41,11 @@ test = [
     "pytest-watcher>=0.3.4,<1.0.0",
     "pytest-xdist>=3.8.0,<4.0.0",
     "responses>=0.25.0",
-]
-test_integration = []
-
-lint = [
-    "ruff>=0.9.7",
-]
-
-typing = [
-    "mypy>=1.10.0,<2.0.0",
-]
-
-dev = [
-    "pytest",
-    "pytest-cov",
     "build",
     "twine",
     "langchain-openai",
-    "pytest-timeout>=2.4.0",
-    "pytest-socket>=0.7.0",
-    "pytest-asyncio>=1.2.0",
+    "ruff>=0.9.7",
+    "mypy>=1.10.0,<2.0.0",
 ]
 
 [build-system]

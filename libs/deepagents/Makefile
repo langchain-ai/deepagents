@@ -15,23 +15,23 @@ TEST_FILE ?= tests/unit_tests/
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 test tests:
-	uv run --group test pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
+	uv run --group dev pytest -vvv --disable-socket --allow-unix-socket $(TEST_FILE)
 
 coverage:
-	uv run --group test pytest --cov \
+	uv run --group dev pytest --cov \
 		--cov-config=.coveragerc \
 		--cov-report xml \
 		--cov-report term-missing:skip-covered \
 		$(TEST_FILE)
 
 integration_test integration_tests:
-	uv run --group test --group test_integration pytest -n auto -vvv --timeout 30 $(TEST_FILE)
+	uv run --group dev pytest -n auto -vvv --timeout 30 $(TEST_FILE)
 
 test_watch:
-	uv run --group test ptw --snapshot-update --now . -- -vv $(TEST_FILE)
+	uv run --group dev ptw --now . -- -vv $(TEST_FILE)
 
 benchmark:
-	uv run --group test pytest ./tests -m benchmark
+	uv run --group dev pytest ./tests -m benchmark
 
 run:
 	uvx --no-cache --reinstall .

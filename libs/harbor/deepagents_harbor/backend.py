@@ -1,6 +1,7 @@
 """Implement harbor backend."""
 
 import base64
+import json
 import shlex
 
 from deepagents.backends.protocol import (
@@ -15,7 +16,11 @@ from harbor.environments.base import BaseEnvironment
 
 
 class HarborSandbox(SandboxBackendProtocol):
-    """A sandbox implementation without assuming that python3 is available."""
+    """A sandbox implementation using shell commands.
+
+    Note: The edit operation requires python3 for JSON parsing. Other operations
+    (read, write, ls, grep, glob) use only standard shell utilities.
+    """
 
     def __init__(self, environment: BaseEnvironment) -> None:
         """Initialize HarborSandbox with the given environment."""
@@ -33,6 +38,7 @@ class HarborSandbox(SandboxBackendProtocol):
         # Filter them from both stdout and stderr, then collect them to show in stderr.
         error_messages = [
             "bash: cannot set terminal process group (-1): Inappropriate ioctl for device",
+            "bash: cannot set terminal process group (1): Inappropriate ioctl for device",
             "bash: no job control in this shell",
             "bash: initialize_job_control: no job control in background: Bad file descriptor",
         ]
@@ -133,6 +139,9 @@ awk -v offset={offset} -v limit={limit} '
         content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
         safe_path = shlex.quote(file_path)
 
+        # Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files.
+        # ARG_MAX limits the total size of command-line arguments.
+        # Heredocs bypass this by passing data through stdin rather than as arguments.
         cmd = f"""
 if [ -e {safe_path} ]; then
     echo "Error: File '{file_path}' already exists" >&2
@@ -140,7 +149,13 @@ if [ -e {safe_path} ]; then
 fi
 parent_dir=$(dirname {safe_path})
 mkdir -p "$parent_dir" 2>/dev/null
-echo '{content_b64}' | base64 -d > {safe_path}
+if ! base64 -d > {safe_path} <<'__DEEPAGENTS_EOF__'
+{content_b64}
+__DEEPAGENTS_EOF__
+then
+    echo "Error: Failed to decode content for file '{file_path}'" >&2
+    exit 1
+fi
 """
         result = await self.aexecute(cmd)
 
@@ -166,38 +181,67 @@ echo '{content_b64}' | base64 -d > {safe_path}
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences using shell commands."""
-        # Encode strings as base64 to avoid escaping issues
-        old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
-        new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
+        # Create JSON payload with old and new strings, then base64 encode
+        payload = json.dumps({"old": old_string, "new": new_string})
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         safe_path = shlex.quote(file_path)
         replace_all_str = "true" if replace_all else "false"
 
-        # Use a shell script with perl for reliable string replacement
+        # Use heredoc to pass old/new strings via stdin to avoid ARG_MAX limits.
+        # ARG_MAX limits the total size of command-line arguments.
+        # Format: base64-encoded JSON with {{"old": str, "new": str}}.
+        # The heredoc feeds into the brace group { ... } which reads and processes stdin.
         cmd = f"""
 if [ ! -f {safe_path} ]; then
     exit 3
 fi
 
-old=$(echo '{old_b64}' | base64 -d)
-new=$(echo '{new_b64}' | base64 -d)
+{{
+    # Read entire heredoc content using cat (read only gets first line)
+    payload_b64=$(cat)
+    if [ -z "$payload_b64" ]; then
+        echo "Error: No payload received for edit operation" >&2
+        exit 4
+    fi
 
-# Count occurrences using grep -F (fixed strings)
-count=$(grep -o -F "$old" {safe_path} | wc -l)
+    # Decode base64 payload
+    payload=$(echo "$payload_b64" | base64 -d) || {{
+        echo "Error: Failed to decode payload" >&2
+        exit 4
+    }}
 
-if [ "$count" -eq 0 ]; then
-    exit 1
-elif [ "$count" -gt 1 ] && [ "{replace_all_str}" = "false" ]; then
-    exit 2
-fi
+    # Extract old and new strings from JSON using python3
+    old=$(echo "$payload" | python3 -c "import sys, json; print(json.load(sys.stdin)['old'], end='')") || {{
+        echo "Error: Failed to parse JSON payload" >&2
+        exit 4
+    }}
+    new=$(echo "$payload" | python3 -c "import sys, json; print(json.load(sys.stdin)['new'], end='')") || {{
+        echo "Error: Failed to parse JSON payload" >&2
+        exit 4
+    }}
 
-# Use perl for reliable string replacement (handles special chars)
-if [ "{replace_all_str}" = "true" ]; then
-    perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/g' {safe_path}
-else
-    perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/' {safe_path}
-fi
+    # Count occurrences using grep -F (fixed strings)
+    count=$(grep -o -F "$old" {safe_path} | wc -l)
 
-echo "$count"
+    if [ "$count" -eq 0 ]; then
+        exit 1
+    elif [ "$count" -gt 1 ] && [ "{replace_all_str}" = "false" ]; then
+        exit 2
+    fi
+
+    # Use perl for reliable string replacement (handles special chars).
+    # Note: \\Q...\\E escapes the search pattern. The replacement string is not
+    # escaped, so Perl special sequences (\\U, $1, etc.) in new will be interpreted.
+    if [ "{replace_all_str}" = "true" ]; then
+        perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/g' {safe_path}
+    else
+        perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/' {safe_path}
+    fi
+
+    echo "$count"
+}} <<'__DEEPAGENTS_EOF__'
+{payload_b64}
+__DEEPAGENTS_EOF__
 """
         result = await self.aexecute(cmd)
 
@@ -212,8 +256,12 @@ echo "$count"
             )
         if exit_code == 3:
             return EditResult(error=f"Error: File '{file_path}' not found")
+        if exit_code == 4:
+            return EditResult(error=f"Error: Failed to decode edit payload: {output}")
         if exit_code != 0:
-            return EditResult(error=f"Error editing file: {output}")
+            return EditResult(
+                error=f"Error editing file (exit code {exit_code}): {output or 'Unknown error'}"
+            )
 
         try:
             count = int(output.split("\n")[0])

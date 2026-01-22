@@ -25,8 +25,8 @@ class TestSandboxOperations:
 
     @pytest.fixture(scope="class")
     def sandbox(self) -> Iterator[SandboxBackendProtocol]:
-        """Provide a single sandbox instance for all tests."""
-        with create_sandbox("runloop") as sandbox:
+        """Provide a single Daytona sandbox instance for all tests."""
+        with create_sandbox("daytona") as sandbox:
             yield sandbox
 
     @pytest.fixture(autouse=True)
@@ -532,6 +532,15 @@ class TestSandboxOperations:
 
     # ==================== ls_info() tests ====================
 
+    def test_ls_info_path_is_absolute(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test that files returned from ls_info have absolute paths."""
+        base_dir = "/tmp/test_sandbox_ops/ls_absolute"
+        sandbox.execute(f"mkdir -p {base_dir}")
+        sandbox.write(f"{base_dir}/file.txt", "content")
+        result = sandbox.ls_info(base_dir)
+        assert len(result) == 1
+        assert result[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
+
     def test_ls_info_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory with files and subdirectories."""
         base_dir = "/tmp/test_sandbox_ops/ls_test"
@@ -544,12 +553,12 @@ class TestSandboxOperations:
 
         assert len(result) == 3
         paths = [info["path"] for info in result]
-        assert "file1.txt" in paths
-        assert "file2.txt" in paths
-        assert "subdir" in paths
+        assert f"{base_dir}/file1.txt" in paths
+        assert f"{base_dir}/file2.txt" in paths
+        assert f"{base_dir}/subdir" in paths
         # Check is_dir flag
         for info in result:
-            if info["path"] == "subdir":
+            if info["path"] == f"{base_dir}/subdir":
                 assert info["is_dir"] is True
             else:
                 assert info["is_dir"] is False
@@ -581,8 +590,8 @@ class TestSandboxOperations:
         result = sandbox.ls_info(base_dir)
 
         paths = [info["path"] for info in result]
-        assert ".hidden" in paths
-        assert "visible.txt" in paths
+        assert f"{base_dir}/.hidden" in paths
+        assert f"{base_dir}/visible.txt" in paths
 
     def test_ls_info_directory_with_spaces(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing a directory that has spaces in file/dir names."""
@@ -594,8 +603,8 @@ class TestSandboxOperations:
         result = sandbox.ls_info(base_dir)
 
         paths = [info["path"] for info in result]
-        assert "file with spaces.txt" in paths
-        assert "dir with spaces" in paths
+        assert f"{base_dir}/file with spaces.txt" in paths
+        assert f"{base_dir}/dir with spaces" in paths
 
     def test_ls_info_unicode_filenames(self, sandbox: SandboxBackendProtocol) -> None:
         """Test listing directory with unicode filenames."""
@@ -614,18 +623,19 @@ class TestSandboxOperations:
         """Test listing a directory with many files."""
         base_dir = "/tmp/test_sandbox_ops/ls_large"
         # Create 50 files in a single command (much faster than loop)
+        # Note: Using $(seq 0 49) instead of {0..49} for better shell compatibility
         sandbox.execute(
             f"mkdir -p {base_dir} && "
             f"cd {base_dir} && "
-            f"for i in {{0..49}}; do echo 'content' > file_$(printf '%03d' $i).txt; done"
+            f"for i in $(seq 0 49); do echo 'content' > file_$(printf '%03d' $i).txt; done"
         )
 
         result = sandbox.ls_info(base_dir)
 
         assert len(result) == 50
         paths = [info["path"] for info in result]
-        assert "file_000.txt" in paths
-        assert "file_049.txt" in paths
+        assert f"{base_dir}/file_000.txt" in paths
+        assert f"{base_dir}/file_049.txt" in paths
 
     def test_ls_info_path_with_trailing_slash(self, sandbox: SandboxBackendProtocol) -> None:
         """Test that trailing slash in path is handled correctly."""
@@ -651,9 +661,9 @@ class TestSandboxOperations:
         result = sandbox.ls_info(base_dir)
 
         paths = [info["path"] for info in result]
-        assert "file(1).txt" in paths
-        assert "file[2].txt" in paths
-        assert "file-3.txt" in paths
+        assert f"{base_dir}/file(1).txt" in paths
+        assert f"{base_dir}/file[2].txt" in paths
+        assert f"{base_dir}/file-3.txt" in paths
 
     # ==================== grep_raw() tests ====================
 
@@ -1006,9 +1016,9 @@ class TestSandboxOperations:
         # List root directory
         ls_result = sandbox.ls_info(base_dir)
         paths = [info["path"] for info in ls_result]
-        assert "root.txt" in paths
-        assert "subdir1" in paths
-        assert "subdir2" in paths
+        assert f"{base_dir}/root.txt" in paths
+        assert f"{base_dir}/subdir1" in paths
+        assert f"{base_dir}/subdir2" in paths
 
         # Glob for txt files
         glob_result = sandbox.glob_info("**/*.txt", path=base_dir)

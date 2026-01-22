@@ -1,13 +1,13 @@
 [project]
 name = "deepagents"
-version = "0.3.5"
+version = "0.3.8"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "langchain-core>=1.2.6,<2.0.0",
-    "langchain>=1.2.3,<2.0.0",
+    "langchain>=1.2.4,<2.0.0",
     "langchain-anthropic>=1.3.1,<2.0.0",
     "langchain-google-genai>=4.1.3,<5.0.0",
     "wcmatch",
@@ -28,12 +28,12 @@ test = [
   "pytest",
   "pytest-cov",
   "pytest-xdist",
+  "pytest-timeout>=2.3.1,<3.0.0",
+  "pytest-socket",
+  "pytest-watcher>=0.3.4,<1.0.0",
   "ruff>=0.12.2,<0.13.0",
-  "mypy>=1.18.1,<1.19.0",
+  "ty>=0.0.1,<1.0.0",
   "pytest-asyncio>=1.3.0",
-]
-
-dev = [
   "langchain-openai",
   "twine",
   "build",
@@ -75,6 +75,11 @@ keep-runtime-typing = true
 
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"  # Google-style docstrings
@@ -122,14 +127,7 @@ ignore-var-parameters = true
 "tests/unit_tests/test_subagents.py" = ["PLR2004"]
 "tests/unit_tests/test_todo_middleware.py" = ["E501", "PLR2004"]
 "tests/utils.py" = ["ANN001", "ANN201", "RUF012", "SIM118"]
-
-[tool.mypy]
-strict = true
-ignore_missing_imports = true
-enable_error_code = ["deprecated"]
-# Optional: reduce strictness if needed
-disallow_any_generics = false
-warn_return_any = false
+"scripts/check_imports.py" = ["INP001", "BLE001"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

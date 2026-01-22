@@ -1,0 +1,16 @@
+[project]
+name = "content-builder-agent"
+version = "0.1.0"
+description = "A content writer agent configured entirely through files on disk"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.3.5",
+    "google-genai>=1.0.0",
+    "pillow>=10.0.0",
+    "pyyaml>=6.0.0",
+    "rich>=13.0.0",
+    "tavily-python>=0.5.0",
+]
+
+[dependency-groups]
+dev = []

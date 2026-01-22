@@ -1,6 +1,7 @@
 """Implement harbor backend."""
 
 import base64
+import json
 import shlex
 
 from deepagents.backends.protocol import (
@@ -170,14 +171,14 @@ __DEEPAGENTS_EOF__
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences using shell commands."""
-        # Encode strings as base64 to avoid escaping issues
-        old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
-        new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
+        # Create JSON payload with old and new strings, then base64 encode
+        payload = json.dumps({"old": old_string, "new": new_string})
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         safe_path = shlex.quote(file_path)
         replace_all_str = "true" if replace_all else "false"
 
         # Use heredoc to pass old/new strings via stdin to avoid ARG_MAX limits.
-        # Format: first line is old_b64, second line is new_b64.
+        # Format: base64-encoded JSON with {{"old": str, "new": str}}.
         # The heredoc feeds into the brace group which contains the read commands.
         cmd = f"""
 if [ ! -f {safe_path} ]; then
@@ -185,11 +186,11 @@ if [ ! -f {safe_path} ]; then
 fi
 
 {{
-    # Read base64-encoded strings from heredoc
-    read old_b64
-    read new_b64
-    old=$(echo "$old_b64" | base64 -d)
-    new=$(echo "$new_b64" | base64 -d)
+    # Read and decode JSON payload from heredoc
+    read payload_b64
+    payload=$(echo "$payload_b64" | base64 -d)
+    old=$(echo "$payload" | python3 -c "import sys, json; print(json.load(sys.stdin)['old'], end='')")
+    new=$(echo "$payload" | python3 -c "import sys, json; print(json.load(sys.stdin)['new'], end='')")
 
     # Count occurrences using grep -F (fixed strings)
     count=$(grep -o -F "$old" {safe_path} | wc -l)
@@ -209,8 +210,7 @@ fi
 
     echo "$count"
 }} <<'__DEEPAGENTS_EOF__'
-{old_b64}
-{new_b64}
+{payload_b64}
 __DEEPAGENTS_EOF__
 """
         result = await self.aexecute(cmd)

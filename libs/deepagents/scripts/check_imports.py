@@ -1,5 +1,15 @@
-"""Script to check for import errors in specified Python files."""
+"""Check imports script.
 
+Quickly verify that a list of Python files can be loaded by the Python interpreter
+without raising any errors. Ran before running more expensive tests. Useful in
+Makefiles.
+
+If loading a file fails, the script prints the problematic filename and the detailed
+error traceback.
+"""
+
+import random
+import string
 import sys
 import traceback
 from importlib.machinery import SourceFileLoader
@@ -9,7 +19,8 @@ if __name__ == "__main__":
     has_failure = False
     for file in files:
         try:
-            SourceFileLoader("x", file).load_module()
+            module_name = "".join(random.choice(string.ascii_letters) for _ in range(20))  # noqa: S311
+            SourceFileLoader(module_name, file).load_module()
         except Exception:
             has_failure = True
             print(file)  # noqa: T201

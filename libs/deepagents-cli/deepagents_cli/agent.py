@@ -97,7 +97,7 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
 
     Args:
         assistant_id: The agent identifier for path references
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona", "koyeb").
                      If None, agent is operating in local mode.
 
     Returns:
@@ -345,7 +345,7 @@ def create_cli_agent(
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
                  If None, uses local filesystem + shell.
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona", "koyeb").
                      Used for system prompt generation.
         system_prompt: Override the default system prompt. If None, generates one
                       based on sandbox_type and assistant_id.

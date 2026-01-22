@@ -708,6 +708,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "daytona" },
     { name = "deepagents" },
+    { name = "koyeb-sdk" },
     { name = "langchain" },
     { name = "langchain-openai" },
     { name = "langgraph-checkpoint-sqlite" },
@@ -756,6 +757,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0" },
     { name = "daytona", specifier = ">=0.113.0" },
     { name = "deepagents", editable = "../deepagents" },
+    { name = "koyeb-sdk", specifier = ">=1.2.2" },
     { name = "langchain", specifier = ">=1.2.3,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.1.7,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
@@ -1294,6 +1296,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/43/4b/674af6ef2f97d56f0ab5153bf0bfa28ccb6c3ed4d1babf4305449668807b/keyring-25.7.0.tar.gz", hash = "sha256:fe01bd85eb3f8fb3dd0405defdeac9a5b4f6f0439edbb3149577f244a2e8245b", size = 63516, upload-time = "2025-11-16T16:26:09.482Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/db/e655086b7f3a705df045bf0933bdd9c2f79bb3c97bfef1384598bb79a217/keyring-25.7.0-py3-none-any.whl", hash = "sha256:be4a0b195f149690c166e850609a477c532ddbfbaed96a404d4e43f8d5e2689f", size = 39160, upload-time = "2025-11-16T16:26:08.402Z" },
+]
+
+[[package]]
+name = "koyeb-sdk"
+version = "1.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "python-dateutil" },
+    { name = "requests" },
+    { name = "typing-extensions" },
+    { name = "urllib3" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/de/bb/72b71e68f433561687cab085f4c6500bca880b128ef3c5f9c59f4312dcee/koyeb_sdk-1.2.2.tar.gz", hash = "sha256:9915b72d7567c40993799b1216776e24dd725ca088018107cb698ff08878f41b", size = 283205, upload-time = "2026-01-05T15:00:52.803Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/7e/c05ed678a586e755595b324f4eef428f40c329b790d26dfa182d4d133f75/koyeb_sdk-1.2.2-py3-none-any.whl", hash = "sha256:c99a437db7dd464706cbe9beef2af05c887ed407fa5eaddbe035aa29aeef8461", size = 1064835, upload-time = "2026-01-05T15:00:50.647Z" },
 ]
 
 [[package]]

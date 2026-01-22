@@ -16,6 +16,7 @@ dependencies = [
   "tavily-python",
   "python-dotenv",
   "daytona>=0.113.0",
+  "koyeb-sdk>=1.2.2",
   "modal>=0.65.0",
   "markdownify>=0.13.0",
   "runloop-api-client>=0.69.0",

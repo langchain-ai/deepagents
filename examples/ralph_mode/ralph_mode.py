@@ -27,7 +27,7 @@ from deepagents_cli.ui import TokenTracker
 async def ralph(task: str, max_iterations: int = 0, model_name: str = None):
     """Run agent in Ralph loop with beautiful CLI output."""
     work_dir = tempfile.mkdtemp(prefix="ralph-")
-    
+
     model = create_model(model_name)
     agent, backend = create_cli_agent(
         model=model,
@@ -37,19 +37,19 @@ async def ralph(task: str, max_iterations: int = 0, model_name: str = None):
     )
     session_state = SessionState(auto_approve=True)
     token_tracker = TokenTracker()
-    
+
     console.print(f"\n[bold {COLORS['primary']}]Ralph Mode[/bold {COLORS['primary']}]")
     console.print(f"[dim]Task: {task}[/dim]")
     console.print(f"[dim]Iterations: {'unlimited (Ctrl+C to stop)' if max_iterations == 0 else max_iterations}[/dim]")
     console.print(f"[dim]Working directory: {work_dir}[/dim]\n")
-    
+
     iteration = 1
     try:
         while max_iterations == 0 or iteration <= max_iterations:
             console.print(f"\n[bold cyan]{'='*60}[/bold cyan]")
             console.print(f"[bold cyan]RALPH ITERATION {iteration}[/bold cyan]")
             console.print(f"[bold cyan]{'='*60}[/bold cyan]\n")
-            
+
             iter_display = f"{iteration}/{max_iterations}" if max_iterations > 0 else str(iteration)
             prompt = f"""## Iteration {iter_display}
 
@@ -68,13 +68,13 @@ Make progress. You'll be called again."""
                 token_tracker,
                 backend=backend,
             )
-            
+
             console.print(f"\n[dim]...continuing to iteration {iteration + 1}[/dim]")
             iteration += 1
-            
+
     except KeyboardInterrupt:
         console.print(f"\n[bold yellow]Stopped after {iteration} iterations[/bold yellow]")
-    
+
     # Show created files
     console.print(f"\n[bold]Files created in {work_dir}:[/bold]")
     for f in sorted(Path(work_dir).rglob("*")):

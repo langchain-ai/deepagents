@@ -19,8 +19,8 @@ from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
-from .config import COLORS, COMMANDS, SessionState, console
-from .image_utils import ImageData, get_clipboard_image
+from deepagents_cli.config import COLORS, COMMANDS, SessionState, console
+from deepagents_cli.image_utils import ImageData, get_clipboard_image
 
 # Regex patterns for context-aware completion
 AT_MENTION_RE = re.compile(r"@(?P<path>(?:[^\s@]|(?<=\\)\s)*)$")

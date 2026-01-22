@@ -783,7 +783,7 @@ async def main():
                     if output_file:
                         print(f"  ✓ Analysis written to: {output_file}")
                     else:
-                        print(f"  ✗ Skipped (no trajectory or already completed)")
+                        print("  ✗ Skipped (no trajectory or already completed)")
                 except Exception as e:
                     print(f"  ✗ Error: {e}")
 

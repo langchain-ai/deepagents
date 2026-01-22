@@ -22,17 +22,6 @@ harbor:
       - any-glob-to-any-file:
           - "libs/harbor/**/*"
 
-# Infrastructure and DevOps
-infra:
-  - changed-files:
-      - any-glob-to-any-file:
-          - ".github/**/*"
-          - "Makefile"
-          - ".pre-commit-config.yaml"
-          - "scripts/**/*"
-          - "docker/**/*"
-          - "Dockerfile*"
-
 github_actions:
   - changed-files:
       - any-glob-to-any-file:
@@ -46,10 +35,3 @@ dependencies:
           - "uv.lock"
           - "**/requirements*.txt"
           - "**/poetry.lock"
-
-# Documentation
-documentation:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "**/*.md"
-          - "**/README*"

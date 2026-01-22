@@ -7,39 +7,39 @@ import uuid
 from typing import Any, Literal
 
 from acp import (
+    PROTOCOL_VERSION,
     Agent,
     AgentSideConnection,
-    PROTOCOL_VERSION,
     stdio_streams,
 )
 from acp.schema import (
     AgentMessageChunk,
+    AgentPlanUpdate,
+    AgentThoughtChunk,
+    AllowedOutcome,
+    CancelNotification,
+    ContentToolCallContent,
+    DeniedOutcome,
+    Implementation,
     InitializeRequest,
     InitializeResponse,
+    LoadSessionRequest,
+    LoadSessionResponse,
     NewSessionRequest,
     NewSessionResponse,
+    PermissionOption,
+    PlanEntry,
     PromptRequest,
     PromptResponse,
-    SessionNotification,
-    TextContentBlock,
-    Implementation,
-    AgentThoughtChunk,
-    ToolCallProgress,
-    ContentToolCallContent,
-    LoadSessionResponse,
-    SetSessionModeResponse,
-    SetSessionModelResponse,
-    CancelNotification,
-    LoadSessionRequest,
-    SetSessionModeRequest,
-    SetSessionModelRequest,
-    AgentPlanUpdate,
-    PlanEntry,
-    PermissionOption,
     RequestPermissionRequest,
-    AllowedOutcome,
-    DeniedOutcome,
+    SessionNotification,
+    SetSessionModelRequest,
+    SetSessionModelResponse,
+    SetSessionModeRequest,
+    SetSessionModeResponse,
+    TextContentBlock,
     ToolCall as ACPToolCall,
+    ToolCallProgress,
 )
 from deepagents import create_deep_agent
 from langchain_anthropic import ChatAnthropic
@@ -342,9 +342,7 @@ class DeepagentsACP(Agent):
             tool_args = action_request.get("args", {})
 
             # Get allowed decisions for this action
-            allowed_decisions = allowed_decisions_map.get(
-                tool_name, ["approve", "reject"]
-            )
+            allowed_decisions = allowed_decisions_map.get(tool_name, ["approve", "reject"])
 
             # Build permission options based on allowed decisions
             options = []
@@ -477,18 +475,14 @@ class DeepagentsACP(Agent):
                     if node_name == "model" and isinstance(last_message, AIMessage):
                         # Check if this AIMessage has tool calls
                         if last_message.tool_calls:
-                            await self._handle_completed_tool_calls(
-                                params, last_message
-                            )
+                            await self._handle_completed_tool_calls(params, last_message)
 
                     # Handle tool execution results from tools node
                     elif node_name == "tools" and isinstance(last_message, ToolMessage):
                         # Look up the original tool call by ID
                         tool_call = self._tool_calls.get(last_message.tool_call_id)
                         if tool_call:
-                            await self._handle_tool_message(
-                                params, tool_call, last_message
-                            )
+                            await self._handle_tool_message(params, tool_call, last_message)
 
         return interrupts
 
@@ -521,9 +515,7 @@ class DeepagentsACP(Agent):
         # Loop until there are no more interrupts
         while True:
             # Stream and collect any interrupts
-            interrupts = await self._stream_and_handle_updates(
-                params, agent, stream_input, config
-            )
+            interrupts = await self._stream_and_handle_updates(params, agent, stream_input, config)
 
             # If no interrupts, we're done
             if not interrupts:

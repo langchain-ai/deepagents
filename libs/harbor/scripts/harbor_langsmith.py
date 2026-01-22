@@ -20,7 +20,7 @@ import aiohttp
 import toml
 from dotenv import load_dotenv
 from harbor.models.dataset_item import DownloadedDatasetItem
-from harbor.registry.client import RegistryClient
+from harbor.registry.client import RegistryClientFactory
 from langsmith import Client
 
 from deepagents_harbor.tracing import create_example_id_from_instruction
@@ -130,7 +130,7 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
 
     # Download from Harbor registry
     print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
-    registry_client = RegistryClient()
+    registry_client = RegistryClientFactory()
     downloaded_tasks = registry_client.download_dataset(
         name=dataset_name,
         version=version,
@@ -243,12 +243,12 @@ async def create_experiment_async(dataset_name: str, experiment_name: str | None
         session_id = experiment_session["id"]
         tenant_id = experiment_session["tenant_id"]
 
-        print(f"✓ Experiment created successfully!")
+        print("✓ Experiment created successfully!")
         print(f"  Session ID: {session_id}")
         print(
             f"  View at: https://smith.langchain.com/o/{tenant_id}/datasets/{dataset_id}/compare?selectedSessions={session_id}"
         )
-        print(f"\nTo run Harbor with this experiment, use:")
+        print("\nTo run Harbor with this experiment, use:")
         print(f"  LANGSMITH_EXPERIMENT={experiment_name} harbor run ...")
 
         return session_id

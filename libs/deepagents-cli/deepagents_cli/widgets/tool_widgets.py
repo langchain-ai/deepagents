@@ -80,24 +80,6 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
 class EditFileApprovalWidget(ToolApprovalWidget):
     """Approval widget for edit_file - shows clean diff with colors."""
 
-    DEFAULT_CSS = """
-    EditFileApprovalWidget .diff-removed-line {
-        color: #ff6b6b;
-        background: #3d1f1f;
-    }
-    EditFileApprovalWidget .diff-added-line {
-        color: #69db7c;
-        background: #1f3d1f;
-    }
-    EditFileApprovalWidget .diff-context-line {
-        color: #888888;
-    }
-    EditFileApprovalWidget .diff-stats {
-        color: #888888;
-        margin-top: 1;
-    }
-    """
-
     def compose(self) -> ComposeResult:
         """Compose the diff display with colored additions and deletions."""
         file_path = self.data.get("file_path", "")
@@ -181,11 +163,11 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         content = _escape_markup(line[1:] if len(line) > 1 else "")
 
         if line.startswith("-"):
-            return Static(f"[on #3d1f1f][red]- {content}[/red][/on #3d1f1f]")
+            return Static(f"[on #4a2020][#ff8787]- {content}[/#ff8787][/on #4a2020]")
         if line.startswith("+"):
-            return Static(f"[on #1f3d1f][green]+ {content}[/green][/on #1f3d1f]")
+            return Static(f"[on #1e4620][#8ce99a]+ {content}[/#8ce99a][/on #1e4620]")
         if line.startswith(" "):
-            return Static(f"[dim]  {content}[/dim]")
+            return Static(f"[#aaaaaa]  {content}[/#aaaaaa]")
         if line.strip():
             return Static(line, markup=False)
         return None
@@ -193,8 +175,8 @@ class EditFileApprovalWidget(ToolApprovalWidget):
     def _render_string_lines(self, text: str, *, is_addition: bool) -> ComposeResult:
         """Render lines from a string with appropriate styling."""
         lines = text.split("\n")
-        style = "[on #1f3d1f][green]+" if is_addition else "[on #3d1f1f][red]-"
-        end_style = "[/green][/on #1f3d1f]" if is_addition else "[/red][/on #3d1f1f]"
+        style = "[on #1e4620][#8ce99a]+" if is_addition else "[on #4a2020][#ff8787]-"
+        end_style = "[/#8ce99a][/on #1e4620]" if is_addition else "[/#ff8787][/on #4a2020]"
 
         for line in lines[:_MAX_PREVIEW_LINES]:
             escaped = _escape_markup(line)
@@ -203,19 +185,3 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         if len(lines) > _MAX_PREVIEW_LINES:
             remaining = len(lines) - _MAX_PREVIEW_LINES
             yield Static(f"[dim]... ({remaining} more lines)[/dim]")
-
-
-class BashApprovalWidget(ToolApprovalWidget):
-    """Approval widget for bash/shell commands."""
-
-    def compose(self) -> ComposeResult:
-        """Compose the bash command display with syntax highlighting."""
-        command = self.data.get("command", "")
-        description = self.data.get("description", "")
-
-        if description:
-            yield Static(description, markup=False, classes="approval-description")
-            yield Static("")
-
-        # Show command with bash syntax highlighting
-        yield Markdown(f"```bash\n{command}\n```")

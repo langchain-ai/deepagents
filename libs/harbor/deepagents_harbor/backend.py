@@ -33,6 +33,7 @@ class HarborSandbox(SandboxBackendProtocol):
         # Filter them from both stdout and stderr, then collect them to show in stderr.
         error_messages = [
             "bash: cannot set terminal process group (-1): Inappropriate ioctl for device",
+            "bash: cannot set terminal process group (1): Inappropriate ioctl for device",
             "bash: no job control in this shell",
             "bash: initialize_job_control: no job control in background: Bad file descriptor",
         ]

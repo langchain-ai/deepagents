@@ -279,6 +279,30 @@ class StoreBackend(BackendProtocol):
 
         return format_read_response(file_data, offset, limit)
 
+    async def aread(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> str:
+        """Async version of read using native store async methods.
+
+        This avoids sync calls in async context by using store.aget directly.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+        item: Item | None = await store.aget(namespace, file_path)
+
+        if item is None:
+            return f"Error: File '{file_path}' not found"
+
+        try:
+            file_data = self._convert_store_item_to_file_data(item)
+        except ValueError as e:
+            return f"Error: {e}"
+
+        return format_read_response(file_data, offset, limit)
+
     def write(
         self,
         file_path: str,
@@ -299,6 +323,29 @@ class StoreBackend(BackendProtocol):
         file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
+        return WriteResult(path=file_path, files_update=None)
+
+    async def awrite(
+        self,
+        file_path: str,
+        content: str,
+    ) -> WriteResult:
+        """Async version of write using native store async methods.
+
+        This avoids sync calls in async context by using store.aget/aput directly.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        # Check if file exists using async method
+        existing = await store.aget(namespace, file_path)
+        if existing is not None:
+            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+
+        # Create new file using async method
+        file_data = create_file_data(content)
+        store_value = self._convert_file_data_to_store_value(file_data)
+        await store.aput(namespace, file_path, store_value)
         return WriteResult(path=file_path, files_update=None)
 
     def edit(
@@ -336,6 +383,44 @@ class StoreBackend(BackendProtocol):
         # Update file in store
         store_value = self._convert_file_data_to_store_value(new_file_data)
         store.put(namespace, file_path, store_value)
+        return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """Async version of edit using native store async methods.
+
+        This avoids sync calls in async context by using store.aget/aput directly.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        # Get existing file using async method
+        item = await store.aget(namespace, file_path)
+        if item is None:
+            return EditResult(error=f"Error: File '{file_path}' not found")
+
+        try:
+            file_data = self._convert_store_item_to_file_data(item)
+        except ValueError as e:
+            return EditResult(error=f"Error: {e}")
+
+        content = file_data_to_string(file_data)
+        result = perform_string_replacement(content, old_string, new_string, replace_all)
+
+        if isinstance(result, str):
+            return EditResult(error=result)
+
+        new_content, occurrences = result
+        new_file_data = update_file_data(file_data, new_content)
+
+        # Update file in store using async method
+        store_value = self._convert_file_data_to_store_value(new_file_data)
+        await store.aput(namespace, file_path, store_value)
         return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
 
     # Removed legacy grep() convenience to keep lean surface

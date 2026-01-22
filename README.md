@@ -52,7 +52,7 @@ There are several parameters you can pass to [`create_deep_agent`](https://refer
 
 ### `model`
 
-By default, `deepagents` uses `claude-sonnet-4-5-20250929`. You can customize this by passing any [LangChain model object](https://python.langchain.com/docs/integrations/chat/).
+By default, `deepagents` uses `claude-sonnet-4-5-20250929`. You can customize this by passing any [LangChain model object](https://docs.langchain.com/oss/python/integrations/providers/overview).
 
 ```python
 from langchain.chat_models import init_chat_model
@@ -180,7 +180,7 @@ See the [subagents documentation](https://docs.langchain.com/oss/python/deepagen
 
 ### `interrupt_on`
 
-Some tools may be sensitive and require human approval before execution. Deepagents supports human-in-the-loop workflows through LangGraph’s interrupt capabilities. You can configure which tools require approval using a checkpointer.
+Some tools may be sensitive and require human approval before execution. Deepagents supports human-in-the-loop workflows through LangGraph's interrupt capabilities. You can configure which tools require approval using a checkpointer.
 
 These tool configs are passed to our prebuilt [HITL middleware](https://docs.langchain.com/oss/python/langchain/middleware#human-in-the-loop) so that the agent pauses execution and waits for feedback from the user before executing configured tools.
 

@@ -7,7 +7,7 @@ description: Use this skill for requests related to LangGraph in order to fetch 
 
 ## Overview
 
-This skill explains how to access LangGraph Python documentation to help answer questions and guide implementation. 
+This skill explains how to access LangGraph Python documentation to help answer questions and guide implementation.
 
 ## Instructions
 
@@ -28,7 +28,7 @@ Based on the question, identify 2-4 most relevant documentation URLs from the in
 
 ### 3. Fetch Selected Documentation
 
-Use the fetch_url tool to read the selected documentation URLs. 
+Use the fetch_url tool to read the selected documentation URLs.
 
 ### 4. Provide Accurate Guidance
 

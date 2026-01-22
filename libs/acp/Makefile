@@ -29,15 +29,15 @@ lint format: PYTHON_FILES=deepagents_acp/ tests/
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
 
 lint lint_diff:
-	[ "$(PYTHON_FILES)" = "" ] ||	uv run ruff format $(PYTHON_FILES) --diff
-	[ "$(PYTHON_FILES)" = "" ] ||	uv run ruff check $(PYTHON_FILES) --diff
-	# [ "$(PYTHON_FILES)" = "" ] || uv run mypy $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group dev ruff format $(PYTHON_FILES) --diff
+	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group dev ruff check $(PYTHON_FILES) --diff
+	# [ "$(PYTHON_FILES)" = "" ] || uv run --group dev ty check $(PYTHON_FILES)
 
 format format_diff:
-	[ "$(PYTHON_FILES)" = "" ] || uv run ruff format $(PYTHON_FILES)
-	[ "$(PYTHON_FILES)" = "" ] || uv run ruff check --fix $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group dev ruff format $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group dev ruff check --fix $(PYTHON_FILES)
 
-	
+
 
 ######################
 # HELP
@@ -52,5 +52,3 @@ help:
 	@echo 'test                         - run unit tests'
 	@echo 'test TEST_FILE=<test_file>   - run all tests in file'
 	@echo '-- DOCUMENTATION tasks are from the top-level Makefile --'
-
-

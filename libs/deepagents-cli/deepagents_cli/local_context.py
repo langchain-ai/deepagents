@@ -493,7 +493,9 @@ class LocalContextMiddleware(AgentMiddleware):
         tree = self._get_directory_tree()
         if tree:
             sections.append("**Tree** (3 levels):")
+            sections.append("```text")
             sections.append(tree)
+            sections.append("```")
             sections.append("")
 
         # Makefile preview

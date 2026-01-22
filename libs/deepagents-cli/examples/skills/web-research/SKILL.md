@@ -1,6 +1,6 @@
 ---
 name: web-research
-description: Use this skill for requests related to web research; it provides a structured approach to conducting comprehensive web research 
+description: Use this skill for requests related to web research; it provides a structured approach to conducting comprehensive web research
 ---
 
 # Web Research Skill

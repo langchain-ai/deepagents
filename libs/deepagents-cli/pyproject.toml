@@ -177,6 +177,10 @@ ignore-var-parameters = true
 "tests/unit_tests/test_local_context.py" = ["ANN001"]
 "tests/unit_tests/test_sessions.py" = ["ANN001", "ANN202", "E501"]
 "tests/unit_tests/test_version.py" = ["S603"]
+"examples/skills/arxiv-search/arxiv_search.py" = ["BLE001", "D103", "TRY300"]
+"examples/skills/skill-creator/scripts/init_skill.py" = ["ANN001", "ANN201", "BLE001", "D103", "D415", "PLR2004", "T201"]
+"examples/skills/skill-creator/scripts/quick_validate.py" = ["ANN001", "ANN201", "D415", "E501", "N806", "PLR0911", "PLR0912", "PLR2004", "T201"]
+"scripts/lint_imports.py" = ["INP001", "BLE001"]
 
 [tool.pytest.ini_options]
 timeout = 10  # Default timeout for all tests (can be overridden per-test)

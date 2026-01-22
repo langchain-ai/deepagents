@@ -57,7 +57,7 @@ lint lint_diff:
 			uv run --group test ruff check $(PYTHON_FILES) --diff; \
 		fi; \
 	fi
-	# [ "$(PYTHON_FILES)" = "" ] || uv run --group test mypy $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ty check $(PYTHON_FILES)
 
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff format $(PYTHON_FILES)

@@ -31,7 +31,7 @@ lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --
 lint lint_diff:
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group dev ruff format $(PYTHON_FILES) --diff
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group dev ruff check $(PYTHON_FILES) --diff
-	# [ "$(PYTHON_FILES)" = "" ] || uv run --group dev mypy $(PYTHON_FILES)
+	# [ "$(PYTHON_FILES)" = "" ] || uv run --group dev ty check $(PYTHON_FILES)
 
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --group dev ruff format $(PYTHON_FILES)

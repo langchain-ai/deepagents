@@ -40,6 +40,7 @@ dev = [
     "pytest-timeout>=2.3.1",
     "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.9.7",
+    "ty>=0.0.1,<1.0.0",
 ]
 
 

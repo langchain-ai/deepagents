@@ -22,6 +22,7 @@ test = [
     "pytest-asyncio>=1.2.0",
     "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.8.0",
+    "ty>=0.0.1,<1.0.0",
     "python-dotenv>=1.0.0",
     "pytest-socket>=0.7.0",
     "pytest-cov>=7.0.0",
@@ -44,6 +45,9 @@ override-dependencies = [
 [tool.uv.sources]
 deepagents-cli = { path = "../deepagents-cli" }
 deepagents = { path = "../deepagents", editable = true }
+
+[tool.ty.environment]
+extra-paths = ["../deepagents", "../deepagents-cli"]
 
 [tool.ruff]
 line-length = 100

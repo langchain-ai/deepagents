@@ -57,7 +57,7 @@ deepagents --model gpt-4o
 deepagents --auto-approve
 
 # Execute code in a remote sandbox
-deepagents --sandbox modal        # or runloop, daytona, koyeb, modal
+deepagents --sandbox modal        # or runloop, daytona, koyeb
 deepagents --sandbox-id dbx_123   # reuse existing sandbox
 ```
 

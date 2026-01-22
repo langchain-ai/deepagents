@@ -78,6 +78,8 @@ ignore = [
     "PLR0913", # Too many arguments in function definition
     "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
     "C901",    # Too complex
+    "PLR0912", # Too many branches
+    "PLR0915", # Too many statements
 ]
 unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
 

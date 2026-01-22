@@ -1521,7 +1521,7 @@ class TestBuiltinTruncationTools:
         expected_result = ToolMessage(content=large_content, tool_call_id="test_grep_123")
 
         # Mock handler that returns the large result
-        def mock_handler(request):
+        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
             return expected_result
 
         # Create a request for a tool in TOOLS_EXCLUDED_FROM_EVICTION
@@ -1551,7 +1551,7 @@ class TestBuiltinTruncationTools:
         large_result = ToolMessage(content=large_content, tool_call_id="test_custom_123")
 
         # Mock handler that returns the large result
-        def mock_handler(request):
+        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
             return large_result
 
         # Create a request for a tool NOT in TOOLS_EXCLUDED_FROM_EVICTION
@@ -1591,7 +1591,7 @@ class TestBuiltinTruncationTools:
         large_result = ToolMessage(content=large_execute_output, tool_call_id="test_exec_123", name="execute")
 
         # Mock handler that returns the large result
-        def mock_handler(request):
+        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
             return large_result
 
         # Create a request for the execute tool

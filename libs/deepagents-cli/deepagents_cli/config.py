@@ -154,10 +154,15 @@ class Settings:
     anthropic_api_key: str | None
     google_api_key: str | None
     tavily_api_key: str | None
+    moonshot_api_key: str | None
 
     # LangSmith configuration
     deepagents_langchain_project: str | None  # For deepagents agent tracing
     user_langchain_project: str | None  # Original LANGSMITH_PROJECT for user code
+
+    # Moonshot configuration
+    moonshot_base_url: str | None = None
+    moonshot_model: str | None = None
 
     # Model configuration
     model_name: str | None = None  # Currently active model name
@@ -181,6 +186,10 @@ class Settings:
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         google_key = os.environ.get("GOOGLE_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
+        moonshot_key = os.environ.get("MOONSHOT_API_KEY")
+
+        moonshot_base_url = os.environ.get("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1")
+        moonshot_model = os.environ.get("MOONSHOT_MODEL", "moonshot-v1-8k")
 
         # Detect LangSmith configuration
         # DEEPAGENTS_LANGSMITH_PROJECT: Project for deepagents agent tracing
@@ -198,6 +207,9 @@ class Settings:
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
             tavily_api_key=tavily_key,
+            moonshot_api_key=moonshot_key,
+            moonshot_base_url=moonshot_base_url,
+            moonshot_model=moonshot_model,
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
@@ -217,6 +229,11 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
+
+    @property
+    def has_moonshot(self) -> bool:
+        """Check if Moonshot API key is configured."""
+        return self.moonshot_api_key is not None
 
     @property
     def has_tavily(self) -> bool:
@@ -417,6 +434,8 @@ def _detect_provider(model_name: str) -> str | None:
         return "anthropic"
     if "gemini" in model_lower:
         return "google"
+    if "moonshot" in model_lower:
+        return "moonshot"
     return None
 
 
@@ -446,6 +465,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             console.print("  - OpenAI: gpt-*, o1-*, o3-*")
             console.print("  - Anthropic: claude-*")
             console.print("  - Google: gemini-*")
+            console.print("  - Moonshot: moonshot-*")
             sys.exit(1)
 
         # Check if API key for detected provider is available
@@ -464,28 +484,39 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
                 f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY"
             )
             sys.exit(1)
+        elif provider == "moonshot" and not settings.has_moonshot:
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires MOONSHOT_API_KEY"
+            )
+            sys.exit(1)
 
         model_name = model_name_override
-    # Use environment variable defaults, detect provider by API key priority
-    elif settings.has_openai:
-        provider = "openai"
-        model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
-    elif settings.has_anthropic:
-        provider = "anthropic"
-        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-    elif settings.has_google:
-        provider = "google"
-        model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
+
     else:
-        console.print("[bold red]Error:[/bold red] No API key configured.")
-        console.print("\nPlease set one of the following environment variables:")
-        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
-        console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-        console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
-        console.print("\nExample:")
-        console.print("  export OPENAI_API_KEY=your_api_key_here")
-        console.print("\nOr add it to your .env file.")
-        sys.exit(1)
+        # Auto-detect best available provider
+        if settings.has_openai:
+            provider = "openai"
+            model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+        elif settings.has_anthropic:
+            provider = "anthropic"
+            model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+        elif settings.has_google:
+            provider = "google"
+            model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
+        elif settings.has_moonshot:
+            provider = "moonshot"
+            model_name = settings.moonshot_model or "moonshot-v1-8k"
+        else:
+            console.print("[bold red]Error:[/bold red] No API key configured.")
+            console.print("\nPlease set one of the following environment variables:")
+            console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
+            console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
+            console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
+            console.print("  - MOONSHOT_API_KEY   (for Moonshot Kimi models)")
+            console.print("\nExample:")
+            console.print("  export OPENAI_API_KEY=your_api_key_here")
+            console.print("\nOr add it to your .env file.")
+            sys.exit(1)
 
     # Store model info in settings for display
     settings.model_name = model_name
@@ -496,6 +527,16 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(model=model_name)
+
+    if provider == "moonshot":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model_name,
+            api_key=settings.moonshot_api_key,
+            base_url=settings.moonshot_base_url,
+        )
+
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
@@ -503,6 +544,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             model_name=model_name,
             max_tokens=20_000,  # type: ignore[arg-type]
         )
+
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -511,3 +553,6 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             temperature=0,
             max_tokens=None,
         )
+    
+    # Should be unreachable
+    return None

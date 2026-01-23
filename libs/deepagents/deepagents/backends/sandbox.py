@@ -3,6 +3,9 @@
 This module provides a base class that implements all SandboxBackendProtocol
 methods using shell commands executed via execute(). Concrete implementations
 only need to implement the execute() method.
+
+It also defines the SandboxProvider protocol for third-party SDK implementations
+to manage sandbox lifecycle (list, create, delete).
 """
 
 from __future__ import annotations
@@ -11,6 +14,9 @@ import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
+from typing import Any, Generic, NotRequired, Protocol, TypeVar, Unpack
+
+from typing_extensions import TypedDict
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -22,6 +28,283 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
+
+# Type variables for provider-specific kwargs
+# Note: These are covariant to work with Protocol, and use type: ignore for mypy compatibility
+ListKwargsT = TypeVar("ListKwargsT", covariant=True)
+"""Type variable for list operation keyword arguments.
+
+Providers define their own TypedDict subclass to specify supported filter parameters.
+
+Example:
+    class ProviderListKwargs(TypedDict, total=False):
+        status: Literal["running", "stopped"]
+        created_after: str
+"""
+
+GetOrCreateKwargsT = TypeVar("GetOrCreateKwargsT", covariant=True)
+"""Type variable for get_or_create operation keyword arguments.
+
+Providers define their own TypedDict subclass to specify supported creation parameters.
+
+Example:
+    class ProviderCreateKwargs(TypedDict, total=False):
+        template_id: str
+        timeout_minutes: int
+"""
+
+DeleteKwargsT = TypeVar("DeleteKwargsT", covariant=True)
+"""Type variable for delete operation keyword arguments.
+
+Providers define their own TypedDict subclass to specify supported deletion options.
+
+Example:
+    class ProviderDeleteKwargs(TypedDict, total=False):
+        force: bool
+"""
+
+
+class SandboxInfo(TypedDict):
+    """Metadata for a single sandbox instance.
+
+    This lightweight structure is returned from list operations and provides
+    basic information about a sandbox without requiring a full connection.
+
+    Attributes:
+        sandbox_id: Unique identifier for the sandbox instance.
+        metadata: Optional provider-specific metadata (e.g., creation time, status,
+            resource limits, template information). Structure is provider-defined.
+
+    Example:
+        ```python
+        info: SandboxInfo = {
+            "sandbox_id": "sb_abc123",
+            "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z", "template": "python-3.11"},
+        }
+        ```
+    """
+
+    sandbox_id: str
+    metadata: NotRequired[dict[str, Any]]
+
+
+class SandboxListResponse(TypedDict):
+    """Paginated response from a sandbox list operation.
+
+    This structure supports cursor-based pagination for efficiently browsing
+    large collections of sandboxes.
+
+    Attributes:
+        items: List of sandbox metadata objects for the current page.
+        cursor: Opaque continuation token for retrieving the next page.
+            None indicates no more pages available. Clients should treat this
+            as an opaque string and pass it to subsequent list() calls.
+
+    Example:
+        ```python
+        response: SandboxListResponse = {
+            "items": [{"sandbox_id": "sb_001", "metadata": {"status": "running"}}, {"sandbox_id": "sb_002", "metadata": {"status": "stopped"}}],
+            "cursor": "eyJvZmZzZXQiOjEwMH0=",
+        }
+
+        # Fetch next page
+        next_response = provider.list(cursor=response["cursor"])
+        ```
+    """
+
+    items: list[SandboxInfo]
+    cursor: str | None
+
+
+class SandboxProvider(Protocol, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargsT]):
+    """Protocol for third-party sandbox provider implementations.
+
+    This protocol defines the lifecycle management interface for sandbox providers.
+    Implementations should integrate with their respective SDKs to provide
+    standardized sandbox lifecycle operations.
+
+    The protocol uses generic TypedDict parameters to allow providers to expose
+    type-safe, IDE-friendly keyword arguments specific to their platform.
+
+    Type Parameters:
+        ListKwargsT: TypedDict defining supported filter parameters for list().
+            Default is empty TypedDict if no filters are supported.
+        GetOrCreateKwargsT: TypedDict defining supported creation parameters
+            for get_or_create(). Default is empty TypedDict.
+        DeleteKwargsT: TypedDict defining supported deletion options for delete().
+            Default is empty TypedDict.
+
+    Example Implementation:
+        ```python
+        class CustomListKwargs(TypedDict, total=False):
+            status: Literal["running", "stopped"]
+            template_id: str
+
+
+        class CustomCreateKwargs(TypedDict, total=False):
+            template_id: str
+            timeout_minutes: int
+
+
+        class CustomSandboxProvider:
+            def list(self, cursor: str | None = None, **kwargs: Unpack[CustomListKwargs]) -> SandboxListResponse:
+                # Implementation with type-safe kwargs
+                status = kwargs.get("status")
+                template_id = kwargs.get("template_id")
+                # ... query provider API
+                return {"items": [...], "cursor": None}
+
+            def get_or_create(self, sandbox_id: str | None = None, **kwargs: Unpack[CustomCreateKwargs]) -> SandboxBackendProtocol:
+                # Implementation returns a SandboxBackendProtocol
+                return CustomSandbox(sandbox_id or self._create_new(), **kwargs)
+
+            def delete(self, sandbox_id: str, **kwargs) -> None:
+                # Implementation
+                self._client.delete(sandbox_id)
+        ```
+
+    Usage:
+        ```python
+        provider: SandboxProvider = CustomSandboxProvider(api_key="...")
+
+        # List sandboxes with type-safe filters
+        result = provider.list(status="running", template_id="python-3.11")
+        for info in result["items"]:
+            print(f"Sandbox {info['sandbox_id']}")
+
+        # Get or create a sandbox
+        sandbox = provider.get_or_create(
+            sandbox_id="sb_123",  # Or None to create new
+            template_id="python-3.11",
+        )
+
+        # Use the sandbox via SandboxBackendProtocol
+        sandbox.execute("pip install numpy")
+
+        # Delete when done
+        provider.delete(sandbox_id="sb_123")
+        ```
+    """
+
+    def list(
+        self,
+        cursor: str | None = None,
+        **kwargs: Unpack[ListKwargsT],  # type: ignore[misc]
+    ) -> SandboxListResponse:
+        """List available sandboxes with optional filtering and pagination.
+
+        Args:
+            cursor: Optional continuation token from a previous list() call.
+                Pass None to start from the beginning. The cursor is opaque
+                and provider-specific; clients should not parse or modify it.
+            **kwargs: Provider-specific filter parameters defined by ListKwargsT.
+                Common examples include status filters, creation time ranges,
+                template filters, or owner filters. Check provider documentation
+                for available filters.
+
+        Returns:
+            SandboxListResponse containing:
+                - items: List of sandbox metadata for the current page
+                - cursor: Token for next page, or None if this is the last page
+
+        Example:
+            ```python
+            # First page
+            response = provider.list()
+            for sandbox in response["items"]:
+                print(sandbox["sandbox_id"])
+
+            # Next page if available
+            if response["cursor"]:
+                next_response = provider.list(cursor=response["cursor"])
+
+            # With filters (if provider supports them)
+            running = provider.list(status="running")
+            ```
+        """
+        ...
+
+    def get_or_create(
+        self,
+        sandbox_id: str | None = None,
+        **kwargs: Unpack[GetOrCreateKwargsT],  # type: ignore[misc]
+    ) -> SandboxBackendProtocol:
+        """Get an existing sandbox or create a new one.
+
+        This method retrieves a connection to an existing sandbox if sandbox_id
+        is provided, or creates a new sandbox instance if sandbox_id is None.
+        The returned object implements SandboxBackendProtocol and can be used
+        for all sandbox operations (execute, read, write, etc.).
+
+        Args:
+            sandbox_id: Unique identifier of an existing sandbox to retrieve.
+                If None, creates a new sandbox instance. The new sandbox's ID
+                can be accessed via the returned object's .id property.
+            **kwargs: Provider-specific creation/connection parameters defined
+                by GetOrCreateKwargsT. Common examples include template_id,
+                resource limits, environment variables, or timeout settings.
+                These are typically only used when creating new sandboxes.
+
+        Returns:
+            An object implementing SandboxBackendProtocol that can execute
+            commands, read/write files, and perform other sandbox operations.
+
+        Raises:
+            Implementation-specific exceptions for errors such as:
+                - Sandbox not found (if sandbox_id provided but doesn't exist)
+                - Insufficient permissions
+                - Resource limits exceeded
+                - Invalid template or configuration
+
+        Example:
+            ```python
+            # Create a new sandbox
+            sandbox = provider.get_or_create(sandbox_id=None, template_id="python-3.11", timeout_minutes=60)
+            print(sandbox.id)  # "sb_new123"
+
+            # Reconnect to existing sandbox
+            existing = provider.get_or_create(sandbox_id="sb_new123")
+
+            # Use the sandbox
+            result = sandbox.execute("python --version")
+            print(result.output)
+            ```
+        """
+        ...
+
+    def delete(
+        self,
+        sandbox_id: str,
+        **kwargs: Unpack[DeleteKwargsT],  # type: ignore[misc]
+    ) -> None:
+        """Delete a sandbox instance.
+
+        This permanently destroys the sandbox and all its associated data.
+        The operation is typically irreversible.
+
+        Args:
+            sandbox_id: Unique identifier of the sandbox to delete.
+            **kwargs: Provider-specific deletion options defined by DeleteKwargsT.
+                Common examples include force flags, grace periods, or cleanup
+                options. Check provider documentation for available options.
+
+        Raises:
+            Implementation-specific exceptions for errors such as:
+                - Sandbox not found
+                - Insufficient permissions
+                - Sandbox is locked or in use
+
+        Example:
+            ```python
+            # Simple deletion
+            provider.delete(sandbox_id="sb_123")
+
+            # With options (if provider supports them)
+            provider.delete(sandbox_id="sb_456", force=True)
+            ```
+        """
+        ...
+
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob

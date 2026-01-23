@@ -22,7 +22,7 @@ class MockMetadata(TypedDict, total=False):
 
 class MockListKwargs(TypedDict, total=False):
     """Example kwargs for list operation (documentation only).
-    
+
     While implementations accept **kwargs: Any, defining these TypedDicts
     serves as documentation for what kwargs are supported by this provider.
     """
@@ -88,22 +88,29 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
         self,
         *,
         cursor: str | None = None,
+        status: Literal["running", "stopped"] | None = None,
+        template_id: str | None = None,
         **kwargs: Any,
     ) -> SandboxListResponse[MockMetadata]:
-        """List sandboxes with optional filtering."""
-        # Note: cursor is part of the protocol but not used in this simple implementation
-        _ = cursor  # Mark as intentionally unused
+        """List sandboxes with optional filtering.
+
+        Args:
+            cursor: Pagination cursor (unused in this simple implementation).
+            status: Filter by sandbox status.
+            template_id: Filter by template ID.
+            **kwargs: Additional provider-specific filters (unused).
+        """
+        _ = cursor  # Unused in simple implementation
+        _ = kwargs  # No additional filters supported
 
         items: list[SandboxInfo[MockMetadata]] = []
 
-        # Apply filters from kwargs
-        status_filter = kwargs.get("status")
-        template_filter = kwargs.get("template_id")
-
         for sandbox_id, metadata in self.sandboxes.items():
-            if status_filter and metadata.get("status") != status_filter:
+            # Apply status filter
+            if status and metadata.get("status") != status:
                 continue
-            if template_filter and metadata.get("template") != template_filter:
+            # Apply template filter
+            if template_id and metadata.get("template") != template_id:
                 continue
 
             items.append(
@@ -122,14 +129,25 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
         self,
         *,
         sandbox_id: str | None = None,
+        template_id: str = "default",
+        timeout_minutes: int | None = None,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
-        """Get existing or create new sandbox."""
+        """Get existing or create new sandbox.
+
+        Args:
+            sandbox_id: ID of existing sandbox to retrieve, or None to create new.
+            template_id: Template to use for new sandboxes.
+            timeout_minutes: Timeout for sandbox operations (unused).
+            **kwargs: Additional provider-specific options (unused).
+        """
+        _ = timeout_minutes  # Unused in simple implementation
+        _ = kwargs  # No additional options supported
+
         if sandbox_id is None:
             # Create new sandbox
             new_id = f"sb_{len(self.sandboxes) + 1:03d}"
-            template = kwargs.get("template_id", "default")
-            self.sandboxes[new_id] = {"status": "running", "template": template}
+            self.sandboxes[new_id] = {"status": "running", "template": template_id}
             return MockSandboxBackend(new_id)
 
         # Get existing sandbox
@@ -142,11 +160,19 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
     def delete(
         self,
         sandbox_id: str,
+        *,
+        force: bool = False,
         **kwargs: Any,
     ) -> None:
-        """Delete a sandbox."""
-        # Note: kwargs is part of the protocol but not used in this simple implementation
-        _ = kwargs  # Mark as intentionally unused
+        """Delete a sandbox.
+
+        Args:
+            sandbox_id: ID of sandbox to delete.
+            force: Force deletion even if sandbox is running (unused).
+            **kwargs: Additional provider-specific options (unused).
+        """
+        _ = force  # Unused in simple implementation
+        _ = kwargs  # No additional options supported
 
         if sandbox_id not in self.sandboxes:
             msg = f"Sandbox {sandbox_id} not found"

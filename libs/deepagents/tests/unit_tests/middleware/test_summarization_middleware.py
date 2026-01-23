@@ -1682,7 +1682,7 @@ def test_truncate_mixed_tool_calls() -> None:
     cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
-    assert len(first_ai_msg.tool_calls) == 3  # noqa: PLR2004
+    assert len(first_ai_msg.tool_calls) == 3
 
     # read_file should be unchanged
     assert first_ai_msg.tool_calls[0]["name"] == "read_file"

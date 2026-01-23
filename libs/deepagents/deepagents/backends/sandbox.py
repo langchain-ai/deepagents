@@ -14,7 +14,7 @@ import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Generic, NotRequired, Protocol, TypeVar, Unpack
+from typing import Any, Generic, NotRequired, TypeVar, Unpack
 
 from typing_extensions import TypedDict
 
@@ -137,8 +137,8 @@ class SandboxListResponse(TypedDict):
     cursor: str | None
 
 
-class SandboxProvider(Protocol, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargsT]):
-    """Protocol for third-party sandbox provider implementations.
+class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargsT]):
+    """Abstract base class for third-party sandbox provider implementations.
 
     This protocol defines the lifecycle management interface for sandbox providers.
     Implementations should integrate with their respective SDKs to provide
@@ -207,6 +207,7 @@ class SandboxProvider(Protocol, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteK
         ```
     """
 
+    @abstractmethod
     def list(
         self,
         *,
@@ -244,8 +245,8 @@ class SandboxProvider(Protocol, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteK
             running = provider.list(status="running")
             ```
         """
-        ...
 
+    @abstractmethod
     def get_or_create(
         self,
         *,
@@ -293,8 +294,8 @@ class SandboxProvider(Protocol, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteK
             print(result.output)
             ```
         """
-        ...
 
+    @abstractmethod
     def delete(
         self,
         sandbox_id: str,
@@ -326,7 +327,6 @@ class SandboxProvider(Protocol, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteK
             provider.delete(sandbox_id="sb_456", force=True)
             ```
         """
-        ...
 
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "

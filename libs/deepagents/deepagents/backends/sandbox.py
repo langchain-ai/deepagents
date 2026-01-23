@@ -15,9 +15,9 @@ import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Generic, NotRequired
+from typing import Any, Generic, NotRequired, TypeVar
 
-from typing_extensions import TypedDict, TypeVar
+from typing_extensions import TypedDict
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -31,7 +31,7 @@ from deepagents.backends.protocol import (
 )
 
 # Type variable for provider-specific metadata
-MetadataT = TypeVar("MetadataT", covariant=True, default=dict[str, Any])
+MetadataT = TypeVar("MetadataT", covariant=True)
 """Type variable for sandbox metadata.
 
 Providers can define their own TypedDict to specify the structure of sandbox metadata,
@@ -62,8 +62,8 @@ class SandboxInfo(TypedDict, Generic[MetadataT]):
     basic information about a sandbox without requiring a full connection.
 
     Type Parameters:
-        MetadataT: Type of the metadata field. Defaults to dict[str, Any].
-            Providers can specify their own TypedDict for type-safe metadata access.
+        MetadataT: Type of the metadata field. Providers should define a TypedDict
+            for type-safe metadata access.
 
     Attributes:
         sandbox_id: Unique identifier for the sandbox instance.
@@ -103,7 +103,7 @@ class SandboxListResponse(TypedDict, Generic[MetadataT]):
     large collections of sandboxes.
 
     Type Parameters:
-        MetadataT: Type of the metadata field in SandboxInfo items. Defaults to dict[str, Any].
+        MetadataT: Type of the metadata field in SandboxInfo items.
 
     Attributes:
         items: List of sandbox metadata objects for the current page.

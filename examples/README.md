@@ -1,8 +1,12 @@
-# Deep Agents Examples
+<p align="center">
+  <img src="../.github/images/Deep Agents wordmark-light-2x.svg" alt="Deep Agents" height="40"/>
+</p>
 
-<img src="da-examples-cover.png" alt="Deep Agents Examples" width="100%"/>
+<h3 align="center">Examples</h3>
 
-Examples of agents, patterns, and applications you can build with `deepagents`.
+<p align="center">
+  Agents, patterns, and applications you can build with Deep Agents.
+</p>
 
 | Example | Description |
 |---------|-------------|

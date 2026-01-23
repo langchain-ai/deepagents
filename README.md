@@ -2,7 +2,9 @@
   <img src=".github/images/deepagents-banner.png" alt="Deep Agents" width="600"/>
 </p>
 
-<h1 align="center">Deep Agents</h1>
+<p align="center">
+  <img src=".github/images/Deep Agents wordmark-light-2x.svg" alt="Deep Agents" height="40"/>
+</p>
 
 <p align="center">
   The batteries-included agent harness.
@@ -61,7 +63,7 @@ uv tool install deepagents-cli
 deepagents
 ```
 
-The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.
+The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.  Using the Deep Agents requires setting an API Key before running (ex: ANTHROPIC_API_KEY).
 
 ## LangGraph Native
 

@@ -137,6 +137,12 @@ class SandboxProvider(ABC, Generic[MetadataT]):
     Implementations can add provider-specific parameters as keyword-only arguments
     with defaults, maintaining compatibility while providing type-safe APIs.
 
+    Sync/Async: Both sync and async methods are provided. By default, async methods
+    run sync methods in a thread pool. Providers may optimize by implementing only
+    sync or only async methods, raising NotImplementedError in the other with a
+    message directing users to the appropriate implementation (e.g., "Use MySyncProvider
+    for synchronous code" or "This provider requires async: use await").
+
     Type Parameters:
         MetadataT: TypedDict defining the structure of sandbox metadata.
             Default is dict[str, Any]. Enables type-safe access to metadata fields.

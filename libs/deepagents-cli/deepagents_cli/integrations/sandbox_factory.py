@@ -1,5 +1,6 @@
 """Sandbox lifecycle management with context managers."""
 
+import logging
 import os
 import shlex
 import string
@@ -11,6 +12,8 @@ from pathlib import Path
 from deepagents.backends.protocol import SandboxBackendProtocol
 
 from deepagents_cli.config import console
+
+logger = logging.getLogger(__name__)
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -93,8 +96,8 @@ def create_modal_sandbox(
                     process.wait()
                     if process.returncode == 0:
                         break
-                except Exception:
-                    pass
+                except (TimeoutError, OSError, RuntimeError) as e:
+                    logger.debug("Modal sandbox not ready yet: %s", e)
                 time.sleep(2)
             else:
                 # Timeout - cleanup and fail
@@ -238,8 +241,8 @@ def create_daytona_sandbox(
             result = sandbox.process.exec("echo ready", timeout=5)
             if result.exit_code == 0:
                 break
-        except Exception:
-            pass
+        except (TimeoutError, OSError, RuntimeError) as e:
+            logger.debug("Daytona sandbox not ready yet: %s", e)
         time.sleep(2)
     else:
         try:

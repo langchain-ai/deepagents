@@ -50,7 +50,7 @@ def http_request(
 
         try:
             content = response.json()
-        except:
+        except (ValueError, requests.exceptions.JSONDecodeError):
             content = response.text
 
         return {

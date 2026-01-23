@@ -19,6 +19,7 @@ dependencies = [
   "modal>=0.65.0",
   "markdownify>=0.13.0",
   "runloop-api-client>=0.69.0",
+  "bedrock-agentcore>=1.1.4",
   "pillow>=10.0.0",
   "pyyaml>=6.0",
   "textual>=1.0.0",

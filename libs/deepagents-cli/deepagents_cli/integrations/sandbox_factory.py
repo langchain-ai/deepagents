@@ -266,10 +266,76 @@ def create_daytona_sandbox(
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
+@contextmanager
+def create_agentcore_sandbox(
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
+    """Create AgentCore Code Interpreter sandbox.
+
+    Args:
+        sandbox_id: Not supported for AgentCore. Raises NotImplementedError if provided.
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        AgentCoreBackend instance
+
+    Raises:
+        NotImplementedError: If sandbox_id is provided (session reconnection not supported)
+
+    Note:
+        AgentCore sessions cannot be reconnected after the CLI exits. The sandbox_id
+        option is not supported. Within a single CLI session, all file operations
+        work normally - the session persists until the CLI exits or times out
+        (default 15 minutes, max 8 hours).
+    """
+    from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
+
+    from deepagents_cli.integrations.agentcore import AgentCoreBackend
+
+    # AgentCore uses AWS credentials (resolved by boto3)
+    region = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
+
+    if sandbox_id:
+        msg = (
+            "AgentCore does not support reconnecting to existing sessions. "
+            "Remove the --sandbox-id option. Within a single CLI session, "
+            "all file operations work normally."
+        )
+        raise NotImplementedError(msg)
+
+    console.print("[yellow]Starting AgentCore Code Interpreter...[/yellow]")
+
+    # Create interpreter with integration_source for telemetry tracking
+    interpreter = CodeInterpreter(
+        region=region, integration_source=AgentCoreBackend.INTEGRATION_SOURCE
+    )
+
+    # Start the session - it's ready immediately after start() returns
+    interpreter.start()
+
+    backend = AgentCoreBackend(interpreter)
+    console.print(f"[green]✓ AgentCore Code Interpreter ready: {backend.id}[/green]")
+
+    # Run setup script if provided
+    if setup_script_path:
+        _run_sandbox_setup(backend, setup_script_path)
+
+    try:
+        yield backend
+    finally:
+        console.print(f"[dim]Stopping AgentCore session {backend.id}...[/dim]")
+        try:
+            interpreter.stop()
+            console.print("[dim]✓ AgentCore session stopped[/dim]")
+        except Exception as e:
+            console.print(f"[yellow]⚠ Cleanup warning: {e}[/yellow]")
+
+
 _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
+    "agentcore": "/tmp",
 }
 
 
@@ -278,6 +344,7 @@ _SANDBOX_PROVIDERS = {
     "modal": create_modal_sandbox,
     "runloop": create_runloop_sandbox,
     "daytona": create_daytona_sandbox,
+    "agentcore": create_agentcore_sandbox,
 }
 
 
@@ -294,7 +361,7 @@ def create_sandbox(
     the appropriate provider-specific context manager.
 
     Args:
-        provider: Sandbox provider ("modal", "runloop", "daytona")
+        provider: Sandbox provider ("modal", "runloop", "daytona", "agentcore")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 
@@ -318,7 +385,7 @@ def get_available_sandbox_types() -> list[str]:
     """Get list of available sandbox provider types.
 
     Returns:
-        List of sandbox type names (e.g., ["modal", "runloop", "daytona"])
+        List of sandbox type names (e.g., ["modal", "runloop", "daytona", "agentcore"])
     """
     return list(_SANDBOX_PROVIDERS.keys())
 
@@ -327,7 +394,7 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name ("modal", "runloop", "daytona")
+        provider: Sandbox provider name ("modal", "runloop", "daytona", "agentcore")
 
     Returns:
         Default working directory path as string

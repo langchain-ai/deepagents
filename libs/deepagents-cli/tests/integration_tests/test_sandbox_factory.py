@@ -1,6 +1,6 @@
 """Test sandbox integrations with upload/download functionality.
 
-This module tests sandbox backends (RunLoop, Daytona, Modal) with support for
+This module tests sandbox backends (AgentCore, RunLoop, Daytona, Modal) with support for
 optional sandbox reuse to reduce test execution time.
 
 Set REUSE_SANDBOX=1 environment variable to reuse sandboxes across tests within
@@ -320,3 +320,29 @@ class TestModalIntegration(BaseSandboxIntegrationTest):
         """Provide a Modal sandbox instance."""
         with create_sandbox("modal") as sandbox:
             yield sandbox
+
+
+class TestAgentCoreIntegration(BaseSandboxIntegrationTest):
+    """Test AgentCore Code Interpreter backend integration."""
+
+    @pytest.fixture(scope="class")
+    def sandbox(self) -> Iterator[BaseSandbox]:
+        """Provide an AgentCore sandbox instance."""
+        with create_sandbox("agentcore") as sandbox:
+            yield sandbox
+
+    def test_upload_binary_content(self, sandbox: SandboxBackendProtocol) -> None:
+        """Test uploading binary content - AgentCore only supports text files.
+
+        AgentCore Code Interpreter uses text-based file transfer, so binary
+        content that cannot be decoded as UTF-8 will return an error.
+        """
+        test_path = "/tmp/binary_file.bin"
+        # Create binary content with all byte values (not valid UTF-8)
+        test_content = bytes(range(256))
+
+        upload_responses = sandbox.upload_files([(test_path, test_content)])
+
+        assert len(upload_responses) == 1
+        # AgentCore returns error for binary content
+        assert upload_responses[0].error is not None

@@ -1323,24 +1323,25 @@ class TestFilesystemMiddleware:
 
         # Verify the message contains the expected structure
         assert "Tool result too large" in content_sample_section
-        assert "first 10 lines" in content_sample_section
+        assert "head and tail" in content_sample_section
 
-        # Extract the content sample part (after "Here are the first 10 lines of the result:")
+        # Extract the content sample part (after "Here is a preview showing the head and tail of the result:")
         lines = content_sample_section.split("\n")
 
         # Find where the actual content sample starts
         sample_start_idx = None
         for i, line in enumerate(lines):
-            if "first 10 lines" in line:
+            if "head and tail" in line:
                 sample_start_idx = i + 1
                 break
 
         assert sample_start_idx is not None, "Could not find content sample in message"
 
         # Check each line in the content sample doesn't exceed 1000 chars
+        # (excluding the truncation notice line)
         for i in range(sample_start_idx, len(lines)):
             line = lines[i]
-            if line.strip():  # Skip empty lines
+            if line.strip() and "truncated" not in line:  # Skip empty lines and truncation notice
                 assert len(line) <= 1010, f"Line {i} exceeds 1000 chars: {len(line)} chars"
 
 

@@ -834,9 +834,38 @@ You can read the result from the filesystem by using the read_file tool, but mak
 You can do this by specifying an offset and limit in the read_file tool call.
 For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
 
-Here are the first 10 lines of the result:
+Here is a preview showing the head and tail of the result:
 {content_sample}
 """
+
+
+def _create_content_preview(content_str: str, head_lines: int = 5, tail_lines: int = 5) -> str:
+    """Create a preview of content showing head and tail with truncation marker.
+
+    Args:
+        content_str: The full content string to preview.
+        head_lines: Number of lines to show from the start.
+        tail_lines: Number of lines to show from the end.
+
+    Returns:
+        Formatted preview string with line numbers.
+    """
+    lines = content_str.splitlines()
+
+    if len(lines) <= head_lines + tail_lines:
+        # If file is small enough, show all lines
+        preview_lines = [line[:1000] for line in lines]
+        return format_content_with_line_numbers(preview_lines, start_line=1)
+
+    # Show head and tail with truncation marker
+    head = [line[:1000] for line in lines[:head_lines]]
+    tail = [line[:1000] for line in lines[-tail_lines:]]
+
+    head_sample = format_content_with_line_numbers(head, start_line=1)
+    truncation_notice = f"\n... [{len(lines) - head_lines - tail_lines} lines truncated] ...\n"
+    tail_sample = format_content_with_line_numbers(tail, start_line=len(lines) - tail_lines + 1)
+
+    return head_sample + truncation_notice + tail_sample
 
 
 class FilesystemMiddleware(AgentMiddleware):
@@ -1086,8 +1115,8 @@ class FilesystemMiddleware(AgentMiddleware):
         if result.error:
             return message, None
 
-        # Create truncated preview for the replacement message
-        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
+        # Create preview showing head and tail of the result
+        content_sample = _create_content_preview(content_str)
         replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
             file_path=file_path,
@@ -1145,8 +1174,8 @@ class FilesystemMiddleware(AgentMiddleware):
         if result.error:
             return message, None
 
-        # Create truncated preview for the replacement message
-        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
+        # Create preview showing head and tail of the result
+        content_sample = _create_content_preview(content_str)
         replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
             file_path=file_path,

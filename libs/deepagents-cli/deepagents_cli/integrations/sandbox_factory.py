@@ -303,11 +303,13 @@ def create_koyeb_sandbox(
         should_cleanup = False
     else:
         # Create sandbox with wait_ready=True to ensure it's ready before returning
-        sandbox = asyncio.run(AsyncSandbox.create(
-            wait_ready=True,
-            api_token=api_token,
-            timeout=180,
-        ))
+        sandbox = asyncio.run(
+            AsyncSandbox.create(
+                wait_ready=True,
+                api_token=api_token,
+                timeout=180,
+            )
+        )
         sandbox_id = sandbox.id
         should_cleanup = True
 

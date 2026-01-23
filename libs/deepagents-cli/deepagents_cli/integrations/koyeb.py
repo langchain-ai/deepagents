@@ -125,15 +125,11 @@ class KoyebBackend(BaseSandbox):
                 # If that fails, fall back to UTF-8 for text files
                 file_info = None
                 try:
-                    file_info = await self._sandbox.filesystem.read_file(
-                        path, encoding="base64"
-                    )
+                    file_info = await self._sandbox.filesystem.read_file(path, encoding="base64")
                 except SandboxFilesystemError as e:
                     error_msg = str(e).lower()
                     if "base64" in error_msg or "invalid" in error_msg:
-                        file_info = await self._sandbox.filesystem.read_file(
-                            path, encoding="utf-8"
-                        )
+                        file_info = await self._sandbox.filesystem.read_file(path, encoding="utf-8")
                     else:
                         raise
 
@@ -145,9 +141,7 @@ class KoyebBackend(BaseSandbox):
                         content = file_info.content.encode("utf-8")
                     else:
                         content = bytes(file_info.content)
-                    responses.append(
-                        FileDownloadResponse(path=path, content=content, error=None)
-                    )
+                    responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except SandboxFileNotFoundError:
                 responses.append(
                     FileDownloadResponse(
@@ -217,13 +211,9 @@ class KoyebBackend(BaseSandbox):
                 # Otherwise, use base64 encoding for binary content
                 try:
                     text_content = content.decode("utf-8")
-                    await self._sandbox.filesystem.write_file(
-                        path, text_content, encoding="utf-8"
-                    )
+                    await self._sandbox.filesystem.write_file(path, text_content, encoding="utf-8")
                 except UnicodeDecodeError:
-                    await self._sandbox.filesystem.write_file(
-                        path, content, encoding="base64"
-                    )
+                    await self._sandbox.filesystem.write_file(path, content, encoding="base64")
                 responses.append(FileUploadResponse(path=path, error=None))
             except SandboxFileNotFoundError:
                 responses.append(

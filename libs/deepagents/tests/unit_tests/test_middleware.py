@@ -1,4 +1,5 @@
 from langchain.agents import create_agent
+from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import (
     AIMessage,
@@ -8,12 +9,16 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langgraph.store.memory import InMemoryStore
-from langgraph.types import Overwrite
+from langgraph.types import Command, Overwrite
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
-from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
+from deepagents.middleware.filesystem import (
+    FileData,
+    FilesystemMiddleware,
+    FilesystemState,
+)
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 
@@ -1502,3 +1507,108 @@ class TestTruncation:
         # Should end with truncation message
         assert "results truncated" in result
         assert "try being more specific" in result
+
+
+class TestBuiltinTruncationTools:
+    def test_builtin_truncation_tool_not_evicted(self):
+        """Test that tools excluded from eviction (grep, ls, glob, etc.) are NOT evicted to filesystem."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)  # Very low limit
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_grep_123", store=None, stream_writer=lambda _: None, config={})
+
+        # Create a large tool result
+        large_content = "x" * 5000
+        expected_result = ToolMessage(content=large_content, tool_call_id="test_grep_123")
+
+        # Mock handler that returns the large result
+        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
+            return expected_result
+
+        # Create a request for a tool in TOOLS_EXCLUDED_FROM_EVICTION
+        request = ToolCallRequest(
+            runtime=runtime,
+            tool_call={"id": "test_grep_123", "name": "grep", "args": {"pattern": "test"}},
+            state=state,
+            tool=None,
+        )
+
+        # Call wrap_tool_call
+        result = middleware.wrap_tool_call(request, mock_handler)
+
+        # Result should NOT be intercepted - should be the original ToolMessage
+        assert isinstance(result, ToolMessage)
+        assert result == expected_result
+        assert result.content == large_content
+
+    def test_non_builtin_truncation_tool_evicted(self):
+        """Test that tools NOT in TOOLS_EXCLUDED_FROM_EVICTION are evicted to filesystem."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)  # Very low limit
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(state=state, context=None, tool_call_id="test_custom_123", store=None, stream_writer=lambda _: None, config={})
+
+        # Create a large tool result
+        large_content = "y" * 5000
+        large_result = ToolMessage(content=large_content, tool_call_id="test_custom_123")
+
+        # Mock handler that returns the large result
+        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
+            return large_result
+
+        # Create a request for a tool NOT in TOOLS_EXCLUDED_FROM_EVICTION
+        request = ToolCallRequest(
+            runtime=runtime,
+            tool_call={"id": "test_custom_123", "name": "custom_tool", "args": {"input": "test"}},
+            state=state,
+            tool=None,
+        )
+
+        # Call wrap_tool_call
+        result = middleware.wrap_tool_call(request, mock_handler)
+
+        # Result SHOULD be intercepted - should be a Command with files
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_custom_123" in result.update["files"]
+        assert "Tool result too large" in result.update["messages"][0].content
+
+    def test_execute_tool_large_output_evicted(self) -> None:
+        """Test that execute tool with large output gets evicted to filesystem."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)  # Low threshold
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="test_exec_123",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        # Simulate large execute output (like a command that outputs many lines)
+        large_execute_output = "x" * 10000
+        large_execute_output += "\n[Command succeeded with exit code 0]"
+
+        # Create a ToolMessage with the large execute output
+        large_result = ToolMessage(content=large_execute_output, tool_call_id="test_exec_123", name="execute")
+
+        # Mock handler that returns the large result
+        def mock_handler(request):  # noqa: ARG001 - request required by handler interface
+            return large_result
+
+        # Create a request for the execute tool
+        request = ToolCallRequest(
+            runtime=runtime,
+            tool_call={"id": "test_exec_123", "name": "execute", "args": {"command": "echo large output"}},
+            state=state,
+            tool=None,
+        )
+
+        # Call wrap_tool_call - this is where eviction happens
+        result = middleware.wrap_tool_call(request, mock_handler)
+
+        # Result SHOULD be intercepted - should be a Command with files
+        assert isinstance(result, Command)
+        assert "/large_tool_results/test_exec_123" in result.update["files"]
+        assert "Tool result too large" in result.update["messages"][0].content
+
+        # Verify the message has the tool name preserved
+        assert result.update["messages"][0].name == "execute"

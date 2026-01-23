@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from deepagents import create_deep_agent
@@ -412,7 +413,7 @@ def create_cli_agent(
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
-        backend = FilesystemBackend()  # Current working directory
+        backend = FilesystemBackend()
 
         # Local context middleware (git info, directory tree, etc.)
         agent_middleware.append(LocalContextMiddleware())
@@ -449,10 +450,28 @@ def create_cli_agent(
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()
 
-    composite_backend = CompositeBackend(
-        default=backend,
-        routes={},
-    )
+    # Set up composite backend with routing
+    # For local FilesystemBackend, route large tool results to /tmp to avoid polluting
+    # the working directory. For sandbox backends, no special routing is needed.
+    if sandbox is None:
+        # Local mode: Route large results to a unique temp directory
+        large_results_dir = tempfile.mkdtemp(prefix="deepagents_large_results_")
+        large_results_backend = FilesystemBackend(
+            root_dir=large_results_dir,
+            virtual_mode=True,
+        )
+        composite_backend = CompositeBackend(
+            default=backend,
+            routes={
+                "/large_tool_results/": large_results_backend,
+            },
+        )
+    else:
+        # Sandbox mode: No special routing needed
+        composite_backend = CompositeBackend(
+            default=backend,
+            routes={},
+        )
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver

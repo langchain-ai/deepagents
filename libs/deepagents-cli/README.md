@@ -69,7 +69,7 @@ The CLI supports OpenAI, Anthropic, and Google models. It automatically selects 
 
 | Priority | API key | Default model |
 |----------|---------|---------------|
-| 1st | `OPENAI_API_KEY` | `gpt-5-mini` |
+| 1st | `OPENAI_API_KEY` | `gpt-5.2` |
 | 2nd | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` |
 | 3rd | `GOOGLE_API_KEY` | `gemini-3-pro-preview` |
 
@@ -312,8 +312,8 @@ deepagents skills info my-tool --project
 To use skills (e.g., the langgraph-docs skill), just type a request relevant to a skill and the skill will be used automatically.
 
 ```bash
-deepagents 
-"create a agent.py script that implements a LangGraph agent" 
+deepagents
+"create a agent.py script that implements a LangGraph agent"
 ```
 
 Skills follow Anthropic's [progressive disclosure pattern](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills) - the agent knows skills exist but only reads full instructions when needed.

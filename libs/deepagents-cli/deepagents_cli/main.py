@@ -156,7 +156,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--model",
-        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5-mini). "
+        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5.2). "
         "Provider is auto-detected from model name.",
     )
     parser.add_argument(

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config import COLORS, DEEP_AGENTS_ASCII, MAX_ARG_LENGTH, console
+from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, MAX_ARG_LENGTH, console
 
 
 def truncate_value(value: str, max_length: int = MAX_ARG_LENGTH) -> str:

@@ -286,7 +286,7 @@ def _get_subagents(
     subagent_descriptions = []
 
     # Create general-purpose agent if enabled
-    if general_purpose_agent and default_tools:
+    if general_purpose_agent:
         general_purpose_middleware = [*default_subagent_middleware]
         if default_interrupt_on:
             general_purpose_middleware.append(HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on))
@@ -518,7 +518,7 @@ class SubAgentMiddleware(AgentMiddleware):
         default_interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
         subagents: list[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
-        general_purpose_agent: bool = True,
+        general_purpose_agent: bool = False,
         task_description: str | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""

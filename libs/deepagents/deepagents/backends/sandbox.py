@@ -15,9 +15,9 @@ import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Generic, NotRequired, TypeVar
+from typing import Any, Generic, NotRequired
 
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, TypeVar
 
 from deepagents.backends.protocol import (
     EditResult,

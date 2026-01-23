@@ -107,7 +107,7 @@ class MockBackend(BackendProtocol):
         self.download_raises = download_raises
         self.write_raises = write_raises
 
-    def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:  # noqa: ARG002
+    def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         self.read_calls.append(path)
         if self.existing_content is not None:
             return self.existing_content
@@ -164,7 +164,7 @@ class MockBackend(BackendProtocol):
             raise RuntimeError(msg)
         return self.write(path, content)
 
-    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: ARG002, FBT001, FBT002
+    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
         """Edit a file by replacing string occurrences."""
         self.edit_calls.append((path, old_string, new_string))
         if self.write_raises:

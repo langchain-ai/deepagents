@@ -53,14 +53,10 @@ class WelcomeBanner(Static):
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the welcome banner."""
         banner = Text()
-        banner.append_text(
-            Text.from_markup(f"[bold #10b981]{DEEP_AGENTS_ASCII}[/bold #10b981]\n")
-        )
+        banner.append_text(Text.from_markup(f"[bold #10b981]{DEEP_AGENTS_ASCII}[/bold #10b981]\n"))
 
         # Show LangSmith status if tracing is enabled
-        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
-            "LANGCHAIN_API_KEY"
-        )
+        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY")
         langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
             "LANGCHAIN_TRACING_V2"
         )
@@ -84,13 +80,9 @@ class WelcomeBanner(Static):
             banner.append("\n")
 
         banner.append_text(
-            Text.from_markup(
-                "[#10b981]Ready to code! What would you like to build?[/#10b981]\n"
-            )
+            Text.from_markup("[#10b981]Ready to code! What would you like to build?[/#10b981]\n")
         )
         banner.append_text(
-            Text.from_markup(
-                "[dim]Enter send • Ctrl+J newline • @ files • / commands[/dim]"
-            )
+            Text.from_markup("[dim]Enter send • Ctrl+J newline • @ files • / commands[/dim]")
         )
         super().__init__(banner, **kwargs)

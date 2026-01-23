@@ -25,10 +25,10 @@ class KoyebBackend(BaseSandbox):
     """
 
     def __init__(self, sandbox: AsyncSandbox) -> None:
-        """Initialize the KoyebBackend with a Koyeb Sandbox instance.
+        """Initialize the KoyebBackend with a Koyeb AsyncSandbox instance.
 
         Args:
-            sandbox: Koyeb Sandbox instance
+            sandbox: Koyeb AsyncSandbox instance
         """
         self._sandbox = sandbox
         self._timeout: int = 30 * 60  # 30 mins
@@ -116,14 +116,17 @@ class KoyebBackend(BaseSandbox):
             # Fall back to UTF-8 for files explicitly written as text
             try:
                 file_info = await self._sandbox.filesystem.read_file(path, encoding="base64")
-                # Koyeb's base64 encoding returns the decoded bytes
-                content = file_info.content if isinstance(file_info.content, bytes) else file_info.content.encode()
+                # Koyeb's base64 encoding returns the decoded bytes (could be bytes, bytearray, or memoryview)
+                if isinstance(file_info.content, (bytes, bytearray, memoryview)):
+                    content = bytes(file_info.content)
+                else:
+                    content = file_info.content.encode()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception:
                 # Fall back to UTF-8 for text files
                 file_info = await self._sandbox.filesystem.read_file(path, encoding="utf-8")
                 # Convert string content to bytes
-                content = file_info.content.encode("utf-8") if isinstance(file_info.content, str) else file_info.content
+                content = file_info.content.encode("utf-8") if isinstance(file_info.content, str) else bytes(file_info.content)
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
         return responses
 

@@ -1,5 +1,6 @@
 """Sandbox lifecycle management with context managers."""
 
+import asyncio
 import os
 import shlex
 import string

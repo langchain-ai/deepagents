@@ -4,8 +4,8 @@ This module provides a base class that implements all SandboxBackendProtocol
 methods using shell commands executed via execute(). Concrete implementations
 only need to implement the execute() method.
 
-It also defines the SandboxProvider protocol for third-party SDK implementations
-to manage sandbox lifecycle (list, create, delete).
+It also defines the SandboxProvider abstract base class for third-party SDK
+implementations to manage sandbox lifecycle (list, create, delete).
 """
 
 from __future__ import annotations
@@ -130,9 +130,12 @@ class SandboxListResponse(TypedDict, Generic[MetadataT]):
 class SandboxProvider(ABC, Generic[MetadataT]):
     """Abstract base class for third-party sandbox provider implementations.
 
-    This protocol defines the lifecycle management interface for sandbox providers.
-    Implementations should integrate with their respective SDKs to provide
-    standardized sandbox lifecycle operations.
+    Defines the lifecycle management interface for sandbox providers. Implementations
+    should integrate with their respective SDKs to provide standardized sandbox
+    lifecycle operations (list, get_or_create, delete).
+
+    Implementations can add provider-specific parameters as keyword-only arguments
+    with defaults, maintaining compatibility while providing type-safe APIs.
 
     Type Parameters:
         MetadataT: TypedDict defining the structure of sandbox metadata.
@@ -147,44 +150,22 @@ class SandboxProvider(ABC, Generic[MetadataT]):
 
 
         class CustomSandboxProvider(SandboxProvider[CustomMetadata]):
-            def list(self, *, cursor=None, **kwargs: Any) -> SandboxListResponse[CustomMetadata]:
-                # Extract and use kwargs as needed
-                status = kwargs.get("status")
-                template_id = kwargs.get("template_id")
+            def list(
+                self, *, cursor=None, status: Literal["running", "stopped"] | None = None, template_id: str | None = None, **kwargs: Any
+            ) -> SandboxListResponse[CustomMetadata]:
+                # Type-safe parameters with IDE autocomplete
                 # ... query provider API
                 return {"items": [...], "cursor": None}
 
-            def get_or_create(self, *, sandbox_id=None, **kwargs: Any) -> SandboxBackendProtocol:
-                # Extract and use kwargs as needed
-                template = kwargs.get("template_id")
-                timeout = kwargs.get("timeout_minutes")
-                return CustomSandbox(sandbox_id or self._create_new(), **kwargs)
+            def get_or_create(
+                self, *, sandbox_id=None, template_id: str = "default", timeout_minutes: int | None = None, **kwargs: Any
+            ) -> SandboxBackendProtocol:
+                # Type-safe parameters with IDE autocomplete
+                return CustomSandbox(sandbox_id or self._create_new(), template_id)
 
-            def delete(self, sandbox_id: str, **kwargs: Any) -> None:
+            def delete(self, sandbox_id: str, *, force: bool = False, **kwargs: Any) -> None:
                 # Implementation
-                self._client.delete(sandbox_id)
-        ```
-
-    Usage:
-        ```python
-        provider: SandboxProvider = CustomSandboxProvider(api_key="...")
-
-        # List sandboxes with type-safe filters
-        result = provider.list(status="running", template_id="python-3.11")
-        for info in result["items"]:
-            print(f"Sandbox {info['sandbox_id']}")
-
-        # Get or create a sandbox
-        sandbox = provider.get_or_create(
-            sandbox_id="sb_123",  # Or None to create new
-            template_id="python-3.11",
-        )
-
-        # Use the sandbox via SandboxBackendProtocol
-        sandbox.execute("pip install numpy")
-
-        # Delete when done
-        provider.delete(sandbox_id="sb_123")
+                self._client.delete(sandbox_id, force=force)
         ```
     """
 
@@ -201,9 +182,10 @@ class SandboxProvider(ABC, Generic[MetadataT]):
             cursor: Optional continuation token from a previous list() call.
                 Pass None to start from the beginning. The cursor is opaque
                 and provider-specific; clients should not parse or modify it.
-            **kwargs: Provider-specific filter parameters. Common examples include
-                status filters, creation time ranges, template filters, or owner
-                filters. Check provider documentation for available filters.
+            **kwargs: Provider-specific filter parameters. Implementations should
+                expose these as named keyword-only parameters with defaults for
+                type safety. Common examples include status filters, creation time
+                ranges, template filters, or owner filters.
 
         Returns:
             SandboxListResponse containing:
@@ -244,10 +226,10 @@ class SandboxProvider(ABC, Generic[MetadataT]):
             sandbox_id: Unique identifier of an existing sandbox to retrieve.
                 If None, creates a new sandbox instance. The new sandbox's ID
                 can be accessed via the returned object's .id property.
-            **kwargs: Provider-specific creation/connection parameters. Common
-                examples include template_id, resource limits, environment variables,
-                or timeout settings. These are typically only used when creating
-                new sandboxes.
+            **kwargs: Provider-specific creation/connection parameters. Implementations
+                should expose these as named keyword-only parameters with defaults
+                for type safety. Common examples include template_id, resource limits,
+                environment variables, or timeout settings.
 
         Returns:
             An object implementing SandboxBackendProtocol that can execute
@@ -288,9 +270,10 @@ class SandboxProvider(ABC, Generic[MetadataT]):
 
         Args:
             sandbox_id: Unique identifier of the sandbox to delete.
-            **kwargs: Provider-specific deletion options. Common examples include
-                force flags, grace periods, or cleanup options. Check provider
-                documentation for available options.
+            **kwargs: Provider-specific deletion options. Implementations should
+                expose these as named keyword-only parameters with defaults for
+                type safety. Common examples include force flags, grace periods,
+                or cleanup options.
 
         Raises:
             Implementation-specific exceptions for errors such as:

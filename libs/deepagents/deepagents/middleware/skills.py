@@ -266,7 +266,9 @@ def _parse_skill_metadata(
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
     if frontmatter_data.get("allowed-tools"):
-        allowed_tools = frontmatter_data.get("allowed-tools").split(" ")
+        allowed_tools = list(
+            filter(None, map(str.strip, frontmatter_data.get("allowed-tools").split(",")))
+        )
     else:
         allowed_tools = []
 

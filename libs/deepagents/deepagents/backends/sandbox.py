@@ -276,6 +276,10 @@ class SandboxProvider(ABC, Generic[MetadataT]):
         This permanently destroys the sandbox and all its associated data.
         The operation is typically irreversible.
 
+        Idempotency: This method should be idempotent - calling delete on a
+        non-existent sandbox should succeed without raising an error. This makes
+        cleanup code simpler and safe to retry.
+
         Args:
             sandbox_id: Unique identifier of the sandbox to delete.
             **kwargs: Provider-specific deletion options. Implementations should
@@ -285,14 +289,17 @@ class SandboxProvider(ABC, Generic[MetadataT]):
 
         Raises:
             Implementation-specific exceptions for errors such as:
-                - Sandbox not found
                 - Insufficient permissions
                 - Sandbox is locked or in use
+                - Network or API errors
 
         Example:
             ```python
             # Simple deletion
             provider.delete(sandbox_id="sb_123")
+
+            # Safe to call multiple times (idempotent)
+            provider.delete(sandbox_id="sb_123")  # No error even if already deleted
 
             # With options (if provider supports them)
             provider.delete(sandbox_id="sb_456", force=True)

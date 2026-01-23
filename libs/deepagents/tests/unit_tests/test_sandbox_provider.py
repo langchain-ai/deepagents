@@ -142,6 +142,8 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
     ) -> None:
         """Delete a sandbox.
 
+        Idempotent - does not raise an error if sandbox doesn't exist.
+
         Args:
             sandbox_id: ID of sandbox to delete.
             force: Force deletion even if sandbox is running (unused).
@@ -150,11 +152,9 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
         _ = force  # Unused in simple implementation
         _ = kwargs  # No additional options supported
 
-        if sandbox_id not in self.sandboxes:
-            msg = f"Sandbox {sandbox_id} not found"
-            raise ValueError(msg)
-
-        del self.sandboxes[sandbox_id]
+        # Idempotent - silently succeed if sandbox doesn't exist
+        if sandbox_id in self.sandboxes:
+            del self.sandboxes[sandbox_id]
 
 
 def test_sandbox_info_structure() -> None:
@@ -225,6 +225,20 @@ def test_provider_delete() -> None:
     assert "sb_001" in provider.sandboxes
 
     provider.delete(sandbox_id="sb_001")
+
+    assert "sb_001" not in provider.sandboxes
+
+
+def test_provider_delete_idempotent() -> None:
+    """Test that delete is idempotent (doesn't error on non-existent sandbox)."""
+    provider = MockSandboxProvider()
+
+    # Delete non-existent sandbox - should not raise an error
+    provider.delete(sandbox_id="sb_999")
+
+    # Delete existing sandbox twice - should not raise an error
+    provider.delete(sandbox_id="sb_001")
+    provider.delete(sandbox_id="sb_001")  # Second delete should succeed
 
     assert "sb_001" not in provider.sandboxes
 

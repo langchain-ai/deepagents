@@ -91,6 +91,7 @@ ignore-var-parameters = true
     "S101",    # Allow asserts in tests
     "S311",    # Allow pseudo-random generators in tests
     # Add more test-specific ignores
+    "PLR2004", # Hard coded constants are usually preferred in tests
 ]
 
 "deepagents/backends/composite.py" = ["B007", "BLE001", "D102", "EM101", "FBT001", "FBT002", "PLW2901", "S110"]

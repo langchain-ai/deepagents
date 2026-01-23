@@ -69,7 +69,7 @@ The CLI supports OpenAI, Anthropic, and Google models. It automatically selects 
 
 | Priority | API key | Default model |
 |----------|---------|---------------|
-| 1st | `OPENAI_API_KEY` | `gpt-5-mini` |
+| 1st | `OPENAI_API_KEY` | `gpt-5.2` |
 | 2nd | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` |
 | 3rd | `GOOGLE_API_KEY` | `gemini-3-pro-preview` |
 

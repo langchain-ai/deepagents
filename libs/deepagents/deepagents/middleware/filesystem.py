@@ -41,6 +41,11 @@ LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
 
+# Approximate number of characters per token for truncation calculations.
+# Using 4 chars per token as a conservative approximation (actual ratio varies by content)
+# This errs on the high side to avoid premature eviction of content that might fit
+NUM_CHARS_PER_TOKEN = 4
+
 
 class FileData(TypedDict):
     """Data structure for storing file contents with metadata."""
@@ -370,8 +375,8 @@ def _read_file_tool_generator(
             result = "".join(lines)
 
         # Check if result exceeds token threshold and truncate if necessary
-        if token_limit_before_truncation and len(result) >= 4 * token_limit_before_truncation:
-            truncate_threshold = 4 * token_limit_before_truncation
+        if token_limit_before_truncation and len(result) >= NUM_CHARS_PER_TOKEN * token_limit_before_truncation:
+            truncate_threshold = NUM_CHARS_PER_TOKEN * token_limit_before_truncation
             result = result[:truncate_threshold]
             result += (
                 f"\n\n[Output was truncated due to size limits. "
@@ -400,8 +405,8 @@ def _read_file_tool_generator(
             result = "".join(lines)
 
         # Check if result exceeds token threshold and truncate if necessary
-        if token_limit_before_truncation and len(result) >= 4 * token_limit_before_truncation:
-            truncate_threshold = 4 * token_limit_before_truncation
+        if token_limit_before_truncation and len(result) >= NUM_CHARS_PER_TOKEN * token_limit_before_truncation:
+            truncate_threshold = NUM_CHARS_PER_TOKEN * token_limit_before_truncation
             result = result[:truncate_threshold]
             result += (
                 f"\n\n[Output was truncated due to size limits. "
@@ -1114,9 +1119,7 @@ class FilesystemMiddleware(AgentMiddleware):
             content_str = str(message.content)
 
         # Check if content exceeds eviction threshold
-        # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
-        # This errs on the high side to avoid premature eviction of content that might fit
-        if len(content_str) <= 4 * self.tool_token_limit_before_evict:
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self.tool_token_limit_before_evict:
             return message, None
 
         # Write content to filesystem
@@ -1172,10 +1175,7 @@ class FilesystemMiddleware(AgentMiddleware):
             # Multiple blocks or non-text content - stringify entire structure
             content_str = str(message.content)
 
-        # Check if content exceeds eviction threshold
-        # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
-        # This errs on the high side to avoid premature eviction of content that might fit
-        if len(content_str) <= 4 * self.tool_token_limit_before_evict:
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self.tool_token_limit_before_evict:
             return message, None
 
         # Write content to filesystem using async method

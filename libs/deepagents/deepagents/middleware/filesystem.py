@@ -338,12 +338,14 @@ def _ls_tool_generator(
 def _read_file_tool_generator(
     backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
     custom_description: str | None = None,
+    token_limit_before_truncation: int | None = None,
 ) -> BaseTool:
     """Generate the read_file tool.
 
     Args:
         backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
         custom_description: Optional custom description for the tool.
+        token_limit_before_truncation: Optional token limit before truncating output.
 
     Returns:
         Configured read_file tool that reads files using the backend.
@@ -366,6 +368,18 @@ def _read_file_tool_generator(
             lines = lines[:limit]
             result = "".join(lines)
 
+        # Check if result exceeds token threshold and truncate if necessary
+        if token_limit_before_truncation and len(result) >= 4 * token_limit_before_truncation:
+            truncate_threshold = 4 * token_limit_before_truncation
+            result = result[:truncate_threshold]
+            result += (
+                f"\n\n[Output was truncated due to size limits. "
+                f"The file content is very large. "
+                f"Consider reformatting the file to make it easier to navigate. "
+                f"For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
+                f"For other formats, you can use appropriate formatting tools to split long lines.]"
+            )
+
         return result
 
     async def async_read_file(
@@ -383,6 +397,18 @@ def _read_file_tool_generator(
         if len(lines) > limit:
             lines = lines[:limit]
             result = "".join(lines)
+
+        # Check if result exceeds token threshold and truncate if necessary
+        if token_limit_before_truncation and len(result) >= 4 * token_limit_before_truncation:
+            truncate_threshold = 4 * token_limit_before_truncation
+            result = result[:truncate_threshold]
+            result += (
+                f"\n\n[Output was truncated due to size limits. "
+                f"The file content is very large. "
+                f"Consider reformatting the file to make it easier to navigate. "
+                f"For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
+                f"For other formats, you can use appropriate formatting tools to split long lines.]"
+            )
 
         return result
 
@@ -780,12 +806,14 @@ TOOL_GENERATORS = {
 def _get_filesystem_tools(
     backend: BackendProtocol,
     custom_tool_descriptions: dict[str, str] | None = None,
+    token_limit_before_truncation: int | None = None,
 ) -> list[BaseTool]:
     """Get filesystem and execution tools.
 
     Args:
         backend: Backend to use for file storage and optional execution, or a factory function that takes runtime and returns a backend.
         custom_tool_descriptions: Optional custom descriptions for tools.
+        token_limit_before_truncation: Optional token limit before truncating read_file output.
 
     Returns:
         List of configured tools: ls, read_file, write_file, edit_file, glob, grep, execute.
@@ -795,7 +823,15 @@ def _get_filesystem_tools(
     tools = []
 
     for tool_name, tool_generator in TOOL_GENERATORS.items():
-        tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
+        # Pass token_limit_before_truncation to read_file generator
+        if tool_name == "read_file":
+            tool = tool_generator(
+                backend,
+                custom_tool_descriptions.get(tool_name),
+                token_limit_before_truncation,
+            )
+        else:
+            tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
         tools.append(tool)
     return tools
 
@@ -888,7 +924,11 @@ class FilesystemMiddleware(AgentMiddleware):
         # Set system prompt (allow full override or None to generate dynamically)
         self._custom_system_prompt = system_prompt
 
-        self.tools = _get_filesystem_tools(self.backend, custom_tool_descriptions)
+        self.tools = _get_filesystem_tools(
+            self.backend,
+            custom_tool_descriptions,
+            tool_token_limit_before_evict,
+        )
 
     def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.

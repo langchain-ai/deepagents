@@ -183,7 +183,6 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             raise NotImplementedError(msg)
 
         sandbox = self._client.create()
-        sandbox_id = sandbox.id
 
         # Poll until running
         for _ in range(timeout // 2):

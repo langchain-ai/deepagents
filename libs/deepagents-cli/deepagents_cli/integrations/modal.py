@@ -140,7 +140,10 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         Args:
             app_name: Name for the Modal app (default: "deepagents-sandbox")
         """
+        import modal
+
         self._app_name = app_name
+        self.app = modal.App.lookup(name=app_name, create_if_missing=True)
 
     def list(
         self,
@@ -181,13 +184,10 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         """
         import modal
 
-        # Create ephemeral app
-        app = modal.App(self._app_name)
-
         if sandbox_id:
-            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=app)
+            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)
         else:
-            sandbox = modal.Sandbox.create(app=app, workdir=workdir)
+            sandbox = modal.Sandbox.create(app=self.app, workdir=workdir)
 
             # Poll until running
             for _ in range(timeout // 2):
@@ -222,6 +222,5 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         """
         import modal
 
-        app = modal.App(self._app_name)
-        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=app)
+        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)
         sandbox.terminate()

@@ -1,18 +1,23 @@
 # Builds and publishes deepagents packages to PyPI.
 #
-# Manually triggered, though can be used as a reusable workflow (workflow_call).
+# Triggers:
+# - Automatically when release-please creates a GitHub release
+# - Manually via workflow_dispatch
+# - As a reusable workflow via workflow_call
 #
-# Handles version bumping, building, and publishing to PyPI with authentication.
+# Handles building, testing, and publishing to PyPI with trusted publishing.
 
 name: "🚀 Package Release"
-run-name: "Release ${{ inputs.package }}"
+run-name: "Release ${{ github.event.release.tag_name || inputs.package }}"
 on:
+  release:
+    types: [published]
   workflow_call:
     inputs:
       package:
         required: true
         type: string
-        description: "Package to release (deepagents or deepagents-cli)"
+        description: "Package to release (deepagents, deepagents-cli, deepagents-acp, or deepagents-harbor)"
   workflow_dispatch:
     inputs:
       package:
@@ -22,6 +27,8 @@ on:
         options:
           - deepagents
           - deepagents-cli
+          - deepagents-acp
+          - deepagents-harbor
         default: deepagents
       dangerous-nonmaster-release:
         required: false
@@ -32,34 +39,71 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   UV_NO_SYNC: "true"
-  # Map package name to working directory
-  WORKING_DIR: ${{ inputs.package == 'deepagents' && 'libs/deepagents' || (inputs.package == 'deepagents-cli' && 'libs/deepagents-cli' || '__invalid__') }}
 
 permissions:
   contents: write # Required for creating GitHub releases
 
 jobs:
+  # Determine package name and working directory from release tag or input
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.parse.outputs.package }}
+      working-dir: ${{ steps.parse.outputs.working-dir }}
+      triggered-by-release: ${{ steps.parse.outputs.triggered-by-release }}
+    steps:
+      - name: Parse package from release tag or input
+        id: parse
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Parse package name from release tag (format: package==version)
+            TAG="${{ github.event.release.tag_name }}"
+            PACKAGE="${TAG%%==*}"
+            echo "triggered-by-release=true" >> $GITHUB_OUTPUT
+          else
+            PACKAGE="${{ inputs.package }}"
+            echo "triggered-by-release=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "package=$PACKAGE" >> $GITHUB_OUTPUT
+
+          # Map package name to working directory
+          case "$PACKAGE" in
+            deepagents)
+              echo "working-dir=libs/deepagents" >> $GITHUB_OUTPUT
+              ;;
+            deepagents-cli)
+              echo "working-dir=libs/deepagents-cli" >> $GITHUB_OUTPUT
+              ;;
+            deepagents-acp)
+              echo "working-dir=libs/acp" >> $GITHUB_OUTPUT
+              ;;
+            deepagents-harbor)
+              echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Error: Unknown package '$PACKAGE'"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor"
+              exit 1
+              ;;
+          esac
+
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
   build:
-    if: github.ref == 'refs/heads/master' || inputs.dangerous-nonmaster-release
+    needs: setup
+    if: github.event_name == 'release' || github.ref == 'refs/heads/master' || inputs.dangerous-nonmaster-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     outputs:
       pkg-name: ${{ steps.check-version.outputs.pkg-name }}
       version: ${{ steps.check-version.outputs.version }}
 
     steps:
-      - name: Validate package name
-        run: |
-          if [ "${{ env.WORKING_DIR }}" = "__invalid__" ]; then
-            echo "Error: Invalid package name '${{ inputs.package }}'"
-            echo "Valid packages are: deepagents, deepagents-cli"
-            exit 1
-          fi
-
       - uses: actions/checkout@v5
 
       - name: Set up Python + uv
@@ -102,12 +146,19 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"pkg-name={pkg_name}\n")
               f.write(f"version={version}\n")
+
+  # Generate release notes (only for manual/workflow_call triggers)
+  # Skipped when triggered by release event since release-please handles this
   release-notes:
     needs:
+      - setup
       - build
+    if: needs.setup.outputs.triggered-by-release != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     outputs:
       release-body: ${{ steps.generate-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
@@ -200,8 +251,8 @@ jobs:
 
   test-pypi-publish:
     needs:
+      - setup
       - build
-      - release-notes
     runs-on: ubuntu-latest
     permissions:
       # This permission is used for trusted publishing:
@@ -210,6 +261,8 @@ jobs:
       # Trusted publishing has to also be configured on PyPI for each package:
       # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
       id-token: write
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
       - uses: actions/checkout@v5
@@ -235,13 +288,15 @@ jobs:
 
   pre-release-checks:
     needs:
+      - setup
       - build
-      - release-notes
       - test-pypi-publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
     timeout-minutes: 20
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
       - uses: actions/checkout@v5
 
@@ -321,8 +376,8 @@ jobs:
   publish:
     # Publishes the package to PyPI
     needs:
+      - setup
       - build
-      - release-notes
       - test-pypi-publish
       - pre-release-checks
     runs-on: ubuntu-latest
@@ -333,6 +388,8 @@ jobs:
       # Trusted publishing has to also be configured on PyPI for each package:
       # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
       id-token: write
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     defaults:
       run:
@@ -360,19 +417,24 @@ jobs:
           # Temp workaround since attestations are on by default as of gh-action-pypi-publish v1.11.0
           attestations: false
 
+  # Create GitHub release (only for manual/workflow_call triggers)
+  # Skipped when triggered by release event since release-please already created it
   mark-release:
-    # Marks the GitHub release with the new version tag
     needs:
+      - setup
       - build
       - release-notes
       - test-pypi-publish
       - pre-release-checks
       - publish
+    if: needs.setup.outputs.triggered-by-release != 'true'
     runs-on: ubuntu-latest
     permissions:
       # This permission is needed by `ncipollo/release-action` to
       # create the GitHub release/tag
       contents: write
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     defaults:
       run:

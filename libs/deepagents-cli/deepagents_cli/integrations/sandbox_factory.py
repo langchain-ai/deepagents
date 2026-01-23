@@ -266,10 +266,80 @@ def create_daytona_sandbox(
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
+@contextmanager
+def create_langsmith_sandbox(
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
+    """Create or connect to LangSmith sandbox.
+
+    Args:
+        sandbox_id: Optional existing sandbox name to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        LangSmithBackend instance
+
+    Raises:
+        ImportError: LangSmith SDK not installed
+        ValueError: LANGSMITH_API_KEY not set
+        RuntimeError: Sandbox failed to start within timeout
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
+    """
+    from langsmith import sandbox
+
+    from deepagents_cli.integrations.langsmith import (
+        LangSmithBackend,
+        create_sandbox_instance,
+        ensure_template,
+    )
+
+    api_key = os.environ.get("LANGSMITH_API_KEY")
+    if not api_key:
+        msg = "LANGSMITH_API_KEY environment variable not set"
+        raise ValueError(msg)
+
+    console.print("[yellow]Starting LangSmith sandbox...[/yellow]")
+
+    client = sandbox.SandboxClient()
+
+    if sandbox_id:
+        # Connect to existing sandbox by name
+        try:
+            sb = client.get_sandbox(name=sandbox_id)
+        except Exception as e:
+            msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
+            raise RuntimeError(msg) from e
+        should_cleanup = False
+        console.print(f"[green]✓ Connected to existing LangSmith sandbox: {sb.name}[/green]")
+    else:
+        ensure_template(client)
+        sb = create_sandbox_instance(client)
+        should_cleanup = True
+
+    backend = LangSmithBackend(sb)
+
+    # Run setup script if provided
+    if setup_script_path:
+        _run_sandbox_setup(backend, setup_script_path)
+
+    try:
+        yield backend
+    finally:
+        if should_cleanup:
+            console.print(f"[dim]Deleting LangSmith sandbox {sb.name}...[/dim]")
+            try:
+                client.delete_sandbox(sb.name)
+                console.print(f"[dim]✓ LangSmith sandbox {sb.name} terminated[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+
+
 _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
+    "langsmith": "/tmp",  # noqa: S108
 }
 
 
@@ -278,6 +348,7 @@ _SANDBOX_PROVIDERS = {
     "modal": create_modal_sandbox,
     "runloop": create_runloop_sandbox,
     "daytona": create_daytona_sandbox,
+    "langsmith": create_langsmith_sandbox,
 }
 
 
@@ -299,7 +370,7 @@ def create_sandbox(
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
-        (SandboxBackend, sandbox_id)
+        SandboxBackend instance
     """
     if provider not in _SANDBOX_PROVIDERS:
         msg = (

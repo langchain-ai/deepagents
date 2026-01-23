@@ -320,3 +320,13 @@ class TestModalIntegration(BaseSandboxIntegrationTest):
         """Provide a Modal sandbox instance."""
         with create_sandbox("modal") as sandbox:
             yield sandbox
+
+
+class TestLangSmithIntegration(BaseSandboxIntegrationTest):
+    """Test LangSmith backend integration."""
+
+    @pytest.fixture(scope="class")
+    def sandbox(self) -> Iterator[BaseSandbox]:
+        """Provide a LangSmith sandbox instance."""
+        with create_sandbox("langsmith") as sandbox:
+            yield sandbox

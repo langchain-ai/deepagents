@@ -20,8 +20,9 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import (
-    BACKEND_TYPES as BACKEND_TYPES,  # Re-export for backwards compatibility
+    BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,
@@ -39,6 +40,11 @@ EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
+
+# Approximate number of characters per token for truncation calculations.
+# Using 4 chars per token as a conservative approximation (actual ratio varies by content)
+# This errs on the high side to avoid premature eviction of content that might fit
+NUM_CHARS_PER_TOKEN = 4
 
 
 class FileData(TypedDict):
@@ -154,19 +160,16 @@ class FilesystemState(AgentState):
     """Files in the filesystem."""
 
 
-LIST_FILES_TOOL_DESCRIPTION = """Lists all files in the filesystem, filtering by directory.
+LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
+
+This is useful for exploring the filesystem and finding the right file to read or edit.
+You should almost ALWAYS use this tool before using the read_file or edit_file tools."""
+
+READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
+
+Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- The path parameter must be an absolute path, not a relative path
-- The list_files tool will return a list of all files in the specified directory.
-- This is very useful for exploring the file system and finding the right file to read or edit.
-- You should almost ALWAYS use this tool before using the Read or Edit tools."""
-
-READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
-
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
 - By default, it reads up to 100 lines starting from the beginning of the file
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
   - First scan: read_file(path, limit=100) to see file structure
@@ -182,61 +185,46 @@ Usage:
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
-- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab. Everything after that tab is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.
-- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance."""
+- You must read the file before editing. This tool will error if you attempt an edit without reading the file first.
+- When editing, preserve the exact indentation (tabs/spaces) from the read output. Never include line number prefixes in old_string or new_string.
+- ALWAYS prefer editing existing files over creating new ones.
+- Only use emojis if the user explicitly requests it."""
 
 
 WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
 
 Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- The content parameter must be a string
 - The write_file tool will create the a new file.
-- Prefer to edit existing files over creating new ones when possible."""
-
+- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
+"""
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
-Usage:
-- The glob tool finds files by matching patterns with wildcards
-- Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character)
-- Patterns can be absolute (starting with `/`) or relative
-- Returns a list of absolute file paths that match the pattern
+Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
+Returns a list of absolute file paths that match the pattern.
 
 Examples:
 - `**/*.py` - Find all Python files
 - `*.txt` - Find all text files in root
 - `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
-GREP_TOOL_DESCRIPTION = """Search for a pattern in files.
+GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
-Usage:
-- The grep tool searches for text patterns across files
-- The pattern parameter is the text to search for (literal string, not regex)
-- The path parameter filters which directory to search in (default is the current working directory)
-- The glob parameter accepts a glob pattern to filter which files to search (e.g., `*.py`)
-- The output_mode parameter controls the output format:
-  - `files_with_matches`: List only file paths containing matches (default)
-  - `content`: Show matching lines with file path and line numbers
-  - `count`: Show count of matches per file
+Searches for literal text (not regex) and returns matching files or content based on output_mode.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
 - Search Python files only: `grep(pattern="import", glob="*.py")`
 - Show matching lines: `grep(pattern="error", output_mode="content")`"""
 
-EXECUTE_TOOL_DESCRIPTION = """Executes a given command in the sandbox environment with proper handling and security measures.
+EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
+Usage:
+Executes a given command in the sandbox environment with proper handling and security measures.
 Before executing the command, please follow these steps:
-
 1. Directory Verification:
    - If the command will create new directories or files, first use the ls tool to verify the parent directory exists and is the correct location
    - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
-
 2. Command Execution:
    - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
    - Examples of proper quoting:
@@ -246,9 +234,7 @@ Before executing the command, please follow these steps:
      - python /path/with spaces/script.py (incorrect - will fail)
    - After ensuring proper quoting, execute the command
    - Capture the output of the command
-
 Usage notes:
-  - The command parameter is required
   - Commands run in an isolated sandbox environment
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
@@ -323,7 +309,10 @@ def _ls_tool_generator(
     """
     tool_description = custom_description or LIST_FILES_TOOL_DESCRIPTION
 
-    def sync_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
+    def sync_ls(
+        runtime: ToolRuntime[None, FilesystemState],
+        path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+    ) -> str:
         """Synchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
         validated_path = _validate_path(path)
@@ -332,7 +321,10 @@ def _ls_tool_generator(
         result = truncate_if_too_long(paths)
         return str(result)
 
-    async def async_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
+    async def async_ls(
+        runtime: ToolRuntime[None, FilesystemState],
+        path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+    ) -> str:
         """Asynchronous wrapper for ls tool."""
         resolved_backend = _get_backend(backend, runtime)
         validated_path = _validate_path(path)
@@ -352,12 +344,14 @@ def _ls_tool_generator(
 def _read_file_tool_generator(
     backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
     custom_description: str | None = None,
+    token_limit_before_truncation: int | None = None,
 ) -> BaseTool:
     """Generate the read_file tool.
 
     Args:
         backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
         custom_description: Optional custom description for the tool.
+        token_limit_before_truncation: Optional token limit before truncating output.
 
     Returns:
         Configured read_file tool that reads files using the backend.
@@ -365,10 +359,10 @@ def _read_file_tool_generator(
     tool_description = custom_description or READ_FILE_TOOL_DESCRIPTION
 
     def sync_read_file(
-        file_path: str,
+        file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
         runtime: ToolRuntime[None, FilesystemState],
-        offset: int = DEFAULT_READ_OFFSET,
-        limit: int = DEFAULT_READ_LIMIT,
+        offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
+        limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
     ) -> str:
         """Synchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -380,13 +374,25 @@ def _read_file_tool_generator(
             lines = lines[:limit]
             result = "".join(lines)
 
+        # Check if result exceeds token threshold and truncate if necessary
+        if token_limit_before_truncation and len(result) >= NUM_CHARS_PER_TOKEN * token_limit_before_truncation:
+            truncate_threshold = NUM_CHARS_PER_TOKEN * token_limit_before_truncation
+            result = result[:truncate_threshold]
+            result += (
+                f"\n\n[Output was truncated due to size limits. "
+                f"The file content is very large. "
+                f"Consider reformatting the file to make it easier to navigate. "
+                f"For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
+                f"For other formats, you can use appropriate formatting tools to split long lines.]"
+            )
+
         return result
 
     async def async_read_file(
-        file_path: str,
+        file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
         runtime: ToolRuntime[None, FilesystemState],
-        offset: int = DEFAULT_READ_OFFSET,
-        limit: int = DEFAULT_READ_LIMIT,
+        offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
+        limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
     ) -> str:
         """Asynchronous wrapper for read_file tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -397,6 +403,18 @@ def _read_file_tool_generator(
         if len(lines) > limit:
             lines = lines[:limit]
             result = "".join(lines)
+
+        # Check if result exceeds token threshold and truncate if necessary
+        if token_limit_before_truncation and len(result) >= NUM_CHARS_PER_TOKEN * token_limit_before_truncation:
+            truncate_threshold = NUM_CHARS_PER_TOKEN * token_limit_before_truncation
+            result = result[:truncate_threshold]
+            result += (
+                f"\n\n[Output was truncated due to size limits. "
+                f"The file content is very large. "
+                f"Consider reformatting the file to make it easier to navigate. "
+                f"For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
+                f"For other formats, you can use appropriate formatting tools to split long lines.]"
+            )
 
         return result
 
@@ -424,8 +442,8 @@ def _write_file_tool_generator(
     tool_description = custom_description or WRITE_FILE_TOOL_DESCRIPTION
 
     def sync_write_file(
-        file_path: str,
-        content: str,
+        file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+        content: Annotated[str, "The text content to write to the file. This parameter is required."],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> Command | str:
         """Synchronous wrapper for write_file tool."""
@@ -450,8 +468,8 @@ def _write_file_tool_generator(
         return f"Updated file {res.path}"
 
     async def async_write_file(
-        file_path: str,
-        content: str,
+        file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+        content: Annotated[str, "The text content to write to the file. This parameter is required."],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> Command | str:
         """Asynchronous wrapper for write_file tool."""
@@ -499,12 +517,12 @@ def _edit_file_tool_generator(
     tool_description = custom_description or EDIT_FILE_TOOL_DESCRIPTION
 
     def sync_edit_file(
-        file_path: str,
-        old_string: str,
-        new_string: str,
+        file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
+        old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
+        new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
         runtime: ToolRuntime[None, FilesystemState],
         *,
-        replace_all: bool = False,
+        replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
     ) -> Command | str:
         """Synchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -527,12 +545,12 @@ def _edit_file_tool_generator(
         return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
 
     async def async_edit_file(
-        file_path: str,
-        old_string: str,
-        new_string: str,
+        file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
+        old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
+        new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
         runtime: ToolRuntime[None, FilesystemState],
         *,
-        replace_all: bool = False,
+        replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
     ) -> Command | str:
         """Asynchronous wrapper for edit_file tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -577,7 +595,11 @@ def _glob_tool_generator(
     """
     tool_description = custom_description or GLOB_TOOL_DESCRIPTION
 
-    def sync_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+    def sync_glob(
+        pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
+        runtime: ToolRuntime[None, FilesystemState],
+        path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+    ) -> str:
         """Synchronous wrapper for glob tool."""
         resolved_backend = _get_backend(backend, runtime)
         infos = resolved_backend.glob_info(pattern, path=path)
@@ -585,7 +607,11 @@ def _glob_tool_generator(
         result = truncate_if_too_long(paths)
         return str(result)
 
-    async def async_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
+    async def async_glob(
+        pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
+        runtime: ToolRuntime[None, FilesystemState],
+        path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+    ) -> str:
         """Asynchronous wrapper for glob tool."""
         resolved_backend = _get_backend(backend, runtime)
         infos = await resolved_backend.aglob_info(pattern, path=path)
@@ -617,11 +643,14 @@ def _grep_tool_generator(
     tool_description = custom_description or GREP_TOOL_DESCRIPTION
 
     def sync_grep(
-        pattern: str,
+        pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
         runtime: ToolRuntime[None, FilesystemState],
-        path: str | None = None,
-        glob: str | None = None,
-        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+        path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
+        glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+        output_mode: Annotated[
+            Literal["files_with_matches", "content", "count"],
+            "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+        ] = "files_with_matches",
     ) -> str:
         """Synchronous wrapper for grep tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -632,11 +661,14 @@ def _grep_tool_generator(
         return truncate_if_too_long(formatted)  # type: ignore[arg-type]
 
     async def async_grep(
-        pattern: str,
+        pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
         runtime: ToolRuntime[None, FilesystemState],
-        path: str | None = None,
-        glob: str | None = None,
-        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+        path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
+        glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+        output_mode: Annotated[
+            Literal["files_with_matches", "content", "count"],
+            "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+        ] = "files_with_matches",
     ) -> str:
         """Asynchronous wrapper for grep tool."""
         resolved_backend = _get_backend(backend, runtime)
@@ -666,9 +698,6 @@ def _supports_execution(backend: BackendProtocol) -> bool:
     Returns:
         True if the backend supports execution, False otherwise.
     """
-    # Import here to avoid circular dependency
-    from deepagents.backends.composite import CompositeBackend
-
     # For CompositeBackend, check the default backend
     if isinstance(backend, CompositeBackend):
         return isinstance(backend.default, SandboxBackendProtocol)
@@ -693,7 +722,7 @@ def _execute_tool_generator(
     tool_description = custom_description or EXECUTE_TOOL_DESCRIPTION
 
     def sync_execute(
-        command: str,
+        command: Annotated[str, "Shell command to execute in the sandbox environment."],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> str:
         """Synchronous wrapper for execute tool."""
@@ -726,7 +755,7 @@ def _execute_tool_generator(
         return "".join(parts)
 
     async def async_execute(
-        command: str,
+        command: Annotated[str, "Shell command to execute in the sandbox environment."],
         runtime: ToolRuntime[None, FilesystemState],
     ) -> str:
         """Asynchronous wrapper for execute tool."""
@@ -766,6 +795,37 @@ def _execute_tool_generator(
     )
 
 
+# Tools that should be excluded from the large result eviction logic.
+#
+# This tuple contains tools that should NOT have their results evicted to the filesystem
+# when they exceed token limits. Tools are excluded for different reasons:
+#
+# 1. Tools with built-in truncation (ls, glob, grep):
+#    These tools truncate their own output when it becomes too large. When these tools
+#    produce truncated output due to many matches, it typically indicates the query
+#    needs refinement rather than full result preservation. In such cases, the truncated
+#    matches are potentially more like noise and the LLM should be prompted to narrow
+#    its search criteria instead.
+#
+# 2. Tools with problematic truncation behavior (read_file):
+#    read_file is tricky to handle as the failure mode here is single long lines
+#    (e.g., imagine a jsonl file with very long payloads on each line). If we try to
+#    truncate the result of read_file, the agent may then attempt to re-read the
+#    truncated file using read_file again, which won't help.
+#
+# 3. Tools that never exceed limits (edit_file, write_file):
+#    These tools return minimal confirmation messages and are never expected to produce
+#    output large enough to exceed token limits, so checking them would be unnecessary.
+TOOLS_EXCLUDED_FROM_EVICTION = (
+    "ls",
+    "glob",
+    "grep",
+    "read_file",
+    "edit_file",
+    "write_file",
+)
+
+
 TOOL_GENERATORS = {
     "ls": _ls_tool_generator,
     "read_file": _read_file_tool_generator,
@@ -780,12 +840,14 @@ TOOL_GENERATORS = {
 def _get_filesystem_tools(
     backend: BackendProtocol,
     custom_tool_descriptions: dict[str, str] | None = None,
+    token_limit_before_truncation: int | None = None,
 ) -> list[BaseTool]:
     """Get filesystem and execution tools.
 
     Args:
         backend: Backend to use for file storage and optional execution, or a factory function that takes runtime and returns a backend.
         custom_tool_descriptions: Optional custom descriptions for tools.
+        token_limit_before_truncation: Optional token limit before truncating read_file output.
 
     Returns:
         List of configured tools: ls, read_file, write_file, edit_file, glob, grep, execute.
@@ -795,7 +857,15 @@ def _get_filesystem_tools(
     tools = []
 
     for tool_name, tool_generator in TOOL_GENERATORS.items():
-        tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
+        # Pass token_limit_before_truncation to read_file generator
+        if tool_name == "read_file":
+            tool = tool_generator(
+                backend,
+                custom_tool_descriptions.get(tool_name),
+                token_limit_before_truncation,
+            )
+        else:
+            tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
         tools.append(tool)
     return tools
 
@@ -805,17 +875,50 @@ You can read the result from the filesystem by using the read_file tool, but mak
 You can do this by specifying an offset and limit in the read_file tool call.
 For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
 
-Here are the first 10 lines of the result:
+Here is a preview showing the head and tail of the result (lines of the form
+... [N lines truncated] ...
+indicate omitted lines in the middle of the content):
+
 {content_sample}
 """
+
+
+def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
+    """Create a preview of content showing head and tail with truncation marker.
+
+    Args:
+        content_str: The full content string to preview.
+        head_lines: Number of lines to show from the start.
+        tail_lines: Number of lines to show from the end.
+
+    Returns:
+        Formatted preview string with line numbers.
+    """
+    lines = content_str.splitlines()
+
+    if len(lines) <= head_lines + tail_lines:
+        # If file is small enough, show all lines
+        preview_lines = [line[:1000] for line in lines]
+        return format_content_with_line_numbers(preview_lines, start_line=1)
+
+    # Show head and tail with truncation marker
+    head = [line[:1000] for line in lines[:head_lines]]
+    tail = [line[:1000] for line in lines[-tail_lines:]]
+
+    head_sample = format_content_with_line_numbers(head, start_line=1)
+    truncation_notice = f"\n... [{len(lines) - head_lines - tail_lines} lines truncated] ...\n"
+    tail_sample = format_content_with_line_numbers(tail, start_line=len(lines) - tail_lines + 1)
+
+    return head_sample + truncation_notice + tail_sample
 
 
 class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
-    `edit_file`, `glob`, and `grep`. Files can be stored using any backend that implements
-    the `BackendProtocol`.
+    `edit_file`, `glob`, and `grep`.
+
+    Files can be stored using any backend that implements the `BackendProtocol`.
 
     If the backend implements `SandboxBackendProtocol`, an `execute` tool is also added
     for running shell commands.
@@ -835,8 +938,6 @@ class FilesystemMiddleware(AgentMiddleware):
         custom_tool_descriptions: Optional custom tool descriptions override.
         tool_token_limit_before_evict: Token limit before evicting a tool result to the
             filesystem.
-
-            Defaults to 20,000 tokens.
 
             When exceeded, writes the result using the configured backend and replaces it
             with a truncated preview and file reference.
@@ -889,7 +990,11 @@ class FilesystemMiddleware(AgentMiddleware):
         # Set system prompt (allow full override or None to generate dynamically)
         self._custom_system_prompt = system_prompt
 
-        self.tools = _get_filesystem_tools(self.backend, custom_tool_descriptions)
+        self.tools = _get_filesystem_tools(
+            self.backend,
+            custom_tool_descriptions,
+            tool_token_limit_before_evict,
+        )
 
     def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
@@ -1046,9 +1151,7 @@ class FilesystemMiddleware(AgentMiddleware):
             content_str = str(message.content)
 
         # Check if content exceeds eviction threshold
-        # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
-        # This errs on the high side to avoid premature eviction of content that might fit
-        if len(content_str) <= 4 * self.tool_token_limit_before_evict:
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self.tool_token_limit_before_evict:
             return message, None
 
         # Write content to filesystem
@@ -1058,8 +1161,8 @@ class FilesystemMiddleware(AgentMiddleware):
         if result.error:
             return message, None
 
-        # Create truncated preview for the replacement message
-        content_sample = format_content_with_line_numbers([line[:1000] for line in content_str.splitlines()[:10]], start_line=1)
+        # Create preview showing head and tail of the result
+        content_sample = _create_content_preview(content_str)
         replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
             file_path=file_path,
@@ -1070,6 +1173,63 @@ class FilesystemMiddleware(AgentMiddleware):
         processed_message = ToolMessage(
             content=replacement_text,
             tool_call_id=message.tool_call_id,
+            name=message.name,
+        )
+        return processed_message, result.files_update
+
+    async def _aprocess_large_message(
+        self,
+        message: ToolMessage,
+        resolved_backend: BackendProtocol,
+    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+        """Async version of _process_large_message.
+
+        Uses async backend methods to avoid sync calls in async context.
+        See _process_large_message for full documentation.
+        """
+        # Early exit if eviction not configured
+        if not self.tool_token_limit_before_evict:
+            return message, None
+
+        # Convert content to string once for both size check and eviction
+        # Special case: single text block - extract text directly for readability
+        if (
+            isinstance(message.content, list)
+            and len(message.content) == 1
+            and isinstance(message.content[0], dict)
+            and message.content[0].get("type") == "text"
+            and "text" in message.content[0]
+        ):
+            content_str = str(message.content[0]["text"])
+        elif isinstance(message.content, str):
+            content_str = message.content
+        else:
+            # Multiple blocks or non-text content - stringify entire structure
+            content_str = str(message.content)
+
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self.tool_token_limit_before_evict:
+            return message, None
+
+        # Write content to filesystem using async method
+        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
+        file_path = f"/large_tool_results/{sanitized_id}"
+        result = await resolved_backend.awrite(file_path, content_str)
+        if result.error:
+            return message, None
+
+        # Create preview showing head and tail of the result
+        content_sample = _create_content_preview(content_str)
+        replacement_text = TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=message.tool_call_id,
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+
+        # Always return as plain string after eviction
+        processed_message = ToolMessage(
+            content=replacement_text,
+            tool_call_id=message.tool_call_id,
+            name=message.name,
         )
         return processed_message, result.files_update
 
@@ -1129,6 +1289,52 @@ class FilesystemMiddleware(AgentMiddleware):
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
         raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
+    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+        """Async version of _intercept_large_tool_result.
+
+        Uses async backend methods to avoid sync calls in async context.
+        See _intercept_large_tool_result for full documentation.
+        """
+        if isinstance(tool_result, ToolMessage):
+            resolved_backend = self._get_backend(runtime)
+            processed_message, files_update = await self._aprocess_large_message(
+                tool_result,
+                resolved_backend,
+            )
+            return (
+                Command(
+                    update={
+                        "files": files_update,
+                        "messages": [processed_message],
+                    }
+                )
+                if files_update is not None
+                else processed_message
+            )
+
+        if isinstance(tool_result, Command):
+            update = tool_result.update
+            if update is None:
+                return tool_result
+            command_messages = update.get("messages", [])
+            accumulated_file_updates = dict(update.get("files", {}))
+            resolved_backend = self._get_backend(runtime)
+            processed_messages = []
+            for message in command_messages:
+                if not isinstance(message, ToolMessage):
+                    processed_messages.append(message)
+                    continue
+
+                processed_message, files_update = await self._aprocess_large_message(
+                    message,
+                    resolved_backend,
+                )
+                processed_messages.append(processed_message)
+                if files_update is not None:
+                    accumulated_file_updates.update(files_update)
+            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+        raise AssertionError(f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}")
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -1143,7 +1349,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return handler(request)
 
         tool_result = handler(request)
@@ -1163,8 +1369,8 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return await handler(request)
 
         tool_result = await handler(request)
-        return self._intercept_large_tool_result(tool_result, request.runtime)
+        return await self._aintercept_large_tool_result(tool_result, request.runtime)

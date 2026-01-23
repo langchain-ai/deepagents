@@ -7,7 +7,7 @@ Agents can increasingly tackle long-horizon tasks, [with agent task length doubl
 ## 📚 Resources
 
 - **[Documentation](https://docs.langchain.com/oss/python/deepagents/overview)** - Full overview and API reference
-- **[Quickstarts Repo](https://github.com/langchain-ai/deepagents-quickstarts)** - Examples and use-cases
+- **[Examples](examples/)** - Example agents and use-cases
 - **[CLI](libs/deepagents-cli/)** - Interactive command-line interface with skills, memory, and HITL workflows
 
 ## 🚀 Quickstart
@@ -44,7 +44,7 @@ agent = create_deep_agent(
 result = agent.invoke({"messages": [{"role": "user", "content": "What is LangGraph?"}]})
 ```
 
-The agent created with `create_deep_agent` is a compiled [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview) `StateGraph`, so it can be used with streaming, human-in-the-loop, memory, or Studio just like any LangGraph agent. See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
+The agent created with `create_deep_agent` is a compiled [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview) `StateGraph`, so it can be used with streaming, human-in-the-loop, memory, or Studio just like any LangGraph agent. See our [examples](examples/) for more.
 
 ## Customizing Deep Agents
 
@@ -91,7 +91,7 @@ agent = create_deep_agent(
 )
 ```
 
-See our [quickstarts repo](https://github.com/langchain-ai/deepagents-quickstarts) for more examples.
+See our [examples](examples/) for more.
 
 ### `tools`
 
@@ -180,7 +180,7 @@ See the [subagents documentation](https://docs.langchain.com/oss/python/deepagen
 
 ### `interrupt_on`
 
-Some tools may be sensitive and require human approval before execution. Deepagents supports human-in-the-loop workflows through LangGraph’s interrupt capabilities. You can configure which tools require approval using a checkpointer.
+Some tools may be sensitive and require human approval before execution. Deepagents supports human-in-the-loop workflows through LangGraph's interrupt capabilities. You can configure which tools require approval using a checkpointer.
 
 These tool configs are passed to our prebuilt [HITL middleware](https://docs.langchain.com/oss/python/langchain/middleware#human-in-the-loop) so that the agent pauses execution and waits for feedback from the user before executing configured tools.
 

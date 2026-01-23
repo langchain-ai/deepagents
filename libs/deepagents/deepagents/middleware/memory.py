@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryState(AgentState):
-    """State schema for MemoryMiddleware.
+    """State schema for `MemoryMiddleware`.
 
     Attributes:
         memory_contents: Dict mapping source paths to their loaded content.
@@ -85,7 +85,7 @@ class MemoryState(AgentState):
 
 
 class MemoryStateUpdate(TypedDict):
-    """State update for MemoryMiddleware."""
+    """State update for `MemoryMiddleware`."""
 
     memory_contents: dict[str, str]
 
@@ -153,14 +153,15 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 
 
 class MemoryMiddleware(AgentMiddleware):
-    """Middleware for loading agent memory from AGENTS.md files.
+    """Middleware for loading agent memory from `AGENTS.md` files.
 
     Loads memory content from configured sources and injects into the system prompt.
+
     Supports multiple sources that are combined together.
 
     Args:
         backend: Backend instance or factory function for file operations.
-        sources: List of MemorySource configurations specifying paths and names.
+        sources: List of `MemorySource` configurations specifying paths and names.
     """
 
     state_schema = MemoryState
@@ -176,9 +177,12 @@ class MemoryMiddleware(AgentMiddleware):
         Args:
             backend: Backend instance or factory function that takes runtime
                      and returns a backend. Use a factory for StateBackend.
-            sources: List of memory file paths to load (e.g., ["~/.deepagents/AGENTS.md",
-                     "./.deepagents/AGENTS.md"]). Display names are automatically derived
-                     from the paths. Sources are loaded in order.
+            sources: List of memory file paths to load (e.g., `["~/.deepagents/AGENTS.md",
+                     "./.deepagents/AGENTS.md"]`).
+
+                     Display names are automatically derived from the paths.
+
+                     Sources are loaded in order.
         """
         self._backend = backend
         self.sources = sources

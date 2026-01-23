@@ -59,6 +59,7 @@ DEEP_AGENTS_ASCII = f"""
 COMMANDS = {
     "clear": "Clear screen and reset conversation",
     "help": "Show help information",
+    "remember": "Review conversation and update memory/skills",
     "tokens": "Show token usage for current session",
     "quit": "Exit the CLI",
     "exit": "Exit the CLI",
@@ -468,7 +469,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     # Use environment variable defaults, detect provider by API key priority
     elif settings.has_openai:
         provider = "openai"
-        model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-5.2")
     elif settings.has_anthropic:
         provider = "anthropic"
         model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
@@ -478,7 +479,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     else:
         console.print("[bold red]Error:[/bold red] No API key configured.")
         console.print("\nPlease set one of the following environment variables:")
-        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
+        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5.2)")
         console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
         console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
         console.print("\nExample:")
@@ -509,4 +510,56 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             model=model_name,
             temperature=0,
             max_tokens=None,
+        )
+
+
+def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
+    """Validate that the model has required capabilities for `deepagents`.
+
+    Checks the model's profile (if available) to ensure it supports tool calling, which
+    is required for agent functionality. Issues warnings for models without profiles or
+    with limited context windows.
+
+    Args:
+        model: The instantiated model to validate.
+        model_name: Model name for error/warning messages.
+
+    Raises:
+        SystemExit: If model profile explicitly indicates `tool_calling=False`.
+
+    Note:
+        This validation is best-effort. Models without profiles will pass with a warning.
+    """
+    profile = getattr(model, "profile", None)
+
+    if profile is None:
+        # Model doesn't have profile data - warn but allow
+        console.print(
+            f"[dim][yellow]Note:[/yellow] No capability profile for '{model_name}'. "
+            "Cannot verify tool calling support.[/dim]"
+        )
+        return
+
+    if not isinstance(profile, dict):
+        return
+
+    # Check required capability: tool_calling
+    tool_calling = profile.get("tool_calling")
+    if tool_calling is False:
+        console.print(
+            f"[bold red]Error:[/bold red] Model '{model_name}' does not support tool calling."
+        )
+        console.print(
+            "\nDeep Agents requires tool calling for agent functionality. "
+            "Please choose a model that supports tool calling."
+        )
+        console.print("\nSee MODELS.md for supported models.")
+        sys.exit(1)
+
+    # Warn about potentially limited context (< 8k tokens)
+    max_input_tokens = profile.get("max_input_tokens")
+    if max_input_tokens and max_input_tokens < 8000:  # noqa: PLR2004
+        console.print(
+            f"[dim][yellow]Warning:[/yellow] Model '{model_name}' has limited context "
+            f"({max_input_tokens:,} tokens). Agent performance may be affected.[/dim]"
         )

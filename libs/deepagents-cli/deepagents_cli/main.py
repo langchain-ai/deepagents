@@ -1,5 +1,5 @@
 """Main entry point and CLI loop for deepagents."""
-# ruff: noqa: T201, E402, BLE001, PLR0912, PLR0915
+# ruff: noqa: E402, BLE001, PLR0912, PLR0915
 
 # Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
 # ruff: noqa: E402
@@ -156,7 +156,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--model",
-        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5-mini). "
+        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5.2). "
         "Provider is auto-detected from model name.",
     )
     parser.add_argument(

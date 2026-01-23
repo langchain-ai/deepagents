@@ -137,15 +137,17 @@ class SandboxProvider(ABC, Generic[MetadataT]):
     Implementations can add provider-specific parameters as keyword-only arguments
     with defaults, maintaining compatibility while providing type-safe APIs.
 
-    Sync/Async: Both sync and async methods are provided. By default, async methods
-    run sync methods in a thread pool. Providers may optimize by implementing only
-    sync or only async methods, raising NotImplementedError in the other with a
-    message directing users to the appropriate implementation (e.g., "Use MySyncProvider
-    for synchronous code" or "This provider requires async: use await").
+    Sync/Async Convention: Following LangChain convention, providers should offer both
+    sync and async methods in the same namespace if possible (doesn't hurt performance)
+    (e.g., both `list()` and `alist()` in one class). The default async implementations
+    delegate to sync methods via a thread pool. Providers can override async methods to
+    provide optimized async implementations if needed.
 
-    Type Parameters:
-        MetadataT: TypedDict defining the structure of sandbox metadata.
-            Default is dict[str, Any]. Enables type-safe access to metadata fields.
+    Alternatively, if necessary for performance optimization, providers may split into
+    separate implementations (e.g., `MySyncProvider` and `MyAsyncProvider`). In this
+    case, unimplemented methods should raise NotImplementedError with clear guidance
+    (e.g., "This provider only supports async operations. Use 'await provider.alist()'
+    or switch to MySyncProvider for synchronous code").
 
     Example Implementation:
         ```python

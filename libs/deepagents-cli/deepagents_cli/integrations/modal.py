@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
+    SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import BaseSandbox
+from deepagents.backends.sandbox import BaseSandbox, SandboxListResponse, SandboxProvider
 
 if TYPE_CHECKING:
     import modal
@@ -124,3 +126,113 @@ class ModalBackend(BaseSandbox):
                 f.write(content)
             responses.append(FileUploadResponse(path=path, error=None))
         return responses
+
+
+class ModalProvider(SandboxProvider[dict[str, Any]]):
+    """Modal sandbox provider implementation.
+    
+    Manages Modal sandbox lifecycle using the Modal SDK.
+    """
+
+    def __init__(self, app_name: str = "deepagents-sandbox") -> None:
+        """Initialize Modal provider.
+        
+        Args:
+            app_name: Name for the Modal app (default: "deepagents-sandbox")
+        """
+        self._app_name = app_name
+
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxListResponse[dict[str, Any]]:
+        """List available Modal sandboxes.
+        
+        Raises:
+            NotImplementedError: Modal doesn't provide a list API.
+        """
+        msg = "Listing Modal sandboxes is not supported yet."
+        raise NotImplementedError(msg)
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        workdir: str = "/workspace",
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get existing or create new Modal sandbox.
+        
+        Args:
+            sandbox_id: Existing sandbox ID to connect to (if None, creates new)
+            workdir: Working directory for new sandboxes (default: /workspace)
+            timeout: Timeout in seconds for sandbox startup (default: 180)
+            **kwargs: Additional Modal-specific parameters
+            
+        Returns:
+            ModalBackend instance
+            
+        Raises:
+            ImportError: Modal SDK not installed
+            RuntimeError: Sandbox startup failed
+        """
+        import modal
+
+        # Import console here to avoid circular import
+        from deepagents_cli.config import console
+
+        console.print("[yellow]Starting Modal sandbox...[/yellow]")
+
+        # Create ephemeral app
+        app = modal.App(self._app_name)
+
+        if sandbox_id:
+            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=app)
+        else:
+            sandbox = modal.Sandbox.create(app=app, workdir=workdir)
+
+            # Poll until running
+            for _ in range(timeout // 2):
+                if sandbox.poll() is not None:
+                    msg = "Modal sandbox terminated unexpectedly during startup"
+                    raise RuntimeError(msg)
+                try:
+                    process = sandbox.exec("echo", "ready", timeout=5)
+                    process.wait()
+                    if process.returncode == 0:
+                        break
+                except Exception:
+                    pass
+                time.sleep(2)
+            else:
+                sandbox.terminate()
+                msg = f"Modal sandbox failed to start within {timeout} seconds"
+                raise RuntimeError(msg)
+
+        backend = ModalBackend(sandbox)
+        console.print(f"[green]✓ Modal sandbox ready: {backend.id}[/green]")
+        return backend
+
+    def delete(self, sandbox_id: str, **kwargs: Any) -> None:
+        """Delete a Modal sandbox.
+        
+        Args:
+            sandbox_id: Sandbox ID to delete
+            **kwargs: Additional parameters
+            
+        Raises:
+            ImportError: Modal SDK not installed
+        """
+        import modal
+
+        # Import console here to avoid circular import
+        from deepagents_cli.config import console
+
+        app = modal.App(self._app_name)
+        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=app)
+        console.print(f"[dim]Terminating Modal sandbox {sandbox_id}...[/dim]")
+        sandbox.terminate()
+        console.print(f"[dim]✓ Modal sandbox {sandbox_id} terminated[/dim]")

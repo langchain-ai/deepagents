@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
+import time
+from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
+    SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import BaseSandbox
+from deepagents.backends.sandbox import BaseSandbox, SandboxListResponse, SandboxProvider
 
 if TYPE_CHECKING:
     from daytona import Sandbox
@@ -115,3 +118,115 @@ class DaytonaBackend(BaseSandbox):
 
         # TODO: Check if Daytona returns error info and map to FileOperationError codes
         return [FileUploadResponse(path=path, error=None) for path, _ in files]
+
+
+class DaytonaProvider(SandboxProvider[dict[str, Any]]):
+    """Daytona sandbox provider implementation.
+    
+    Manages Daytona sandbox lifecycle using the Daytona SDK.
+    """
+
+    def __init__(self, api_key: str | None = None) -> None:
+        """Initialize Daytona provider.
+        
+        Args:
+            api_key: Daytona API key (defaults to DAYTONA_API_KEY env var)
+        """
+        from daytona import Daytona, DaytonaConfig
+
+        self._api_key = api_key or os.environ.get("DAYTONA_API_KEY")
+        if not self._api_key:
+            msg = "DAYTONA_API_KEY environment variable not set"
+            raise ValueError(msg)
+        self._client = Daytona(DaytonaConfig(api_key=self._api_key))
+
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxListResponse[dict[str, Any]]:
+        """List available Daytona sandboxes.
+        
+        Raises:
+            NotImplementedError: Daytona SDK doesn't expose a list API yet.
+        """
+        msg = "Listing with Daytona SDK not yet implemented"
+        raise NotImplementedError(msg)
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get existing or create new Daytona sandbox.
+        
+        Args:
+            sandbox_id: Not supported yet - must be None
+            timeout: Timeout in seconds for sandbox startup (default: 180)
+            **kwargs: Additional Daytona-specific parameters
+            
+        Returns:
+            DaytonaBackend instance
+            
+        Raises:
+            NotImplementedError: Connecting to existing sandbox not supported
+            RuntimeError: Sandbox startup failed
+        """
+        # Import console here to avoid circular import
+        from deepagents_cli.config import console
+
+        if sandbox_id:
+            msg = (
+                "Connecting to existing Daytona sandbox by ID not yet supported. "
+                "Create a new sandbox by omitting sandbox_id parameter."
+            )
+            raise NotImplementedError(msg)
+
+        console.print("[yellow]Starting Daytona sandbox...[/yellow]")
+
+        sandbox = self._client.create()
+        sandbox_id = sandbox.id
+
+        # Poll until running
+        for _ in range(timeout // 2):
+            try:
+                result = sandbox.process.exec("echo ready", timeout=5)
+                if result.exit_code == 0:
+                    break
+            except Exception:
+                pass
+            time.sleep(2)
+        else:
+            try:
+                sandbox.delete()
+            finally:
+                msg = f"Daytona sandbox failed to start within {timeout} seconds"
+                raise RuntimeError(msg)
+
+        backend = DaytonaBackend(sandbox)
+        console.print(f"[green]✓ Daytona sandbox ready: {backend.id}[/green]")
+        return backend
+
+    def delete(self, sandbox_id: str, **kwargs: Any) -> None:
+        """Delete a Daytona sandbox.
+        
+        Note: This requires retrieving the sandbox first which may not be supported.
+        
+        Args:
+            sandbox_id: Sandbox ID to delete
+            **kwargs: Additional parameters
+            
+        Raises:
+            NotImplementedError: If sandbox retrieval not supported
+        """
+        # Import console here to avoid circular import
+        from deepagents_cli.config import console
+
+        console.print(f"[dim]Deleting Daytona sandbox {sandbox_id}...[/dim]")
+        # Note: Daytona SDK may not support retrieving by ID yet
+        # This is a placeholder implementation
+        msg = "Deleting Daytona sandbox by ID not yet implemented"
+        raise NotImplementedError(msg)

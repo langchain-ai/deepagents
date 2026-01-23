@@ -20,30 +20,6 @@ class MockMetadata(TypedDict, total=False):
     template: str
 
 
-class MockListKwargs(TypedDict, total=False):
-    """Example kwargs for list operation (documentation only).
-
-    While implementations accept **kwargs: Any, defining these TypedDicts
-    serves as documentation for what kwargs are supported by this provider.
-    """
-
-    status: Literal["running", "stopped"]
-    template_id: str
-
-
-class MockCreateKwargs(TypedDict, total=False):
-    """Example kwargs for get_or_create operation (documentation only)."""
-
-    template_id: str
-    timeout_minutes: int
-
-
-class MockDeleteKwargs(TypedDict, total=False):
-    """Example kwargs for delete operation (documentation only)."""
-
-    force: bool
-
-
 class MockSandboxBackend(BaseSandbox):
     """Mock implementation of SandboxBackendProtocol for testing."""
 

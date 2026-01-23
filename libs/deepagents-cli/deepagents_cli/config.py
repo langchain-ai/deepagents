@@ -469,7 +469,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     # Use environment variable defaults, detect provider by API key priority
     elif settings.has_openai:
         provider = "openai"
-        model_name = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+        model_name = os.environ.get("OPENAI_MODEL", "gpt-5.2")
     elif settings.has_anthropic:
         provider = "anthropic"
         model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
@@ -479,7 +479,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     else:
         console.print("[bold red]Error:[/bold red] No API key configured.")
         console.print("\nPlease set one of the following environment variables:")
-        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5-mini)")
+        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5.2)")
         console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
         console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
         console.print("\nExample:")

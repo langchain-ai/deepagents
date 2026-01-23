@@ -159,7 +159,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
         """Get existing or create new Daytona sandbox.
 
@@ -196,7 +196,8 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
                 result = sandbox.process.exec("echo ready", timeout=5)
                 if result.exit_code == 0:
                     break
-            except Exception:
+            except Exception:  # noqa: S110, BLE001
+                # Sandbox not ready yet, continue polling
                 pass
             time.sleep(2)
         else:
@@ -210,7 +211,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
         console.print(f"[green]✓ Daytona sandbox ready: {backend.id}[/green]")
         return backend
 
-    def delete(self, sandbox_id: str, **kwargs: Any) -> None:
+    def delete(self, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Daytona sandbox.
 
         Note: This requires retrieving the sandbox first which may not be supported.

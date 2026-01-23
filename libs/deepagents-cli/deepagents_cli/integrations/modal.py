@@ -162,7 +162,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         sandbox_id: str | None = None,
         workdir: str = "/workspace",
         timeout: int = 180,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
         """Get existing or create new Modal sandbox.
 
@@ -204,7 +204,8 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
                     process.wait()
                     if process.returncode == 0:
                         break
-                except Exception:
+                except Exception:  # noqa: S110, BLE001
+                    # Sandbox not ready yet, continue polling
                     pass
                 time.sleep(2)
             else:
@@ -216,7 +217,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         console.print(f"[green]✓ Modal sandbox ready: {backend.id}[/green]")
         return backend
 
-    def delete(self, sandbox_id: str, **kwargs: Any) -> None:
+    def delete(self, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Modal sandbox.
 
         Args:

@@ -667,7 +667,7 @@ wheels = [
 [[package]]
 name = "deepagents"
 version = "0.3.8"
-source = { directory = "../deepagents" }
+source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
     { name = "langchain-anthropic" },
@@ -755,7 +755,7 @@ test = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0" },
     { name = "daytona", specifier = ">=0.113.0" },
-    { name = "deepagents", directory = "../deepagents" },
+    { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.2.3,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.1.7,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },

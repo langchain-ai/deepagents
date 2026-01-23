@@ -168,7 +168,7 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,
+        **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
         """Get existing or create new Runloop devbox.
 
@@ -209,7 +209,7 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
         console.print(f"[green]✓ Runloop devbox ready: {sandbox_id}[/green]")
         return RunloopBackend(devbox_id=devbox.id, client=self._client)
 
-    def delete(self, sandbox_id: str, **kwargs: Any) -> None:
+    def delete(self, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Runloop devbox.
 
         Args:
@@ -222,5 +222,3 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
         console.print(f"[dim]Shutting down Runloop devbox {sandbox_id}...[/dim]")
         self._client.devboxes.shutdown(id=sandbox_id)
         console.print(f"[dim]✓ Runloop devbox {sandbox_id} terminated[/dim]")
-
-        return responses

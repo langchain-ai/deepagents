@@ -839,7 +839,7 @@ Here is a preview showing the head and tail of the result:
 """
 
 
-def _create_content_preview(content_str: str, head_lines: int = 5, tail_lines: int = 5) -> str:
+def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
     """Create a preview of content showing head and tail with truncation marker.
 
     Args:

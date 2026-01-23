@@ -29,8 +29,21 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 
-# Type variables for provider-specific kwargs
+# Type variables for provider-specific kwargs and metadata
 # Note: These are covariant to work with Protocol, and use type: ignore for mypy compatibility
+MetadataT = TypeVar("MetadataT", covariant=True, default=dict[str, Any])
+"""Type variable for sandbox metadata.
+
+Providers can define their own TypedDict to specify the structure of sandbox metadata,
+enabling type-safe access to metadata fields.
+
+Example:
+    class ProviderMetadata(TypedDict, total=False):
+        status: Literal["running", "stopped"]
+        created_at: str
+        template: str
+"""
+
 ListKwargsT = TypeVar("ListKwargsT", covariant=True)
 """Type variable for list operation keyword arguments.
 
@@ -46,29 +59,24 @@ GetOrCreateKwargsT = TypeVar("GetOrCreateKwargsT", covariant=True)
 """Type variable for get_or_create operation keyword arguments.
 
 Providers define their own TypedDict subclass to specify supported creation parameters.
-
-Example:
-    class ProviderCreateKwargs(TypedDict, total=False):
-        template_id: str
-        timeout_minutes: int
 """
 
 DeleteKwargsT = TypeVar("DeleteKwargsT", covariant=True)
 """Type variable for delete operation keyword arguments.
 
 Providers define their own TypedDict subclass to specify supported deletion options.
-
-Example:
-    class ProviderDeleteKwargs(TypedDict, total=False):
-        force: bool
 """
 
 
-class SandboxInfo(TypedDict):
+class SandboxInfo(TypedDict, Generic[MetadataT]):
     """Metadata for a single sandbox instance.
 
     This lightweight structure is returned from list operations and provides
     basic information about a sandbox without requiring a full connection.
+
+    Type Parameters:
+        MetadataT: Type of the metadata field. Defaults to dict[str, Any].
+            Providers can specify their own TypedDict for type-safe metadata access.
 
     Attributes:
         sandbox_id: Unique identifier for the sandbox instance.
@@ -77,15 +85,28 @@ class SandboxInfo(TypedDict):
 
     Example:
         ```python
+        # Using default dict[str, Any]
         info: SandboxInfo = {
             "sandbox_id": "sb_abc123",
             "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z", "template": "python-3.11"},
+        }
+
+
+        # Using typed metadata
+        class MyMetadata(TypedDict, total=False):
+            status: Literal["running", "stopped"]
+            created_at: str
+
+
+        typed_info: SandboxInfo[MyMetadata] = {
+            "sandbox_id": "sb_abc123",
+            "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z"},
         }
         ```
     """
 
     sandbox_id: str
-    metadata: NotRequired[dict[str, Any]]
+    metadata: NotRequired[MetadataT]
 
 
 class SandboxListResponse(TypedDict):
@@ -188,9 +209,10 @@ class SandboxProvider(Protocol, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteK
 
     def list(
         self,
+        *,
         cursor: str | None = None,
         **kwargs: Unpack[ListKwargsT],  # type: ignore[misc]
-    ) -> SandboxListResponse:
+    ) -> SandboxListResponse[MetadataT]:
         """List available sandboxes with optional filtering and pagination.
 
         Args:
@@ -226,6 +248,7 @@ class SandboxProvider(Protocol, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteK
 
     def get_or_create(
         self,
+        *,
         sandbox_id: str | None = None,
         **kwargs: Unpack[GetOrCreateKwargsT],  # type: ignore[misc]
     ) -> SandboxBackendProtocol:

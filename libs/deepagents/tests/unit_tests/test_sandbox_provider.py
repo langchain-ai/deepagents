@@ -12,6 +12,13 @@ from deepagents.backends.sandbox import (
 )
 
 
+class MockMetadata(TypedDict, total=False):
+    """Example typed metadata for sandboxes."""
+
+    status: Literal["running", "stopped"]
+    template: str
+
+
 class MockListKwargs(TypedDict, total=False):
     """Example kwargs for list operation."""
 
@@ -93,14 +100,15 @@ class MockSandboxProvider:
 
     def list(
         self,
+        *,
         cursor: str | None = None,
         **kwargs: Unpack[MockListKwargs],
-    ) -> SandboxListResponse:
+    ) -> SandboxListResponse[MockMetadata]:
         """List sandboxes with optional filtering."""
         # Note: cursor is part of the protocol but not used in this simple implementation
         _ = cursor  # Mark as intentionally unused
 
-        items: list[SandboxInfo] = []
+        items: list[SandboxInfo[MockMetadata]] = []
 
         # Apply filters from kwargs
         status_filter = kwargs.get("status")
@@ -126,6 +134,7 @@ class MockSandboxProvider:
 
     def get_or_create(
         self,
+        *,
         sandbox_id: str | None = None,
         **kwargs: Unpack[MockCreateKwargs],
     ) -> SandboxBackendProtocol:

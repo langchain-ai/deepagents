@@ -1,3 +1,4 @@
+import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
@@ -18,6 +19,7 @@ from deepagents.middleware.filesystem import (
     FileData,
     FilesystemMiddleware,
     FilesystemState,
+    _create_content_preview,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
@@ -1359,6 +1361,48 @@ class TestFilesystemMiddleware:
         for line in lines:
             if line.strip() and "truncated" not in line:  # Skip empty lines and truncation notice
                 assert len(line) <= 1010, f"Line exceeds 1000 chars: {len(line)} chars"
+
+    @pytest.mark.parametrize(
+        ("num_lines", "should_truncate"),
+        [
+            (0, False),  # Empty content
+            (1, False),  # Single line
+            (5, False),  # Fewer than head_lines + tail_lines
+            (10, False),  # Exactly head_lines + tail_lines
+            (11, True),  # Just over threshold
+            (20, True),  # Well over threshold
+        ],
+    )
+    def test_content_preview_edge_cases(self, num_lines, should_truncate):
+        """Test _create_content_preview with various line counts."""
+        # Create content with specified number of lines
+        if num_lines == 0:
+            content_str = ""
+        else:
+            lines = [f"line {i}" for i in range(num_lines)]
+            content_str = "\n".join(lines)
+
+        preview = _create_content_preview(content_str)
+
+        if should_truncate:
+            # Should have truncation notice
+            assert "truncated" in preview
+            # Should have head lines (0-4)
+            assert "line 0" in preview
+            assert "line 4" in preview
+            # Should have tail lines
+            assert f"line {num_lines - 5}" in preview
+            assert f"line {num_lines - 1}" in preview
+            # Should NOT have middle lines
+            if num_lines > 11:
+                assert "line 5" not in preview
+                assert f"line {num_lines - 6}" not in preview
+        else:
+            # Should NOT have truncation notice
+            assert "truncated" not in preview
+            # Should have all lines
+            for i in range(num_lines):
+                assert f"line {i}" in preview
 
 
 class TestPatchToolCallsMiddleware:

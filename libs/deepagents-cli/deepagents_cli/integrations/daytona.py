@@ -175,17 +175,12 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             NotImplementedError: Connecting to existing sandbox not supported
             RuntimeError: Sandbox startup failed
         """
-        # Import console here to avoid circular import
-        from deepagents_cli.config import console
-
         if sandbox_id:
             msg = (
                 "Connecting to existing Daytona sandbox by ID not yet supported. "
                 "Create a new sandbox by omitting sandbox_id parameter."
             )
             raise NotImplementedError(msg)
-
-        console.print("[yellow]Starting Daytona sandbox...[/yellow]")
 
         sandbox = self._client.create()
         sandbox_id = sandbox.id
@@ -207,11 +202,9 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
                 msg = f"Daytona sandbox failed to start within {timeout} seconds"
                 raise RuntimeError(msg)
 
-        backend = DaytonaBackend(sandbox)
-        console.print(f"[green]✓ Daytona sandbox ready: {backend.id}[/green]")
-        return backend
+        return DaytonaBackend(sandbox)
 
-    def delete(self, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, sandbox_id: str, **kwargs: Any) -> None:
         """Delete a Daytona sandbox.
 
         Note: This requires retrieving the sandbox first which may not be supported.
@@ -224,9 +217,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             NotImplementedError: If sandbox retrieval not supported
         """
         # Import console here to avoid circular import
-        from deepagents_cli.config import console
 
-        console.print(f"[dim]Deleting Daytona sandbox {sandbox_id}...[/dim]")
         # Note: Daytona SDK may not support retrieving by ID yet
         # This is a placeholder implementation
         msg = "Deleting Daytona sandbox by ID not yet implemented"

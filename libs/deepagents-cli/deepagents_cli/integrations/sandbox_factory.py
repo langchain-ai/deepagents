@@ -87,7 +87,9 @@ def create_sandbox(
     should_cleanup = sandbox_id is None
 
     # Create or connect to sandbox
+    console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
     backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
+    console.print(f"[green]✓ {provider.capitalize()} sandbox ready: {backend.id}[/green]")
 
     # Run setup script if provided
     if setup_script_path:
@@ -98,7 +100,11 @@ def create_sandbox(
     finally:
         if should_cleanup:
             try:
+                console.print(f"[dim]Terminating {provider} sandbox {backend.id}...[/dim]")
                 provider_obj.delete(backend.id)
+                console.print(
+                    f"[dim]✓ {provider.capitalize()} sandbox {backend.id} terminated[/dim]"
+                )
             except Exception as e:
                 console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
@@ -153,7 +159,6 @@ def _get_provider(provider_name: str) -> SandboxProvider:
 
 
 __all__ = [
-    # Only what's actually used by CLI
     "create_sandbox",
     "get_default_working_dir",
 ]

@@ -184,11 +184,6 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
             ImportError: Runloop SDK not installed
             RuntimeError: Devbox startup failed
         """
-        # Import console here to avoid circular import
-        from deepagents_cli.config import console
-
-        console.print("[yellow]Starting Runloop devbox...[/yellow]")
-
         if sandbox_id:
             devbox = self._client.devboxes.retrieve(id=sandbox_id)
         else:
@@ -206,7 +201,6 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
                 msg = f"Devbox failed to start within {timeout} seconds"
                 raise RuntimeError(msg)
 
-        console.print(f"[green]✓ Runloop devbox ready: {sandbox_id}[/green]")
         return RunloopBackend(devbox_id=devbox.id, client=self._client)
 
     def delete(self, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
@@ -216,9 +210,4 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
             sandbox_id: Devbox ID to delete
             **kwargs: Additional parameters
         """
-        # Import console here to avoid circular import
-        from deepagents_cli.config import console
-
-        console.print(f"[dim]Shutting down Runloop devbox {sandbox_id}...[/dim]")
         self._client.devboxes.shutdown(id=sandbox_id)
-        console.print(f"[dim]✓ Runloop devbox {sandbox_id} terminated[/dim]")

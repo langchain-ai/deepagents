@@ -181,11 +181,6 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         """
         import modal
 
-        # Import console here to avoid circular import
-        from deepagents_cli.config import console
-
-        console.print("[yellow]Starting Modal sandbox...[/yellow]")
-
         # Create ephemeral app
         app = modal.App(self._app_name)
 
@@ -213,9 +208,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
                 msg = f"Modal sandbox failed to start within {timeout} seconds"
                 raise RuntimeError(msg)
 
-        backend = ModalBackend(sandbox)
-        console.print(f"[green]✓ Modal sandbox ready: {backend.id}[/green]")
-        return backend
+        return ModalBackend(sandbox)
 
     def delete(self, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Modal sandbox.
@@ -229,11 +222,6 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         """
         import modal
 
-        # Import console here to avoid circular import
-        from deepagents_cli.config import console
-
         app = modal.App(self._app_name)
         sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=app)
-        console.print(f"[dim]Terminating Modal sandbox {sandbox_id}...[/dim]")
         sandbox.terminate()
-        console.print(f"[dim]✓ Modal sandbox {sandbox_id} terminated[/dim]")

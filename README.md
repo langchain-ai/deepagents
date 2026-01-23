@@ -52,7 +52,7 @@ agent = create_deep_agent(
 
 MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters).
 
-## CLI
+## Deep Agents CLI
 
 Try Deep Agents instantly from the terminal:
 
@@ -71,7 +71,7 @@ The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, 
 
 ### Why should I use this?
 
-- **100% open source** — MIT licensed, fully extensible, no vendor lock-in
+- **100% open source** — MIT licensed, fully extensible
 - **Provider agnostic** — Works with Claude, OpenAI, Google, or any LangChain-compatible model
 - **Built on LangGraph** — Production-ready runtime with streaming, persistence, and checkpointing
 - **Batteries included** — Planning, file access, sub-agents, and context management work out of the box

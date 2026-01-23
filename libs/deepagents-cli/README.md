@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="cli-banner.jpg" alt="Deep Agents CLI" width="600"/>
+  <img src="da-cli-cover-photo.png" alt="Deep Agents CLI" width="600"/>
 </p>
 
 <h1 align="center">Deep Agents CLI</h1>

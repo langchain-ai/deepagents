@@ -122,13 +122,13 @@ class DaytonaBackend(BaseSandbox):
 
 class DaytonaProvider(SandboxProvider[dict[str, Any]]):
     """Daytona sandbox provider implementation.
-    
+
     Manages Daytona sandbox lifecycle using the Daytona SDK.
     """
 
     def __init__(self, api_key: str | None = None) -> None:
         """Initialize Daytona provider.
-        
+
         Args:
             api_key: Daytona API key (defaults to DAYTONA_API_KEY env var)
         """
@@ -147,7 +147,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
         **kwargs: Any,
     ) -> SandboxListResponse[dict[str, Any]]:
         """List available Daytona sandboxes.
-        
+
         Raises:
             NotImplementedError: Daytona SDK doesn't expose a list API yet.
         """
@@ -162,15 +162,15 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get existing or create new Daytona sandbox.
-        
+
         Args:
             sandbox_id: Not supported yet - must be None
             timeout: Timeout in seconds for sandbox startup (default: 180)
             **kwargs: Additional Daytona-specific parameters
-            
+
         Returns:
             DaytonaBackend instance
-            
+
         Raises:
             NotImplementedError: Connecting to existing sandbox not supported
             RuntimeError: Sandbox startup failed
@@ -212,13 +212,13 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
 
     def delete(self, sandbox_id: str, **kwargs: Any) -> None:
         """Delete a Daytona sandbox.
-        
+
         Note: This requires retrieving the sandbox first which may not be supported.
-        
+
         Args:
             sandbox_id: Sandbox ID to delete
             **kwargs: Additional parameters
-            
+
         Raises:
             NotImplementedError: If sandbox retrieval not supported
         """

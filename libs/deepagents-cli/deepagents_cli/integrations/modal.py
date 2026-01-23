@@ -130,13 +130,13 @@ class ModalBackend(BaseSandbox):
 
 class ModalProvider(SandboxProvider[dict[str, Any]]):
     """Modal sandbox provider implementation.
-    
+
     Manages Modal sandbox lifecycle using the Modal SDK.
     """
 
     def __init__(self, app_name: str = "deepagents-sandbox") -> None:
         """Initialize Modal provider.
-        
+
         Args:
             app_name: Name for the Modal app (default: "deepagents-sandbox")
         """
@@ -149,7 +149,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         **kwargs: Any,
     ) -> SandboxListResponse[dict[str, Any]]:
         """List available Modal sandboxes.
-        
+
         Raises:
             NotImplementedError: Modal doesn't provide a list API.
         """
@@ -165,16 +165,16 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get existing or create new Modal sandbox.
-        
+
         Args:
             sandbox_id: Existing sandbox ID to connect to (if None, creates new)
             workdir: Working directory for new sandboxes (default: /workspace)
             timeout: Timeout in seconds for sandbox startup (default: 180)
             **kwargs: Additional Modal-specific parameters
-            
+
         Returns:
             ModalBackend instance
-            
+
         Raises:
             ImportError: Modal SDK not installed
             RuntimeError: Sandbox startup failed
@@ -218,11 +218,11 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
 
     def delete(self, sandbox_id: str, **kwargs: Any) -> None:
         """Delete a Modal sandbox.
-        
+
         Args:
             sandbox_id: Sandbox ID to delete
             **kwargs: Additional parameters
-            
+
         Raises:
             ImportError: Modal SDK not installed
         """

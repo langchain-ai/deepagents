@@ -129,14 +129,12 @@ class KoyebBackend(BaseSandbox):
                         path, encoding="base64"
                     )
                 except SandboxFilesystemError as e:
-                    # If base64 decoding failed, try UTF-8
                     error_msg = str(e).lower()
                     if "base64" in error_msg or "invalid" in error_msg:
                         file_info = await self._sandbox.filesystem.read_file(
                             path, encoding="utf-8"
                         )
                     else:
-                        # Not a base64 error, re-raise to outer handler
                         raise
 
                 # Process the file content
@@ -159,7 +157,6 @@ class KoyebBackend(BaseSandbox):
                     )
                 )
             except SandboxFilesystemError:
-                # Generic filesystem error - use invalid_path as catch-all
                 responses.append(
                     FileDownloadResponse(
                         path=path,
@@ -236,7 +233,6 @@ class KoyebBackend(BaseSandbox):
                     )
                 )
             except SandboxFileExistsError:
-                # File already exists - treat as invalid_path
                 responses.append(
                     FileUploadResponse(
                         path=path,
@@ -244,7 +240,6 @@ class KoyebBackend(BaseSandbox):
                     )
                 )
             except SandboxFilesystemError:
-                # Generic filesystem error - use invalid_path as catch-all
                 responses.append(
                     FileUploadResponse(
                         path=path,

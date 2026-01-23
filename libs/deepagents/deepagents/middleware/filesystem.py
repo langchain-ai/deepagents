@@ -834,7 +834,10 @@ You can read the result from the filesystem by using the read_file tool, but mak
 You can do this by specifying an offset and limit in the read_file tool call.
 For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
 
-Here is a preview showing the head and tail of the result:
+Here is a preview showing the head and tail of the result (lines of the form
+... [N lines truncated] ...
+indicate omitted lines in the middle of the content):
+
 {content_sample}
 """
 

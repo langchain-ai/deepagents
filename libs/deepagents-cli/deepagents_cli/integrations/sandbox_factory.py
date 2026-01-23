@@ -286,7 +286,7 @@ def create_koyeb_sandbox(
         FileNotFoundError: Setup script not found
         RuntimeError: Setup script failed
     """
-    from koyeb import Sandbox
+    from koyeb import AsyncSandbox
 
     from deepagents_cli.integrations.koyeb import KoyebBackend
 
@@ -298,15 +298,15 @@ def create_koyeb_sandbox(
     console.print("[yellow]Starting Koyeb sandbox...[/yellow]")
 
     if sandbox_id:
-        sandbox = Sandbox.get_from_id(id=sandbox_id, api_token=api_token)
+        sandbox = asyncio.run(AsyncSandbox.get_from_id(id=sandbox_id, api_token=api_token))
         should_cleanup = False
     else:
         # Create sandbox with wait_ready=True to ensure it's ready before returning
-        sandbox = Sandbox.create(
+        sandbox = asyncio.run(AsyncSandbox.create(
             wait_ready=True,
             api_token=api_token,
             timeout=180,
-        )
+        ))
         sandbox_id = sandbox.id
         should_cleanup = True
 
@@ -322,7 +322,7 @@ def create_koyeb_sandbox(
         if should_cleanup:
             try:
                 console.print(f"[dim]Deleting Koyeb sandbox {sandbox_id}...[/dim]")
-                sandbox.delete()
+                asyncio.run(sandbox.delete())
                 console.print(f"[dim]✓ Koyeb sandbox {sandbox_id} terminated[/dim]")
             except Exception as e:
                 console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")

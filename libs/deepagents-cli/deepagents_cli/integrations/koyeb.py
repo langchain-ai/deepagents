@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import (
@@ -12,17 +13,18 @@ from deepagents.backends.protocol import (
 from deepagents.backends.sandbox import BaseSandbox
 
 if TYPE_CHECKING:
-    from koyeb import Sandbox
+    from koyeb import AsyncSandbox
 
 
 class KoyebBackend(BaseSandbox):
     """Koyeb backend implementation conforming to SandboxBackendProtocol.
 
-    This implementation inherits all file operation methods from BaseSandbox
-    and only implements the execute() method using Koyeb's Sandbox API.
+    This implementation uses Koyeb's async API natively and provides both sync
+    and async methods. The async methods use Koyeb's native async API, while
+    sync methods wrap the async calls with asyncio.run().
     """
 
-    def __init__(self, sandbox: Sandbox) -> None:
+    def __init__(self, sandbox: AsyncSandbox) -> None:
         """Initialize the KoyebBackend with a Koyeb Sandbox instance.
 
         Args:
@@ -42,25 +44,58 @@ class KoyebBackend(BaseSandbox):
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
+        Sync wrapper that calls the async implementation.
+
         Args:
             command: Full shell command string to execute.
 
         Returns:
             ExecuteResponse with combined output, exit code, and truncation flag.
         """
-        # Execute command using Koyeb's exec API
-        result = self._sandbox.exec(command, timeout=self._timeout)
+        return asyncio.run(self.aexecute(command))
+
+    async def aexecute(
+        self,
+        command: str,
+    ) -> ExecuteResponse:
+        """Execute a command in the sandbox and return ExecuteResponse (async).
+
+        Native async implementation using Koyeb's async API.
+
+        Args:
+            command: Full shell command string to execute.
+
+        Returns:
+            ExecuteResponse with combined output, exit code, and truncation flag.
+        """
+        # Execute command using Koyeb's async exec API
+        result = await self._sandbox.exec(command, timeout=self._timeout)
 
         # Koyeb's CommandResult combines stdout and stderr via the output property
         return ExecuteResponse(
             output=result.output,
             exit_code=result.exit_code,
-            truncated=False,  # Koyeb doesn't provide truncation info
+            truncated=False,
         )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the Koyeb sandbox.
 
+        Sync wrapper that calls the async implementation.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects, one per input path.
+            Response order matches input order.
+        """
+        return asyncio.run(self.adownload_files(paths))
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files from the Koyeb sandbox (async).
+
+        Native async implementation using Koyeb's async API.
         Supports partial success - individual downloads may fail without
         affecting others.
 
@@ -80,21 +115,36 @@ class KoyebBackend(BaseSandbox):
             # Try base64 first (handles both binary and text files stored with base64)
             # Fall back to UTF-8 for files explicitly written as text
             try:
-                file_info = self._sandbox.filesystem.read_file(path, encoding="base64")
+                file_info = await self._sandbox.filesystem.read_file(path, encoding="base64")
                 # Koyeb's base64 encoding returns the decoded bytes
                 content = file_info.content if isinstance(file_info.content, bytes) else file_info.content.encode()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception:
                 # Fall back to UTF-8 for text files
-                file_info = self._sandbox.filesystem.read_file(path, encoding="utf-8")
+                file_info = await self._sandbox.filesystem.read_file(path, encoding="utf-8")
                 # Convert string content to bytes
-                content = file_info.content.encode('utf-8') if isinstance(file_info.content, str) else file_info.content
+                content = file_info.content.encode("utf-8") if isinstance(file_info.content, str) else file_info.content
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the Koyeb sandbox.
 
+        Sync wrapper that calls the async implementation.
+
+        Args:
+            files: List of (path, content) tuples to upload.
+
+        Returns:
+            List of FileUploadResponse objects, one per input file.
+            Response order matches input order.
+        """
+        return asyncio.run(self.aupload_files(files))
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Upload multiple files to the Koyeb sandbox (async).
+
+        Native async implementation using Koyeb's async API.
         Supports partial success - individual uploads may fail without
         affecting others.
 
@@ -114,11 +164,11 @@ class KoyebBackend(BaseSandbox):
             # Try to decode as UTF-8 text; if successful, write as text
             # Otherwise, use base64 encoding for binary content
             try:
-                text_content = content.decode('utf-8')
+                text_content = content.decode("utf-8")
                 # Successfully decoded as UTF-8, write as text
-                self._sandbox.filesystem.write_file(path, text_content, encoding="utf-8")
+                await self._sandbox.filesystem.write_file(path, text_content, encoding="utf-8")
             except UnicodeDecodeError:
                 # Binary content that can't be decoded as UTF-8, use base64
-                self._sandbox.filesystem.write_file(path, content, encoding="base64")
+                await self._sandbox.filesystem.write_file(path, content, encoding="base64")
             responses.append(FileUploadResponse(path=path, error=None))
         return responses

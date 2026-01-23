@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import concurrent.futures
+import asyncio
 import os
 from typing import Any
 
@@ -13,30 +13,16 @@ from textual.widgets import Static
 from deepagents_cli.config import DEEP_AGENTS_ASCII, settings
 
 
-def _get_langsmith_project_url(project_name: str) -> str | None:
-    """Get the LangSmith project URL for a given project name.
-
-    Uses a thread with a timeout to avoid blocking the UI.
-    """
-
-    def _fetch_url() -> str | None:
-        import contextlib
-        import io
-
+def _fetch_project_url(project_name: str) -> str | None:
+    """Fetch the LangSmith project URL (blocking, run in a thread)."""
+    try:
         from langsmith import Client
 
-        # Suppress stderr to hide API validation errors (e.g. project not yet created)
-        with contextlib.redirect_stderr(io.StringIO()):
-            client = Client()
-            project = client.read_project(project_name=project_name)
-            return project.url
-
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_fetch_url)
-            return future.result(timeout=2.0)
-    except Exception:
+        project = Client().read_project(project_name=project_name)
+    except (OSError, ValueError, RuntimeError):
         return None
+    else:
+        return project.url if project.url else None
 
 
 class WelcomeBanner(Static):
@@ -52,37 +38,56 @@ class WelcomeBanner(Static):
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the welcome banner."""
-        banner = Text()
-        banner.append_text(Text.from_markup(f"[bold #10b981]{DEEP_AGENTS_ASCII}[/bold #10b981]\n"))
+        self._project_name: str | None = None
 
-        # Show LangSmith status if tracing is enabled
         langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY")
         langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
             "LANGCHAIN_TRACING_V2"
         )
 
         if langsmith_key and langsmith_tracing:
-            project_name = (
+            self._project_name = (
                 settings.deepagents_langchain_project
                 or os.environ.get("LANGSMITH_PROJECT")
                 or "default"
             )
-            project_url = _get_langsmith_project_url(project_name)
+
+        super().__init__(self._build_banner(), **kwargs)
+
+    def on_mount(self) -> None:
+        """Kick off background fetch for LangSmith project URL."""
+        if self._project_name:
+            self.run_worker(self._fetch_and_update, exclusive=True)
+
+    async def _fetch_and_update(self) -> None:
+        """Fetch the LangSmith URL in a thread and update the banner."""
+        try:
+            project_url = await asyncio.wait_for(
+                asyncio.to_thread(_fetch_project_url, self._project_name),
+                timeout=2.0,
+            )
+        except (TimeoutError, OSError):
+            project_url = None
+        if project_url:
+            self.update(self._build_banner(project_url))
+
+    def _build_banner(self, project_url: str | None = None) -> Text:
+        """Build the banner rich text."""
+        banner = Text()
+        banner.append(DEEP_AGENTS_ASCII + "\n", style=Style(bold=True, color="#10b981"))
+
+        if self._project_name:
             banner.append("✓ ", style="green")
             banner.append("LangSmith tracing: ")
             if project_url:
                 banner.append(
-                    f"'{project_name}'",
+                    f"'{self._project_name}'",
                     style=Style(color="cyan", link=project_url),
                 )
             else:
-                banner.append(f"'{project_name}'", style="cyan")
+                banner.append(f"'{self._project_name}'", style="cyan")
             banner.append("\n")
 
-        banner.append_text(
-            Text.from_markup("[#10b981]Ready to code! What would you like to build?[/#10b981]\n")
-        )
-        banner.append_text(
-            Text.from_markup("[dim]Enter send • Ctrl+J newline • @ files • / commands[/dim]")
-        )
-        super().__init__(banner, **kwargs)
+        banner.append("Ready to code! What would you like to build?\n", style="#10b981")
+        banner.append("Enter send • Ctrl+J newline • @ files • / commands", style="dim")
+        return banner

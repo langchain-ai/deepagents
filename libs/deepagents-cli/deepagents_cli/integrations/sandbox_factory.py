@@ -1,5 +1,6 @@
 """Sandbox lifecycle management with context managers."""
 
+import asyncio
 import os
 import shlex
 import string
@@ -266,10 +267,75 @@ def create_daytona_sandbox(
             console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
+@contextmanager
+def create_koyeb_sandbox(
+    *, sandbox_id: str | None = None, setup_script_path: str | None = None
+) -> Generator[SandboxBackendProtocol, None, None]:
+    """Create or connect to Koyeb sandbox.
+
+    Args:
+        sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+
+    Yields:
+        (KoyebBackend, sandbox_id)
+
+    Raises:
+        ImportError: Koyeb SDK not installed
+        ValueError: KOYEB_API_TOKEN not set
+        RuntimeError: Sandbox failed to start within timeout
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
+    """
+    from koyeb import AsyncSandbox
+
+    from deepagents_cli.integrations.koyeb import KoyebBackend
+
+    api_token = os.environ.get("KOYEB_API_TOKEN")
+    if not api_token:
+        msg = "KOYEB_API_TOKEN environment variable not set"
+        raise ValueError(msg)
+
+    console.print("[yellow]Starting Koyeb sandbox...[/yellow]")
+
+    if sandbox_id:
+        sandbox = asyncio.run(AsyncSandbox.get_from_id(id=sandbox_id, api_token=api_token))
+        should_cleanup = False
+    else:
+        # Create sandbox with wait_ready=True to ensure it's ready before returning
+        sandbox = asyncio.run(
+            AsyncSandbox.create(
+                wait_ready=True,
+                api_token=api_token,
+                timeout=180,
+            )
+        )
+        sandbox_id = sandbox.id
+        should_cleanup = True
+
+    backend = KoyebBackend(sandbox)
+    console.print(f"[green]✓ Koyeb sandbox ready: {backend.id}[/green]")
+
+    # Run setup script if provided
+    if setup_script_path:
+        _run_sandbox_setup(backend, setup_script_path)
+    try:
+        yield backend
+    finally:
+        if should_cleanup:
+            try:
+                console.print(f"[dim]Deleting Koyeb sandbox {sandbox_id}...[/dim]")
+                asyncio.run(sandbox.delete())
+                console.print(f"[dim]✓ Koyeb sandbox {sandbox_id} terminated[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+
+
 _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
+    "koyeb": "/root",
 }
 
 
@@ -278,6 +344,7 @@ _SANDBOX_PROVIDERS = {
     "modal": create_modal_sandbox,
     "runloop": create_runloop_sandbox,
     "daytona": create_daytona_sandbox,
+    "koyeb": create_koyeb_sandbox,
 }
 
 
@@ -294,7 +361,7 @@ def create_sandbox(
     the appropriate provider-specific context manager.
 
     Args:
-        provider: Sandbox provider ("modal", "runloop", "daytona")
+        provider: Sandbox provider ("modal", "runloop", "daytona", "koyeb")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 

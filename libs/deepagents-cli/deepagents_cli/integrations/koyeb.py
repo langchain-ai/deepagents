@@ -121,24 +121,36 @@ class KoyebBackend(BaseSandbox):
         responses = []
         for path in paths:
             try:
-                # Try base64 first (handles both binary and text files stored with base64)
-                # Fall back to UTF-8 for files explicitly written as text
+                # Try base64 first (handles binary files stored with base64)
+                # If that fails, fall back to UTF-8 for text files
+                file_info = None
                 try:
-                    file_info = await self._sandbox.filesystem.read_file(path, encoding="base64")
-                    # Koyeb's base64 encoding returns the decoded bytes (could be bytes, bytearray, or memoryview)
+                    file_info = await self._sandbox.filesystem.read_file(
+                        path, encoding="base64"
+                    )
+                except SandboxFilesystemError as e:
+                    # If base64 decoding failed, try UTF-8
+                    error_msg = str(e).lower()
+                    if "base64" in error_msg or "invalid" in error_msg:
+                        file_info = await self._sandbox.filesystem.read_file(
+                            path, encoding="utf-8"
+                        )
+                    else:
+                        # Not a base64 error, re-raise to outer handler
+                        raise
+
+                # Process the file content
+                if file_info:
                     if isinstance(file_info.content, (bytes, bytearray, memoryview)):
                         content = bytes(file_info.content)
+                    elif isinstance(file_info.content, str):
+                        content = file_info.content.encode("utf-8")
                     else:
-                        content = file_info.content.encode()
-                    responses.append(FileDownloadResponse(path=path, content=content, error=None))
-                except Exception:
-                    # Fall back to UTF-8 for text files
-                    file_info = await self._sandbox.filesystem.read_file(path, encoding="utf-8")
-                    # Convert string content to bytes
-                    content = file_info.content.encode("utf-8") if isinstance(file_info.content, str) else bytes(file_info.content)
-                    responses.append(FileDownloadResponse(path=path, content=content, error=None))
-            except SandboxFileNotFoundError as e:
-                # Map Koyeb's file not found error to standardized code
+                        content = bytes(file_info.content)
+                    responses.append(
+                        FileDownloadResponse(path=path, content=content, error=None)
+                    )
+            except SandboxFileNotFoundError:
                 responses.append(
                     FileDownloadResponse(
                         path=path,
@@ -146,17 +158,8 @@ class KoyebBackend(BaseSandbox):
                         error="file_not_found",
                     )
                 )
-            except SandboxFilesystemError as e:
+            except SandboxFilesystemError:
                 # Generic filesystem error - use invalid_path as catch-all
-                responses.append(
-                    FileDownloadResponse(
-                        path=path,
-                        content=None,
-                        error="invalid_path",
-                    )
-                )
-            except Exception as e:
-                # Unexpected error - use invalid_path as catch-all
                 responses.append(
                     FileDownloadResponse(
                         path=path,
@@ -196,10 +199,13 @@ class KoyebBackend(BaseSandbox):
             response will contain an error with a standardized error code.
 
         Error codes:
-            - file_not_found: Parent directory does not exist (not currently raised by Koyeb - auto-creates parent dirs)
-            - permission_denied: Insufficient permissions (not currently raised by Koyeb)
-            - is_directory: Path is a directory, not a file (not currently raised by Koyeb)
-            - invalid_path: Invalid path format (catch-all for filesystem errors)
+            - file_not_found: Parent directory does not exist
+              (not currently raised by Koyeb - auto-creates parent dirs)
+            - permission_denied: Insufficient permissions
+              (not currently raised by Koyeb)
+            - is_directory: Path is a directory, not a file
+              (not currently raised by Koyeb)
+            - invalid_path: Invalid path format (catch-all for errors)
         """
         from koyeb.sandbox.filesystem import (
             SandboxFileExistsError,
@@ -214,38 +220,31 @@ class KoyebBackend(BaseSandbox):
                 # Otherwise, use base64 encoding for binary content
                 try:
                     text_content = content.decode("utf-8")
-                    # Successfully decoded as UTF-8, write as text
-                    await self._sandbox.filesystem.write_file(path, text_content, encoding="utf-8")
+                    await self._sandbox.filesystem.write_file(
+                        path, text_content, encoding="utf-8"
+                    )
                 except UnicodeDecodeError:
-                    # Binary content that can't be decoded as UTF-8, use base64
-                    await self._sandbox.filesystem.write_file(path, content, encoding="base64")
+                    await self._sandbox.filesystem.write_file(
+                        path, content, encoding="base64"
+                    )
                 responses.append(FileUploadResponse(path=path, error=None))
-            except SandboxFileNotFoundError as e:
-                # Map Koyeb's file not found error (e.g., parent directory doesn't exist)
+            except SandboxFileNotFoundError:
                 responses.append(
                     FileUploadResponse(
                         path=path,
                         error="file_not_found",
                     )
                 )
-            except SandboxFileExistsError as e:
-                # File already exists - treat as invalid_path since we're trying to write
+            except SandboxFileExistsError:
+                # File already exists - treat as invalid_path
                 responses.append(
                     FileUploadResponse(
                         path=path,
                         error="invalid_path",
                     )
                 )
-            except SandboxFilesystemError as e:
+            except SandboxFilesystemError:
                 # Generic filesystem error - use invalid_path as catch-all
-                responses.append(
-                    FileUploadResponse(
-                        path=path,
-                        error="invalid_path",
-                    )
-                )
-            except Exception as e:
-                # Unexpected error - use invalid_path as catch-all
                 responses.append(
                     FileUploadResponse(
                         path=path,

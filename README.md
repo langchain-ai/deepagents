@@ -34,7 +34,7 @@ agent = create_deep_agent()
 result = agent.invoke({"messages": [{"role": "user", "content": "Research LangGraph and write a summary"}]})
 ```
 
-That's it. The agent can plan, read/write files, and manage its own context. Add tools, customize prompts, or swap models as needed.
+The agent can plan, read/write files, and manage its own context. Add tools, customize prompts, or swap models as needed.
 
 ## Customization
 
@@ -50,7 +50,7 @@ agent = create_deep_agent(
 )
 ```
 
-MCP tools work too via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters).
+MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters).
 
 ## CLI
 
@@ -61,7 +61,7 @@ uv tool install deepagents-cli
 deepagents
 ```
 
-The CLI provides an interactive chat interface with the full power of the agent harness. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.
+The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.
 
 ## LangGraph Native
 
@@ -72,7 +72,7 @@ The CLI provides an interactive chat interface with the full power of the agent 
 ### Why should I use this?
 
 - **100% open source** — MIT licensed, fully extensible, no vendor lock-in
-- **Provider agnostic** — Works with Claude, OpenAI, Google, local models, or any LangChain-compatible model
+- **Provider agnostic** — Works with Claude, OpenAI, Google, or any LangChain-compatible model
 - **Built on LangGraph** — Production-ready runtime with streaming, persistence, and checkpointing
 - **Batteries included** — Planning, file access, sub-agents, and context management work out of the box
 - **Get started in seconds** — `pip install deepagents` and you have a working agent

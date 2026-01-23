@@ -1,11 +1,12 @@
 """Tests for SandboxProvider protocol and related types."""
 
-from typing import Literal, Never
+from typing import Any, Literal
 
-from typing_extensions import TypedDict, Unpack
+from typing_extensions import TypedDict
 
-from deepagents.backends.protocol import SandboxBackendProtocol
+from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse, SandboxBackendProtocol
 from deepagents.backends.sandbox import (
+    BaseSandbox,
     SandboxInfo,
     SandboxListResponse,
     SandboxProvider,
@@ -20,80 +21,65 @@ class MockMetadata(TypedDict, total=False):
 
 
 class MockListKwargs(TypedDict, total=False):
-    """Example kwargs for list operation."""
+    """Example kwargs for list operation (documentation only).
+    
+    While implementations accept **kwargs: Any, defining these TypedDicts
+    serves as documentation for what kwargs are supported by this provider.
+    """
 
     status: Literal["running", "stopped"]
     template_id: str
 
 
 class MockCreateKwargs(TypedDict, total=False):
-    """Example kwargs for get_or_create operation."""
+    """Example kwargs for get_or_create operation (documentation only)."""
 
     template_id: str
     timeout_minutes: int
 
 
 class MockDeleteKwargs(TypedDict, total=False):
-    """Example kwargs for delete operation."""
+    """Example kwargs for delete operation (documentation only)."""
 
     force: bool
 
 
-class MockSandboxBackend(SandboxBackendProtocol):
+class MockSandboxBackend(BaseSandbox):
     """Mock implementation of SandboxBackendProtocol for testing."""
 
     def __init__(self, sandbox_id: str) -> None:
         self._id = sandbox_id
 
+    def execute(
+        self,
+        command: str,
+    ) -> ExecuteResponse:
+        return ExecuteResponse(
+            output="Got: " + command,
+        )
+
     @property
     def id(self) -> str:
         return self._id
 
-    # Minimal implementation - other methods would raise NotImplementedError
-    def execute(self, command: str) -> Never:  # type: ignore[override]
-        raise NotImplementedError
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Mock upload implementation."""
+        return [FileUploadResponse(path=path) for path, _ in files]
 
-    def ls_info(self, path: str) -> Never:  # type: ignore[override]
-        raise NotImplementedError
-
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> Never:  # type: ignore[override]
-        raise NotImplementedError
-
-    def write(self, file_path: str, content: str) -> Never:  # type: ignore[override]
-        raise NotImplementedError
-
-    def edit(  # type: ignore[override]
-        self,
-        file_path: str,
-        old_string: str,
-        new_string: str,
-        *,
-        replace_all: bool = False,
-    ) -> Never:
-        raise NotImplementedError
-
-    def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> Never:  # type: ignore[override]
-        raise NotImplementedError
-
-    def glob_info(self, pattern: str, path: str = "/") -> Never:  # type: ignore[override]
-        raise NotImplementedError
-
-    def upload_files(self, files: list[tuple[str, bytes]]) -> Never:  # type: ignore[override]
-        raise NotImplementedError
-
-    def download_files(self, paths: list[str]) -> Never:  # type: ignore[override]
-        raise NotImplementedError
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Mock download implementation."""
+        return [FileDownloadResponse(path=path, content=b"mock content") for path in paths]
 
 
-class MockSandboxProvider:
+class MockSandboxProvider(SandboxProvider[MockMetadata]):
     """Mock provider implementation for testing.
 
-    This demonstrates how to implement the SandboxProvider protocol
-    with custom kwargs types.
+    This demonstrates how to implement the SandboxProvider ABC
+    with custom kwargs types and typed metadata.
     """
 
     def __init__(self) -> None:
-        self.sandboxes = {
+        self.sandboxes: dict[str, MockMetadata] = {
             "sb_001": {"status": "running", "template": "python-3.11"},
             "sb_002": {"status": "stopped", "template": "node-20"},
         }
@@ -102,7 +88,7 @@ class MockSandboxProvider:
         self,
         *,
         cursor: str | None = None,
-        **kwargs: Unpack[MockListKwargs],
+        **kwargs: Any,
     ) -> SandboxListResponse[MockMetadata]:
         """List sandboxes with optional filtering."""
         # Note: cursor is part of the protocol but not used in this simple implementation
@@ -136,7 +122,7 @@ class MockSandboxProvider:
         self,
         *,
         sandbox_id: str | None = None,
-        **kwargs: Unpack[MockCreateKwargs],
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get existing or create new sandbox."""
         if sandbox_id is None:
@@ -156,7 +142,7 @@ class MockSandboxProvider:
     def delete(
         self,
         sandbox_id: str,
-        **kwargs: Unpack[MockDeleteKwargs],
+        **kwargs: Any,
     ) -> None:
         """Delete a sandbox."""
         # Note: kwargs is part of the protocol but not used in this simple implementation
@@ -171,20 +157,22 @@ class MockSandboxProvider:
 
 def test_sandbox_info_structure() -> None:
     """Test SandboxInfo TypedDict structure."""
-    info: SandboxInfo = {
+    info: SandboxInfo[MockMetadata] = {
         "sandbox_id": "sb_123",
-        "metadata": {"status": "running", "created_at": "2024-01-01T00:00:00Z"},
+        "metadata": {"status": "running", "template": "python-3.11"},
     }
 
     assert info["sandbox_id"] == "sb_123"
-    assert info["metadata"]["status"] == "running"  # type: ignore[index]
+    metadata = info.get("metadata")
+    assert metadata is not None
+    assert metadata["status"] == "running"
 
 
 def test_sandbox_list_response() -> None:
     """Test SandboxListResponse structure."""
-    response: SandboxListResponse = {
+    response: SandboxListResponse[MockMetadata] = {
         "items": [
-            {"sandbox_id": "sb_001", "metadata": {"status": "running"}},
+            {"sandbox_id": "sb_001", "metadata": {"status": "running", "template": "python-3.11"}},
             {"sandbox_id": "sb_002"},  # metadata is optional
         ],
         "cursor": "next_page_token",
@@ -248,3 +236,30 @@ def test_provider_protocol_compliance() -> None:
     assert isinstance(result, dict)
     assert "items" in result
     assert "cursor" in result
+
+
+async def test_provider_async_list() -> None:
+    """Test async list method (defaults to running sync in thread)."""
+    provider = MockSandboxProvider()
+    result = await provider.alist()
+
+    assert len(result["items"]) == 2
+    assert result["cursor"] is None
+
+
+async def test_provider_async_get_or_create() -> None:
+    """Test async get_or_create method."""
+    provider = MockSandboxProvider()
+    sandbox = await provider.aget_or_create(sandbox_id="sb_001")
+
+    assert sandbox.id == "sb_001"
+
+
+async def test_provider_async_delete() -> None:
+    """Test async delete method."""
+    provider = MockSandboxProvider()
+    assert "sb_001" in provider.sandboxes
+
+    await provider.adelete(sandbox_id="sb_001")
+
+    assert "sb_001" not in provider.sandboxes

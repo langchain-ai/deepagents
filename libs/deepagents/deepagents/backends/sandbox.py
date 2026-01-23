@@ -10,11 +10,12 @@ to manage sandbox lifecycle (list, create, delete).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Generic, NotRequired, TypeVar, Unpack
+from typing import Any, Generic, NotRequired, TypeVar
 
 from typing_extensions import TypedDict
 
@@ -29,8 +30,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 
-# Type variables for provider-specific kwargs and metadata
-# Note: These are covariant to work with Protocol, and use type: ignore for mypy compatibility
+# Type variable for provider-specific metadata
 MetadataT = TypeVar("MetadataT", covariant=True, default=dict[str, Any])
 """Type variable for sandbox metadata.
 
@@ -38,33 +38,20 @@ Providers can define their own TypedDict to specify the structure of sandbox met
 enabling type-safe access to metadata fields.
 
 Example:
+    ```python
     class ProviderMetadata(TypedDict, total=False):
         status: Literal["running", "stopped"]
         created_at: str
         template: str
-"""
 
-ListKwargsT = TypeVar("ListKwargsT", covariant=True)
-"""Type variable for list operation keyword arguments.
-
-Providers define their own TypedDict subclass to specify supported filter parameters.
-
-Example:
-    class ProviderListKwargs(TypedDict, total=False):
-        status: Literal["running", "stopped"]
-        created_after: str
-"""
-
-GetOrCreateKwargsT = TypeVar("GetOrCreateKwargsT", covariant=True)
-"""Type variable for get_or_create operation keyword arguments.
-
-Providers define their own TypedDict subclass to specify supported creation parameters.
-"""
-
-DeleteKwargsT = TypeVar("DeleteKwargsT", covariant=True)
-"""Type variable for delete operation keyword arguments.
-
-Providers define their own TypedDict subclass to specify supported deletion options.
+    class MyProvider(SandboxProvider[ProviderMetadata]):
+        def list(
+            self, *, cursor=None, **kwargs: Any
+        ) -> SandboxListResponse[ProviderMetadata]:
+            # Extract kwargs as needed
+            status = kwargs.get("status")
+            ...
+    ```
 """
 
 
@@ -109,11 +96,14 @@ class SandboxInfo(TypedDict, Generic[MetadataT]):
     metadata: NotRequired[MetadataT]
 
 
-class SandboxListResponse(TypedDict):
+class SandboxListResponse(TypedDict, Generic[MetadataT]):
     """Paginated response from a sandbox list operation.
 
     This structure supports cursor-based pagination for efficiently browsing
     large collections of sandboxes.
+
+    Type Parameters:
+        MetadataT: Type of the metadata field in SandboxInfo items. Defaults to dict[str, Any].
 
     Attributes:
         items: List of sandbox metadata objects for the current page.
@@ -123,7 +113,7 @@ class SandboxListResponse(TypedDict):
 
     Example:
         ```python
-        response: SandboxListResponse = {
+        response: SandboxListResponse[MyMetadata] = {
             "items": [{"sandbox_id": "sb_001", "metadata": {"status": "running"}}, {"sandbox_id": "sb_002", "metadata": {"status": "stopped"}}],
             "cursor": "eyJvZmZzZXQiOjEwMH0=",
         }
@@ -133,53 +123,44 @@ class SandboxListResponse(TypedDict):
         ```
     """
 
-    items: list[SandboxInfo]
+    items: list[SandboxInfo[MetadataT]]
     cursor: str | None
 
 
-class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargsT]):
+class SandboxProvider(ABC, Generic[MetadataT]):
     """Abstract base class for third-party sandbox provider implementations.
 
     This protocol defines the lifecycle management interface for sandbox providers.
     Implementations should integrate with their respective SDKs to provide
     standardized sandbox lifecycle operations.
 
-    The protocol uses generic TypedDict parameters to allow providers to expose
-    type-safe, IDE-friendly keyword arguments specific to their platform.
-
     Type Parameters:
-        ListKwargsT: TypedDict defining supported filter parameters for list().
-            Default is empty TypedDict if no filters are supported.
-        GetOrCreateKwargsT: TypedDict defining supported creation parameters
-            for get_or_create(). Default is empty TypedDict.
-        DeleteKwargsT: TypedDict defining supported deletion options for delete().
-            Default is empty TypedDict.
+        MetadataT: TypedDict defining the structure of sandbox metadata.
+            Default is dict[str, Any]. Enables type-safe access to metadata fields.
 
     Example Implementation:
         ```python
-        class CustomListKwargs(TypedDict, total=False):
+        class CustomMetadata(TypedDict, total=False):
             status: Literal["running", "stopped"]
-            template_id: str
+            template: str
+            created_at: str
 
 
-        class CustomCreateKwargs(TypedDict, total=False):
-            template_id: str
-            timeout_minutes: int
-
-
-        class CustomSandboxProvider:
-            def list(self, cursor: str | None = None, **kwargs: Unpack[CustomListKwargs]) -> SandboxListResponse:
-                # Implementation with type-safe kwargs
+        class CustomSandboxProvider(SandboxProvider[CustomMetadata]):
+            def list(self, *, cursor=None, **kwargs: Any) -> SandboxListResponse[CustomMetadata]:
+                # Extract and use kwargs as needed
                 status = kwargs.get("status")
                 template_id = kwargs.get("template_id")
                 # ... query provider API
                 return {"items": [...], "cursor": None}
 
-            def get_or_create(self, sandbox_id: str | None = None, **kwargs: Unpack[CustomCreateKwargs]) -> SandboxBackendProtocol:
-                # Implementation returns a SandboxBackendProtocol
+            def get_or_create(self, *, sandbox_id=None, **kwargs: Any) -> SandboxBackendProtocol:
+                # Extract and use kwargs as needed
+                template = kwargs.get("template_id")
+                timeout = kwargs.get("timeout_minutes")
                 return CustomSandbox(sandbox_id or self._create_new(), **kwargs)
 
-            def delete(self, sandbox_id: str, **kwargs) -> None:
+            def delete(self, sandbox_id: str, **kwargs: Any) -> None:
                 # Implementation
                 self._client.delete(sandbox_id)
         ```
@@ -212,7 +193,7 @@ class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargs
         self,
         *,
         cursor: str | None = None,
-        **kwargs: Unpack[ListKwargsT],  # type: ignore[misc]
+        **kwargs: Any,
     ) -> SandboxListResponse[MetadataT]:
         """List available sandboxes with optional filtering and pagination.
 
@@ -220,10 +201,9 @@ class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargs
             cursor: Optional continuation token from a previous list() call.
                 Pass None to start from the beginning. The cursor is opaque
                 and provider-specific; clients should not parse or modify it.
-            **kwargs: Provider-specific filter parameters defined by ListKwargsT.
-                Common examples include status filters, creation time ranges,
-                template filters, or owner filters. Check provider documentation
-                for available filters.
+            **kwargs: Provider-specific filter parameters. Common examples include
+                status filters, creation time ranges, template filters, or owner
+                filters. Check provider documentation for available filters.
 
         Returns:
             SandboxListResponse containing:
@@ -251,7 +231,7 @@ class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargs
         self,
         *,
         sandbox_id: str | None = None,
-        **kwargs: Unpack[GetOrCreateKwargsT],  # type: ignore[misc]
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get an existing sandbox or create a new one.
 
@@ -264,10 +244,10 @@ class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargs
             sandbox_id: Unique identifier of an existing sandbox to retrieve.
                 If None, creates a new sandbox instance. The new sandbox's ID
                 can be accessed via the returned object's .id property.
-            **kwargs: Provider-specific creation/connection parameters defined
-                by GetOrCreateKwargsT. Common examples include template_id,
-                resource limits, environment variables, or timeout settings.
-                These are typically only used when creating new sandboxes.
+            **kwargs: Provider-specific creation/connection parameters. Common
+                examples include template_id, resource limits, environment variables,
+                or timeout settings. These are typically only used when creating
+                new sandboxes.
 
         Returns:
             An object implementing SandboxBackendProtocol that can execute
@@ -299,7 +279,7 @@ class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargs
     def delete(
         self,
         sandbox_id: str,
-        **kwargs: Unpack[DeleteKwargsT],  # type: ignore[misc]
+        **kwargs: Any,
     ) -> None:
         """Delete a sandbox instance.
 
@@ -308,9 +288,9 @@ class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargs
 
         Args:
             sandbox_id: Unique identifier of the sandbox to delete.
-            **kwargs: Provider-specific deletion options defined by DeleteKwargsT.
-                Common examples include force flags, grace periods, or cleanup
-                options. Check provider documentation for available options.
+            **kwargs: Provider-specific deletion options. Common examples include
+                force flags, grace periods, or cleanup options. Check provider
+                documentation for available options.
 
         Raises:
             Implementation-specific exceptions for errors such as:
@@ -327,6 +307,63 @@ class SandboxProvider(ABC, Generic[ListKwargsT, GetOrCreateKwargsT, DeleteKwargs
             provider.delete(sandbox_id="sb_456", force=True)
             ```
         """
+
+    async def alist(
+        self,
+        *,
+        cursor: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxListResponse[MetadataT]:
+        """Async version of list().
+
+        By default, runs the synchronous list() method in a thread pool.
+        Providers can override this for native async implementations.
+
+        Args:
+            cursor: Optional continuation token from a previous list() call.
+            **kwargs: Provider-specific filter parameters.
+
+        Returns:
+            SandboxListResponse containing items and cursor for pagination.
+        """
+        return await asyncio.to_thread(self.list, cursor=cursor, **kwargs)
+
+    async def aget_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Async version of get_or_create().
+
+        By default, runs the synchronous get_or_create() method in a thread pool.
+        Providers can override this for native async implementations.
+
+        Args:
+            sandbox_id: Unique identifier of an existing sandbox to retrieve.
+                If None, creates a new sandbox instance.
+            **kwargs: Provider-specific creation/connection parameters.
+
+        Returns:
+            An object implementing SandboxBackendProtocol.
+        """
+        return await asyncio.to_thread(self.get_or_create, sandbox_id=sandbox_id, **kwargs)
+
+    async def adelete(
+        self,
+        sandbox_id: str,
+        **kwargs: Any,
+    ) -> None:
+        """Async version of delete().
+
+        By default, runs the synchronous delete() method in a thread pool.
+        Providers can override this for native async implementations.
+
+        Args:
+            sandbox_id: Unique identifier of the sandbox to delete.
+            **kwargs: Provider-specific deletion options.
+        """
+        await asyncio.to_thread(self.delete, sandbox_id, **kwargs)
 
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "

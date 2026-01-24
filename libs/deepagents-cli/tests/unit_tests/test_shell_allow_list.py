@@ -261,3 +261,194 @@ def test_dangerous_commands_not_allowed(command, basic_allow_list):
 def test_complex_pipeline(command, expected, pipeline_allow_list):
     """Test complex pipelines with multiple operators."""
     assert is_shell_command_allowed(command, pipeline_allow_list) == expected
+
+
+class TestShellInjectionPrevention:
+    """Tests for shell injection attack prevention.
+
+    These tests verify that dangerous shell patterns are blocked BEFORE parsing,
+    preventing attackers from bypassing the allow-list through shell metacharacters.
+    """
+
+    @pytest.fixture
+    def injection_allow_list(self):
+        """Allow-list for injection tests."""
+        return ["ls", "cat", "grep", "echo"]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls $(rm -rf /)",
+            "ls $(cat /etc/shadow)",
+            'echo "$(whoami)"',
+            "cat $(echo /etc/passwd)",
+        ],
+    )
+    def test_command_substitution_blocked(self, command, injection_allow_list):
+        """Command substitution $(...) must be blocked even in arguments."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls `rm -rf /`",
+            "ls `cat /etc/shadow`",
+            "echo `whoami`",
+            "cat `echo /etc/passwd`",
+        ],
+    )
+    def test_backtick_substitution_blocked(self, command, injection_allow_list):
+        """Backtick command substitution must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls\nrm -rf /",
+            "cat file\nwhoami",
+            "echo hello\n/bin/sh",
+        ],
+    )
+    def test_newline_injection_blocked(self, command, injection_allow_list):
+        """Newline characters must be blocked (command injection)."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls\rrm -rf /",
+            "cat file\rwhoami",
+        ],
+    )
+    def test_carriage_return_injection_blocked(self, command, injection_allow_list):
+        """Carriage return characters must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls\trm",
+            "cat\t/etc/passwd",
+        ],
+    )
+    def test_tab_injection_blocked(self, command, injection_allow_list):
+        """Tab characters must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat <(rm -rf /)",
+            "cat <(whoami)",
+            "grep pattern <(cat /etc/shadow)",
+        ],
+    )
+    def test_process_substitution_input_blocked(self, command, injection_allow_list):
+        """Process substitution <(...) must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat >(rm -rf /)",
+            "echo test >(cat)",
+        ],
+    )
+    def test_process_substitution_output_blocked(self, command, injection_allow_list):
+        """Process substitution >(...) must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat <<< 'rm -rf /'",
+            "grep pattern <<< 'test'",
+        ],
+    )
+    def test_here_string_blocked(self, command, injection_allow_list):
+        """Here-strings (<<<) must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat << EOF\nmalicious\nEOF",
+            "cat <<EOF",
+        ],
+    )
+    def test_here_doc_blocked(self, command, injection_allow_list):
+        """Here-documents (<<) must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo hello > /tmp/test",
+            "ls > output.txt",
+            "cat file > /etc/passwd",
+        ],
+    )
+    def test_output_redirect_blocked(self, command, injection_allow_list):
+        """Output redirection (>) must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo hello >> /tmp/test",
+            "ls >> output.txt",
+        ],
+    )
+    def test_append_redirect_blocked(self, command, injection_allow_list):
+        """Append redirection (>>) must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat < /etc/passwd",
+            "grep pattern < input.txt",
+        ],
+    )
+    def test_input_redirect_blocked(self, command, injection_allow_list):
+        """Input redirection (<) must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo ${PATH}",
+            "cat ${HOME}/.bashrc",
+            "ls ${PWD}",
+        ],
+    )
+    def test_brace_variable_expansion_blocked(self, command, injection_allow_list):
+        """Brace variable expansion ${...} must be blocked (can contain commands)."""
+        assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls -la",
+            "cat file.txt",
+            "grep pattern file",
+            "echo hello world",
+            "ls | grep test",
+            "cat file | grep pattern",
+        ],
+    )
+    def test_safe_commands_still_allowed(self, command, injection_allow_list):
+        """Verify that safe commands without dangerous patterns are still allowed."""
+        assert is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/bin/rm -rf /",
+            "./malicious",
+            "../../../bin/sh",
+        ],
+    )
+    def test_path_bypass_blocked(self, command, injection_allow_list):
+        """Commands with paths (not in allow-list) must be blocked."""
+        assert not is_shell_command_allowed(command, injection_allow_list)

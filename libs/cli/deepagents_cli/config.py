@@ -131,6 +131,26 @@ def _find_project_agent_md(project_root: Path) -> list[Path]:
     return paths
 
 
+def _parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
+    """Parse shell allow-list from string.
+
+    Args:
+        allow_list_str: Comma-separated list of commands, or "recommended" for safe defaults
+
+    Returns:
+        List of allowed commands, or None if no allow-list configured
+    """
+    if not allow_list_str:
+        return None
+
+    # Special value "recommended" uses our curated safe list
+    if allow_list_str.strip().lower() == "recommended":
+        return list(RECOMMENDED_SAFE_SHELL_COMMANDS)
+
+    # Split by comma and strip whitespace
+    return [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+
+
 @dataclass
 class Settings:
     """Global settings and environment detection for deepagents-cli.
@@ -208,13 +228,9 @@ class Settings:
 
         # Parse shell command allow-list from environment
         # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
+        # Special value "recommended" uses RECOMMENDED_SAFE_SHELL_COMMANDS
         shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
-        shell_allow_list = None
-        if shell_allow_list_str:
-            # Split by comma and strip whitespace
-            shell_allow_list = [
-                cmd.strip() for cmd in shell_allow_list_str.split(",") if cmd.strip()
-            ]
+        shell_allow_list = _parse_shell_allow_list(shell_allow_list_str)
 
         return cls(
             openai_api_key=openai_key,
@@ -484,6 +500,85 @@ DANGEROUS_SHELL_PATTERNS = (
     ">",  # Output redirect
     "<",  # Input redirect
     "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
+)
+
+# Recommended safe shell commands for non-interactive mode.
+# These commands are read-only and cannot modify the system.
+#
+# EXCLUDED (dangerous - listed on GTFOBins/LOOBins or can modify system):
+# - All shells: bash, sh, zsh, fish, dash, ksh, csh, tcsh, etc.
+# - Editors: vim, vi, nano, emacs, ed, etc. (can spawn shells)
+# - Interpreters: python, perl, ruby, node, php, lua, awk, gawk, etc.
+# - Package managers: pip, npm, gem, apt, yum, brew, etc.
+# - Compilers: gcc, cc, make, cmake, etc.
+# - Network tools: curl, wget, nc, ssh, scp, ftp, telnet, etc.
+# - Archivers with shell escape: tar, zip, 7z, etc.
+# - System modifiers: chmod, chown, chattr, mv, rm, cp, dd, etc.
+# - Privilege tools: sudo, su, doas, pkexec, etc.
+# - Process tools: env, xargs, find (with -exec), etc.
+# - Git (can run hooks), docker, kubectl, etc.
+#
+# SAFE commands included below are pure readers/formatters with no shell escape,
+# no network access, no file write capability, and no code execution.
+RECOMMENDED_SAFE_SHELL_COMMANDS = (
+    # Directory listing
+    "ls",
+    "dir",
+    "tree",
+    # File content viewing (read-only)
+    "cat",
+    "head",
+    "tail",
+    # Text searching (read-only)
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    # File information
+    "file",
+    "stat",
+    "wc",
+    "du",
+    "df",
+    # Text processing (read-only, no shell execution)
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "diff",
+    "md5sum",
+    "sha256sum",
+    # Path utilities
+    "pwd",
+    "which",
+    # Date/time (read-only)
+    "date",
+    "cal",
+    # System info (read-only)
+    "uname",
+    "hostname",
+    "whoami",
+    "id",
+    "groups",
+    "uptime",
+    "arch",
+    "nproc",
+    "free",
+    "lscpu",
+    "lsmem",
+    # JSON/data processing (read-only, safe)
+    "jq",
+    "yq",
+    # Simple echo (useful for debugging)
+    "echo",
+    "printf",
+    # Process viewing (read-only)
+    "ps",
+    "pgrep",
+    # Pagers/viewers that are generally safe
+    "hexdump",
+    "od",
+    "strings",
 )
 
 

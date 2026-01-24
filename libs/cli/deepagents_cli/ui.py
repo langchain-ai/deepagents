@@ -293,17 +293,13 @@ def show_help() -> None:
         style=COLORS["dim"],
     )
     console.print(
-        "  deepagents -n 'List files' --shell-allow-list ls,cat,grep",
+        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",
         style=COLORS["dim"],
     )
-    console.print()
     console.print(
-        "  [yellow]Security:[/yellow] Shell is disabled by default in non-interactive mode."
+        "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Or specify your own list",
+        style=COLORS["dim"],
     )
-    console.print(
-        "  Use --shell-allow-list or DEEPAGENTS_SHELL_ALLOW_LIST env var to enable"
-    )
-    console.print("  specific commands (e.g., ls,cat,grep,find,head,tail).")
     console.print()
 
     console.print("[bold]Thread Management:[/bold]", style=COLORS["primary"])

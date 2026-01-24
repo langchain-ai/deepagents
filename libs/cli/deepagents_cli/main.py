@@ -190,7 +190,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--shell-allow-list",
-        help="Comma-separated list of shell commands to auto-approve (e.g., 'ls,cat,grep,pwd')",
+        help="Comma-separated list of shell commands to allow, or 'recommended' for safe defaults",
     )
     return parser.parse_args()
 
@@ -303,10 +303,16 @@ def cli_main() -> None:
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if hasattr(args, "shell_allow_list") and args.shell_allow_list:
-            shell_allow_list = [
-                cmd.strip() for cmd in args.shell_allow_list.split(",") if cmd.strip()
-            ]
-            settings.shell_allow_list = shell_allow_list
+            from deepagents_cli.config import (
+                RECOMMENDED_SAFE_SHELL_COMMANDS,
+            )
+
+            if args.shell_allow_list.strip().lower() == "recommended":
+                settings.shell_allow_list = list(RECOMMENDED_SAFE_SHELL_COMMANDS)
+            else:
+                settings.shell_allow_list = [
+                    cmd.strip() for cmd in args.shell_allow_list.split(",") if cmd.strip()
+                ]
 
         if args.command == "help":
             show_help()

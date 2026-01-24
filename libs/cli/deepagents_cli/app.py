@@ -21,7 +21,12 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
-from deepagents_cli.config import CharsetMode, _detect_charset_mode
+from deepagents_cli.config import (
+    CharsetMode,
+    _detect_charset_mode,
+    is_shell_command_allowed,
+    settings,
+)
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -561,11 +566,33 @@ class DeepAgentsApp(App):
 
         If another approval is already pending, queue this one.
 
+        Auto-approves shell commands that are in the configured allow-list.
+
         Returns:
             A Future that resolves to the user's decision.
         """
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
+
+        # Check if this is a shell command that should be auto-approved
+        if action_request.get("name") == "shell" and settings.shell_allow_list:
+            command = action_request.get("args", {}).get("command", "")
+            if is_shell_command_allowed(command, settings.shell_allow_list):
+                # Auto-approve the command
+                result_future.set_result({"type": "approve"})
+
+                # Mount a system message showing the auto-approval
+                try:
+                    messages = self.query_one("#messages", Container)
+                    auto_msg = SystemMessage(
+                        f"[dim]✓ Auto-approved shell command (allow-list): {command}[/dim]"
+                    )
+                    await messages.mount(auto_msg)
+                    self._scroll_chat_to_bottom()
+                except Exception:
+                    pass  # Don't fail if we can't show the message
+
+                return result_future
 
         # If there's already a pending approval, wait for it to complete first
         if self._pending_approval_widget is not None:

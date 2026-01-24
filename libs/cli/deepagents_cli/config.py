@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import sys
 import uuid
 from dataclasses import dataclass
@@ -364,6 +365,7 @@ class Settings:
             agent tracing
         user_langchain_project: Original LANGSMITH_PROJECT from environment
             (for user code)
+        shell_allow_list: List of shell commands that don't require approval
     """
 
     # API keys
@@ -386,6 +388,9 @@ class Settings:
 
     # Project information
     project_root: Path | None = None
+
+    # Shell command allow-list for auto-approval
+    shell_allow_list: list[str] | None = None
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
@@ -415,6 +420,16 @@ class Settings:
         # Detect project
         project_root = _find_project_root(start_path)
 
+        # Parse shell command allow-list from environment
+        # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
+        shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
+        shell_allow_list = None
+        if shell_allow_list_str:
+            # Split by comma and strip whitespace
+            shell_allow_list = [
+                cmd.strip() for cmd in shell_allow_list_str.split(",") if cmd.strip()
+            ]
+
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -424,6 +439,7 @@ class Settings:
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
+            shell_allow_list=shell_allow_list,
         )
 
     @property
@@ -697,6 +713,64 @@ class SessionState:
         """
         self.auto_approve = not self.auto_approve
         return self.auto_approve
+
+
+def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool:
+    """Check if a shell command is in the allow-list.
+
+    The allow-list matches against the first token of the command (the executable name).
+    This allows read-only commands like ls, cat, grep, etc. to be auto-approved.
+
+    Args:
+        command: The full shell command to check
+        allow_list: List of allowed command names (e.g., ["ls", "cat", "grep"])
+
+    Returns:
+        True if the command is allowed, False otherwise
+
+    Examples:
+        >>> is_shell_command_allowed("ls -la", ["ls", "cat"])
+        True
+        >>> is_shell_command_allowed("cat file.txt", ["ls", "cat"])
+        True
+        >>> is_shell_command_allowed("rm file.txt", ["ls", "cat"])
+        False
+        >>> is_shell_command_allowed("ls | grep test", ["ls", "grep"])
+        True
+    """
+    if not allow_list or not command or not command.strip():
+        return False
+
+    allow_set = set(allow_list)
+
+    # Extract the first command token
+    # Handle pipes and other shell operators by checking each command in the pipeline
+    # Split by common shell operators (pipes, semicolons, &&, ||)
+    segments = re.split(r"[|;&]|&&|\|\|", command)
+
+    # Track if we found at least one valid command
+    found_command = False
+
+    for raw_segment in segments:
+        segment = raw_segment.strip()
+        if not segment:
+            continue
+
+        try:
+            # Try to parse as shell command to extract the executable name
+            tokens = shlex.split(segment)
+            if tokens:
+                found_command = True
+                cmd_name = tokens[0]
+                # Check if this command is in the allow set
+                if cmd_name not in allow_set:
+                    return False
+        except ValueError:
+            # If we can't parse it, be conservative and require approval
+            return False
+
+    # All segments are allowed (and we found at least one command)
+    return found_command
 
 
 def get_default_coding_instructions() -> str:

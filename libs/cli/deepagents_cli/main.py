@@ -199,6 +199,10 @@ def parse_args() -> argparse.Namespace:
         "--sandbox-setup",
         help="Path to setup script to run in sandbox after creation",
     )
+    parser.add_argument(
+        "--shell-allow-list",
+        help="Comma-separated list of shell commands to auto-approve (e.g., 'ls,cat,grep,pwd')",
+    )
     return parser.parse_args()
 
 
@@ -320,6 +324,13 @@ def cli_main() -> None:
             show_help()
             sys.exit(0)
 
+        # Apply shell-allow-list from command line if provided (overrides env var)
+        if hasattr(args, "shell_allow_list") and args.shell_allow_list:
+            shell_allow_list = [
+                cmd.strip() for cmd in args.shell_allow_list.split(",") if cmd.strip()
+            ]
+            settings.shell_allow_list = shell_allow_list
+
         if args.command == "help":
             show_help()
         elif args.command == "list":
@@ -345,6 +356,7 @@ def cli_main() -> None:
         elif getattr(args, "non_interactive_message", None):
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
+
             exit_code = asyncio.run(
                 run_non_interactive(
                     message=args.non_interactive_message,

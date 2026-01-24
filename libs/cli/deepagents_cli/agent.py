@@ -386,6 +386,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "allowed_decisions": ["approve", "reject"],
         "description": _format_task_description,  # type: ignore[typeddict-item]
     }
+
     return {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,

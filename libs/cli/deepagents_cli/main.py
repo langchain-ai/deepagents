@@ -390,11 +390,12 @@ async def run_textual_cli_async(
             tools.append(web_search)
 
         # Load MCP tools if config provided
-        mcp_client = None
+        mcp_session_manager = None
         if mcp_config_path:
             try:
                 from deepagents_cli.mcp_tools import get_mcp_tools
-                mcp_tools, mcp_client = await get_mcp_tools(mcp_config_path)
+
+                mcp_tools, mcp_session_manager = await get_mcp_tools(mcp_config_path)
                 tools.extend(mcp_tools)
                 console.print(f"[green]✓ Loaded {len(mcp_tools)} MCP tools[/green]")
             except ImportError:
@@ -455,11 +456,10 @@ async def run_textual_cli_async(
                 initial_prompt=initial_prompt,
             )
         finally:
-            # Clean up MCP client if initialized
-            if 'mcp_client' in locals() and mcp_client is not None:
+            # Clean up MCP session manager if initialized
+            if mcp_session_manager is not None:
                 with contextlib.suppress(Exception):
-                    if hasattr(mcp_client, 'cleanup'):
-                        await mcp_client.cleanup()
+                    await mcp_session_manager.cleanup()
 
             # Clean up sandbox after app exits (success or error)
             if sandbox_cm is not None:

@@ -31,6 +31,52 @@ Applications like "Deep Research", "Manus", and "Claude Code" have gotten around
 
 **Acknowledgements: This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.**
 
+## MCP Tools
+
+Load additional tools from [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers using the `--mcp-config` flag:
+
+```bash
+deepagents --mcp-config path/to/mcp-config.json
+```
+
+The config file uses Claude Desktop format:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {}
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "your-token" }
+    },
+    "remote-api": {
+      "type": "sse",
+      "url": "https://api.example.com/mcp",
+      "headers": { "Authorization": "Bearer your-token" }
+    }
+  }
+}
+```
+
+**Server types:**
+
+| Type | Required fields | Optional fields |
+|------|-----------------|-----------------|
+| stdio (default) | `command` | `args`, `env` |
+| sse | `type: "sse"`, `url` | `headers` |
+| http | `type: "http"`, `url` | `headers` |
+
+**Requirements:** Install `langchain-mcp-adapters`:
+
+```bash
+pip install langchain-mcp-adapters
+```
+
 ## 📖 Resources
 
 - **[Documentation](https://docs.langchain.com/oss/python/deepagents/cli)** — Full documentation

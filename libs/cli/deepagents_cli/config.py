@@ -734,6 +734,7 @@ class SessionState:
 DANGEROUS_SHELL_PATTERNS = (
     "$(",  # Command substitution
     "`",  # Backtick command substitution
+    "$'",  # ANSI-C quoting (can encode dangerous chars via escape sequences)
     "\n",  # Newline (command injection)
     "\r",  # Carriage return (command injection)
     "\t",  # Tab (can be used for injection in some shells)

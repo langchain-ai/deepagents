@@ -452,3 +452,20 @@ class TestShellInjectionPrevention:
     def test_path_bypass_blocked(self, command, injection_allow_list):
         """Commands with paths (not in allow-list) must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            r"cat $'\050whoami\051'",  # Octal for $(whoami)
+            r"cat $'\044\050whoami\051'",  # Octal for $(whoami) with $
+            r"echo $'\140whoami\140'",  # Octal for `whoami`
+            r"cat $'\x24\x28whoami\x29'",  # Hex for $(whoami)
+            r"echo $'\076/tmp/evil'",  # Octal for >
+            r"cat $'\074/etc/passwd'",  # Octal for <
+        ],
+    )
+    def test_ansi_c_quoting_blocked(self, command, injection_allow_list):
+        """ANSI-C quoting $'...' with escape sequences must be blocked."""
+        # This is a potential bypass - ANSI-C quoting can encode dangerous chars
+        # that would otherwise be blocked by pattern detection
+        assert not is_shell_command_allowed(command, injection_allow_list)

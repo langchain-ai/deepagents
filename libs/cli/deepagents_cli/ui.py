@@ -266,7 +266,7 @@ def show_help() -> None:
     )
     console.print("  -r, --resume [ID]             Resume thread: -r for most recent")
     console.print("  -n, --non-interactive MSG     Run a single task and exit")
-    console.print("  --shell-allow-list CMDS       Comma-separated shell commands to allow")
+    console.print("  --shell-allow-list CMDS       Comma-separated local shell commands to allow")
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -302,7 +302,7 @@ def show_help() -> None:
 
     console.print("[bold]Non-Interactive Mode:[/bold]", style=COLORS["primary"])
     console.print(
-        "  deepagents -n 'Summarize README.md'     # Run task (no shell access)",
+        "  deepagents -n 'Summarize README.md'     # Run task (no local shell access)",
         style=COLORS["dim"],
     )
     console.print(

@@ -349,7 +349,8 @@ def _parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     """Parse shell allow-list from string.
 
     Args:
-        allow_list_str: Comma-separated list of commands, or "recommended" for safe defaults
+        allow_list_str: Comma-separated list of commands, or "recommended" for safe defaults.
+                       Can also include "recommended" in the list to merge with custom commands.
 
     Returns:
         List of allowed commands, or None if no allow-list configured
@@ -362,7 +363,19 @@ def _parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
         return list(RECOMMENDED_SAFE_SHELL_COMMANDS)
 
     # Split by comma and strip whitespace
-    return [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+    commands = [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+
+    # If "recommended" is in the list, merge with recommended commands
+    result = []
+    for cmd in commands:
+        if cmd.lower() == "recommended":
+            result.extend(RECOMMENDED_SAFE_SHELL_COMMANDS)
+        else:
+            result.append(cmd)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    return [cmd for cmd in result if not (cmd in seen or seen.add(cmd))]
 
 
 @dataclass

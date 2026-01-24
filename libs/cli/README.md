@@ -30,10 +30,10 @@ deepagents --auto-approve
 # Execute code in a remote sandbox
 deepagents --sandbox modal
 
-# Run non-interactively (shell disabled by default for security)
+# Run non-interactively (local shell disabled by default for security)
 deepagents -n "Summarize the README"
 
-# Enable shell with recommended safe commands
+# Enable local shell with recommended safe commands
 deepagents -n "List all Python files" --shell-allow-list recommended
 
 # Or specify your own allow-list

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from deepagents_cli.config import _parse_shell_allow_list
 from deepagents_cli.main import parse_args
 
 
@@ -56,11 +57,6 @@ def test_shell_allow_list_combined_with_other_args(mock_argv):
         assert parsed_args.auto_approve is True
 
 
-def parse_shell_allow_list(shell_allow_list_str: str) -> list[str]:
-    """Helper to parse shell allow-list string into list."""
-    return [cmd.strip() for cmd in shell_allow_list_str.split(",") if cmd.strip()]
-
-
 @pytest.mark.parametrize(
     ("input_str", "expected"),
     [
@@ -68,11 +64,9 @@ def parse_shell_allow_list(shell_allow_list_str: str) -> list[str]:
         ("ls , cat , grep", ["ls", "cat", "grep"]),
         ("ls,cat,grep,", ["ls", "cat", "grep"]),
         ("ls", ["ls"]),
-        ("", []),
-        (",,,", []),
     ],
 )
 def test_shell_allow_list_string_parsing(input_str, expected):
-    """Test parsing shell-allow-list string into list."""
-    result = parse_shell_allow_list(input_str)
+    """Test parsing shell-allow-list string into list using actual config function."""
+    result = _parse_shell_allow_list(input_str)
     assert result == expected

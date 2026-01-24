@@ -54,7 +54,7 @@ The CLI auto-detects your provider based on available API keys:
 
 In non-interactive mode (`-n`), shell access is **disabled by default** for security. To enable shell commands, use `--shell-allow-list`:
 
-- `--shell-allow-list recommended` — Use 75 curated safe, read-only commands
+- `--shell-allow-list recommended` — Use safe commands
 - `--shell-allow-list ls,cat,grep` — Specify your own comma-separated list
 
 The recommended list includes common read-only utilities (`ls`, `cat`, `grep`, `head`, `tail`, `find`, `ps`, `wc`, etc.) while excluding anything that can:

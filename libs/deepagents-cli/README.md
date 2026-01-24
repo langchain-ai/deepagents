@@ -29,6 +29,20 @@ deepagents --auto-approve
 
 # Execute code in a remote sandbox
 deepagents --sandbox modal
+
+# Run non-interactively with safe commands
+deepagents -n "what's your public IP? try using curl" --shell-allow-list "ls,cat,grep,pwd,echo,head,tail,find,wc"
+Running task non-interactively...
+Agent: agent | Thread: 0049b0e6
+
+I'll use curl to check the public IP address.
+🔧 Calling tool: shell
+
+❌ Shell command rejected: curl -s ifconfig.me
+Allowed commands: ls, cat, grep, pwd, echo, head, tail, find, wc
+It looks like curl isn't in the allowed command list for the shell tool. Let me try using the http_request tool instead to check the public IP.
+🔧 Calling tool: http_request
+The public IP address is **X.X.X.X**.
 ```
 
 ## Model Configuration

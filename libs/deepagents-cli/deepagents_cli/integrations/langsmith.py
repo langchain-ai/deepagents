@@ -115,8 +115,8 @@ class LangSmithBackend(BaseSandbox):
 
 
 # Default template configuration
-DEFAULT_TEMPLATE_NAME = "deepagents-cli"
-DEFAULT_TEMPLATE_IMAGE = "ubuntu:24.04"
+DEFAULT_TEMPLATE_NAME = "python-slim"
+DEFAULT_TEMPLATE_IMAGE = "python:3.12-slim"
 
 
 def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE_NAME) -> None:

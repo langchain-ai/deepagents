@@ -197,7 +197,8 @@ def show_help() -> None:
     )
     console.print("  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)")
     console.print(
-        "  --mcp-config PATH             Load MCP tools from JSON config file (Claude Desktop format)"
+        "  --mcp-config PATH             "
+        "Load MCP tools from JSON config file (Claude Desktop format)"
     )
     console.print(
         "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"

@@ -467,15 +467,9 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
     "tail",
     # Text searching (read-only)
     "grep",
-    # File information
-    "file",
-    "stat",
     "wc",
-    "du",
-    "df",
+    "strings",
     # Text processing (read-only, no shell execution)
-    "sort",
-    "uniq",
     "cut",
     "tr",
     "diff",
@@ -484,9 +478,6 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Path utilities
     "pwd",
     "which",
-    # Date/time (read-only)
-    "date",
-    "cal",
     # System info (read-only)
     "uname",
     "hostname",
@@ -494,17 +485,11 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
     "id",
     "groups",
     "uptime",
-    "arch",
     "nproc",
     "lscpu",
     "lsmem",
     # Process viewing (read-only)
     "ps",
-    "pgrep",
-    # Pagers/viewers that are generally safe
-    "hexdump",
-    "od",
-    "strings",
 )
 
 

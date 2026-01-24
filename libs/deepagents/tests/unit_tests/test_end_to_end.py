@@ -817,3 +817,310 @@ class TestDeepAgentEndToEnd:
             glob_result = glob_messages[-1].content
             assert "AttributeError" not in glob_result
             assert "'list' object has no attribute 'items'" not in glob_result
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_file_truncation(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test that read_file truncates large files and provides pagination guidance."""
+        # Create a file with content that exceeds the truncation threshold
+        # Default token_limit_before_evict is 20000, so threshold is 4 * 20000 = 80000 chars
+        large_content = "x" * 85000  # 85k chars exceeds the 80k threshold
+
+        # Create backend and write file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/large_file.txt"
+        res = backend.write(file_path, large_content)
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
+
+        # Create a fake model that calls read_file
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 0, "limit": 100},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the file.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Verify truncation occurred
+        assert "Output was truncated due to size limits" in file_content
+        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+
+        # Verify the content is actually truncated (should be 80k chars + truncation message)
+        assert len(file_content) < 85000
+        assert len(file_content) > 80000  # Should include the 80k truncated content
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_file_no_truncation_small_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test that read_file does NOT truncate small files."""
+        # Create a small file that doesn't exceed the truncation threshold
+        small_content = "Hello, world!\n" * 100  # Much smaller than 80k chars
+
+        # Create backend and write file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/small_file.txt"
+        res = backend.write(file_path, small_content)
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
+
+        # Create a fake model that calls read_file
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the file.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Verify NO truncation occurred
+        assert "Output was truncated" not in file_content
+        assert "Hello, world!" in file_content
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_file_truncation_with_offset(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test that read_file truncation message includes correct offset for pagination."""
+        # Create a large file with many lines (each line is 500 chars + newline)
+        # 500 lines total, we'll read lines 50-250 (200 lines)
+        # 200 lines * ~510 chars (including formatting) = ~102,000 chars, exceeds 80k threshold
+        large_content = "\n".join(["y" * 500 for _ in range(500)])
+
+        # Create backend and write file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/large_file_offset.txt"
+        res = backend.write(file_path, large_content)
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
+
+        # Create a fake model that calls read_file with a non-zero offset
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 50, "limit": 200},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the file.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Verify truncation occurred
+        assert "Output was truncated due to size limits" in file_content
+        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test that read_file truncates large files in async mode."""
+        # Create a large file
+        large_content = "z" * 85000
+
+        # Create backend and write file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/large_file_async.txt"
+        res = await backend.awrite(file_path, large_content)
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
+
+        # Create a fake model that calls read_file
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 0, "limit": 100},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the file.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent (async)
+        result = await agent.ainvoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Verify truncation occurred
+        assert "Output was truncated due to size limits" in file_content
+        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+
+        # Verify the content is actually truncated
+        assert len(file_content) < 85000
+
+    @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
+    def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
+        """Test the behavior with a single very long line.
+
+        When a file has a single very long line (e.g., 85,000 chars), it gets split
+        into continuation markers (1, 1.1, 1.2, etc.) by format_content_with_line_numbers.
+
+        The current behavior:
+        - offset works on logical lines (before formatting)
+        - limit applies to formatted output lines (after continuation markers)
+        - This allows pagination through long lines by increasing limit
+        - Limitation: cannot use offset to skip within a long line
+
+        This test verifies:
+        1. A single long line with limit=1 returns only the first chunk (respects limit on formatted lines)
+        2. Size-based truncation applies if the formatted output exceeds threshold
+        """
+        # Create a file with a SINGLE very long line (no newlines)
+        # This will be split into ~17 continuation chunks (85000 / 5000)
+        single_long_line = "x" * 85000
+
+        # Create backend and write file
+        backend = backend_factory(tmp_path)
+
+        file_path = "/single_long_line.txt"
+        res = backend.write(file_path, single_long_line)
+        if isinstance(backend, StateBackend):
+            backend.runtime.state["files"].update(res.files_update)
+
+        # Create a fake model that calls read_file with limit=1
+        # This should return just 1 formatted line (the first chunk of the long line)
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 0, "limit": 1},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="I've read the file.",
+                    ),
+                ]
+            )
+        )
+
+        # Create agent with backend
+        agent = create_deep_agent(model=model, backend=backend)
+
+        # Invoke the agent
+        result = agent.invoke({"messages": [HumanMessage(content=f"Read {file_path}")]})
+
+        # Verify the agent executed correctly
+        assert "messages" in result
+
+        # Get the tool message containing the file content
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0
+
+        file_content = tool_messages[0].content
+
+        # Verify behavior: with limit=1, we get only the first formatted line
+        # (not all continuation markers)
+        assert len(file_content) < 10000  # Only got first chunk (~5000 chars)
+        assert len(file_content.splitlines()) == 1  # Only 1 formatted line
+        assert "1.1" not in file_content  # No continuation markers (would need higher limit)
+
+        # To get more of the line, the model would need to increase limit, not offset
+        # E.g., read_file(offset=0, limit=20) would get first 20 formatted lines

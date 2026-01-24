@@ -59,6 +59,9 @@ deepagents --auto-approve
 # Execute code in a remote sandbox
 deepagents --sandbox modal        # or runloop, daytona
 deepagents --sandbox-id dbx_123   # reuse existing sandbox
+
+# Load MCP tools from config file
+deepagents --mcp-config mcp.json
 ```
 
 Type naturally as you would in a chat interface. The agent will use its built-in tools, skills, and memory to help you with tasks.
@@ -123,6 +126,52 @@ The agent comes with the following built-in tools (always available without conf
 > ```bash
 > deepagents --auto-approve
 > ```
+
+## MCP Tools
+
+Load additional tools from [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) servers using the `--mcp-config` flag:
+
+```bash
+deepagents --mcp-config path/to/mcp-config.json
+```
+
+The config file uses Claude Desktop format:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {}
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "your-token" }
+    },
+    "remote-api": {
+      "type": "sse",
+      "url": "https://api.example.com/mcp",
+      "headers": { "Authorization": "Bearer your-token" }
+    }
+  }
+}
+```
+
+**Server types:**
+
+| Type | Required fields | Optional fields |
+|------|-----------------|-----------------|
+| stdio (default) | `command` | `args`, `env` |
+| sse | `type: "sse"`, `url` | `headers` |
+| http | `type: "http"`, `url` | `headers` |
+
+**Requirements:** Install `langchain-mcp-adapters`:
+
+```bash
+pip install langchain-mcp-adapters
+```
 
 ## Agent Configuration
 

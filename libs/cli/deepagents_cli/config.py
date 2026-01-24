@@ -769,16 +769,12 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Directory listing
     "ls",
     "dir",
-    "tree",
     # File content viewing (read-only)
     "cat",
     "head",
     "tail",
     # Text searching (read-only)
     "grep",
-    "egrep",
-    "fgrep",
-    "rg",
     # File information
     "file",
     "stat",
@@ -808,15 +804,8 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
     "uptime",
     "arch",
     "nproc",
-    "free",
     "lscpu",
     "lsmem",
-    # JSON/data processing (read-only, safe)
-    "jq",
-    "yq",
-    # Simple echo (useful for debugging)
-    "echo",
-    "printf",
     # Process viewing (read-only)
     "ps",
     "pgrep",

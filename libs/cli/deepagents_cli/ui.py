@@ -216,6 +216,9 @@ def show_help() -> None:
         "  deepagents [OPTIONS]                           Start interactive session"
     )
     console.print(
+        "  deepagents -n 'MESSAGE'                        Run non-interactively"
+    )
+    console.print(
         "  deepagents list                                List all available agents"
     )
     console.print(
@@ -249,6 +252,8 @@ def show_help() -> None:
     console.print(
         "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"  # noqa: E501
     )
+    console.print("  -n, --non-interactive MSG     Run a single task and exit")
+    console.print("  --shell-allow-list CMDS       Comma-separated shell commands to allow")
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -280,6 +285,25 @@ def show_help() -> None:
         "  deepagents --sandbox runloop            # Execute code in Runloop sandbox",
         style=COLORS["dim"],
     )
+    console.print()
+
+    console.print("[bold]Non-Interactive Mode:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  deepagents -n 'Summarize README.md'     # Run task (no shell access)",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -n 'List files' --shell-allow-list ls,cat,grep",
+        style=COLORS["dim"],
+    )
+    console.print()
+    console.print(
+        "  [yellow]Security:[/yellow] Shell is disabled by default in non-interactive mode."
+    )
+    console.print(
+        "  Use --shell-allow-list or DEEPAGENTS_SHELL_ALLOW_LIST env var to enable"
+    )
+    console.print("  specific commands (e.g., ls,cat,grep,find,head,tail).")
     console.print()
 
     console.print("[bold]Thread Management:[/bold]", style=COLORS["primary"])

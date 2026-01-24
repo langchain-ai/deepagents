@@ -1,11 +1,12 @@
 """Sandbox lifecycle management with context managers."""
 
+import asyncio
 import os
 import shlex
 import string
 import time
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
@@ -292,6 +293,7 @@ def create_langsmith_sandbox(
         LangSmithBackend,
         create_sandbox_instance,
         ensure_template,
+        verify_sandbox_ready,
     )
 
     api_key = os.environ.get("LANGSMITH_API_KEY")
@@ -310,11 +312,15 @@ def create_langsmith_sandbox(
         except Exception as e:
             msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
             raise RuntimeError(msg) from e
+        
+        # Verify the existing sandbox is ready
+        verify_sandbox_ready(sb, client)
+        
         should_cleanup = False
         console.print(f"[green]✓ Connected to existing LangSmith sandbox: {sb.name}[/green]")
     else:
         ensure_template(client)
-        sb = create_sandbox_instance(client)
+        sb = create_sandbox_instance(client)  # Already includes readiness check
         should_cleanup = True
 
     backend = LangSmithBackend(sb)
@@ -335,6 +341,91 @@ def create_langsmith_sandbox(
                 console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
+@asynccontextmanager
+async def create_langsmith_sandbox_async(
+    *,
+    sandbox_id: str | None = None,
+    setup_script_path: str | None = None,
+    cleanup: bool = True,
+) -> AsyncGenerator[SandboxBackendProtocol, None]:
+    """Create or connect to LangSmith sandbox (async version).
+
+    Args:
+        sandbox_id: Optional existing sandbox name to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+        cleanup: If True, delete sandbox on exit. If False, sandbox persists.
+
+    Yields:
+        LangSmithBackend instance
+
+    Raises:
+        ImportError: LangSmith SDK not installed
+        ValueError: LANGSMITH_API_KEY not set
+        RuntimeError: Sandbox failed to start within timeout
+        FileNotFoundError: Setup script not found
+        RuntimeError: Setup script failed
+    """
+    from langsmith import sandbox
+
+    from deepagents_cli.integrations.langsmith import LangSmithBackend
+
+    api_key = os.environ.get("LANGSMITH_API_KEY")
+    if not api_key:
+        msg = "LANGSMITH_API_KEY environment variable not set"
+        raise ValueError(msg)
+
+    console.print("[yellow]Starting LangSmith sandbox...[/yellow]")
+
+    # Run blocking SDK calls in executor
+    loop = asyncio.get_event_loop()
+    client = await loop.run_in_executor(None, sandbox.SandboxClient)
+
+    if sandbox_id:
+        # Connect to existing sandbox by name
+        try:
+            sb = await loop.run_in_executor(None, client.get_sandbox, sandbox_id)
+        except Exception as e:
+            msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
+            raise RuntimeError(msg) from e
+        
+        # Verify the existing sandbox is ready
+        from deepagents_cli.integrations.langsmith import verify_sandbox_ready
+        await loop.run_in_executor(None, verify_sandbox_ready, sb, client)
+        
+        should_cleanup = False
+        console.print(f"[green]✓ Connected to existing LangSmith sandbox: {sb.name}[/green]")
+    else:
+        # Import helper functions
+        from deepagents_cli.integrations.langsmith import (
+            create_sandbox_instance,
+            ensure_template,
+        )
+
+        # Ensure template exists
+        await loop.run_in_executor(None, ensure_template, client)
+
+        # Create sandbox instance (already includes readiness check)
+        sb = await loop.run_in_executor(None, create_sandbox_instance, client)
+        should_cleanup = cleanup  # Only cleanup if requested
+
+    backend = LangSmithBackend(sb)
+
+    # Run setup script if provided
+    if setup_script_path:
+        await loop.run_in_executor(None, _run_sandbox_setup, backend, setup_script_path)
+
+    try:
+        yield backend
+    finally:
+        if should_cleanup:
+            console.print(f"[dim]Deleting LangSmith sandbox {sb.name}...[/dim]")
+            try:
+                await loop.run_in_executor(None, client.delete_sandbox, sb.name)
+                console.print(f"[dim]✓ LangSmith sandbox {sb.name} terminated[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+
+
 _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
@@ -349,6 +440,11 @@ _SANDBOX_PROVIDERS = {
     "runloop": create_runloop_sandbox,
     "daytona": create_daytona_sandbox,
     "langsmith": create_langsmith_sandbox,
+}
+
+# Mapping of sandbox types to their async context manager factories
+_SANDBOX_PROVIDERS_ASYNC = {
+    "langsmith": create_langsmith_sandbox_async,
 }
 
 
@@ -385,6 +481,46 @@ def create_sandbox(
         yield backend
 
 
+@asynccontextmanager
+async def create_sandbox_async(
+    provider: str,
+    *,
+    sandbox_id: str | None = None,
+    setup_script_path: str | None = None,
+    cleanup: bool = True,
+) -> AsyncGenerator[SandboxBackendProtocol, None]:
+    """Create or connect to a sandbox of the specified provider (async version).
+
+    This is the unified async interface for sandbox creation that delegates to
+    the appropriate provider-specific async context manager.
+
+    Args:
+        provider: Sandbox provider (currently only "langsmith" is supported)
+        sandbox_id: Optional existing sandbox ID to reuse
+        setup_script_path: Optional path to setup script to run after sandbox starts
+        cleanup: If True, delete sandbox on exit. If False, sandbox persists.
+
+    Yields:
+        SandboxBackend instance
+
+    Raises:
+        ValueError: If provider is unknown or doesn't have async support
+    """
+    if provider not in _SANDBOX_PROVIDERS_ASYNC:
+        msg = (
+            f"Async sandbox provider not available for: {provider}. "
+            f"Available async providers: {', '.join(_SANDBOX_PROVIDERS_ASYNC.keys())}"
+        )
+        raise ValueError(msg)
+
+    sandbox_provider = _SANDBOX_PROVIDERS_ASYNC[provider]
+
+    async with sandbox_provider(
+        sandbox_id=sandbox_id, setup_script_path=setup_script_path, cleanup=cleanup
+    ) as backend:
+        yield backend
+
+
 def get_available_sandbox_types() -> list[str]:
     """Get list of available sandbox provider types.
 
@@ -414,6 +550,7 @@ def get_default_working_dir(provider: str) -> str:
 
 __all__ = [
     "create_sandbox",
+    "create_sandbox_async",
     "get_available_sandbox_types",
     "get_default_working_dir",
 ]

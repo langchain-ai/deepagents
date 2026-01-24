@@ -486,3 +486,83 @@ def create_cli_agent(
         checkpointer=final_checkpointer,
     ).with_config(config)
     return agent, composite_backend
+
+
+def create_server_agent(
+    model: str | BaseChatModel,
+    assistant_id: str,
+    *,
+    tools: list[BaseTool] | None = None,
+    sandbox: SandboxBackendProtocol | None = None,
+    sandbox_type: str | None = None,
+    system_prompt: str | None = None,
+    auto_approve: bool = False,
+    enable_memory: bool = True,
+    enable_skills: bool = True,
+    enable_shell: bool = True,
+) -> tuple[Pregel, CompositeBackend]:
+    """Create a CLI-configured agent with flexible options.
+
+    This is the main entry point for creating a deepagents CLI agent, usable both
+    internally and from external code (e.g., benchmarking frameworks, Harbor).
+
+    Args:
+        model: LLM model to use (e.g., "anthropic:claude-sonnet-4-5-20250929")
+        assistant_id: Agent identifier for memory/state storage
+        tools: Additional tools to provide to agent
+        sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
+                 If None, uses local filesystem + shell.
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+                     Used for system prompt generation.
+        system_prompt: Override the default system prompt. If None, generates one
+                      based on sandbox_type and assistant_id.
+        auto_approve: If True, automatically approves all tool calls without human
+                     confirmation. Useful for automated workflows.
+        enable_memory: Enable MemoryMiddleware for persistent memory
+        enable_skills: Enable SkillsMiddleware for custom agent skills
+        enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
+        checkpointer: Optional checkpointer for session persistence. If None, uses
+                     InMemorySaver (no persistence across CLI invocations).
+
+    Returns:
+        2-tuple of (agent_graph, backend)
+        - agent_graph: Configured LangGraph Pregel instance ready for execution
+        - composite_backend: CompositeBackend for file operations
+    """
+    tools = tools or []
+
+    # Build middleware stack based on enabled features
+    agent_middleware = []
+
+    # ========== REMOTE SANDBOX MODE ==========
+    backend = sandbox  # Remote sandbox (ModalBackend, etc.)
+    # Note: Shell middleware not used in sandbox mode
+    # File operations and execute tool are provided by the sandbox backend
+
+    # Get or use custom system prompt
+    if system_prompt is None:
+        if sandbox_type is not None:
+            system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
+        if sandbox_type is None:
+            # NOTE: (harrison)
+            # This only happens when thread_id is None
+            # That only happens when not actually running, so system_prompt doesn't matter
+            system_prompt = ""
+
+    # Configure interrupt_on based on auto_approve setting
+    if auto_approve:
+        # No interrupts - all tools run automatically
+        interrupt_on = {}
+    else:
+        # Full HITL for destructive operations
+        interrupt_on = _add_interrupt_on()
+
+    agent = create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=tools,
+        backend=backend,
+        middleware=agent_middleware,
+        interrupt_on=interrupt_on
+    ).with_config(config)
+    return agent

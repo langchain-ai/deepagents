@@ -357,6 +357,15 @@ class Settings:
             return None
         return self.project_root / ".deepagents" / "skills"
 
+    @property
+    def tasks_dir(self) -> Path:
+        """Get the tasks directory path.
+
+        Returns:
+            Path to ~/.deepagents/tasks/
+        """
+        return Path.home() / ".deepagents" / "tasks"
+
     def ensure_project_skills_dir(self) -> Path | None:
         """Ensure project-level skills directory exists and return its path.
 

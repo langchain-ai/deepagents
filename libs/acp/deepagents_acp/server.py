@@ -304,6 +304,59 @@ class DeepagentsACP(Agent):
             )
         )
 
+    async def _handle_task_update(
+        self,
+        params: PromptRequest,
+        tasks: list[dict[str, Any]],
+    ) -> None:
+        """Handle task list updates from the tools node.
+
+        Args:
+            params: The prompt request parameters
+            tasks: List of task dictionaries with content, status, and optional dependencies
+
+        Note:
+            Tasks come from the CLI's write_tasks tool and have the structure:
+            [{'id': 'uuid', 'content': 'Task description', 'status': 'pending'|'in_progress'|'completed'|'blocked',
+              'blocked_by': ['other-task-id', ...]}, ...]
+        """
+        # Convert tasks to PlanEntry objects
+        entries = []
+        for task in tasks:
+            content = task.get("content", "")
+            status = task.get("status", "pending")
+
+            # Map 'blocked' status to 'pending' for ACP compatibility
+            if status == "blocked":
+                status = "pending"
+
+            # Validate status
+            if status not in ("pending", "in_progress", "completed"):
+                status = "pending"
+
+            # Add dependency info to content if present
+            blocked_by = task.get("blocked_by", [])
+            if blocked_by:
+                content = f"{content} (blocked by: {', '.join(blocked_by)})"
+
+            entry = PlanEntry(
+                content=content,
+                status=status,  # type: ignore
+                priority="medium",
+            )
+            entries.append(entry)
+
+        # Send plan update notification
+        await self._connection.sessionUpdate(
+            SessionNotification(
+                update=AgentPlanUpdate(
+                    sessionUpdate="plan",
+                    entries=entries,
+                ),
+                sessionId=params.sessionId,
+            )
+        )
+
     async def _handle_interrupt(
         self,
         params: PromptRequest,
@@ -459,11 +512,18 @@ class DeepagentsACP(Agent):
                     if node_name not in ("model", "tools"):
                         continue
 
-                    # Handle todos from tools node
-                    if node_name == "tools" and "todos" in update:
-                        todos = update.get("todos", [])
-                        if todos:
-                            await self._handle_todo_update(params, todos)
+                    # Handle todos/tasks from tools node
+                    if node_name == "tools":
+                        # Handle legacy todos (from TodoListMiddleware)
+                        if "todos" in update:
+                            todos = update.get("todos", [])
+                            if todos:
+                                await self._handle_todo_update(params, todos)
+                        # Handle new tasks (from TaskMiddleware)
+                        if "tasks" in update:
+                            tasks = update.get("tasks", [])
+                            if tasks:
+                                await self._handle_task_update(params, tasks)
 
                     # Get messages from the update
                     messages = update.get("messages", [])

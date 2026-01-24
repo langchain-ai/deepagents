@@ -81,10 +81,15 @@ async def run_non_interactive(
             if settings.has_tavily:
                 tools.append(web_search)
 
-            # Determine auto-approve setting based on shell allow-list
-            # If a shell allow-list is configured, use HITL to selectively approve
-            # Otherwise, auto-approve everything (traditional non-interactive behavior)
-            use_auto_approve = not bool(settings.shell_allow_list)
+            # SECURITY: In non-interactive mode, shell is DISABLED by default.
+            # Shell is only enabled if an explicit allow-list is configured via
+            # DEEPAGENTS_SHELL_ALLOW_LIST environment variable.
+            # This prevents arbitrary command execution without human oversight.
+            enable_shell = bool(settings.shell_allow_list)
+
+            # If shell is enabled (allow-list configured), use HITL for selective approval
+            # Otherwise, auto-approve all non-shell tools
+            use_auto_approve = not enable_shell
 
             # Create agent
             agent, composite_backend = create_cli_agent(
@@ -94,6 +99,7 @@ async def run_non_interactive(
                 sandbox=sandbox_backend,
                 sandbox_type=sandbox_type if sandbox_type != "none" else None,
                 auto_approve=use_auto_approve,
+                enable_shell=enable_shell,
                 checkpointer=checkpointer,
             )
 

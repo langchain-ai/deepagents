@@ -470,11 +470,47 @@ class SessionState:
         return self.auto_approve
 
 
+DANGEROUS_SHELL_PATTERNS = (
+    "$(",  # Command substitution
+    "`",  # Backtick command substitution
+    "\n",  # Newline (command injection)
+    "\r",  # Carriage return (command injection)
+    "\t",  # Tab (can be used for injection in some shells)
+    "<(",  # Process substitution (input)
+    ">(",  # Process substitution (output)
+    "<<<",  # Here-string
+    "<<",  # Here-doc (can embed commands)
+    ">>",  # Append redirect
+    ">",  # Output redirect
+    "<",  # Input redirect
+    "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
+)
+
+
+def _contains_dangerous_patterns(command: str) -> bool:
+    """Check if a command contains dangerous shell patterns.
+
+    These patterns can be used to bypass allow-list validation by embedding
+    arbitrary commands within seemingly safe commands.
+
+    Args:
+        command: The shell command to check
+
+    Returns:
+        True if dangerous patterns are found, False otherwise
+    """
+    return any(pattern in command for pattern in DANGEROUS_SHELL_PATTERNS)
+
+
 def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool:
     """Check if a shell command is in the allow-list.
 
     The allow-list matches against the first token of the command (the executable name).
     This allows read-only commands like ls, cat, grep, etc. to be auto-approved.
+
+    SECURITY: This function rejects commands containing dangerous shell patterns
+    (command substitution, redirects, process substitution, etc.) BEFORE parsing,
+    to prevent injection attacks that could bypass the allow-list.
 
     Args:
         command: The full shell command to check
@@ -492,8 +528,15 @@ def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool
         False
         >>> is_shell_command_allowed("ls | grep test", ["ls", "grep"])
         True
+        >>> is_shell_command_allowed("ls $(rm -rf /)", ["ls"])  # Injection blocked
+        False
     """
     if not allow_list or not command or not command.strip():
+        return False
+
+    # SECURITY: Check for dangerous patterns BEFORE any parsing
+    # This prevents injection attacks like: ls "$(rm -rf /)"
+    if _contains_dangerous_patterns(command):
         return False
 
     allow_set = set(allow_list)

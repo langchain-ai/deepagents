@@ -1,0 +1,78 @@
+"""Tests for command-line argument parsing."""
+# ruff: noqa: ANN001, ANN002, ANN202
+
+import sys
+from unittest.mock import patch
+
+import pytest
+
+from deepagents_cli.main import parse_args
+
+
+@pytest.fixture
+def mock_argv():
+    """Factory fixture to mock sys.argv with given arguments."""
+
+    def _mock_argv(*args):
+        return patch.object(sys, "argv", ["deepagents", *args])
+
+    return _mock_argv
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (["--shell-allow-list", "ls,cat,grep"], "ls,cat,grep"),
+        (["--shell-allow-list", "ls, cat , grep"], "ls, cat , grep"),
+        (["--shell-allow-list", "ls"], "ls"),
+        (
+            ["--shell-allow-list", "ls,cat,grep,pwd,echo,head,tail,find,wc,tree"],
+            "ls,cat,grep,pwd,echo,head,tail,find,wc,tree",
+        ),
+    ],
+)
+def test_shell_allow_list_argument(args, expected, mock_argv):
+    """Test --shell-allow-list argument with various values."""
+    with mock_argv(*args):
+        parsed_args = parse_args()
+        assert hasattr(parsed_args, "shell_allow_list")
+        assert parsed_args.shell_allow_list == expected
+
+
+def test_shell_allow_list_not_specified(mock_argv):
+    """Test that shell_allow_list is None when not specified."""
+    with mock_argv():
+        parsed_args = parse_args()
+        assert hasattr(parsed_args, "shell_allow_list")
+        assert parsed_args.shell_allow_list is None
+
+
+def test_shell_allow_list_combined_with_other_args(mock_argv):
+    """Test that shell-allow-list works with other arguments."""
+    with mock_argv("--shell-allow-list", "ls,cat", "--model", "gpt-4o", "--auto-approve"):
+        parsed_args = parse_args()
+        assert parsed_args.shell_allow_list == "ls,cat"
+        assert parsed_args.model == "gpt-4o"
+        assert parsed_args.auto_approve is True
+
+
+def parse_shell_allow_list(shell_allow_list_str: str) -> list[str]:
+    """Helper to parse shell allow-list string into list."""
+    return [cmd.strip() for cmd in shell_allow_list_str.split(",") if cmd.strip()]
+
+
+@pytest.mark.parametrize(
+    ("input_str", "expected"),
+    [
+        ("ls,cat,grep", ["ls", "cat", "grep"]),
+        ("ls , cat , grep", ["ls", "cat", "grep"]),
+        ("ls,cat,grep,", ["ls", "cat", "grep"]),
+        ("ls", ["ls"]),
+        ("", []),
+        (",,,", []),
+    ],
+)
+def test_shell_allow_list_string_parsing(input_str, expected):
+    """Test parsing shell-allow-list string into list."""
+    result = parse_shell_allow_list(input_str)
+    assert result == expected

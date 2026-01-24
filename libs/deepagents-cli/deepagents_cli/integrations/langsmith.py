@@ -129,11 +129,11 @@ def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE
     Raises:
         RuntimeError: If template check or creation fails
     """
-    from langsmith.sandbox import TemplateNotFoundError
+    from langsmith.sandbox import ResourceNotFoundError
 
     try:
         client.get_template(template_name)
-    except TemplateNotFoundError:
+    except ResourceNotFoundError:
         console.print(f"[dim]Creating template '{template_name}'...[/dim]")
         try:
             client.create_template(name=template_name, image=DEFAULT_TEMPLATE_IMAGE)
@@ -143,6 +143,29 @@ def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE
     except Exception as e:
         msg = f"Failed to check template '{template_name}': {e}"
         raise RuntimeError(msg) from e
+
+
+def verify_sandbox_ready(sb: Sandbox, client: SandboxClient) -> None:
+    """Verify sandbox is ready to accept commands.
+
+    Args:
+        sb: Sandbox instance to verify
+        client: SandboxClient instance (for cleanup if needed)
+
+    Raises:
+        RuntimeError: If sandbox readiness check fails
+    """
+    readiness_error: Exception | None = None
+    try:
+        result = sb.run("echo ready", timeout=5)
+        if result.exit_code != 0:
+            readiness_error = RuntimeError("Sandbox readiness check failed")
+    except Exception as e:
+        readiness_error = e
+
+    if readiness_error:
+        msg = f"LangSmith sandbox failed readiness check: {readiness_error}"
+        raise RuntimeError(msg) from readiness_error
 
 
 def create_sandbox_instance(
@@ -168,19 +191,12 @@ def create_sandbox_instance(
         raise RuntimeError(msg) from e
 
     # Verify sandbox is ready
-    readiness_error: Exception | None = None
     try:
-        result = sb.run("echo ready", timeout=5)
-        if result.exit_code != 0:
-            readiness_error = RuntimeError("Sandbox readiness check failed")
-    except Exception as e:
-        readiness_error = e
-
-    if readiness_error:
+        verify_sandbox_ready(sb, client)
+    except RuntimeError:
         with contextlib.suppress(Exception):
             client.delete_sandbox(sb.name)
-        msg = f"LangSmith sandbox failed readiness check: {readiness_error}"
-        raise RuntimeError(msg) from readiness_error
+        raise
 
     console.print(f"[green]✓ LangSmith sandbox ready: {sb.name}[/green]")
     return sb

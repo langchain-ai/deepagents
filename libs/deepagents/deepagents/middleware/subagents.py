@@ -34,11 +34,11 @@ class SubAgent(TypedDict):
         system_prompt: Instructions for the subagent.
 
             Include tool usage guidance and output format requirements.
-        tools: Tools the subagent can use.
-
-            Keep this minimal and include only what's needed.
 
     Optional fields:
+        tools: Tools the subagent can use.
+
+            If not specified, inherits tools from the main agent via `default_tools`.
         model: Override the main agent's model.
 
             Use the format `'provider:model-name'` (e.g., `'openai:gpt-4o'`).
@@ -57,8 +57,8 @@ class SubAgent(TypedDict):
     system_prompt: str
     """Instructions for the subagent."""
 
-    tools: Sequence[BaseTool | Callable | dict[str, Any]]
-    """Tools the subagent can use."""
+    tools: NotRequired[Sequence[BaseTool | Callable | dict[str, Any]]]
+    """Tools the subagent can use. If not specified, inherits from main agent."""
 
     model: NotRequired[str | BaseChatModel]
     """Override the main agent's model. Use `'provider:model-name'` format."""
@@ -523,7 +523,21 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
-        self.system_prompt = system_prompt
+
+        # Build list of available agents for system prompt
+        subagent_descriptions = []
+        if general_purpose_agent:
+            subagent_descriptions.append(f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
+        for agent_ in subagents or []:
+            subagent_descriptions.append(f"- {agent_['name']}: {agent_['description']}")
+
+        # Append available agents to system prompt if we have any
+        if system_prompt is not None and subagent_descriptions:
+            agents_section = "\n\nAvailable subagent types:\n" + "\n".join(subagent_descriptions)
+            self.system_prompt = system_prompt + agents_section
+        else:
+            self.system_prompt = system_prompt
+
         task_tool = _create_task_tool(
             default_model=default_model,
             default_tools=default_tools or [],

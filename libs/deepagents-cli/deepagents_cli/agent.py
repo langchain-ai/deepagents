@@ -26,6 +26,7 @@ from deepagents_cli.config import COLORS, config, console, get_default_coding_in
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.shell import ShellMiddleware
+from deepagents_cli.subagents import list_subagents
 
 
 def list_agents() -> None:
@@ -380,6 +381,24 @@ def create_cli_agent(
         skills_dir = settings.ensure_user_skills_dir(assistant_id)
         project_skills_dir = settings.get_project_skills_dir()
 
+    # Load custom subagents from filesystem
+    custom_subagents: list[dict] = []
+    user_agents_dir = settings.get_user_agents_dir(assistant_id)
+    project_agents_dir = settings.get_project_agents_dir()
+
+    for subagent_meta in list_subagents(
+        user_agents_dir=user_agents_dir,
+        project_agents_dir=project_agents_dir,
+    ):
+        subagent: dict = {
+            "name": subagent_meta["name"],
+            "description": subagent_meta["description"],
+            "system_prompt": subagent_meta["system_prompt"],
+        }
+        if subagent_meta["model"]:
+            subagent["model"] = subagent_meta["model"]
+        custom_subagents.append(subagent)
+
     # Build middleware stack based on enabled features
     agent_middleware = []
 
@@ -484,5 +503,6 @@ def create_cli_agent(
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
         checkpointer=final_checkpointer,
+        subagents=custom_subagents if custom_subagents else None,
     ).with_config(config)
     return agent, composite_backend

@@ -1,33 +1,39 @@
-# Contributing to Deep Agents
+# Local Development Setup Guide
 
-Welcome! We're glad you're interested in contributing to Deep Agents. Please follow the guidelines below to help us maintain a high quality of code and documentation.
+## Prerequisites
+- Ensure you have Python 3.8+ installed.
+- Install Node.js (for frontend development).
 
-## Local Setup Guide
-
-To set up your local environment, follow these steps:
-
-1. **Clone the repository**:
+## Setting Up the Environment
+1. Clone the repository:
    ```bash
    git clone https://github.com/langchain-ai/deepagents.git
    cd deepagents
    ```
-
-2. **Install dependencies**:
-   Ensure you have Python 3.8 or higher installed. You can set up a virtual environment and install the required packages:
+2. Create a virtual environment:
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+   ```
+3. Install the required dependencies:
+   ```bash
    pip install -r requirements.txt
    ```
-
-3. **Run the application**:
-   After installing the dependencies, you can run the application:
+4. For frontend development, navigate to the frontend directory and install dependencies:
    ```bash
-   python main.py
+   cd frontend
+   npm install
    ```
 
-4. **Contribute**:
-   - Make your changes in a feature branch.
-   - Submit a pull request detailing your changes.
+## Running the Application
+- To run the application, use:
+```bash
+python app.py
+```
 
-Thank you for contributing!
+## Running Tests
+- To run tests, execute:
+```bash
+pytest
+```
+``

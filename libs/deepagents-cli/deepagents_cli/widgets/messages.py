@@ -572,3 +572,33 @@ class SystemMessage(Static):
         """
         # Use Text object to safely render message without markup parsing
         super().__init__(Text(message, style="dim italic"), **kwargs)
+
+
+class SummarizationMessage(Static):
+    """Widget displaying a summarization notification."""
+
+    DEFAULT_CSS = """
+    SummarizationMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 1 0;
+        background: $surface;
+        border-left: thick $primary;
+    }
+
+    SummarizationMessage .summary-header {
+        color: $primary;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize a summarization message."""
+        super().__init__(**kwargs)
+
+    def compose(self) -> ComposeResult:
+        """Compose the summarization message layout."""
+        yield Static(
+            "[bold cyan]✓[/bold cyan] Summarized conversation",
+            classes="summary-header",
+        )

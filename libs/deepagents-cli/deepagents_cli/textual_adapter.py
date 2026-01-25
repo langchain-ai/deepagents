@@ -24,6 +24,7 @@ from deepagents_cli.ui import format_tool_message_content
 from deepagents_cli.widgets.messages import (
     AssistantMessage,
     DiffMessage,
+    SummarizationMessage,
     SystemMessage,
     ToolCallMessage,
 )
@@ -306,7 +307,13 @@ async def execute_task_textual(
 
                     # Filter out summarization LLM output but show UI feedback
                     if _is_summarization_chunk(_metadata):
-                        if not summarization_in_progress:
+                        # HumanMessage in summarization chunk = summary complete (#810)
+                        if isinstance(message, HumanMessage):
+                            await adapter._mount_message(SummarizationMessage())
+                            summarization_in_progress = False
+                            if adapter._set_thinking_status:
+                                adapter._set_thinking_status("Thinking")
+                        elif not summarization_in_progress:
                             summarization_in_progress = True
                             if adapter._set_thinking_status:
                                 adapter._set_thinking_status("Summarizing")

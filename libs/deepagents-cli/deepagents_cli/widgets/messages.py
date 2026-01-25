@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.containers import Vertical
+from textual.events import Click
 from textual.timer import Timer
 from textual.widgets import Markdown, Static
 from textual.widgets._markdown import MarkdownStream
@@ -393,7 +394,7 @@ class ToolCallMessage(Vertical):
         self._expanded = not self._expanded
         self._update_output_display()
 
-    def on_click(self, event: Any) -> None:
+    def on_click(self, event: Click) -> None:
         """Handle click to toggle output expansion."""
         event.stop()  # Prevent click from bubbling up and scrolling
         self.toggle_output()

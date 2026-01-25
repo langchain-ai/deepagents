@@ -38,8 +38,6 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
 
-
-
 class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 

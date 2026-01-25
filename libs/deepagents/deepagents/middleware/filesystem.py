@@ -41,6 +41,16 @@ LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
 
+# Template for truncation message in read_file
+# {file_path} will be filled in at runtime
+READ_FILE_TRUNCATION_MSG = (
+    "\n\n[Output was truncated due to size limits. "
+    "The file content is very large. "
+    "Consider reformatting the file to make it easier to navigate. "
+    "For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
+    "For other formats, you can use appropriate formatting tools to split long lines.]"
+)
+
 # Approximate number of characters per token for truncation calculations.
 # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
 # This errs on the high side to avoid premature eviction of content that might fit
@@ -376,15 +386,11 @@ def _read_file_tool_generator(
 
         # Check if result exceeds token threshold and truncate if necessary
         if token_limit_before_truncation and len(result) >= NUM_CHARS_PER_TOKEN * token_limit_before_truncation:
-            truncate_threshold = NUM_CHARS_PER_TOKEN * token_limit_before_truncation
-            result = result[:truncate_threshold]
-            result += (
-                f"\n\n[Output was truncated due to size limits. "
-                f"The file content is very large. "
-                f"Consider reformatting the file to make it easier to navigate. "
-                f"For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
-                f"For other formats, you can use appropriate formatting tools to split long lines.]"
-            )
+            # Calculate truncation message length to ensure final result stays under threshold
+            truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+            max_content_length = NUM_CHARS_PER_TOKEN * token_limit_before_truncation - len(truncation_msg)
+            result = result[:max_content_length]
+            result += truncation_msg
 
         return result
 
@@ -406,15 +412,11 @@ def _read_file_tool_generator(
 
         # Check if result exceeds token threshold and truncate if necessary
         if token_limit_before_truncation and len(result) >= NUM_CHARS_PER_TOKEN * token_limit_before_truncation:
-            truncate_threshold = NUM_CHARS_PER_TOKEN * token_limit_before_truncation
-            result = result[:truncate_threshold]
-            result += (
-                f"\n\n[Output was truncated due to size limits. "
-                f"The file content is very large. "
-                f"Consider reformatting the file to make it easier to navigate. "
-                f"For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
-                f"For other formats, you can use appropriate formatting tools to split long lines.]"
-            )
+            # Calculate truncation message length to ensure final result stays under threshold
+            truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+            max_content_length = NUM_CHARS_PER_TOKEN * token_limit_before_truncation - len(truncation_msg)
+            result = result[:max_content_length]
+            result += truncation_msg
 
         return result
 

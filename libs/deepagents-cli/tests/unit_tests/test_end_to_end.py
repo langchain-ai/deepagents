@@ -137,6 +137,106 @@ class TestDeepAgentsCLIEndToEnd:
             # Verify the final AI message contains our expected content
             final_ai_message = ai_messages[-1]
             assert "Task completed successfully!" in final_ai_message.content
+    
+    def test_cli_agent_summarizes(self, tmp_path: Path) -> None:
+        """Test basic CLI agent functionality with a fake LLM model.
+
+        This test verifies that a CLI agent can be created and invoked with
+        a fake LLM model that returns predefined responses.
+        """
+        from langchain_core.language_models.chat_models import BaseChatModel, LangSmithParams
+        from langchain_core.messages import BaseMessage
+        from langchain_core.outputs import ChatResult, ChatGeneration
+        from langchain_core.callbacks import CallbackManagerForLLMRun
+        with mock_settings(tmp_path):
+            # Create a fake model that returns predefined messages
+            
+            # class FakeModel(FixedGenericFakeChatModel):
+
+            #     def _get_ls_params(
+            #         self,
+            #         stop: list[str] | None = None,
+            #         **kwargs: Any,
+            #     ) -> LangSmithParams:
+            #         # 
+            #         return {"ls_provider": "my-provider"}
+            
+            model = FixedGenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="summary goes here",
+                            usage_metadata={
+                                "input_tokens": 10_000,
+                                "output_tokens": 10_000,
+                                "total_tokens": 20_000,
+                            },
+                            #response_metadata={"model_provider": "my-provider"},
+                        ),
+                        AIMessage(
+                            content="response",
+                            usage_metadata={
+                                "input_tokens": 20_000,
+                                "output_tokens": 10_000,
+                                "total_tokens": 30_000,
+                            },
+                            #response_metadata={"model_provider": "my-provider"},
+                        ),
+                    ]
+                )
+            )
+            model.profile = {"max_input_tokens": 200_000}
+
+            # Create a CLI agent with the fake model
+            agent, backend = create_cli_agent(
+                model=model,
+                assistant_id="test-agent",
+                tools=[],
+            )
+
+            # Invoke the agent
+            thread_id = str(uuid.uuid4())
+            num_chars_in_10_000_tokens = 10_000 * 4
+            num_chars_in_50_000_tokens = 50_000 * 4
+            input_messages = [
+                HumanMessage(content="x" * num_chars_in_10_000_tokens),
+                AIMessage(
+                    content="x" * num_chars_in_50_000_tokens,
+                    usage_metadata={
+                        "input_tokens": 10_000,
+                        "output_tokens": 50_000,
+                        "total_tokens": 60_000,
+                    },
+                    #response_metadata={"model_provider": "my-provider"},
+                ),
+                HumanMessage(content="x" * num_chars_in_10_000_tokens),
+                AIMessage(
+                    content="x" * num_chars_in_50_000_tokens,
+                    usage_metadata={
+                        "input_tokens": 70_000,
+                        "output_tokens": 50_000,
+                        "total_tokens": 120_000,
+                    },
+                    #response_metadata={"model_provider": "my-provider"},
+                ),
+                HumanMessage(content="x" * num_chars_in_10_000_tokens),
+                AIMessage(
+                    content="x" * num_chars_in_50_000_tokens,
+                    usage_metadata={
+                        "input_tokens": 140_000,
+                        "output_tokens": 50_000,
+                        "total_tokens": 190_000,
+                    },
+                    #response_metadata={"model_provider": "my-provider"},
+                ),
+                HumanMessage(content="query"),
+            ]
+            result = agent.invoke(
+                {"messages": input_messages},
+                {"configurable": {"thread_id": thread_id}},
+            )
+            assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+            import pdb; pdb.set_trace()
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.

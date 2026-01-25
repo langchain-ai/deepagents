@@ -1133,8 +1133,7 @@ class TestDeepAgentEndToEnd:
         read_file chunks this into 100 lines x 5000 chars = 500K chars - potential token overflow.
         This test verifies that the truncation logic prevents such overflow.
         """
-
-        MAX_REASONABLE_CHARS = TOOL_RESULT_TOKEN_LIMIT * NUM_CHARS_PER_TOKEN  # 80,000 chars
+        max_reasonable_chars = TOOL_RESULT_TOKEN_LIMIT * NUM_CHARS_PER_TOKEN  # 80,000 chars
 
         # str(dict) produces no newlines—exactly how evicted tool results are serialized
         large_dict = {"records": [{"id": i, "data": "x" * 100} for i in range(4000)]}
@@ -1181,11 +1180,9 @@ class TestDeepAgentEndToEnd:
         read_file_response = tool_messages[-1]
 
         # Verify truncation occurred and result stays under threshold
-        assert "Output was truncated due to size limits" in read_file_response.content, (
-            "Expected truncation message for large single-line file"
-        )
-        assert len(read_file_response.content) <= MAX_REASONABLE_CHARS, (
+        assert "Output was truncated due to size limits" in read_file_response.content, "Expected truncation message for large single-line file"
+        assert len(read_file_response.content) <= max_reasonable_chars, (
             f"read_file returned {len(read_file_response.content):,} chars. "
-            f"Expected <= {MAX_REASONABLE_CHARS:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "
+            f"Expected <= {max_reasonable_chars:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "
             f"A single-line file should not cause token overflow."
         )

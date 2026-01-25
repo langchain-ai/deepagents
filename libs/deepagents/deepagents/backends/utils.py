@@ -7,9 +7,10 @@ enable composition without fragile string parsing.
 
 import os
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 import wcmatch.glob as wcglob
 

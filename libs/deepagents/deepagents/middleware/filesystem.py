@@ -1,9 +1,7 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
-import os
-import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (

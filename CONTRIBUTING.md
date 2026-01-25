@@ -1,39 +1,73 @@
-# Local Development Setup Guide
+# Local Development Setup
 
 ## Prerequisites
-- Ensure you have Python 3.8+ installed.
-- Install Node.js (for frontend development).
+- Python 3.11+ 
+- [uv](https://docs.astral.sh/uv/getting-started/) (recommended) or pip
+- Git
 
-## Setting Up the Environment
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/langchain-ai/deepagents.git
-   cd deepagents
-   ```
-2. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
-   ```
-3. Install the required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. For frontend development, navigate to the frontend directory and install dependencies:
-   ```bash
-   cd frontend
-   npm install
-   ```
+## Quick Start
 
-## Running the Application
-- To run the application, use:
 ```bash
-python app.py
+git clone https://github.com/langchain-ai/deepagents.git
+cd deepagents/libs/deepagents
+uv venv && source .venv/bin/activate
+uv sync
 ```
 
-## Running Tests
-- To run tests, execute:
+## Environment Variables
+
+Create `.env` in project root:
 ```bash
-pytest
+OPENAI_API_KEY=your_key          # or ANTHROPIC_API_KEY
+TAVILY_API_KEY=your_key          # Optional: for web search
 ```
-``
+
+## Verify Installation
+
+```bash
+uv run python -c "from deepagents import create_deep_agent; print('✓ Ready')"
+```
+
+## Common Tasks
+
+**Run tests:**
+```bash
+uv run pytest tests/
+uv run pytest tests/ --cov=deepagents
+```
+
+**Format & lint code:**
+```bash
+uv run ruff format .
+uv run ruff check . --fix
+```
+
+**Development workflow:**
+```bash
+git checkout -b feature/name
+# Make changes
+uv run pytest tests/
+uv run ruff format . && uv run ruff check . --fix
+git commit -m "feat: description"
+```
+
+## Project Structure
+```
+libs/deepagents/          # Core library
+libs/deepagents-cli/      # CLI tool
+libs/acp/                 # Agent Client Protocol
+libs/harbor/              # Harbor integration
+examples/                 # Runnable examples
+```
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `ModuleNotFoundError: deepagents` | Run `uv sync` and activate venv |
+| API key errors | Verify `.env` file exists with keys |
+| Tests fail | Run `uv run pytest tests/ -v -s` for details |
+
+## Resources
+- [Documentation](https://docs.langchain.com/oss/python/deepagents/overview)
+- [Examples](examples/)

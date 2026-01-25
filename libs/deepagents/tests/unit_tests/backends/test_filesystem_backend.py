@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, WriteResult
 
@@ -489,3 +491,53 @@ def test_filesystem_download_directory_as_file(tmp_path: Path):
     assert responses[0].path == "/mydir"
     assert responses[0].content is None
     assert responses[0].error == "is_directory"
+
+
+class TestWindowsPathHandling:
+    """Tests to verify virtual paths always use forward slashes."""
+
+    @pytest.fixture
+    def backend_with_files(self, tmp_path: Path):
+        """Create a backend with test files."""
+        (tmp_path / "src" / "utils").mkdir(parents=True)
+        (tmp_path / "src" / "main.py").write_text("import os")
+        (tmp_path / "src" / "utils" / "helper.py").write_text("# helper")
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "readme.md").write_text("hello world")
+        return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    def _assert_no_backslashes(self, paths: list[str]):
+        """Helper to assert no paths contain backslashes."""
+        for path in paths:
+            assert "\\" not in path, f"Path contains backslash: {path}"
+            assert path.startswith("/"), f"Virtual path should start with /: {path}"
+
+    def test_ls_info_paths(self, backend_with_files):
+        """Test ls_info returns forward-slash paths."""
+        paths = [info["path"] for info in backend_with_files.ls_info("/")]
+        self._assert_no_backslashes(paths)
+
+    def test_glob_info_paths(self, backend_with_files):
+        """Test glob_info returns forward-slash paths."""
+        paths = [info["path"] for info in backend_with_files.glob_info("**/*.py", "/")]
+        assert len(paths) >= 2
+        self._assert_no_backslashes(paths)
+
+    def test_grep_raw_paths(self, backend_with_files):
+        """Test grep_raw returns forward-slash paths."""
+        results = backend_with_files.grep_raw("import", path="/")
+        assert isinstance(results, list)
+        paths = [match["path"] for match in results]
+        self._assert_no_backslashes(paths)
+
+    def test_deeply_nested_path(self, tmp_path: Path):
+        """Test deeply nested paths use forward slashes."""
+        deep = tmp_path / "a" / "b" / "c" / "d"
+        deep.mkdir(parents=True)
+        (deep / "file.txt").write_text("content")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        results = be.glob_info("**/*.txt", "/")
+
+        assert len(results) == 1
+        assert results[0]["path"] == "/a/b/c/d/file.txt"

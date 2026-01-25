@@ -5,10 +5,11 @@ helpers used by backends and the composite router. Structured helpers
 enable composition without fragile string parsing.
 """
 
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import wcmatch.glob as wcglob
 
@@ -219,27 +220,81 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     return result
 
 
-def _validate_path(path: str | None) -> str:
-    """Validate and normalize a path.
+def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
+    r"""Validate and normalize file path for security.
+
+    Ensures paths are safe to use by preventing directory traversal attacks
+    and enforcing consistent formatting. All paths are normalized to use
+    forward slashes and start with a leading slash.
+
+    This function is designed for virtual filesystem paths and rejects
+    Windows absolute paths (e.g., C:/..., F:/...) to maintain consistency
+    and prevent path format ambiguity.
 
     Args:
-        path: Path to validate
+        path: The path to validate and normalize.
+        allowed_prefixes: Optional list of allowed path prefixes. If provided,
+            the normalized path must start with one of these prefixes.
 
     Returns:
-        Normalized path starting with /
+        Normalized canonical path starting with `/` and using forward slashes.
 
     Raises:
-        ValueError: If path is invalid
+        ValueError: If path contains traversal sequences (`..` or `~`), is a
+            Windows absolute path (e.g., C:/...), or does not start with an
+            allowed prefix when `allowed_prefixes` is specified.
+
+    Example:
+        ```python
+        _validate_path("foo/bar")  # Returns: "/foo/bar"
+        _validate_path("/./foo//bar")  # Returns: "/foo/bar"
+        _validate_path("../etc/passwd")  # Raises ValueError
+        _validate_path(r"C:\\Users\\file.txt")  # Raises ValueError
+        _validate_path("/data/file.txt", allowed_prefixes=["/data/"])  # OK
+        _validate_path("/etc/file.txt", allowed_prefixes=["/data/"])  # Raises ValueError
+        ```
+    """
+    if ".." in path or path.startswith("~"):
+        msg = f"Path traversal not allowed: {path}"
+        raise ValueError(msg)
+
+    # Reject Windows absolute paths (e.g., C:\..., D:/...)
+    if re.match(r"^[a-zA-Z]:", path):
+        msg = f"Windows absolute paths are not supported: {path}. Please use virtual paths starting with / (e.g., /workspace/file.txt)"
+        raise ValueError(msg)
+
+    normalized = os.path.normpath(path)
+    normalized = normalized.replace("\\", "/")
+
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+
+    if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
+        msg = f"Path must start with one of {allowed_prefixes}: {path}"
+        raise ValueError(msg)
+
+    return normalized
+
+
+def _normalize_dir_path(path: str | None) -> str:
+    """Normalize a directory path with security validation.
+
+    Validates path using _validate_path and ensures trailing slash
+    for directory prefix matching operations.
+
+    Args:
+        path: Directory path to normalize (None or empty defaults to "/")
+
+    Returns:
+        Normalized path with trailing slash (e.g., "/foo/bar/")
+
+    Raises:
+        ValueError: If path contains traversal sequences or is invalid
     """
     path = path or "/"
-    if not path or path.strip() == "":
-        raise ValueError("Path cannot be empty")
-
-    normalized = path if path.startswith("/") else "/" + path
-
+    normalized = _validate_path(path)
     if not normalized.endswith("/"):
         normalized += "/"
-
     return normalized
 
 
@@ -267,7 +322,7 @@ def _glob_search_files(
         ```
     """
     try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_dir_path(path)
     except ValueError:
         return "No files found"
 
@@ -281,9 +336,10 @@ def _glob_search_files(
 
     matches = []
     for file_path, file_data in filtered.items():
-        relative = file_path[len(normalized_path) :].lstrip("/")
+        relative = file_path[len(normalized_path) :].lstrip("/").lstrip("\\")
         if not relative:
-            relative = file_path.split("/")[-1]
+            # Handle both Unix and Windows path separators
+            relative = file_path.replace("\\", "/").split("/")[-1]
 
         if wcglob.globmatch(relative, effective_pattern, flags=wcglob.BRACE | wcglob.GLOBSTAR):
             matches.append((file_path, file_data["modified_at"]))
@@ -357,7 +413,7 @@ def _grep_search_files(
         return f"Invalid regex pattern: {e}"
 
     try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_dir_path(path)
     except ValueError:
         return "No matches found"
 
@@ -400,7 +456,7 @@ def grep_matches_from_files(
         return f"Invalid regex pattern: {e}"
 
     try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_dir_path(path)
     except ValueError:
         return []
 

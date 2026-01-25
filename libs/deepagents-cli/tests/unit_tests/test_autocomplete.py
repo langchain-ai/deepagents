@@ -333,3 +333,33 @@ class TestMultiCompletionManager:
         manager.on_text_changed("/cmd", 4)
         manager.reset()
         assert manager._active is None
+
+
+class TestWindowsPathHandling:
+    """Tests for cross-platform path handling in autocomplete."""
+
+    @pytest.mark.parametrize(
+        "path,query,min_score",
+        [
+            ("src\\main.py", "main", 50),  # backslash path
+            ("src/main.py", "main", 50),  # forward slash (baseline)
+            ("src/utils\\helper.py", "helper", 50),  # mixed separators
+            ("a\\b\\c\\d\\deep.py", "deep", 50),  # deeply nested
+            ("path\\to\\test.py", "test", 90),  # filename extraction
+        ],
+    )
+    def test_fuzzy_score_handles_backslash_paths(self, path, query, min_score):
+        """Test that _fuzzy_score handles paths with backslashes."""
+        score = _fuzzy_score(query, path)
+        assert score > min_score, f"Score {score} too low for '{query}' in '{path}'"
+
+    def test_fuzzy_score_no_match(self):
+        """Test that non-matching queries get low scores."""
+        assert _fuzzy_score("xyz", "path\\to\\utils.py") < 15
+
+    def test_fuzzy_search_with_backslash_paths(self):
+        """Test _fuzzy_search works with backslash paths in file list."""
+        files = ["src\\main.py", "src\\utils\\helper.py", "src/other.py"]
+        results = _fuzzy_search("main", files, limit=5)
+        assert len(results) > 0
+        assert any("main" in r for r in results)

@@ -58,19 +58,26 @@ class ApprovalMenu(Container):
 
     def __init__(
         self,
-        action_request: dict[str, Any],
+        action_requests: list[dict[str, Any]] | dict[str, Any],
         _assistant_id: str | None = None,
         id: str | None = None,  # noqa: A002
         **kwargs: Any,
     ) -> None:
         super().__init__(id=id or "approval-menu", classes="approval-menu", **kwargs)
-        self._tool_name = action_request.get("name", "unknown")
-        self._tool_args = action_request.get("args", {})
+        # Support both single request (legacy) and list of requests (batch)
+        if isinstance(action_requests, dict):
+            self._action_requests = [action_requests]
+        else:
+            self._action_requests = action_requests
+
+        # For display purposes, get tool names
+        self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
         self._selected = 0
         self._future: asyncio.Future[dict[str, str]] | None = None
         self._option_widgets: list[Static] = []
         self._tool_info_container: Vertical | None = None
-        self._is_minimal = self._tool_name in self._MINIMAL_TOOLS
+        # Minimal display if ALL tools are bash/shell
+        self._is_minimal = all(name in self._MINIMAL_TOOLS for name in self._tool_names)
 
     def set_future(self, future: asyncio.Future[dict[str, str]]) -> None:
         """Set the future to resolve when user decides."""
@@ -82,11 +89,13 @@ class ApprovalMenu(Container):
         Layout: Tool info first (what's being approved), then options at bottom.
         For bash/shell, skip tool info since it's already shown in tool call.
         """
-        # Title
-        yield Static(
-            f">>> {self._tool_name} Requires Approval <<<",
-            classes="approval-title",
-        )
+        # Title - show count if multiple tools
+        count = len(self._action_requests)
+        if count == 1:
+            title = f">>> {self._tool_names[0]} Requires Approval <<<"
+        else:
+            title = f">>> {count} Tool Calls Require Approval <<<"
+        yield Static(title, classes="approval-title")
 
         # Tool info - only for non-minimal tools (diffs, writes show actual content)
         if not self._is_minimal:
@@ -119,26 +128,44 @@ class ApprovalMenu(Container):
         self.focus()
 
     async def _update_tool_info(self) -> None:
-        """Mount the tool-specific approval widget."""
+        """Mount the tool-specific approval widgets for all tools."""
         if not self._tool_info_container:
             return
 
-        # Get the appropriate renderer for this tool
-        renderer = get_renderer(self._tool_name)
-        widget_class, data = renderer.get_approval_widget(self._tool_args)
-
-        # Clear existing content and mount new widget
+        # Clear existing content
         await self._tool_info_container.remove_children()
-        approval_widget = widget_class(data)
-        await self._tool_info_container.mount(approval_widget)
+
+        # Mount info for each tool
+        for i, action_request in enumerate(self._action_requests):
+            tool_name = action_request.get("name", "unknown")
+            tool_args = action_request.get("args", {})
+
+            # Add tool header if multiple tools
+            if len(self._action_requests) > 1:
+                header = Static(f"[bold]{i + 1}. {tool_name}[/bold]")
+                await self._tool_info_container.mount(header)
+
+            # Get the appropriate renderer for this tool
+            renderer = get_renderer(tool_name)
+            widget_class, data = renderer.get_approval_widget(tool_args)
+            approval_widget = widget_class(data)
+            await self._tool_info_container.mount(approval_widget)
 
     def _update_options(self) -> None:
         """Update option widgets based on selection."""
-        options = [
-            "1. Approve (y)",
-            "2. Reject (n)",
-            "3. Auto-approve all this session (a)",
-        ]
+        count = len(self._action_requests)
+        if count == 1:
+            options = [
+                "1. Approve (y)",
+                "2. Reject (n)",
+                "3. Auto-approve all this session (a)",
+            ]
+        else:
+            options = [
+                f"1. Approve all {count} (y)",
+                f"2. Reject all {count} (n)",
+                "3. Auto-approve all this session (a)",
+            ]
 
         for i, (text, widget) in enumerate(zip(options, self._option_widgets, strict=True)):
             cursor = "› " if i == self._selected else "  "

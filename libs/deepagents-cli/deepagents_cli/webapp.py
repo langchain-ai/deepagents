@@ -18,7 +18,7 @@ app = FastAPI()
 
 LINEAR_WEBHOOK_SECRET = os.environ.get("LINEAR_WEBHOOK_SECRET", "")
 
-LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL", "http://localhost:2024")
+LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL") or os.environ.get("LANGGRAPH_URL_PROD", "http://localhost:2024")
 
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
     "LANGSMITH_API_KEY_PROD", ""

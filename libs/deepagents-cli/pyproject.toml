@@ -19,7 +19,7 @@ dependencies = [
   "modal>=0.65.0",
   "markdownify>=0.13.0",
   "runloop-api-client>=0.69.0",
-  "langsmith>=0.4.0", # TODO: set to proper version once sdk is released
+  "langsmith>=0.6.5",
   "pillow>=10.0.0",
   "pyyaml>=6.0",
   "textual>=1.0.0",
@@ -181,4 +181,3 @@ timeout = 10  # Default timeout for all tests (can be overridden per-test)
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
-langsmith = { git = "https://github.com/langchain-ai/langsmith-sdk.git", subdirectory = "python", rev = "daniel/add-sandbox-sdk" }

@@ -831,7 +831,7 @@ requires-dist = [
     { name = "langchain-auth", specifier = ">=0.2.0" },
     { name = "langchain-openai", specifier = ">=1.1.7,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
-    { name = "langsmith", git = "https://github.com/langchain-ai/langsmith-sdk.git?subdirectory=python&rev=daniel%2Fadd-sandbox-sdk" },
+    { name = "langsmith", specifier = ">=0.6.5" },
     { name = "markdownify", specifier = ">=0.13.0" },
     { name = "modal", specifier = ">=0.65.0" },
     { name = "pillow", specifier = ">=10.0.0" },
@@ -849,7 +849,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.12" },
-    { name = "langsmith", git = "https://github.com/langchain-ai/langsmith-sdk.git?subdirectory=python&rev=daniel%2Fadd-sandbox-sdk" },
+    { name = "langsmith" },
 ]
 test = [
     { name = "build" },
@@ -1780,8 +1780,8 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.6.4"
-source = { git = "https://github.com/langchain-ai/langsmith-sdk.git?subdirectory=python&rev=daniel%2Fadd-sandbox-sdk#a30a6caaf7f42360e41ddaca2feb1c091950e280" }
+version = "0.6.5"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson", marker = "platform_python_implementation != 'PyPy'" },
@@ -1791,6 +1791,10 @@ dependencies = [
     { name = "requests-toolbelt" },
     { name = "uuid-utils" },
     { name = "zstandard" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/81/634d2b4614519a178d36117ac7151a3b8be0548f00e692c6e8c1701f968b/langsmith-0.6.5.tar.gz", hash = "sha256:4225e523a28cbd5a80e9aed70064ea06d68dafcb12db8cdf4bc60b83a9b0fe69", size = 953461 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/6d/526fee48986499400075436728499307fa7c37fa88c9d5450b4500b640e3/langsmith-0.6.5-py3-none-any.whl", hash = "sha256:926609cb434c020f8e86b9083a0bd36325cb4ab0bf2ca47321f654d6c893a99a", size = 308483 },
 ]
 
 [package.optional-dependencies]

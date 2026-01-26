@@ -206,14 +206,9 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Daytona sandbox.
 
-        Note: This requires retrieving the sandbox first which may not be supported.
-
         Args:
             sandbox_id: Sandbox ID to delete
             **kwargs: Additional parameters
-
-        Raises:
-            NotImplementedError: If sandbox retrieval not supported
         """
         sandbox = self._client.get(sandbox_id)
         self._client.delete(sandbox)

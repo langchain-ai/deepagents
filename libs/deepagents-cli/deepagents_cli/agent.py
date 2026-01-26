@@ -381,6 +381,13 @@ def create_cli_agent(
         if not agent_md.exists():
             source_content = get_default_coding_instructions()
             agent_md.write_text(source_content)
+        else:
+            # Migrate existing AGENTS.md: replace write_todos with write_tasks
+            # This handles users upgrading from versions that used TodoListMiddleware
+            content = agent_md.read_text()
+            if "write_todos" in content:
+                migrated_content = content.replace("write_todos", "write_tasks")
+                agent_md.write_text(migrated_content)
 
     # Skills directories (if enabled)
     skills_dir = None
@@ -420,10 +427,15 @@ def create_cli_agent(
         )
 
     # Add task middleware (file-based task management with dependencies)
+    tasks_dir = settings.tasks_dir
+    if isinstance(tasks_dir, (str, Path, os.PathLike)):
+        tasks_dir = Path(tasks_dir)
+    else:
+        tasks_dir = None
     agent_middleware.append(
         TaskMiddleware(
             task_list_id=task_list_id,
-            tasks_dir=settings.tasks_dir,
+            tasks_dir=tasks_dir,
         )
     )
 
@@ -480,5 +492,6 @@ def create_cli_agent(
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
         checkpointer=final_checkpointer,
+        include_todo_middleware=False,  # CLI uses TaskMiddleware instead
     ).with_config(config)
     return agent, composite_backend

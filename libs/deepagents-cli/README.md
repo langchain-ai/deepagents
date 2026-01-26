@@ -124,7 +124,8 @@ The agent comes with the following built-in tools (always available without conf
 | `web_search` | Search the web using Tavily API |
 | `fetch_url` | Fetch and convert web pages to markdown |
 | `task` | Delegate work to subagents for parallel execution |
-| `write_todos` | Create and manage task lists for complex work |
+| `write_tasks` | Create and manage task lists with dependencies for complex work |
+| `get_tasks` | Refresh task list from disk (for cross-session sharing) |
 
 > [!WARNING]
 > **Human-in-the-Loop (HITL) Approval Required**

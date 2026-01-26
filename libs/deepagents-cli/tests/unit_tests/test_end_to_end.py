@@ -77,6 +77,7 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
         mock_settings_obj.get_project_agent_md_path.return_value = None
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
+        mock_settings_obj.tasks_dir = tmp_path / "tasks"
 
         yield agent_dir
 
@@ -99,8 +100,8 @@ class TestDeepAgentsCLIEndToEnd:
                             content="I'll help you with that.",
                             tool_calls=[
                                 {
-                                    "name": "write_todos",
-                                    "args": {"todos": []},
+                                    "name": "write_tasks",
+                                    "args": {"tasks": []},
                                     "id": "call_1",
                                     "type": "tool_call",
                                 }

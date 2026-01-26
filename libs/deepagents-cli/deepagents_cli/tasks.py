@@ -227,7 +227,11 @@ def _compute_blocked_status(task: Task, all_tasks: list[Task]) -> Literal["pendi
         if dep_status != "completed":
             return "blocked"
 
-    # All dependencies completed, return actual status
+    # All dependencies completed. Unblock tasks that were auto-blocked.
+    if task["status"] == "blocked":
+        return "pending"
+
+    # Return actual status for in-progress or completed tasks.
     return task["status"]
 
 

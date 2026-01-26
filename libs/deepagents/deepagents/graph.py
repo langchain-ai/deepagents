@@ -59,6 +59,7 @@ def create_deep_agent(
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    include_todo_middleware: bool = True,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -107,6 +108,10 @@ def create_deep_agent(
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
+        include_todo_middleware: Whether to include `TodoListMiddleware` in the middleware
+            stack. When `True` (default), the agent has access to the `write_todos` tool.
+            Set to `False` when providing an alternative task management middleware
+            (e.g., `TaskMiddleware`) to avoid tool conflicts.
 
     Returns:
         A configured deep agent.
@@ -129,9 +134,9 @@ def create_deep_agent(
         keep = ("messages", 6)
 
     # Build middleware stack for subagents (includes skills if provided)
-    subagent_middleware: list[AgentMiddleware] = [
-        TodoListMiddleware(),
-    ]
+    subagent_middleware: list[AgentMiddleware] = []
+    if include_todo_middleware:
+        subagent_middleware.append(TodoListMiddleware())
 
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
@@ -152,9 +157,9 @@ def create_deep_agent(
     )
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware] = [
-        TodoListMiddleware(),
-    ]
+    deepagent_middleware: list[AgentMiddleware] = []
+    if include_todo_middleware:
+        deepagent_middleware.append(TodoListMiddleware())
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:

@@ -18,8 +18,8 @@ If asked how to approach something, answer first before taking action.
 - Never add comments unless asked
 
 ## Task Management
-Use write_todos for complex multi-step tasks (3+ steps). Mark tasks in_progress before starting, completed immediately after finishing.
-For simple 1-2 step tasks, just do them directly without todos.
+Use write_tasks for complex multi-step tasks (3+ steps). Use blocked_by for dependencies, and mark tasks in_progress before starting, completed immediately after finishing.
+For simple 1-2 step tasks, just do them directly without creating tasks.
 
 ## File Reading Best Practices
 

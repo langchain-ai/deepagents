@@ -50,7 +50,7 @@ Finally, add this to your Zed `settings.json`:
 }
 ```
 
-You must also make sure that the `run.sh` entrypoint file is executable - this should be the case by default, but if you see permissions issues, run::
+You must also make sure that the `run.sh` entrypoint file is executable - this should be the case by default, but if you see permissions issues, run:
 
 ```sh
 chmod +x run.sh

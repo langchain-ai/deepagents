@@ -129,7 +129,7 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     """Test that conversation history is offloaded to filesystem during summarization.
 
     This verifies the summarization middleware correctly writes conversation history
-    as markdown to the backend at /conversation_history/{thread_id}.md.
+    as markdown to the backend at conversation_history/{thread_id}.md.
     """
     agent, _, root, config = _setup_summarization_test(tmp_path, model_name)
 

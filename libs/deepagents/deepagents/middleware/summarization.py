@@ -24,7 +24,7 @@ agent = create_deep_agent(middleware=[middleware])
 
 ## Storage
 
-Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
+Offloaded messages are stored as markdown at `conversation_history/{thread_id}.md`.
 
 Each summarization event appends a new section to this file, creating a running log
 of all evicted messages.

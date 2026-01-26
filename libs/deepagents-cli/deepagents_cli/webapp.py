@@ -2,10 +2,13 @@
 
 import hashlib
 import hmac
+import logging
 import os
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from langgraph_sdk import get_client
 
@@ -271,11 +274,18 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
         issue_data: The Linear issue data from webhook (basic info only).
         repo_config: The repo configuration with owner and name.
     """
+    issue_id = issue_data.get("id", "")
+    logger.info(
+        "Processing Linear issue %s for repo %s/%s",
+        issue_id,
+        repo_config.get("owner"),
+        repo_config.get("name"),
+    )
+
     triggering_comment_id = issue_data.get("triggering_comment_id", "")
     if triggering_comment_id:
         await react_to_linear_comment(triggering_comment_id, "👀")
 
-    issue_id = issue_data.get("id", "")
     thread_id = generate_thread_id_from_issue(issue_id)
 
     full_issue = await fetch_linear_issue_details(issue_id)
@@ -304,8 +314,10 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
 
             if "token" in auth_result:
                 github_token = auth_result["token"]
+                logger.info("GitHub token obtained for user %s", user_email)
             elif "auth_url" in auth_result:
                 auth_url = auth_result["auth_url"]
+                logger.info("GitHub auth required for user %s, sending auth URL", user_email)
                 comment = f"""🔐 **GitHub Authentication Required**
 
 To allow the Open SWE agent to work on this issue, please authenticate with GitHub by clicking the link below:
@@ -316,6 +328,8 @@ Once authenticated, reply to this issue mentioning @openswe to retry."""
 
                 await comment_on_linear_issue(issue_id, comment)
                 return
+            else:
+                logger.warning("Auth result has neither token nor auth_url: %s", auth_result)
 
     title = full_issue.get("title", "No title")
     description = full_issue.get("description") or "No description"
@@ -364,6 +378,7 @@ Please analyze this issue and implement the necessary changes. When you're done,
     if github_token:
         configurable["github_token_encrypted"] = encrypt_token(github_token)
 
+        logger.info("Creating LangGraph run for thread %s", thread_id)
         langgraph_client = get_client(url=LANGGRAPH_URL)
         await langgraph_client.runs.create(
             thread_id,
@@ -372,6 +387,9 @@ Please analyze this issue and implement the necessary changes. When you're done,
             config={"configurable": configurable},
             if_not_exists="create",
         )
+        logger.info("LangGraph run created successfully for thread %s", thread_id)
+    else:
+        logger.warning("No GitHub token available, cannot create run for issue %s", issue_id)
 
 
 def verify_linear_signature(body: bytes, signature: str, secret: str) -> bool:
@@ -399,12 +417,14 @@ async def linear_webhook(request: Request, background_tasks: BackgroundTasks):
 
     Triggers a new LangGraph run when an issue gets the 'open-swe' label added.
     """
+    logger.info("Received Linear webhook")
     body = await request.body()
 
     signature = request.headers.get("Linear-Signature", "")
     if LINEAR_WEBHOOK_SECRET and not verify_linear_signature(
         body, signature, LINEAR_WEBHOOK_SECRET
     ):
+        logger.warning("Invalid webhook signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
@@ -412,13 +432,16 @@ async def linear_webhook(request: Request, background_tasks: BackgroundTasks):
 
         payload = json.loads(body)
     except Exception:
+        logger.error("Failed to parse webhook JSON")
         return {"status": "error", "message": "Invalid JSON"}
 
     if payload.get("type") != "Comment":
+        logger.debug("Ignoring webhook: not a Comment event")
         return {"status": "ignored", "reason": "Not a Comment event"}
 
     action = payload.get("action")
     if action != "create":
+        logger.debug("Ignoring webhook: action is %s, not create", action)
         return {
             "status": "ignored",
             "reason": f"Comment action is '{action}', only processing 'create'",
@@ -427,6 +450,7 @@ async def linear_webhook(request: Request, background_tasks: BackgroundTasks):
     data = payload.get("data", {})
 
     if data.get("botActor"):
+        logger.debug("Ignoring webhook: comment is from a bot")
         return {"status": "ignored", "reason": "Comment is from a bot"}
 
     comment_body = data.get("body", "")
@@ -438,12 +462,15 @@ async def linear_webhook(request: Request, background_tasks: BackgroundTasks):
     ]
     for prefix in bot_message_prefixes:
         if comment_body.startswith(prefix):
+            logger.debug("Ignoring webhook: comment is our own bot message")
             return {"status": "ignored", "reason": "Comment is our own bot message"}
     if "@openswe" not in comment_body.lower():
+        logger.debug("Ignoring webhook: comment doesn't mention @openswe")
         return {"status": "ignored", "reason": "Comment doesn't mention @openswe"}
 
     issue = data.get("issue", {})
     if not issue:
+        logger.debug("Ignoring webhook: no issue data in comment")
         return {"status": "ignored", "reason": "No issue data in comment"}
 
     team = issue.get("team", {})
@@ -478,6 +505,11 @@ async def linear_webhook(request: Request, background_tasks: BackgroundTasks):
     if comment_user:
         issue["comment_author"] = comment_user
 
+    logger.info(
+        "Accepted webhook for issue '%s' (%s), scheduling background task",
+        issue.get("title"),
+        issue.get("id"),
+    )
     background_tasks.add_task(process_linear_issue, issue, repo_config)
 
     return {

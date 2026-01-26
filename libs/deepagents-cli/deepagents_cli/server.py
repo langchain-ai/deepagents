@@ -3,9 +3,12 @@
 
 # Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
 # ruff: noqa: E402
+import logging
 import os
 import warnings
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from langchain.agents.middleware import AgentState, after_agent
 from langgraph.config import get_config
@@ -100,6 +103,7 @@ async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
 @after_agent
 async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
     """Middleware that commits/pushes changes and comments on Linear after agent runs."""
+    logger.info("After-agent middleware started")
     pr_url = None
     pr_number = None
     pr_title = "feat: Open SWE PR"
@@ -109,6 +113,7 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
         config = get_config()
         configurable = config.get("configurable", {})
         thread_id = configurable.get("thread_id")
+        logger.debug("Middleware running for thread %s", thread_id)
 
         # Get the last message content from state
         last_message_content = ""
@@ -168,12 +173,15 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
         has_changes = has_uncommitted_changes or has_unpushed_commits
 
         if not has_changes:
+            logger.info("No changes detected, skipping PR creation")
             if linear_issue_id and last_message_content:
                 comment = f"""🤖 **Agent Response**
 
 {last_message_content}"""
                 await comment_on_linear_issue(linear_issue_id, comment)
             return None
+
+        logger.info("Changes detected, preparing PR for thread %s", thread_id)
 
         branch_result = await asyncio.to_thread(
             sandbox_backend.execute, f"cd {repo_dir} && git rev-parse --abbrev-ref HEAD"
@@ -259,6 +267,12 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
                 pr_response = json.loads(pr_result.output)
                 pr_url = pr_response.get("html_url")
                 pr_number = pr_response.get("number")
+                if pr_url:
+                    logger.info("PR created successfully: %s", pr_url)
+                else:
+                    logger.warning(
+                        "PR creation response did not contain html_url: %s", pr_result.output[:200]
+                    )
 
         if linear_issue_id and last_message_content:
             if pr_url:
@@ -279,9 +293,11 @@ I've created a pull request to address this issue:
 {last_message_content}"""
             await comment_on_linear_issue(linear_issue_id, comment)
 
+        logger.info("After-agent middleware completed successfully")
         return None
 
     except Exception as e:
+        logger.error("Error in after-agent middleware: %s: %s", type(e).__name__, e)
         try:
             config = get_config()
             configurable = config.get("configurable", {})
@@ -296,8 +312,8 @@ An error occurred while processing this issue:
 {type(e).__name__}: {e}
 ```"""
                 await comment_on_linear_issue(linear_issue_id, error_comment)
-        except Exception:
-            pass
+        except Exception as inner_e:
+            logger.error("Failed to post error comment to Linear: %s", inner_e)
         return None
 
 
@@ -395,6 +411,7 @@ async def _wait_for_sandbox_id(thread_id: str) -> str:
 async def get_agent(config: RunnableConfig):
     """Get or create an agent with a sandbox for the given thread."""
     thread_id = config["configurable"].get("thread_id", None)
+    logger.info("get_agent called for thread %s", thread_id)
 
     repo_config = config["configurable"].get("repo", {})
     repo_owner = repo_config.get("owner")
@@ -403,8 +420,10 @@ async def get_agent(config: RunnableConfig):
     encrypted_token = config["configurable"].get("github_token_encrypted")
     if encrypted_token:
         github_token = decrypt_token(encrypted_token)
+        logger.debug("Decrypted GitHub token")
 
     if thread_id is None:
+        logger.info("No thread_id, returning agent without sandbox")
         return create_server_agent(
             model=None,
             assistant_id="agent",
@@ -417,20 +436,25 @@ async def get_agent(config: RunnableConfig):
     sandbox_id = await _get_sandbox_id_from_metadata(thread_id)
 
     if sandbox_id == SANDBOX_CREATING:
+        logger.info("Sandbox creation in progress, waiting...")
         sandbox_id = await _wait_for_sandbox_id(thread_id)
 
     if sandbox_id is None:
+        logger.info("Creating new sandbox for thread %s", thread_id)
         await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": SANDBOX_CREATING})
 
         try:
             sandbox_cm = create_sandbox_async("langsmith", cleanup=False)
             sandbox_backend = await sandbox_cm.__aenter__()
+            logger.info("Sandbox created: %s", sandbox_backend.id)
 
             repo_dir = None
             if repo_owner and repo_name:
+                logger.info("Cloning repo %s/%s into sandbox", repo_owner, repo_name)
                 repo_dir = await _clone_or_pull_repo_in_sandbox(
                     sandbox_backend, repo_owner, repo_name, github_token
                 )
+                logger.info("Repo cloned to %s", repo_dir)
 
             await client.threads.update(
                 thread_id=thread_id,
@@ -439,10 +463,12 @@ async def get_agent(config: RunnableConfig):
                     "repo_dir": repo_dir,
                 },
             )
-        except Exception:
+        except Exception as e:
+            logger.error("Failed to create sandbox: %s", e)
             await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
             raise
     else:
+        logger.info("Connecting to existing sandbox %s", sandbox_id)
         sandbox_cm = create_sandbox_async("langsmith", sandbox_id=sandbox_id, cleanup=False)
         sandbox_backend = await sandbox_cm.__aenter__()
 
@@ -450,12 +476,14 @@ async def get_agent(config: RunnableConfig):
         repo_dir = thread.get("metadata", {}).get("repo_dir")
 
         if repo_owner and repo_name:
+            logger.info("Pulling latest changes for repo %s/%s", repo_owner, repo_name)
             repo_dir = await _clone_or_pull_repo_in_sandbox(
                 sandbox_backend, repo_owner, repo_name, github_token
             )
 
     _SANDBOX_BACKENDS[thread_id] = sandbox_backend
 
+    logger.info("Returning agent with sandbox for thread %s", thread_id)
     return create_server_agent(
         model=None,
         assistant_id="agent",

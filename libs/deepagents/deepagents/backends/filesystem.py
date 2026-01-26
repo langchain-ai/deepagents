@@ -4,9 +4,9 @@ import json
 import os
 import re
 import subprocess
+import warnings
 from datetime import datetime
 from pathlib import Path
-import warnings
 
 import wcmatch.glob as wcglob
 
@@ -91,10 +91,10 @@ class FilesystemBackend(BackendProtocol):
                   This parameter will default to True in a future version.
 
             allowed_paths: List of directories to restrict file access to.
-                
+
                 When specified, only these directories are accessible (root_dir is NOT
                 automatically included unless restrict_to_root=True).
-                
+
                 Can be combined with restrict_to_root=True to allow root_dir plus
                 these additional directories. If restrict_to_root=False (or None) and
                 allowed_paths is specified, ONLY the directories in allowed_paths are
@@ -116,10 +116,7 @@ class FilesystemBackend(BackendProtocol):
             Restrict to project directory (recommended):
 
             ```python
-            backend = FilesystemBackend(
-                root_dir="/project",
-                restrict_to_root=True
-            )
+            backend = FilesystemBackend(root_dir="/project", restrict_to_root=True)
             ```
 
             Explicitly opt out of restrictions (use with caution):
@@ -131,11 +128,7 @@ class FilesystemBackend(BackendProtocol):
             Allow root_dir plus additional directories:
 
             ```python
-            backend = FilesystemBackend(
-                root_dir="/project",
-                restrict_to_root=True,
-                allowed_paths=["/data", "/home/user/.config"]
-            )
+            backend = FilesystemBackend(root_dir="/project", restrict_to_root=True, allowed_paths=["/data", "/home/user/.config"])
             ```
 
             Allow only specific directories (not including root):
@@ -146,13 +139,13 @@ class FilesystemBackend(BackendProtocol):
             backend = FilesystemBackend(
                 root_dir="/project",
                 restrict_to_root=False,  # Optional: makes intent explicit
-                allowed_paths=["/data", "/tmp"]
+                allowed_paths=["/data", "/tmp"],
             )
             ```
         """
         # Handle parameter migration and defaults
         # Goal: Migrate from virtual_mode AND require explicit restrict_to_root
-        
+
         if restrict_to_root is not None:
             # User explicitly set restrict_to_root - no warnings needed
             # (This is the desired end state)
@@ -186,10 +179,7 @@ class FilesystemBackend(BackendProtocol):
 
         if allowed_paths is not None:
             if isinstance(allowed_paths, list) and len(allowed_paths) == 0:
-                raise ValueError(
-                    "allowed_paths cannot be an empty list. "
-                    "Use None for no additional paths, or omit the parameter."
-                )
+                raise ValueError("allowed_paths cannot be an empty list. Use None for no additional paths, or omit the parameter.")
             allowed_dirs.extend(Path(p).resolve() for p in allowed_paths)
 
         # Store as None if no restrictions, otherwise store the list
@@ -225,9 +215,7 @@ class FilesystemBackend(BackendProtocol):
         vpath = key if key.startswith("/") else "/" + key
 
         if ".." in vpath or vpath.startswith("~"):
-            raise ValueError(
-                f"Path traversal not allowed when restrictions are enabled: {key}"
-            )
+            raise ValueError(f"Path traversal not allowed when restrictions are enabled: {key}")
 
         # Resolve against cwd
         full = (self.cwd / vpath.lstrip("/")).resolve()
@@ -235,9 +223,7 @@ class FilesystemBackend(BackendProtocol):
         # Verify path is within at least one allowed directory
         if not any(self._is_within_dir(full, allowed) for allowed in self._allowed_dirs):
             allowed_str = ", ".join(str(d) for d in self._allowed_dirs)
-            raise ValueError(
-                f"Path '{full}' is outside allowed directories: {allowed_str}"
-            )
+            raise ValueError(f"Path '{full}' is outside allowed directories: {allowed_str}")
 
         return full
 
@@ -245,9 +231,10 @@ class FilesystemBackend(BackendProtocol):
         """Check if path is within directory (after resolving symlinks)."""
         try:
             path.relative_to(directory)
-            return True
         except ValueError:
             return False
+        else:
+            return True
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).

@@ -11,7 +11,7 @@ Agents are just folders. This means you can share, download, and run them instan
 ## Prerequisites
 
 ```bash
-uv tool install deepagents-cli==0.0.13a2
+uv tool install deepagents-cli==0.0.13
 ```
 
 ## Quick Start

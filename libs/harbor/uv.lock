@@ -731,6 +731,7 @@ requires-dist = [
     { name = "daytona", specifier = ">=0.113.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.2.3,<2.0.0" },
+    { name = "langchain-google-vertexai", marker = "extra == 'vertexai'", specifier = ">=3.0.0,<4.0.0" },
     { name = "langchain-openai", specifier = ">=1.1.7,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
     { name = "markdownify", specifier = ">=0.13.0" },
@@ -746,6 +747,7 @@ requires-dist = [
     { name = "textual", specifier = ">=1.0.0" },
     { name = "textual-autocomplete", specifier = ">=3.0.0" },
 ]
+provides-extras = ["vertexai"]
 
 [package.metadata.requires-dev]
 test = [

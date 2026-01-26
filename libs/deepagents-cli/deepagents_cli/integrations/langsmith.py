@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import (
@@ -16,6 +17,47 @@ if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox, SandboxClient
 
 from deepagents_cli.config import console
+
+
+def _print_sandbox_failure_logs(sb: Sandbox) -> None:
+    """Best-effort dump of sandbox logs to help debug startup/readiness failures.
+
+    Args:
+        sb: Sandbox instance to retrieve logs from.
+    """
+
+    def _try_print(text: object) -> bool:
+        if text is None:
+            return False
+        rendered = str(text).strip()
+        if not rendered:
+            return False
+        console.print("[dim]\n--- sandbox logs ---\n[/dim]" + rendered)
+        return True
+
+    with contextlib.suppress(Exception):
+        for attr in ("logs", "get_logs", "read_logs", "tail_logs"):
+            fn = getattr(sb, attr, None)
+            if callable(fn) and _try_print(fn()):
+                return
+
+    with contextlib.suppress(Exception):
+        result = sb.run(
+            "set -euo pipefail; "
+            "echo 'uname:'; uname -a; "
+            "echo; echo 'processes:'; ps aux | head -n 50; "
+            "echo; echo 'disk:'; df -h; "
+            "echo; echo 'recent logs:'; "
+            "(ls -la /var/log 2>/dev/null || true); "
+            "(tail -n 200 /var/log/syslog 2>/dev/null || true); "
+            "(tail -n 200 /var/log/messages 2>/dev/null || true); "
+            "(tail -n 200 /var/log/cloud-init-output.log 2>/dev/null || true);",
+            timeout=20,
+        )
+        combined = result.stdout or ""
+        if result.stderr:
+            combined = combined + ("\n" if combined else "") + result.stderr
+        _try_print(combined)
 
 
 class LangSmithBackend(BaseSandbox):
@@ -115,8 +157,10 @@ class LangSmithBackend(BaseSandbox):
 
 
 # Default template configuration
-DEFAULT_TEMPLATE_NAME = "python-slim"
-DEFAULT_TEMPLATE_IMAGE = "python:3.12-slim"
+DEFAULT_TEMPLATE_NAME = os.getenv("DEFAULT_SANDBOX_TEMPLATE_NAME", "python-slim")
+DEFAULT_TEMPLATE_IMAGE = os.getenv(
+    "DEFAULT_SANDBOX_TEMPLATE_IMAGE", "bracelangchain/deepagents-sandbox:v1"
+)
 
 
 def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE_NAME) -> None:
@@ -132,6 +176,11 @@ def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE
     from langsmith.sandbox import ResourceNotFoundError
 
     try:
+        templates = client.list_templates()
+        for template in templates:
+            if template.name == template_name:
+                console.print(f"[green]✓ Template '{template_name}' already exists[/green]")
+                return
         client.get_template(template_name)
     except ResourceNotFoundError:
         console.print(f"[dim]Creating template '{template_name}'...[/dim]")
@@ -194,6 +243,11 @@ def create_sandbox_instance(
     try:
         verify_sandbox_ready(sb, client)
     except RuntimeError:
+        with contextlib.suppress(Exception):
+            console.print(
+                "[red]Sandbox failed readiness check; dumping logs before cleanup...[/red]"
+            )
+            _print_sandbox_failure_logs(sb)
         with contextlib.suppress(Exception):
             client.delete_sandbox(sb.name)
         raise

@@ -1,0 +1,64 @@
+FROM python:3.12-slim
+
+# Avoid prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base utilities and build dependencies
+RUN apt-get update && apt-get install -y \
+    # Essential tools
+    git \
+    curl \
+    wget \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    # Build tools (needed for native Python/Node extensions)
+    build-essential \
+    # SSH client (for git clone over SSH)
+    openssh-client \
+    # Useful utilities
+    jq \
+    unzip \
+    zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
+    $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# Install Node.js (LTS) and Yarn
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && corepack enable \
+    && corepack prepare yarn@stable --activate
+
+# Install Go
+ENV GO_VERSION=1.23.5
+RUN curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:$PATH"
+ENV GOPATH="/root/go"
+ENV PATH="${GOPATH}/bin:$PATH"
+
+# Set working directory
+WORKDIR /workspace
+
+# Verify installations
+RUN echo "=== Installed versions ===" \
+    && python --version \
+    && uv --version \
+    && node --version \
+    && yarn --version \
+    && go version \
+    && docker --version \
+    && git --version

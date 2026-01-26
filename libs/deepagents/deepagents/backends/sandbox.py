@@ -111,7 +111,7 @@ try:
     old = data['old']
     new = data['new']
 except Exception as e:
-    print(f'Error: Failed to decode edit payload: {e}', file=sys.stderr)
+    print(f'Error: Failed to decode edit payload: {{e}}', file=sys.stderr)
     sys.exit(4)
 
 # Check if file exists

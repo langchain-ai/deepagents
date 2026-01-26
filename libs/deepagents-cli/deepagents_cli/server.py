@@ -1,9 +1,20 @@
 """Main entry point and CLI loop for deepagents."""
-# ruff: noqa: E402, BLE001, PLR0912, PLR0915
+# ruff: noqa: E402
 
 # Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
 # ruff: noqa: E402
+import logging
+import os
 import warnings
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+from langchain.agents.middleware import AgentState, after_agent, after_model
+from langgraph.config import get_config
+from langgraph.graph.state import RunnableConfig
+from langgraph.runtime import Runtime
+from typing_extensions import TypedDict
 
 warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 
@@ -17,6 +28,7 @@ from deepagents_cli.agent import create_server_agent
 
 # CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import settings
+from deepagents_cli.encryption import decrypt_token
 from deepagents_cli.integrations.sandbox_factory import create_sandbox_async
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
@@ -28,12 +40,491 @@ from langgraph_sdk import get_client
 
 client = get_client()
 
-# Sentinel value to indicate sandbox creation is in progress
 SANDBOX_CREATING = "__creating__"
-# How long to wait for sandbox creation (seconds)
 SANDBOX_CREATION_TIMEOUT = 180
-# How often to poll for sandbox_id (seconds)
 SANDBOX_POLL_INTERVAL = 1.0
+
+_SANDBOX_BACKENDS: dict[str, Any] = {}
+
+LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")
+
+
+async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
+    """Add a comment to a Linear issue.
+
+    Args:
+        issue_id: The Linear issue ID
+        comment_body: The comment text
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if not LINEAR_API_KEY:
+        return False
+
+    import httpx
+
+    # Linear uses GraphQL API
+    url = "https://api.linear.app/graphql"
+
+    mutation = """
+    mutation CommentCreate($issueId: String!, $body: String!) {
+        commentCreate(input: { issueId: $issueId, body: $body }) {
+            success
+            comment {
+                id
+            }
+        }
+    }
+    """
+
+    async with httpx.AsyncClient() as http_client:
+        try:
+            response = await http_client.post(
+                url,
+                headers={
+                    "Authorization": LINEAR_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "query": mutation,
+                    "variables": {"issueId": issue_id, "body": comment_body},
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get("data", {}).get("commentCreate", {}).get("success"):
+                return True
+            return False
+        except Exception:
+            return False
+
+
+class LinearNotifyState(TypedDict, total=False):
+    """Custom state for tracking Linear notifications."""
+
+    messages: list[Any]
+    linear_messages_sent_count: int
+
+
+@after_model(state_schema=LinearNotifyState)
+async def post_to_linear_after_model(
+    state: LinearNotifyState, runtime: Runtime
+) -> dict[str, Any] | None:
+    """Middleware that posts AI responses to Linear after each model call.
+
+    Only posts if:
+    - This is a Linear-triggered conversation (has linear_issue in config)
+    - A human message was just processed (not tool results)
+    - The AI message hasn't already been sent
+    """
+    try:
+        config = get_config()
+        configurable = config.get("configurable", {})
+
+        linear_issue = configurable.get("linear_issue", {})
+        linear_issue_id = linear_issue.get("id")
+
+        if not linear_issue_id:
+            return None
+
+        messages = state.get("messages", [])
+        if not messages:
+            return None
+
+        sent_count = state.get("linear_messages_sent_count", 0)
+
+        human_message_count = 0
+        for msg in messages:
+            if isinstance(msg, dict):
+                role = msg.get("role", "")
+            else:
+                role = getattr(msg, "type", "") or getattr(msg, "role", "")
+            if role in ("human", "user"):
+                human_message_count += 1
+
+        if human_message_count != 1:
+            return None
+
+        last_message = messages[-1]
+        if isinstance(last_message, dict):
+            role = last_message.get("role", "")
+            content = last_message.get("content", "")
+        else:
+            role = getattr(last_message, "type", "") or getattr(last_message, "role", "")
+            content = getattr(last_message, "content", "")
+
+        if role not in ("ai", "assistant"):
+            return None
+
+        ai_message_count = 0
+        for msg in messages:
+            if isinstance(msg, dict):
+                r = msg.get("role", "")
+            else:
+                r = getattr(msg, "type", "") or getattr(msg, "role", "")
+            if r in ("ai", "assistant"):
+                ai_message_count += 1
+
+        if ai_message_count <= sent_count:
+            return None
+
+        if len(messages) >= 2:
+            prev_message = messages[-2]
+            if isinstance(prev_message, dict):
+                prev_role = prev_message.get("role", "")
+            else:
+                prev_role = getattr(prev_message, "type", "") or getattr(prev_message, "role", "")
+
+            if prev_role not in ("human", "user"):
+                return None
+
+        if not content or not isinstance(content, str):
+            return None
+
+        comment = f"""🤖 **Agent Response**
+
+{content}"""
+        logger.info("Posting AI response to Linear issue %s", linear_issue_id)
+        success = await comment_on_linear_issue(linear_issue_id, comment)
+
+        if success:
+            logger.info("Successfully posted to Linear")
+            return {"linear_messages_sent_count": ai_message_count}
+        logger.warning("Failed to post to Linear")
+        return None
+
+    except Exception as e:
+        logger.error("Error in post_to_linear_after_model: %s", e)
+        return None
+
+
+@after_agent
+async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    """Middleware that commits/pushes changes and comments on Linear after agent runs."""
+    logger.info("After-agent middleware started")
+    pr_url = None
+    pr_number = None
+    pr_title = "feat: Open SWE PR"
+
+    try:
+        # Get config using langgraph's get_config
+        config = get_config()
+        configurable = config.get("configurable", {})
+        thread_id = configurable.get("thread_id")
+        logger.debug("Middleware running for thread %s", thread_id)
+
+        # Get the last message content from state
+        last_message_content = ""
+        messages = state.get("messages", [])
+        if messages:
+            last_message = messages[-1]
+            # Handle both dict and object message formats
+            if isinstance(last_message, dict):
+                last_message_content = last_message.get("content", "")
+            elif hasattr(last_message, "content"):
+                last_message_content = last_message.content
+
+        # Get Linear issue info for commenting
+        linear_issue = configurable.get("linear_issue", {})
+        linear_issue_id = linear_issue.get("id")
+
+        if not thread_id:
+            # Still comment on Linear if we have the issue ID
+            if linear_issue_id and last_message_content:
+                comment = f"""🤖 **Agent Response**
+
+{last_message_content}"""
+                await comment_on_linear_issue(linear_issue_id, comment)
+            return None
+
+        repo_config = configurable.get("repo", {})
+        repo_owner = repo_config.get("owner")
+        repo_name = repo_config.get("name")
+
+        sandbox_backend = _SANDBOX_BACKENDS.get(thread_id)
+
+        repo_dir = f"/workspace/{repo_name}"
+
+        if not sandbox_backend or not repo_dir:
+            if linear_issue_id and last_message_content:
+                comment = f"""🤖 **Agent Response**
+
+{last_message_content}"""
+                await comment_on_linear_issue(linear_issue_id, comment)
+            return None
+
+        result = await asyncio.to_thread(
+            sandbox_backend.execute, f"cd {repo_dir} && git status --porcelain"
+        )
+
+        has_uncommitted_changes = result.exit_code == 0 and result.output.strip()
+
+        await asyncio.to_thread(
+            sandbox_backend.execute, f"cd {repo_dir} && git fetch origin 2>/dev/null || true"
+        )
+        unpushed_result = await asyncio.to_thread(
+            sandbox_backend.execute,
+            f"cd {repo_dir} && git log --oneline @{{upstream}}..HEAD 2>/dev/null || git log --oneline origin/HEAD..HEAD 2>/dev/null || echo ''",
+        )
+        has_unpushed_commits = unpushed_result.exit_code == 0 and unpushed_result.output.strip()
+
+        has_changes = has_uncommitted_changes or has_unpushed_commits
+
+        if not has_changes:
+            logger.info("No changes detected, skipping PR creation")
+            if linear_issue_id and last_message_content:
+                comment = f"""🤖 **Agent Response**
+
+{last_message_content}"""
+                await comment_on_linear_issue(linear_issue_id, comment)
+            return None
+
+        logger.info("Changes detected, preparing PR for thread %s", thread_id)
+
+        branch_result = await asyncio.to_thread(
+            sandbox_backend.execute, f"cd {repo_dir} && git rev-parse --abbrev-ref HEAD"
+        )
+        current_branch = branch_result.output.strip() if branch_result.exit_code == 0 else ""
+
+        target_branch = f"open-swe/{thread_id}"
+
+        if current_branch != target_branch:
+            checkout_result = await asyncio.to_thread(
+                sandbox_backend.execute, f"cd {repo_dir} && git checkout -b {target_branch}"
+            )
+            if checkout_result.exit_code != 0:
+                await asyncio.to_thread(
+                    sandbox_backend.execute, f"cd {repo_dir} && git checkout {target_branch}"
+                )
+
+        await asyncio.to_thread(
+            sandbox_backend.execute, f"cd {repo_dir} && git config user.name 'Open SWE[bot]'"
+        )
+        await asyncio.to_thread(
+            sandbox_backend.execute,
+            f"cd {repo_dir} && git config user.email 'Open SWE@users.noreply.github.com'",
+        )
+
+        await asyncio.to_thread(sandbox_backend.execute, f"cd {repo_dir} && git add -A")
+
+        await asyncio.to_thread(
+            sandbox_backend.execute, f'cd {repo_dir} && git commit -m "feat: Open SWE PR"'
+        )
+
+        encrypted_token = configurable.get("github_token_encrypted")
+        if encrypted_token:
+            github_token = decrypt_token(encrypted_token)
+
+        if github_token:
+            remote_result = await asyncio.to_thread(
+                sandbox_backend.execute, f"cd {repo_dir} && git remote get-url origin"
+            )
+            if remote_result.exit_code == 0:
+                remote_url = remote_result.output.strip()
+                if "github.com" in remote_url and "@" not in remote_url:
+                    # Convert https://github.com/owner/repo.git to https://git:token@github.com/owner/repo.git
+                    auth_url = remote_url.replace("https://", f"https://git:{github_token}@")
+                    await asyncio.to_thread(
+                        sandbox_backend.execute,
+                        f"cd {repo_dir} && git push {auth_url} {target_branch}",
+                    )
+                else:
+                    await asyncio.to_thread(
+                        sandbox_backend.execute, f"cd {repo_dir} && git push origin {target_branch}"
+                    )
+
+            default_branch_result = await asyncio.to_thread(
+                sandbox_backend.execute,
+                f"cd {repo_dir} && git remote show origin | grep 'HEAD branch' | cut -d' ' -f5",
+            )
+            base_branch = (
+                default_branch_result.output.strip()
+                if default_branch_result.exit_code == 0
+                else "main"
+            )
+
+            pr_title = "feat: Open SWE PR"
+            pr_body = "Automated PR created by Open SWE agent."
+
+            create_pr_cmd = f"""curl -s -X POST \\
+                -H "Authorization: Bearer {github_token}" \\
+                -H "Accept: application/vnd.github+json" \\
+                -H "X-GitHub-Api-Version: 2022-11-28" \\
+                https://api.github.com/repos/{repo_owner}/{repo_name}/pulls \\
+                -d '{{"title":"{pr_title}","head":"{target_branch}","base":"{base_branch}","body":"{pr_body}"}}'
+            """
+
+            pr_result = await asyncio.to_thread(sandbox_backend.execute, create_pr_cmd)
+
+            linear_issue = configurable.get("linear_issue", {})
+            linear_issue_id = linear_issue.get("id")
+
+            if pr_result.exit_code == 0:
+                import json
+
+                pr_response = json.loads(pr_result.output)
+                pr_url = pr_response.get("html_url")
+                pr_number = pr_response.get("number")
+                if pr_url:
+                    logger.info("PR created successfully: %s", pr_url)
+                else:
+                    logger.warning(
+                        "PR creation response did not contain html_url: %s", pr_result.output[:200]
+                    )
+
+        if linear_issue_id and last_message_content:
+            if pr_url:
+                comment = f"""✅ **Pull Request Created**
+
+I've created a pull request to address this issue:
+
+**[PR #{pr_number}: {pr_title}]({pr_url})**
+
+---
+
+🤖 **Agent Response**
+
+{last_message_content}"""
+            else:
+                comment = f"""🤖 **Agent Response**
+
+{last_message_content}"""
+            await comment_on_linear_issue(linear_issue_id, comment)
+
+        logger.info("After-agent middleware completed successfully")
+        return None
+
+    except Exception as e:
+        logger.error("Error in after-agent middleware: %s: %s", type(e).__name__, e)
+        try:
+            config = get_config()
+            configurable = config.get("configurable", {})
+            linear_issue = configurable.get("linear_issue", {})
+            linear_issue_id = linear_issue.get("id")
+            if linear_issue_id:
+                error_comment = f"""❌ **Agent Error**
+
+An error occurred while processing this issue:
+
+```
+{type(e).__name__}: {e}
+```"""
+                await comment_on_linear_issue(linear_issue_id, error_comment)
+        except Exception as inner_e:
+            logger.error("Failed to post error comment to Linear: %s", inner_e)
+        return None
+
+
+async def _clone_or_pull_repo_in_sandbox(
+    sandbox_backend: Any, owner: str, repo: str, github_token: str | None = None
+) -> str:
+    """Clone a GitHub repo into the sandbox, or pull if it already exists.
+
+    Args:
+        sandbox_backend: The sandbox backend to execute commands in (LangSmithBackend)
+        owner: GitHub repo owner
+        repo: GitHub repo name
+        github_token: GitHub access token (from agent auth or env var)
+
+    Returns:
+        Path to the cloned/updated repo directory
+    """
+    logger.info("_clone_or_pull_repo_in_sandbox called for %s/%s", owner, repo)
+    loop = asyncio.get_event_loop()
+
+    token = github_token
+    if not token:
+        msg = "No GitHub token provided"
+        logger.error(msg)
+        raise ValueError(msg)
+
+    repo_dir = f"/workspace/{repo}"
+
+    logger.debug("Checking if repo already exists at %s", repo_dir)
+    try:
+        check_result = await loop.run_in_executor(
+            None, sandbox_backend.execute, f"test -d {repo_dir}/.git && echo exists"
+        )
+        logger.debug(
+            "Check result: exit_code=%s, output=%s",
+            check_result.exit_code,
+            check_result.output[:200] if check_result.output else "",
+        )
+    except Exception as e:
+        logger.error("Failed to execute check command in sandbox: %s", e, exc_info=True)
+        raise
+
+    if check_result.exit_code == 0 and "exists" in check_result.output:
+        logger.info("Repo already exists at %s, pulling latest changes", repo_dir)
+        try:
+            status_result = await loop.run_in_executor(
+                None, sandbox_backend.execute, f"cd {repo_dir} && git status --porcelain"
+            )
+            logger.debug("Git status result: exit_code=%s", status_result.exit_code)
+        except Exception as e:
+            logger.error("Failed to get git status: %s", e, exc_info=True)
+            raise
+
+        # CRITICAL: Ensure remote URL doesn't contain token (clean up from previous runs)
+        clean_url = f"https://github.com/{owner}/{repo}.git"
+        try:
+            await loop.run_in_executor(
+                None,
+                sandbox_backend.execute,
+                f"cd {repo_dir} && git remote set-url origin {clean_url}",
+            )
+        except Exception as e:
+            logger.error("Failed to set remote URL: %s", e, exc_info=True)
+            raise
+
+        if status_result.exit_code == 0 and not status_result.output.strip():
+            auth_url = f"https://git:{token}@github.com/{owner}/{repo}.git"
+            try:
+                pull_result = await loop.run_in_executor(
+                    None, sandbox_backend.execute, f"cd {repo_dir} && git pull {auth_url}"
+                )
+                logger.debug("Git pull result: exit_code=%s", pull_result.exit_code)
+                if pull_result.exit_code != 0:
+                    logger.warning(
+                        "Git pull failed with exit code %s: %s",
+                        pull_result.exit_code,
+                        pull_result.output[:200] if pull_result.output else "",
+                    )
+            except Exception as e:
+                logger.error("Failed to execute git pull: %s", e, exc_info=True)
+                raise
+    else:
+        logger.info("Cloning repo %s/%s to %s", owner, repo, repo_dir)
+        clone_url = f"https://git:{token}@github.com/{owner}/{repo}.git"
+        try:
+            result = await loop.run_in_executor(
+                None, sandbox_backend.execute, f"git clone {clone_url} {repo_dir}"
+            )
+            logger.debug("Git clone result: exit_code=%s", result.exit_code)
+        except Exception as e:
+            logger.error("Failed to execute git clone: %s", e, exc_info=True)
+            raise
+
+        if result.exit_code != 0:
+            msg = f"Failed to clone repo {owner}/{repo}: {result.output}"
+            logger.error(msg)
+            raise RuntimeError(msg)
+
+        clean_url = f"https://github.com/{owner}/{repo}.git"
+        try:
+            await loop.run_in_executor(
+                None,
+                sandbox_backend.execute,
+                f"cd {repo_dir} && git remote set-url origin {clean_url}",
+            )
+        except Exception as e:
+            logger.error("Failed to set remote URL after clone: %s", e, exc_info=True)
+            raise
+
+    logger.info("Repo setup complete at %s", repo_dir)
+    return repo_dir
 
 
 async def _get_sandbox_id_from_metadata(thread_id: str) -> str | None:
@@ -44,10 +535,10 @@ async def _get_sandbox_id_from_metadata(thread_id: str) -> str | None:
 
 async def _wait_for_sandbox_id(thread_id: str) -> str:
     """Wait for sandbox_id to be set in thread metadata.
-    
+
     Polls thread metadata until sandbox_id is set to a real value
     (not the creating sentinel).
-    
+
     Raises:
         TimeoutError: If sandbox creation takes too long
     """
@@ -58,17 +549,27 @@ async def _wait_for_sandbox_id(thread_id: str) -> str:
             return sandbox_id
         await asyncio.sleep(SANDBOX_POLL_INTERVAL)
         elapsed += SANDBOX_POLL_INTERVAL
-    
+
     msg = f"Timeout waiting for sandbox creation for thread {thread_id}"
     raise TimeoutError(msg)
 
 
-async def get_agent(config):
+async def get_agent(config: RunnableConfig):
     """Get or create an agent with a sandbox for the given thread."""
     thread_id = config["configurable"].get("thread_id", None)
-    
+    logger.info("get_agent called for thread %s", thread_id)
+
+    repo_config = config["configurable"].get("repo", {})
+    repo_owner = repo_config.get("owner")
+    repo_name = repo_config.get("name")
+
+    encrypted_token = config["configurable"].get("github_token_encrypted")
+    if encrypted_token:
+        github_token = decrypt_token(encrypted_token)
+        logger.debug("Decrypted GitHub token")
+
     if thread_id is None:
-        # No thread_id means no sandbox
+        logger.info("No thread_id, returning agent without sandbox")
         return create_server_agent(
             model=None,
             assistant_id="agent",
@@ -77,44 +578,73 @@ async def get_agent(config):
             sandbox_type=None,
             auto_approve=True,
         )
-    
-    # Check if sandbox already exists or is being created
+
     sandbox_id = await _get_sandbox_id_from_metadata(thread_id)
-    
+
     if sandbox_id == SANDBOX_CREATING:
-        # Another call is creating the sandbox, wait for it
+        logger.info("Sandbox creation in progress, waiting...")
         sandbox_id = await _wait_for_sandbox_id(thread_id)
-    
+
     if sandbox_id is None:
-        # No sandbox yet - we need to create one
-        # First, set sentinel to prevent other callers from also creating
-        await client.threads.update(
-            thread_id=thread_id,
-            metadata={"sandbox_id": SANDBOX_CREATING}
-        )
-        
+        logger.info("Creating new sandbox for thread %s", thread_id)
+        await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": SANDBOX_CREATING})
+
         try:
-            # Create the sandbox
             sandbox_cm = create_sandbox_async("langsmith", cleanup=False)
             sandbox_backend = await sandbox_cm.__aenter__()
-            
-            # Update metadata with real sandbox_id
+            logger.info("Sandbox created: %s", sandbox_backend.id)
+
+            repo_dir = None
+            if repo_owner and repo_name:
+                logger.info("Cloning repo %s/%s into sandbox", repo_owner, repo_name)
+                repo_dir = await _clone_or_pull_repo_in_sandbox(
+                    sandbox_backend, repo_owner, repo_name, github_token
+                )
+                logger.info("Repo cloned to %s", repo_dir)
+
             await client.threads.update(
                 thread_id=thread_id,
-                metadata={"sandbox_id": sandbox_backend._sandbox.name}
+                metadata={
+                    "sandbox_id": sandbox_backend.id,
+                    "repo_dir": repo_dir,
+                },
             )
-        except Exception:
-            # Clear sentinel on failure so others can retry
-            await client.threads.update(
-                thread_id=thread_id,
-                metadata={"sandbox_id": None}
-            )
+        except Exception as e:
+            logger.error("Failed to create sandbox or clone repo: %s", e, exc_info=True)
+            try:
+                await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
+                logger.info("Reset sandbox_id to None for thread %s", thread_id)
+            except Exception as reset_error:
+                logger.error("Failed to reset sandbox_id metadata: %s", reset_error)
             raise
     else:
-        # Connect to existing sandbox
-        sandbox_cm = create_sandbox_async("langsmith", sandbox_id=sandbox_id, cleanup=False)
-        sandbox_backend = await sandbox_cm.__aenter__()
-    
+        logger.info("Connecting to existing sandbox %s", sandbox_id)
+        try:
+            sandbox_cm = create_sandbox_async("langsmith", sandbox_id=sandbox_id, cleanup=False)
+            sandbox_backend = await sandbox_cm.__aenter__()
+            logger.info("Connected to existing sandbox %s", sandbox_id)
+        except Exception as e:
+            logger.error(
+                "Failed to connect to existing sandbox %s: %s", sandbox_id, e, exc_info=True
+            )
+            raise
+
+        thread = await client.threads.get(thread_id=thread_id)
+        repo_dir = thread.get("metadata", {}).get("repo_dir")
+
+        if repo_owner and repo_name:
+            logger.info("Pulling latest changes for repo %s/%s", repo_owner, repo_name)
+            try:
+                repo_dir = await _clone_or_pull_repo_in_sandbox(
+                    sandbox_backend, repo_owner, repo_name, github_token
+                )
+            except Exception as e:
+                logger.error("Failed to pull repo in existing sandbox: %s", e, exc_info=True)
+                raise
+
+    _SANDBOX_BACKENDS[thread_id] = sandbox_backend
+
+    logger.info("Returning agent with sandbox for thread %s", thread_id)
     return create_server_agent(
         model=None,
         assistant_id="agent",
@@ -122,4 +652,6 @@ async def get_agent(config):
         sandbox=sandbox_backend,
         sandbox_type="langsmith",
         auto_approve=True,
+        working_dir=repo_dir,
+        middleware=[post_to_linear_after_model, open_pr_if_needed],
     )

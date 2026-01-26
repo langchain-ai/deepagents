@@ -171,7 +171,7 @@ class SandboxProvider(ABC, Generic[MetadataT]):
                 # Type-safe parameters with IDE autocomplete
                 return CustomSandbox(sandbox_id or self._create_new(), template_id)
 
-            def delete(self, sandbox_id: str, *, force: bool = False, **kwargs: Any) -> None:
+            def delete(self, *, sandbox_id: str, force: bool = False, **kwargs: Any) -> None:
                 # Implementation
                 self._client.delete(sandbox_id, force=force)
         ```
@@ -230,10 +230,16 @@ class SandboxProvider(ABC, Generic[MetadataT]):
         The returned object implements SandboxBackendProtocol and can be used
         for all sandbox operations (execute, read, write, etc.).
 
+        Important: If a sandbox_id is provided but does not exist, this method
+        should raise an error rather than creating a new sandbox. Only when
+        sandbox_id is explicitly None should a new sandbox be created.
+
         Args:
             sandbox_id: Unique identifier of an existing sandbox to retrieve.
                 If None, creates a new sandbox instance. The new sandbox's ID
                 can be accessed via the returned object's .id property.
+                If a non-None value is provided but the sandbox doesn't exist,
+                an error will be raised.
             **kwargs: Provider-specific creation/connection parameters. Implementations
                 should expose these as named keyword-only parameters with defaults
                 for type safety. Common examples include template_id, resource limits,
@@ -268,6 +274,7 @@ class SandboxProvider(ABC, Generic[MetadataT]):
     @abstractmethod
     def delete(
         self,
+        *,
         sandbox_id: str,
         **kwargs: Any,
     ) -> None:
@@ -337,9 +344,14 @@ class SandboxProvider(ABC, Generic[MetadataT]):
         By default, runs the synchronous get_or_create() method in a thread pool.
         Providers can override this for native async implementations.
 
+        Important: If a sandbox_id is provided but does not exist, this method
+        should raise an error rather than creating a new sandbox. Only when
+        sandbox_id is explicitly None should a new sandbox be created.
+
         Args:
             sandbox_id: Unique identifier of an existing sandbox to retrieve.
-                If None, creates a new sandbox instance.
+                If None, creates a new sandbox instance. If a non-None value
+                is provided but the sandbox doesn't exist, an error will be raised.
             **kwargs: Provider-specific creation/connection parameters.
 
         Returns:
@@ -349,6 +361,7 @@ class SandboxProvider(ABC, Generic[MetadataT]):
 
     async def adelete(
         self,
+        *,
         sandbox_id: str,
         **kwargs: Any,
     ) -> None:
@@ -361,7 +374,7 @@ class SandboxProvider(ABC, Generic[MetadataT]):
             sandbox_id: Unique identifier of the sandbox to delete.
             **kwargs: Provider-specific deletion options.
         """
-        await asyncio.to_thread(self.delete, sandbox_id, **kwargs)
+        await asyncio.to_thread(self.delete, sandbox_id=sandbox_id, **kwargs)
 
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "

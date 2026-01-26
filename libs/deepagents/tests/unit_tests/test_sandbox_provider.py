@@ -135,8 +135,8 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
 
     def delete(
         self,
-        sandbox_id: str,
         *,
+        sandbox_id: str,
         force: bool = False,
         **kwargs: Any,
     ) -> None:

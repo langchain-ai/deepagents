@@ -115,8 +115,10 @@ class LangSmithBackend(BaseSandbox):
 
 
 # Default template configuration
-DEFAULT_TEMPLATE_NAME = "python-slim"
-DEFAULT_TEMPLATE_IMAGE = "python:3.12-slim"
+# DEFAULT_TEMPLATE_NAME = "python-slim"
+DEFAULT_TEMPLATE_NAME = "open-swe-dev"
+# DEFAULT_TEMPLATE_IMAGE = "python:3.12-slim"
+DEFAULT_TEMPLATE_IMAGE = "bracelangchain/deepagents-sandbox:v1"
 
 
 def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE_NAME) -> None:
@@ -132,7 +134,15 @@ def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE
     from langsmith.sandbox import ResourceNotFoundError
 
     try:
+        templates = client.list_templates()
+        for template in templates:
+            print(f"\nFound template: {template.name}")
+            if template.name == template_name:
+                console.print(f"[green]✓ Template '{template_name}' already exists[/green]")
+                return
+        print(f"\n\nChecking for template '{template_name}'...")
         client.get_template(template_name)
+        print("\nTemplate found\n")
     except ResourceNotFoundError:
         console.print(f"[dim]Creating template '{template_name}'...[/dim]")
         try:

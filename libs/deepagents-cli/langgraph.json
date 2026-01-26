@@ -2,5 +2,8 @@
   "graphs": {
     "agent": "deepagents_cli/server.py:get_agent"
   },
-  "dependencies": ["."]
+  "dependencies": ["."],
+  "http": {
+    "app": "deepagents_cli/webapp.py:app"
+  }
 }

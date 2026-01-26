@@ -301,9 +301,12 @@ def create_langsmith_sandbox(
         msg = "LANGSMITH_API_KEY environment variable not set"
         raise ValueError(msg)
 
+    langsmith_endpoint = os.environ.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+    sandbox_endpoint = f"{langsmith_endpoint.rstrip('/')}/v2/sandboxes"
+
     console.print("[yellow]Starting LangSmith sandbox...[/yellow]")
 
-    client = sandbox.SandboxClient()
+    client = sandbox.SandboxClient(api_endpoint=sandbox_endpoint, api_key=api_key)
 
     if sandbox_id:
         # Connect to existing sandbox by name
@@ -312,10 +315,10 @@ def create_langsmith_sandbox(
         except Exception as e:
             msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
             raise RuntimeError(msg) from e
-        
+
         # Verify the existing sandbox is ready
         verify_sandbox_ready(sb, client)
-        
+
         should_cleanup = False
         console.print(f"[green]✓ Connected to existing LangSmith sandbox: {sb.name}[/green]")
     else:
@@ -374,11 +377,20 @@ async def create_langsmith_sandbox_async(
         msg = "LANGSMITH_API_KEY environment variable not set"
         raise ValueError(msg)
 
+    langsmith_endpoint = os.environ.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+    sandbox_endpoint = f"{langsmith_endpoint.rstrip('/')}/v2/sandboxes"
+
     console.print("[yellow]Starting LangSmith sandbox...[/yellow]")
 
     # Run blocking SDK calls in executor
     loop = asyncio.get_event_loop()
-    client = await loop.run_in_executor(None, sandbox.SandboxClient)
+    client = await loop.run_in_executor(
+        None,
+        lambda: sandbox.SandboxClient(
+            api_endpoint=sandbox_endpoint,
+            api_key=api_key,
+        ),
+    )
 
     if sandbox_id:
         # Connect to existing sandbox by name
@@ -387,11 +399,12 @@ async def create_langsmith_sandbox_async(
         except Exception as e:
             msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
             raise RuntimeError(msg) from e
-        
+
         # Verify the existing sandbox is ready
         from deepagents_cli.integrations.langsmith import verify_sandbox_ready
+
         await loop.run_in_executor(None, verify_sandbox_ready, sb, client)
-        
+
         should_cleanup = False
         console.print(f"[green]✓ Connected to existing LangSmith sandbox: {sb.name}[/green]")
     else:

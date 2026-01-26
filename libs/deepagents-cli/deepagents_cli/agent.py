@@ -4,6 +4,9 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from collections.abc import Sequence
+
+from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
@@ -93,13 +96,19 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
+def get_system_prompt(
+    assistant_id: str,
+    sandbox_type: str | None = None,
+    working_dir: str | None = None,
+) -> str:
     """Get the base system prompt for the agent.
 
     Args:
         assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
                      If None, agent is operating in local mode.
+        working_dir: Override the default working directory (e.g., cloned repo path).
+                    If None, uses the sandbox provider's default.
 
     Returns:
         The system prompt string (without AGENTS.md content)
@@ -107,9 +116,9 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
     agent_dir_path = f"~/.deepagents/{assistant_id}"
 
     if sandbox_type:
-        # Get provider-specific working directory
-
-        working_dir = get_default_working_dir(sandbox_type)
+        # Get provider-specific working directory, or use override
+        if working_dir is None:
+            working_dir = get_default_working_dir(sandbox_type)
 
         working_dir_section = f"""### Current Working Directory
 
@@ -500,6 +509,8 @@ def create_server_agent(
     enable_memory: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
+    working_dir: str | None = None,
+    middleware: Sequence[AgentMiddleware] = (),
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -521,6 +532,8 @@ def create_server_agent(
         enable_memory: Enable MemoryMiddleware for persistent memory
         enable_skills: Enable SkillsMiddleware for custom agent skills
         enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
+        working_dir: Override the default working directory (e.g., cloned repo path).
+                    Used in system prompt to tell the agent where to operate.
         checkpointer: Optional checkpointer for session persistence. If None, uses
                      InMemorySaver (no persistence across CLI invocations).
 
@@ -532,7 +545,7 @@ def create_server_agent(
     tools = tools or []
 
     # Build middleware stack based on enabled features
-    agent_middleware = []
+    agent_middleware = middleware
 
     # ========== REMOTE SANDBOX MODE ==========
     backend = sandbox  # Remote sandbox (ModalBackend, etc.)
@@ -542,7 +555,11 @@ def create_server_agent(
     # Get or use custom system prompt
     if system_prompt is None:
         if sandbox_type is not None:
-            system_prompt = get_system_prompt(assistant_id=assistant_id, sandbox_type=sandbox_type)
+            system_prompt = get_system_prompt(
+                assistant_id=assistant_id,
+                sandbox_type=sandbox_type,
+                working_dir=working_dir,
+            )
         if sandbox_type is None:
             # NOTE: (harrison)
             # This only happens when thread_id is None
@@ -563,6 +580,6 @@ def create_server_agent(
         tools=tools,
         backend=backend,
         middleware=agent_middleware,
-        interrupt_on=interrupt_on
+        interrupt_on=interrupt_on,
     ).with_config(config)
     return agent

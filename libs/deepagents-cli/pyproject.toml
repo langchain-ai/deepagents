@@ -25,6 +25,9 @@ dependencies = [
   "textual>=1.0.0",
   "textual-autocomplete>=3.0.0",
   "aiosqlite>=0.19.0",
+  "fastapi>=0.128.0",
+  "langchain-auth>=0.2.0",
+  "cryptography>=41.0.0",
 ]
 
 [project.scripts]
@@ -47,6 +50,10 @@ test = [
     "langchain-openai",
     "ruff>=0.9.7",
     "ty>=0.0.1,<1.0.0",
+]
+dev = [
+    "langgraph-cli[inmem]>=0.4.12",
+    "langsmith",
 ]
 
 [build-system]
@@ -174,3 +181,4 @@ timeout = 10  # Default timeout for all tests (can be overridden per-test)
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+langsmith = { git = "https://github.com/langchain-ai/langsmith-sdk.git", subdirectory = "python", rev = "daniel/add-sandbox-sdk" }

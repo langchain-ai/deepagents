@@ -1,0 +1,291 @@
+"""`LocalShellBackend`: Filesystem backend with unrestricted local shell execution.
+
+This backend extends FilesystemBackend to add shell command execution on the local
+host system. It provides NO sandboxing or isolation - all operations run directly
+on your machine with full system access.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import uuid
+from pathlib import Path
+
+from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+
+
+class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
+    """Filesystem backend with unrestricted local shell command execution.
+
+    This backend extends `FilesystemBackend` to add shell command execution
+    capabilities. Commands are executed directly on the host system without any
+    sandboxing, process isolation, or security restrictions.
+
+    !!! warning "Security Warning"
+
+        This backend grants agents BOTH direct filesystem access AND unrestricted
+        shell execution on your local machine. Use with extreme caution and only in
+        appropriate environments.
+
+        **Appropriate use cases:**
+
+        - Local development CLIs (coding assistants, development tools)
+        - Personal development environments where you trust the agent's code
+        - CI/CD pipelines with proper secret management (see security considerations)
+
+        **Inappropriate use cases:**
+
+        - Production environments (e.g., web servers, APIs, multi-tenant systems)
+        - Processing untrusted user input or executing untrusted code
+
+        Use `StateBackend`, `StoreBackend`, or extend `BaseSandbox` for production.
+
+        **Security risks:**
+
+        - Agents can execute **arbitrary shell commands** with your user's permissions
+        - Agents can read **any accessible file**, including secrets (API keys,
+            credentials, `.env` files, SSH keys, etc.)
+        - Combined with network tools, secrets may be exfiltrated via SSRF attacks
+        - File modifications and command execution are **permanent and irreversible**
+        - Agents can install packages, modify system files, spawn processes, etc.
+        - **No process isolation** - commands run directly on your host system
+        - **No resource limits** - commands can consume unlimited CPU, memory, disk
+
+        **Recommended safeguards:**
+
+        1. **Enable Human-in-the-Loop (HITL) middleware** to review ALL operations
+            before execution (especially critical for shell commands)
+        2. Use `virtual_mode=True` with `root_dir` to enable path-based access
+            restrictions for filesystem operations (blocks `..`, `~`, and absolute
+            paths outside root). Note: this does NOT restrict shell commands.
+        3. Exclude secrets from accessible filesystem paths (especially in CI/CD)
+        4. Run in dedicated development environments, not on shared or production systems
+        5. Never expose to untrusted users or allow execution of untrusted code
+        6. For production environments requiring code execution, implement a sandboxed
+            backend by extending `BaseSandbox` with proper isolation (e.g., Docker
+            containers, VMs, or other isolated execution environments)
+
+    Examples:
+        ```python
+        from deepagents.backends import LocalShellBackend
+
+        # Create backend with working directory
+        backend = LocalShellBackend(root_dir="/home/user/project")
+
+        # Execute shell commands (runs directly on host)
+        result = backend.execute("ls -la")
+        print(result.output)
+        print(result.exit_code)
+
+        # Use filesystem operations (inherited from FilesystemBackend)
+        content = backend.read("/README.md")
+        backend.write("/output.txt", "Hello world")
+
+        # Commands run in the backend's working directory
+        result = backend.execute("python script.py")
+        ```
+    """
+
+    def __init__(
+        self,
+        root_dir: str | Path | None = None,
+        virtual_mode: bool = False,
+	*,
+        max_file_size_mb: int = 10,
+        timeout: float = 120.0,
+        max_output_bytes: int = 100_000,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """Initialize local shell backend with filesystem access.
+
+        Args:
+            root_dir: Working directory for both filesystem operations and shell commands.
+
+                - If not provided, defaults to the current working directory.
+                - Shell commands execute with this as their working directory.
+                - When `virtual_mode=False` (default): Only affects relative path
+                    resolution for filesystem ops. Provides **no security** - agents can
+                    access any file using absolute paths or `..` sequences, and shell
+                    commands can access the entire filesystem.
+                - When `virtual_mode=True`: Filesystem paths are restricted to this
+                    directory with traversal protection. **Note:** This does NOT restrict
+                    shell commands - they can still access any path.
+
+            virtual_mode: Enable path-based access restrictions for filesystem operations only.
+
+                When `True`, filesystem operations (read/write/edit) treat all paths as
+                virtual paths anchored to `root_dir`. Path traversal (`..`, `~`) is blocked
+                and all resolved paths are verified to remain within `root_dir`.
+
+                **Important:** This only affects filesystem operations. Shell commands
+                executed via `execute()` are NOT restricted and can access any path.
+
+                When `False` (default), **no security is provided**:
+
+                - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
+                - Relative paths with `..` can escape `root_dir`
+                - Shell commands have unrestricted access
+
+                **Security note:** `virtual_mode=True` provides path-based access control
+                for filesystem operations, not process isolation. It restricts which files
+                can be accessed via filesystem tools, but does NOT sandbox shell execution.
+
+            max_file_size_mb: Maximum file size in megabytes for operations like grep.
+                Files exceeding this limit are skipped during search. Defaults to 10 MB.
+
+            timeout: Maximum time in seconds to wait for shell command execution.
+                Commands exceeding this timeout will be terminated. Defaults to 120 seconds.
+
+            max_output_bytes: Maximum number of bytes to capture from command output.
+                Output exceeding this limit will be truncated. Defaults to 100,000 bytes.
+
+            env: Environment variables to pass to executed shell commands. If None,
+                uses the current process's environment. Defaults to None.
+        """
+        # Initialize parent FilesystemBackend
+        super().__init__(
+            root_dir=root_dir,
+            virtual_mode=virtual_mode,
+            max_file_size_mb=max_file_size_mb,
+        )
+
+        # Store execution parameters
+        self._timeout = timeout
+        self._max_output_bytes = max_output_bytes
+        self._env = env if env is not None else os.environ.copy()
+
+        # Generate unique sandbox ID
+        self._sandbox_id = f"local-{uuid.uuid4().hex[:8]}"
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for this backend instance.
+
+        Returns:
+            String identifier in format "local-{random_hex}".
+        """
+        return self._sandbox_id
+
+    def execute(
+        self,
+        command: str,
+    ) -> ExecuteResponse:
+        """Execute a shell command directly on the host system.
+
+        !!! danger "Unrestricted Execution"
+            Commands are executed directly on your host system using `subprocess.run()`
+            with `shell=True`. There is **no sandboxing, isolation, or security
+            restrictions**. The command runs with your user's full permissions and can:
+
+            - Access any file on the filesystem (regardless of `virtual_mode`)
+            - Execute any program or script
+            - Make network connections
+            - Modify system configuration
+            - Spawn additional processes
+            - Install packages or modify dependencies
+
+            **Always use Human-in-the-Loop (HITL) middleware when using this method.**
+
+        The command is executed using the system shell (`/bin/sh` or equivalent) with
+        the working directory set to the backend's `root_dir`. Stdout and stderr are
+        combined into a single output stream.
+
+        Args:
+            command: Shell command string to execute.
+                Examples: "python script.py", "ls -la", "grep pattern file.txt"
+
+                **Security:** This string is passed directly to the shell. Agents can
+                execute arbitrary commands including pipes, redirects, command
+                substitution, etc.
+
+        Returns:
+            ExecuteResponse containing:
+                - output: Combined stdout and stderr (stderr lines prefixed with [stderr])
+                - exit_code: Process exit code (0 for success, non-zero for failure)
+                - truncated: True if output was truncated due to size limits
+
+        Examples:
+            ```python
+            # Run a simple command
+            result = backend.execute("echo hello")
+            assert result.output == "hello\\n"
+            assert result.exit_code == 0
+
+            # Handle errors
+            result = backend.execute("cat nonexistent.txt")
+            assert result.exit_code != 0
+            assert "[stderr]" in result.output
+
+            # Check for truncation
+            result = backend.execute("cat huge_file.txt")
+            if result.truncated:
+                print("Output was truncated")
+
+            # Commands run in root_dir, but can access any path
+            result = backend.execute("cat /etc/passwd")  # Can read system files!
+            ```
+        """
+        if not command or not isinstance(command, str):
+            return ExecuteResponse(
+                output="Error: Command must be a non-empty string.",
+                exit_code=1,
+                truncated=False,
+            )
+
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                env=self._env,
+                cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
+            )
+
+            # Combine stdout and stderr
+            output_parts = []
+            if result.stdout:
+                output_parts.append(result.stdout)
+            if result.stderr:
+                stderr_lines = result.stderr.strip().split("\n")
+                for line in stderr_lines:
+                    output_parts.append(f"[stderr] {line}")
+
+            output = "\n".join(output_parts) if output_parts else "<no output>"
+
+            # Check for truncation
+            truncated = False
+            if len(output) > self._max_output_bytes:
+                output = output[: self._max_output_bytes]
+                output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
+                truncated = True
+
+            # Add exit code info if non-zero
+            if result.returncode != 0:
+                output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+
+            return ExecuteResponse(
+                output=output,
+                exit_code=result.returncode,
+                truncated=truncated,
+            )
+
+        except subprocess.TimeoutExpired:
+            return ExecuteResponse(
+                output=f"Error: Command timed out after {self._timeout:.1f} seconds.",
+                exit_code=124,  # Standard timeout exit code
+                truncated=False,
+            )
+        except Exception as e:
+            return ExecuteResponse(
+                output=f"Error executing command: {e}",
+                exit_code=1,
+                truncated=False,
+            )
+
+
+__all__ = ["LocalShellBackend"]

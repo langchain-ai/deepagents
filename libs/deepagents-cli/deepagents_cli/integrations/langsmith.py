@@ -220,7 +220,7 @@ def verify_sandbox_ready(sb: Sandbox, client: SandboxClient) -> None:
 def create_sandbox_instance(
     client: SandboxClient, template_name: str = DEFAULT_TEMPLATE_NAME
 ) -> Sandbox:
-    """Create a new sandbox and verify it's ready.
+    """Create a new sandbox.
 
     Args:
         client: LangSmith SandboxClient instance
@@ -230,7 +230,7 @@ def create_sandbox_instance(
         Ready Sandbox instance
 
     Raises:
-        RuntimeError: If sandbox creation or readiness check fails
+        RuntimeError: If sandbox creation fails
     """
     console.print("[dim]Creating sandbox...[/dim]")
     try:
@@ -239,18 +239,6 @@ def create_sandbox_instance(
         msg = f"Failed to create sandbox from template '{template_name}': {e}"
         raise RuntimeError(msg) from e
 
-    # Verify sandbox is ready
-    try:
-        verify_sandbox_ready(sb, client)
-    except RuntimeError:
-        with contextlib.suppress(Exception):
-            console.print(
-                "[red]Sandbox failed readiness check; dumping logs before cleanup...[/red]"
-            )
-            _print_sandbox_failure_logs(sb)
-        with contextlib.suppress(Exception):
-            client.delete_sandbox(sb.name)
-        raise
-
+    # No need to verify - sandbox is ready when create_sandbox returns
     console.print(f"[green]✓ LangSmith sandbox ready: {sb.name}[/green]")
     return sb

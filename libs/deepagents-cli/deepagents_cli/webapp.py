@@ -18,7 +18,9 @@ app = FastAPI()
 
 LINEAR_WEBHOOK_SECRET = os.environ.get("LINEAR_WEBHOOK_SECRET", "")
 
-LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL") or os.environ.get("LANGGRAPH_URL_PROD", "http://localhost:2024")
+LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL") or os.environ.get(
+    "LANGGRAPH_URL_PROD", "http://localhost:2024"
+)
 
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
     "LANGSMITH_API_KEY_PROD", ""
@@ -347,22 +349,37 @@ Once authenticated, reply to this issue mentioning @openswe to retry."""
     comments = full_issue.get("comments", {}).get("nodes", [])
     comments_text = ""
 
-    if comments:
-        found_trigger = False
-        relevant_comments = []
+    bot_message_prefixes = (
+        "🔐 **GitHub Authentication Required**",
+        "✅ **Pull Request Created**",
+        "🤖 **Agent Response**",
+        "❌ **Agent Error**",
+    )
 
-        for comment in comments:
+    if comments:
+        last_bot_comment_idx = -1
+        for i, comment in enumerate(comments):
+            body = comment.get("body", "")
+            if any(body.startswith(prefix) for prefix in bot_message_prefixes):
+                last_bot_comment_idx = i
+
+        relevant_comments = []
+        for i, comment in enumerate(comments):
+            if i <= last_bot_comment_idx:
+                continue
             body = comment.get("body", "")
             if "@openswe" in body.lower():
-                found_trigger = True
-            if found_trigger:
                 relevant_comments.append(comment)
+                relevant_comments.extend(comments[i + 1 :])
+                break
 
         if relevant_comments:
             comments_text = "\n\n## Comments:\n"
             for comment in relevant_comments:
                 author = comment.get("user", {}).get("name", "Unknown")
                 body = comment.get("body", "")
+                if any(body.startswith(prefix) for prefix in bot_message_prefixes):
+                    continue
                 comments_text += f"\n**{author}:** {body}\n"
 
     prompt = f"""Please work on the following issue:

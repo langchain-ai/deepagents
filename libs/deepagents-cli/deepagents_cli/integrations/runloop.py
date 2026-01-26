@@ -188,7 +188,6 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
             devbox = self._client.devboxes.retrieve(id=sandbox_id)
         else:
             devbox = self._client.devboxes.create()
-            sandbox_id = devbox.id
 
             # Poll until running
             for _ in range(timeout // 2):

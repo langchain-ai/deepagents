@@ -18,7 +18,6 @@ LINEAR_WEBHOOK_SECRET = os.environ.get("LINEAR_WEBHOOK_SECRET", "")
 LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL", "http://localhost:2024")
 
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY", "")
-LANGSMITH_API_KEY_PROD = os.environ.get("LANGSMITH_API_KEY_PROD", "")
 LANGSMITH_API_URL = os.environ.get("LANGSMITH_API_URL", "https://api.smith.langchain.com")
 
 GITHUB_OAUTH_PROVIDER_ID = os.environ.get("GITHUB_OAUTH_PROVIDER_ID", "")
@@ -39,9 +38,7 @@ async def get_ls_user_id_from_email(email: str) -> str | None:
     Returns:
         The ls_user_id if found, None otherwise
     """
-    # TODO: Update this once sandbox can run on prod
-    # if not LANGSMITH_API_KEY:
-    if not LANGSMITH_API_KEY_PROD:
+    if not LANGSMITH_API_KEY:
         return None
 
     url = f"{LANGSMITH_API_URL}/api/v1/workspaces/current/members/active"
@@ -50,7 +47,7 @@ async def get_ls_user_id_from_email(email: str) -> str | None:
         try:
             response = await client.get(
                 url,
-                headers={"X-API-Key": LANGSMITH_API_KEY_PROD},
+                headers={"X-API-Key": LANGSMITH_API_KEY},
                 params={"emails": [email]},
             )
             response.raise_for_status()
@@ -79,8 +76,7 @@ async def get_github_token_for_user(ls_user_id: str) -> dict[str, Any]:
     try:
         from langchain_auth import Client
 
-        # TODO: Update this once sandbox can run on prod
-        client = Client(api_key=LANGSMITH_API_KEY_PROD)
+        client = Client(api_key=LANGSMITH_API_KEY)
 
         auth_result = await client.authenticate(
             provider=GITHUB_OAUTH_PROVIDER_ID,

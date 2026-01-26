@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import (
@@ -115,10 +116,10 @@ class LangSmithBackend(BaseSandbox):
 
 
 # Default template configuration
-# DEFAULT_TEMPLATE_NAME = "python-slim"
-DEFAULT_TEMPLATE_NAME = "open-swe-dev"
-# DEFAULT_TEMPLATE_IMAGE = "python:3.12-slim"
-DEFAULT_TEMPLATE_IMAGE = "bracelangchain/deepagents-sandbox:v1"
+DEFAULT_TEMPLATE_NAME = os.getenv("DEFAULT_SANDBOX_TEMPLATE_NAME", "python-slim")
+DEFAULT_TEMPLATE_IMAGE = os.getenv(
+    "DEFAULT_SANDBOX_TEMPLATE_IMAGE", "bracelangchain/deepagents-sandbox:v1"
+)
 
 
 def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE_NAME) -> None:

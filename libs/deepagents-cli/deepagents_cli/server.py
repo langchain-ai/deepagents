@@ -554,6 +554,14 @@ async def _wait_for_sandbox_id(thread_id: str) -> str:
     raise TimeoutError(msg)
 
 
+def graph_loaded_for_execution(config: RunnableConfig) -> bool:
+    return (
+        config["configurable"].get("__is_for_execution__", False)
+        if "configurable" in config
+        else False
+    )
+
+
 async def get_agent(config: RunnableConfig):
     """Get or create an agent with a sandbox for the given thread."""
     thread_id = config["configurable"].get("thread_id", None)
@@ -568,8 +576,8 @@ async def get_agent(config: RunnableConfig):
         github_token = decrypt_token(encrypted_token)
         logger.debug("Decrypted GitHub token")
 
-    if thread_id is None:
-        logger.info("No thread_id, returning agent without sandbox")
+    if thread_id is None or not graph_loaded_for_execution(config):
+        logger.info("No thread_id or not for execution, returning agent without sandbox")
         return create_server_agent(
             model=None,
             assistant_id="agent",

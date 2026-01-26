@@ -20,7 +20,9 @@ LINEAR_WEBHOOK_SECRET = os.environ.get("LINEAR_WEBHOOK_SECRET", "")
 
 LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL", "http://localhost:2024")
 
-LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY", "")
+LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
+    "LANGSMITH_API_KEY_PROD", ""
+)
 LANGSMITH_API_URL = os.environ.get("LANGSMITH_API_URL", "https://api.smith.langchain.com")
 
 GITHUB_OAUTH_PROVIDER_ID = os.environ.get("GITHUB_OAUTH_PROVIDER_ID", "")
@@ -305,12 +307,20 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
         if assignee:
             user_email = assignee.get("email")
 
+    logger.info(
+        "User email: %s, GITHUB_OAUTH_PROVIDER_ID set: %s",
+        user_email,
+        bool(GITHUB_OAUTH_PROVIDER_ID),
+    )
+
     github_token = None
     if user_email and GITHUB_OAUTH_PROVIDER_ID:
         ls_user_id = await get_ls_user_id_from_email(user_email)
+        logger.info("LangSmith user ID for %s: %s", user_email, ls_user_id)
 
         if ls_user_id:
             auth_result = await get_github_token_for_user(ls_user_id)
+            logger.info("Auth result keys: %s", list(auth_result.keys()))
 
             if "token" in auth_result:
                 github_token = auth_result["token"]

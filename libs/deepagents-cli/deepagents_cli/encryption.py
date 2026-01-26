@@ -1,7 +1,5 @@
 """Encryption utilities for sensitive data like tokens."""
 
-import base64
-import hashlib
 import os
 
 from cryptography.fernet import Fernet
@@ -18,18 +16,10 @@ def _get_encryption_key() -> bytes:
     """
     # Check for explicit encryption key first
     explicit_key = os.environ.get("TOKEN_ENCRYPTION_KEY")
-    if explicit_key:
-        return explicit_key.encode()
+    if not explicit_key:
+        raise ValueError("TOKEN_ENCRYPTION_KEY environment variable not set")
 
-    # Fall back to deriving from LANGSMITH_API_KEY
-    langsmith_key = os.environ.get("LANGSMITH_API_KEY", "")
-    if not langsmith_key:
-        # Use a default seed if nothing else available (not recommended for production)
-        langsmith_key = "deepagents-default-key"
-
-    # Derive a 32-byte key using SHA256 and encode as url-safe base64
-    derived = hashlib.sha256(langsmith_key.encode()).digest()
-    return base64.urlsafe_b64encode(derived)
+    return explicit_key.encode()
 
 
 def encrypt_token(token: str) -> str:

@@ -296,9 +296,9 @@ def create_langsmith_sandbox(
         verify_sandbox_ready,
     )
 
-    api_key = os.environ.get("LANGSMITH_API_KEY")
+    api_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGSMITH_API_KEY_PROD")
     if not api_key:
-        msg = "LANGSMITH_API_KEY environment variable not set"
+        msg = "LANGSMITH_API_KEY or LANGSMITH_API_KEY_PROD environment variable not set"
         raise ValueError(msg)
 
     langsmith_endpoint = os.environ.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
@@ -372,9 +372,9 @@ async def create_langsmith_sandbox_async(
 
     from deepagents_cli.integrations.langsmith import LangSmithBackend
 
-    api_key = os.environ.get("LANGSMITH_API_KEY")
+    api_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGSMITH_API_KEY_PROD")
     if not api_key:
-        msg = "LANGSMITH_API_KEY environment variable not set"
+        msg = "LANGSMITH_API_KEY or LANGSMITH_API_KEY_PROD environment variable not set"
         raise ValueError(msg)
 
     langsmith_endpoint = os.environ.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")

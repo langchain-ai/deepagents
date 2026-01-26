@@ -215,8 +215,6 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
         Raises:
             NotImplementedError: If sandbox retrieval not supported
         """
-        # Import console here to avoid circular import
-
         # Note: Daytona SDK may not support retrieving by ID yet
         # This is a placeholder implementation
         msg = "Deleting Daytona sandbox by ID not yet implemented"

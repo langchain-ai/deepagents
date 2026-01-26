@@ -202,7 +202,7 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
 
         return RunloopBackend(devbox_id=devbox.id, client=self._client)
 
-    def delete(self, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Runloop devbox.
 
         Args:

@@ -210,7 +210,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
 
         return ModalBackend(sandbox)
 
-    def delete(self, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Modal sandbox.
 
         Args:

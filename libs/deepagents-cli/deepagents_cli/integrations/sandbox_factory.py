@@ -101,7 +101,7 @@ def create_sandbox(
         if should_cleanup:
             try:
                 console.print(f"[dim]Terminating {provider} sandbox {backend.id}...[/dim]")
-                provider_obj.delete(backend.id)
+                provider_obj.delete(sandbox_id=backend.id)
                 console.print(
                     f"[dim]✓ {provider.capitalize()} sandbox {backend.id} terminated[/dim]"
                 )

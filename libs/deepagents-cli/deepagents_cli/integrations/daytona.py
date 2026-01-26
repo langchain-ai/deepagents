@@ -203,7 +203,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
 
         return DaytonaBackend(sandbox)
 
-    def delete(self, sandbox_id: str, **kwargs: Any) -> None:
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Daytona sandbox.
 
         Note: This requires retrieving the sandbox first which may not be supported.

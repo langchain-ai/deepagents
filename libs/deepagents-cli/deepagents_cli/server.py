@@ -594,6 +594,13 @@ async def get_agent(config: RunnableConfig):
             sandbox_backend = await sandbox_cm.__aenter__()
             logger.info("Sandbox created: %s", sandbox_backend.id)
 
+            # Update metadata immediately after sandbox creation so other callers
+            # can connect to the sandbox while we clone the repo
+            await client.threads.update(
+                thread_id=thread_id,
+                metadata={"sandbox_id": sandbox_backend.id},
+            )
+
             repo_dir = None
             if repo_owner and repo_name:
                 logger.info("Cloning repo %s/%s into sandbox", repo_owner, repo_name)
@@ -602,13 +609,11 @@ async def get_agent(config: RunnableConfig):
                 )
                 logger.info("Repo cloned to %s", repo_dir)
 
-            await client.threads.update(
-                thread_id=thread_id,
-                metadata={
-                    "sandbox_id": sandbox_backend.id,
-                    "repo_dir": repo_dir,
-                },
-            )
+                # Update repo_dir in metadata after clone completes
+                await client.threads.update(
+                    thread_id=thread_id,
+                    metadata={"repo_dir": repo_dir},
+                )
         except Exception as e:
             logger.error("Failed to create sandbox or clone repo: %s", e, exc_info=True)
             try:

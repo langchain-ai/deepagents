@@ -6,6 +6,7 @@ import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
+import warnings
 
 import wcmatch.glob as wcglob
 
@@ -60,90 +61,193 @@ class FilesystemBackend(BackendProtocol):
         2. Exclude secrets from accessible filesystem paths (especially in CI/CD)
         3. Use `SandboxBackend` for production environments requiring filesystem
             interaction
-        4. **Always** use `virtual_mode=True` with `root_dir` to enable path-based
-            access restrictions (blocks `..`, `~`, and absolute paths outside root).
-            Note that the default (`virtual_mode=False`) provides no security even with
-            `root_dir` set.
+        4. Use `restrict_to_root=True` with `root_dir` to enable path-based
+           access restrictions (blocks `..`, `~`, and absolute paths outside root).
+           In a future version, `restrict_to_root` will default to `True` for safety.
     """
 
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool = False,
+        virtual_mode: bool | None = None,
+        *,
+        restrict_to_root: bool | None = None,
+        allowed_paths: list[str | Path] | None = None,
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
 
         Args:
-            root_dir: Optional root directory for file operations.
+            root_dir: Base directory for resolving relative paths.
+                Defaults to current working directory.
 
-                - If not provided, defaults to the current working directory.
-                - When `virtual_mode=False` (default): Only affects relative path
-                    resolution. Provides **no security** - agents can access any file
-                    using absolute paths or `..` sequences.
-                - When `virtual_mode=True`: All paths are restricted to this
-                    directory with traversal protection enabled.
+            virtual_mode: **DEPRECATED**. Use `restrict_to_root` instead.
+                This parameter will be removed in a future version.
 
-            virtual_mode: Enable path-based access restrictions.
+            restrict_to_root: Whether to restrict file access to root_dir.
+                - True: Restrict to root_dir (blocks traversal, enforces boundary)
+                - False: No restrictions, full filesystem access (unless allowed_paths is set)
+                - None: Currently defaults to False with a warning.
+                  This parameter will default to True in a future version.
 
-                When `True`, all paths are treated as virtual paths anchored to
-                `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
-                are verified to remain within `root_dir`.
+            allowed_paths: List of directories to restrict file access to.
+                
+                When specified, only these directories are accessible (root_dir is NOT
+                automatically included unless restrict_to_root=True).
+                
+                Can be combined with restrict_to_root=True to allow root_dir plus
+                these additional directories. If restrict_to_root=False (or None) and
+                allowed_paths is specified, ONLY the directories in allowed_paths are
+                accessible, not root_dir.
 
-                When `False` (default), **no security is provided**:
-
-                - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
-                - Relative paths with `..` can escape `root_dir`
-                - Agents have unrestricted filesystem access
-
-                **Security note:** `virtual_mode=True` provides path-based access
-                control, not process isolation. It restricts which files can be
-                accessed via paths, but does not sandbox the Python process itself.
+                When path restrictions are enabled (restrict_to_root=True or
+                allowed_paths specified), blocks `..` and `~` and verifies all
+                resolved paths remain within allowed directories.
 
             max_file_size_mb: Maximum file size in megabytes for operations like
                 grep's Python fallback search.
 
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
+
+        Raises:
+            ValueError: If allowed_paths is an empty list.
+
+        Examples:
+            Restrict to project directory (recommended):
+
+            ```python
+            backend = FilesystemBackend(
+                root_dir="/project",
+                restrict_to_root=True
+            )
+            ```
+
+            Explicitly opt out of restrictions (use with caution):
+
+            ```python
+            backend = FilesystemBackend(restrict_to_root=False)
+            ```
+
+            Allow root_dir plus additional directories:
+
+            ```python
+            backend = FilesystemBackend(
+                root_dir="/project",
+                restrict_to_root=True,
+                allowed_paths=["/data", "/home/user/.config"]
+            )
+            ```
+
+            Allow only specific directories (not including root):
+
+            ```python
+            # Note: root_dir is used for path resolution but is NOT accessible
+            # Only /data and /tmp are accessible
+            backend = FilesystemBackend(
+                root_dir="/project",
+                restrict_to_root=False,  # Optional: makes intent explicit
+                allowed_paths=["/data", "/tmp"]
+            )
+            ```
         """
+        # Handle parameter migration and defaults
+        # Goal: Migrate from virtual_mode AND require explicit restrict_to_root
+        
+        if restrict_to_root is not None:
+            # User explicitly set restrict_to_root - no warnings needed
+            # (This is the desired end state)
+            pass
+        elif virtual_mode is not None:
+            # User is using deprecated virtual_mode parameter
+            warnings.warn(
+                "The 'virtual_mode' parameter is deprecated and will be removed in a future version. "
+                "Use 'restrict_to_root' instead for the same behavior.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            restrict_to_root = virtual_mode
+        else:
+            # Neither parameter specified - warn about missing explicit choice
+            warnings.warn(
+                "The default value of 'restrict_to_root' will change to True in a future version for security. "
+                "Explicitly set restrict_to_root=False or restrict_to_root=True.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            restrict_to_root = False
+
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
-        self.virtual_mode = virtual_mode
+
+        # Build list of allowed directories
+        allowed_dirs: list[Path] = []
+
+        if restrict_to_root:
+            allowed_dirs.append(self.cwd)
+
+        if allowed_paths is not None:
+            if isinstance(allowed_paths, list) and len(allowed_paths) == 0:
+                raise ValueError(
+                    "allowed_paths cannot be an empty list. "
+                    "Use None for no additional paths, or omit the parameter."
+                )
+            allowed_dirs.extend(Path(p).resolve() for p in allowed_paths)
+
+        # Store as None if no restrictions, otherwise store the list
+        self._allowed_dirs: list[Path] | None = allowed_dirs if allowed_dirs else None
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
     def _resolve_path(self, key: str) -> Path:
         """Resolve a file path with security checks.
 
-        When `virtual_mode=True`, treat incoming paths as virtual absolute paths under
-        `self.cwd`, disallow traversal (`..`, `~`) and ensure resolved path stays within
-        root.
+        When path restrictions are enabled (_allowed_dirs is not None),
+        treat incoming paths as virtual paths, block traversal, and verify
+        the resolved path is within an allowed directory.
 
-        When `virtual_mode=False`, preserve legacy behavior: absolute paths are allowed
-        as-is; relative paths resolve under cwd.
+        When unrestricted (_allowed_dirs is None), preserve legacy behavior:
+        absolute paths are used as-is, relative paths resolve under cwd.
 
         Args:
-            key: File path (absolute, relative, or virtual when `virtual_mode=True`).
+            key: File path (absolute or relative).
 
         Returns:
-            Resolved absolute `Path` object.
+            Resolved absolute Path object.
 
         Raises:
-            ValueError: If path traversal is attempted in `virtual_mode` or if the
-                resolved path escapes the root directory.
+            ValueError: If path traversal is attempted when restrictions are
+                enabled, or if the resolved path is outside all allowed directories.
         """
-        if self.virtual_mode:
-            vpath = key if key.startswith("/") else "/" + key
-            if ".." in vpath or vpath.startswith("~"):
-                raise ValueError("Path traversal not allowed")
-            full = (self.cwd / vpath.lstrip("/")).resolve()
-            try:
-                full.relative_to(self.cwd)
-            except ValueError:
-                raise ValueError(f"Path:{full} outside root directory: {self.cwd}") from None
-            return full
+        if self._allowed_dirs is None:
+            # Unrestricted mode - legacy behavior
+            path = Path(key)
+            return path if path.is_absolute() else (self.cwd / path).resolve()
 
-        path = Path(key)
-        if path.is_absolute():
-            return path
-        return (self.cwd / path).resolve()
+        # Restricted mode - treat as virtual path under root
+        vpath = key if key.startswith("/") else "/" + key
+
+        if ".." in vpath or vpath.startswith("~"):
+            raise ValueError(
+                f"Path traversal not allowed when restrictions are enabled: {key}"
+            )
+
+        # Resolve against cwd
+        full = (self.cwd / vpath.lstrip("/")).resolve()
+
+        # Verify path is within at least one allowed directory
+        if not any(self._is_within_dir(full, allowed) for allowed in self._allowed_dirs):
+            allowed_str = ", ".join(str(d) for d in self._allowed_dirs)
+            raise ValueError(
+                f"Path '{full}' is outside allowed directories: {allowed_str}"
+            )
+
+        return full
+
+    def _is_within_dir(self, path: Path, directory: Path) -> bool:
+        """Check if path is within directory (after resolving symlinks)."""
+        try:
+            path.relative_to(directory)
+            return True
+        except ValueError:
+            return False
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
@@ -178,8 +282,8 @@ class FilesystemBackend(BackendProtocol):
 
                 abs_path = str(child_path)
 
-                if not self.virtual_mode:
-                    # Non-virtual mode: use absolute paths
+                if self._allowed_dirs is None:
+                    # Unrestricted mode: use absolute paths
                     if is_file:
                         try:
                             st = child_path.stat()
@@ -207,7 +311,7 @@ class FilesystemBackend(BackendProtocol):
                         except OSError:
                             results.append({"path": abs_path + "/", "is_dir": True})
                 else:
-                    # Virtual mode: strip cwd prefix
+                    # Restricted mode: strip cwd prefix to return virtual paths
                     if abs_path.startswith(cwd_str):
                         relative_path = abs_path[len(cwd_str) :]
                     elif abs_path.startswith(str(self.cwd)):
@@ -468,7 +572,7 @@ class FilesystemBackend(BackendProtocol):
             if not ftext:
                 continue
             p = Path(ftext)
-            if self.virtual_mode:
+            if self._allowed_dirs is not None:
                 try:
                     virt = "/" + str(p.resolve().relative_to(self.cwd))
                 except Exception:
@@ -523,7 +627,7 @@ class FilesystemBackend(BackendProtocol):
                 continue
             for line_num, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
-                    if self.virtual_mode:
+                    if self._allowed_dirs is not None:
                         try:
                             virt_path = "/" + str(fp.resolve().relative_to(self.cwd))
                         except Exception:
@@ -563,7 +667,7 @@ class FilesystemBackend(BackendProtocol):
                 if not is_file:
                     continue
                 abs_path = str(matched_path)
-                if not self.virtual_mode:
+                if self._allowed_dirs is None:
                     try:
                         st = matched_path.stat()
                         results.append(

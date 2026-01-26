@@ -48,7 +48,7 @@ def list_skills(
 
     # Load user skills first (foundation)
     if user_skills_dir and user_skills_dir.exists():
-        user_backend = FilesystemBackend(root_dir=str(user_skills_dir))
+        user_backend = FilesystemBackend(root_dir=str(user_skills_dir), restrict_to_root=True)
         user_skills = list_skills_from_backend(backend=user_backend, source_path=".")
         for skill in user_skills:
             # Add source field for CLI display
@@ -57,7 +57,7 @@ def list_skills(
 
     # Load project skills second (override/augment)
     if project_skills_dir and project_skills_dir.exists():
-        project_backend = FilesystemBackend(root_dir=str(project_skills_dir))
+        project_backend = FilesystemBackend(root_dir=str(project_skills_dir), restrict_to_root=True)
         project_skills = list_skills_from_backend(backend=project_backend, source_path=".")
         for skill in project_skills:
             # Add source field for CLI display

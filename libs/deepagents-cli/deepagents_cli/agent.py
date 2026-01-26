@@ -392,7 +392,7 @@ def create_cli_agent(
 
         agent_middleware.append(
             MemoryMiddleware(
-                backend=FilesystemBackend(),
+                backend=FilesystemBackend(restrict_to_root=False),
                 sources=memory_sources,
             )
         )
@@ -405,7 +405,7 @@ def create_cli_agent(
 
         agent_middleware.append(
             SkillsMiddleware(
-                backend=FilesystemBackend(),
+                backend=FilesystemBackend(restrict_to_root=False),
                 sources=sources,
             )
         )
@@ -413,7 +413,7 @@ def create_cli_agent(
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
-        backend = FilesystemBackend()
+        backend = FilesystemBackend(restrict_to_root=False)
 
         # Local context middleware (git info, directory tree, etc.)
         agent_middleware.append(LocalContextMiddleware())
@@ -458,7 +458,7 @@ def create_cli_agent(
         large_results_dir = tempfile.mkdtemp(prefix="deepagents_large_results_")
         large_results_backend = FilesystemBackend(
             root_dir=large_results_dir,
-            virtual_mode=True,
+            restrict_to_root=True,
         )
         composite_backend = CompositeBackend(
             default=backend,

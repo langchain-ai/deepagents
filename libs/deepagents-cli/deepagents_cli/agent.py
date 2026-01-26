@@ -3,10 +3,8 @@
 import os
 import shutil
 import tempfile
-from pathlib import Path
 from collections.abc import Sequence
-
-from langchain.agents.middleware.types import AgentMiddleware
+from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
@@ -16,7 +14,7 @@ from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 from langchain.agents.middleware import (
     InterruptOnConfig,
 )
-from langchain.agents.middleware.types import AgentState
+from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain.messages import ToolCall
 from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel

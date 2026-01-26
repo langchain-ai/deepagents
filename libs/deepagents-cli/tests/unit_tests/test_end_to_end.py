@@ -139,11 +139,7 @@ class TestDeepAgentsCLIEndToEnd:
             assert "Task completed successfully!" in final_ai_message.content
 
     def test_cli_agent_summarizes(self, tmp_path: Path) -> None:
-        """Test basic CLI agent functionality with a fake LLM model.
-
-        This test verifies that a CLI agent can be created and invoked with
-        a fake LLM model that returns predefined responses.
-        """
+        """Test summarization."""
         with mock_settings(tmp_path):
             model = FixedGenericFakeChatModel(
                 messages=iter(

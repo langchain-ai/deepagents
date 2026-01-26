@@ -129,11 +129,13 @@ def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE
     Raises:
         RuntimeError: If template check or creation fails
     """
-    from langsmith.sandbox import TemplateNotFoundError
+    from langsmith.sandbox import ResourceNotFoundError
 
     try:
         client.get_template(template_name)
-    except TemplateNotFoundError:
+    except ResourceNotFoundError as e:
+        if e.resource_type != "template":
+            raise
         console.print(f"[dim]Creating template '{template_name}'...[/dim]")
         try:
             client.create_template(name=template_name, image=DEFAULT_TEMPLATE_IMAGE)

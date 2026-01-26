@@ -753,7 +753,7 @@ requires-dist = [
     { name = "langchain", specifier = ">=1.2.3,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.1.7,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
-    { name = "langsmith", specifier = ">=0.4.0" },
+    { name = "langsmith", git = "https://github.com/langchain-ai/langsmith-sdk?subdirectory=python&branch=main" },
     { name = "markdownify", specifier = ">=0.13.0" },
     { name = "modal", specifier = ">=0.65.0" },
     { name = "pillow", specifier = ">=10.0.0" },
@@ -1441,7 +1441,7 @@ wheels = [
 [[package]]
 name = "langsmith"
 version = "0.6.4"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/langchain-ai/langsmith-sdk?subdirectory=python&branch=main#7c6fb2baa46eb02634b0753cda5fea83f887f598" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson", marker = "platform_python_implementation != 'PyPy'" },
@@ -1451,10 +1451,6 @@ dependencies = [
     { name = "requests-toolbelt" },
     { name = "uuid-utils" },
     { name = "zstandard" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e7/85/9c7933052a997da1b85bc5c774f3865e9b1da1c8d71541ea133178b13229/langsmith-0.6.4.tar.gz", hash = "sha256:36f7223a01c218079fbb17da5e536ebbaf5c1468c028abe070aa3ae59bc99ec8", size = 919964, upload-time = "2026-01-15T20:02:28.873Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/0f/09a6637a7ba777eb307b7c80852d9ee26438e2bdafbad6fcc849ff9d9192/langsmith-0.6.4-py3-none-any.whl", hash = "sha256:ac4835860160be371042c7adbba3cb267bcf8d96a5ea976c33a8a4acad6c5486", size = 283503, upload-time = "2026-01-15T20:02:26.662Z" },
 ]
 
 [[package]]

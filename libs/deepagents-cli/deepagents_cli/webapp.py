@@ -342,6 +342,19 @@ Once authenticated, reply to this issue mentioning @openswe to retry."""
                 return
             else:
                 logger.warning("Auth result has neither token nor auth_url: %s", auth_result)
+        else:
+            # User not found in LangSmith workspace
+            logger.warning("User %s not found in LangSmith workspace", user_email)
+            comment = f"""🔐 **GitHub Authentication Required**
+
+Could not find a LangSmith account for **{user_email}**.
+
+Please ensure this email is invited to the main LangSmith organization. If your Linear account uses a different email than your LangSmith account, you may need to update one of them to match.
+
+Once your email is added to LangSmith, reply to this issue mentioning @openswe to retry."""
+
+            await comment_on_linear_issue(issue_id, comment)
+            return
 
     title = full_issue.get("title", "No title")
     description = full_issue.get("description") or "No description"
@@ -417,6 +430,27 @@ Please analyze this issue and implement the necessary changes. When you're done,
         logger.info("LangGraph run created successfully for thread %s", thread_id)
     else:
         logger.warning("No GitHub token available, cannot create run for issue %s", issue_id)
+        # Send a comment explaining why we couldn't proceed
+        if not user_email:
+            comment = """🔐 **GitHub Authentication Required**
+
+Could not determine the user email from this issue. Please ensure your Linear account has an email address configured.
+
+Reply to this issue mentioning @openswe to retry."""
+        elif not GITHUB_OAUTH_PROVIDER_ID:
+            comment = """❌ **Configuration Error**
+
+The Open SWE agent is not properly configured (missing GitHub OAuth provider).
+
+Please contact your administrator."""
+        else:
+            comment = """🔐 **GitHub Authentication Required**
+
+Unable to authenticate with GitHub. Please ensure you have connected your GitHub account in LangSmith.
+
+Reply to this issue mentioning @openswe to retry."""
+
+        await comment_on_linear_issue(issue_id, comment)
 
 
 def verify_linear_signature(body: bytes, signature: str, secret: str) -> bool:

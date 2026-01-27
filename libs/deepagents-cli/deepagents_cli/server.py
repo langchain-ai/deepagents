@@ -101,10 +101,9 @@ async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
             return False
 
 
-class LinearNotifyState(TypedDict, total=False):
-    """Custom state for tracking Linear notifications."""
+class LinearNotifyState(AgentState, total=False):
+    """Extended agent state for tracking Linear notifications."""
 
-    messages: list[Any]
     linear_messages_sent_count: int
 
 
@@ -116,8 +115,10 @@ async def post_to_linear_after_model(
 
     Only posts if:
     - This is a Linear-triggered conversation (has linear_issue in config)
-    - A human message was just processed (not tool results)
-    - The AI message hasn't already been sent
+    - There's exactly 1 human message (initial request)
+    - The previous message was from human (not a tool result)
+    - The AI response has text content (not just tool calls)
+    - The message hasn't already been sent (tracked via linear_messages_sent_count)
     """
     try:
         config = get_config()

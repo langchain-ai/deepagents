@@ -4,9 +4,11 @@ import hashlib
 import hmac
 import logging
 import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+import jwt
 
 logger = logging.getLogger(__name__)
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -30,6 +32,38 @@ LANGSMITH_API_URL = os.environ.get("LANGSMITH_API_URL", "https://api.smith.langc
 GITHUB_OAUTH_PROVIDER_ID = os.environ.get("GITHUB_OAUTH_PROVIDER_ID", "")
 
 LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")
+
+X_SERVICE_AUTH_JWT_SECRET = os.environ.get("X_SERVICE_AUTH_JWT_SECRET", "")
+
+
+def get_service_jwt_token_for_user(ls_user_id: str, expiration_seconds: int = 300) -> str:
+    """Create a short-lived service JWT for authenticating as a specific user.
+
+    Args:
+        ls_user_id: The LangSmith user ID to associate with the token
+        expiration_seconds: Token expiration time in seconds (default: 5 minutes)
+
+    Returns:
+        JWT token string
+
+    Raises:
+        ValueError: If X_SERVICE_AUTH_JWT_SECRET is not configured
+    """
+    if not X_SERVICE_AUTH_JWT_SECRET:
+        raise ValueError(
+            "X_SERVICE_AUTH_JWT_SECRET is not configured. Cannot generate service keys."
+        )
+
+    exp_datetime = datetime.now(tz=UTC) + timedelta(seconds=expiration_seconds)
+    exp = int(exp_datetime.timestamp())
+
+    payload = {
+        "sub": ls_user_id,
+        "exp": exp,
+        "ls_user_id": ls_user_id,
+    }
+
+    return jwt.encode(payload, X_SERVICE_AUTH_JWT_SECRET, algorithm="HS256")
 
 LINEAR_TEAM_TO_REPO: dict[str, dict[str, str]] = {
     "Brace's test workspace": {"owner": "langchain-ai", "name": "open-swe"},
@@ -81,9 +115,12 @@ async def get_github_token_for_user(ls_user_id: str) -> dict[str, Any]:
         return {"error": "GITHUB_OAUTH_PROVIDER_ID not configured"}
 
     try:
+        # Generate a service JWT token associated with the user
+        service_token = get_service_jwt_token_for_user(ls_user_id)
+
         from langchain_auth import Client
 
-        client = Client(api_key=LANGSMITH_API_KEY)
+        client = Client(api_key=service_token)
 
         auth_result = await client.authenticate(
             provider=GITHUB_OAUTH_PROVIDER_ID,
@@ -297,17 +334,24 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
         full_issue = issue_data
 
     user_email = None
+    user_name = None
     comment_author = issue_data.get("comment_author", {})
     if comment_author:
         user_email = comment_author.get("email")
+        user_name = comment_author.get("name")
     if not user_email:
         creator = full_issue.get("creator", {})
         if creator:
             user_email = creator.get("email")
+            user_name = user_name or creator.get("name")
     if not user_email:
         assignee = full_issue.get("assignee", {})
         if assignee:
             user_email = assignee.get("email")
+            user_name = user_name or assignee.get("name")
+
+    # Create a mention tag for the user
+    user_mention = f"@{user_name}" if user_name else ""
 
     logger.info(
         "User email: %s, GITHUB_OAUTH_PROVIDER_ID set: %s",
@@ -330,7 +374,7 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
             elif "auth_url" in auth_result:
                 auth_url = auth_result["auth_url"]
                 logger.info("GitHub auth required for user %s, sending auth URL", user_email)
-                comment = f"""🔐 **GitHub Authentication Required**
+                comment = f"""🔐 **GitHub Authentication Required** {user_mention}
 
 To allow the Open SWE agent to work on this issue, please authenticate with GitHub by clicking the link below:
 
@@ -345,7 +389,7 @@ Once authenticated, reply to this issue mentioning @openswe to retry."""
         else:
             # User not found in LangSmith workspace
             logger.warning("User %s not found in LangSmith workspace", user_email)
-            comment = f"""🔐 **GitHub Authentication Required**
+            comment = f"""🔐 **GitHub Authentication Required** {user_mention}
 
 Could not find a LangSmith account for **{user_email}**.
 
@@ -432,19 +476,19 @@ Please analyze this issue and implement the necessary changes. When you're done,
         logger.warning("No GitHub token available, cannot create run for issue %s", issue_id)
         # Send a comment explaining why we couldn't proceed
         if not user_email:
-            comment = """🔐 **GitHub Authentication Required**
+            comment = f"""🔐 **GitHub Authentication Required** {user_mention}
 
 Could not determine the user email from this issue. Please ensure your Linear account has an email address configured.
 
 Reply to this issue mentioning @openswe to retry."""
         elif not GITHUB_OAUTH_PROVIDER_ID:
-            comment = """❌ **Configuration Error**
+            comment = f"""❌ **Configuration Error** {user_mention}
 
 The Open SWE agent is not properly configured (missing GitHub OAuth provider).
 
 Please contact your administrator."""
         else:
-            comment = """🔐 **GitHub Authentication Required**
+            comment = f"""🔐 **GitHub Authentication Required** {user_mention}
 
 Unable to authenticate with GitHub. Please ensure you have connected your GitHub account in LangSmith.
 

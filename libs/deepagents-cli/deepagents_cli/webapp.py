@@ -36,11 +36,12 @@ LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")
 X_SERVICE_AUTH_JWT_SECRET = os.environ.get("X_SERVICE_AUTH_JWT_SECRET", "")
 
 
-def get_service_jwt_token_for_user(ls_user_id: str, expiration_seconds: int = 300) -> str:
+def get_service_jwt_token_for_user(tenant_id: str, user_id: str, expiration_seconds: int = 300) -> str:
     """Create a short-lived service JWT for authenticating as a specific user.
 
     Args:
-        ls_user_id: The LangSmith user ID to associate with the token
+        tenant_id: The LangSmith tenant ID to associate with the token
+        user_id: The LangSmith user ID to associate with the token
         expiration_seconds: Token expiration time in seconds (default: 5 minutes)
 
     Returns:
@@ -58,9 +59,10 @@ def get_service_jwt_token_for_user(ls_user_id: str, expiration_seconds: int = 30
     exp = int(exp_datetime.timestamp())
 
     payload = {
-        "sub": ls_user_id,
+        "sub": "unspecified",
         "exp": exp,
-        "ls_user_id": ls_user_id,
+        "tenant_id": tenant_id,
+        "user_id": ls_user_id,
     }
 
     return jwt.encode(payload, X_SERVICE_AUTH_JWT_SECRET, algorithm="HS256")
@@ -123,7 +125,7 @@ async def get_github_token_for_user(ls_user_id: str, tenant_id: str) -> dict[str
 
     try:
         # Generate a service JWT token associated with the user
-        service_token = get_service_jwt_token_for_user(ls_user_id)
+        service_token = get_service_jwt_token_for_user(tenant_id, ls_user_id)
 
         headers = {
             "X-Service-Key": service_token,

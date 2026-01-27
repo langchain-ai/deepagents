@@ -70,17 +70,17 @@ LINEAR_TEAM_TO_REPO: dict[str, dict[str, str]] = {
 }
 
 
-async def get_ls_user_id_from_email(email: str) -> str | None:
-    """Get the LangSmith user ID (ls_user_id) from a user's email.
+async def get_ls_user_id_from_email(email: str) -> dict[str, str | None]:
+    """Get the LangSmith user ID and tenant ID from a user's email.
 
     Args:
         email: The user's email address
 
     Returns:
-        The ls_user_id if found, None otherwise
+        Dict with 'ls_user_id' and 'tenant_id' keys (values may be None if not found)
     """
     if not LANGSMITH_API_KEY:
-        return None
+        return {"ls_user_id": None, "tenant_id": None}
 
     url = f"{LANGSMITH_API_URL}/api/v1/workspaces/current/members/active"
 
@@ -95,18 +95,25 @@ async def get_ls_user_id_from_email(email: str) -> str | None:
             members = response.json()
 
             if members and len(members) > 0:
-                ls_user_id = members[0].get("ls_user_id")
-                return ls_user_id
-            return None
+                member = members[0]
+                return {
+                    "ls_user_id": member.get("ls_user_id"),
+                    "tenant_id": member.get("tenant_id"),
+                }
+            return {"ls_user_id": None, "tenant_id": None}
         except Exception:
-            return None
+            return {"ls_user_id": None, "tenant_id": None}
 
 
-async def get_github_token_for_user(ls_user_id: str) -> dict[str, Any]:
+LANGSMITH_HOST_API_URL = os.environ.get("LANGSMITH_HOST_API_URL", "https://api.host.langchain.com")
+
+
+async def get_github_token_for_user(ls_user_id: str, tenant_id: str) -> dict[str, Any]:
     """Get GitHub OAuth token for a user via LangSmith agent auth.
 
     Args:
         ls_user_id: The LangSmith user ID
+        tenant_id: The LangSmith tenant ID
 
     Returns:
         Dict with either 'token' key or 'auth_url' key
@@ -118,22 +125,39 @@ async def get_github_token_for_user(ls_user_id: str) -> dict[str, Any]:
         # Generate a service JWT token associated with the user
         service_token = get_service_jwt_token_for_user(ls_user_id)
 
-        from langchain_auth import Client
+        headers = {
+            "X-Service-Key": service_token,
+            "X-Tenant-Id": tenant_id,
+            "X-User-Id": ls_user_id,
+        }
 
-        client = Client(api_key=service_token)
+        payload = {
+            "provider": GITHUB_OAUTH_PROVIDER_ID,
+            "scopes": ["repo"],
+            "user_id": ls_user_id,
+            "ls_user_id": ls_user_id,
+        }
 
-        auth_result = await client.authenticate(
-            provider=GITHUB_OAUTH_PROVIDER_ID,
-            scopes=["repo"],
-            user_id=ls_user_id,
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{LANGSMITH_HOST_API_URL}/v2/auth/authenticate",
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+            response_data = response.json()
 
-        if hasattr(auth_result, "token") and auth_result.token:
-            return {"token": auth_result.token}
-        if hasattr(auth_result, "url") and auth_result.url:
-            return {"auth_url": auth_result.url}
-        return {"error": "Unexpected auth result"}
+            token = response_data.get("token")
+            auth_url = response_data.get("url")
 
+            if token:
+                return {"token": token}
+            if auth_url:
+                return {"auth_url": auth_url}
+            return {"error": f"Unexpected auth result: {response_data}"}
+
+    except httpx.HTTPStatusError as e:
+        return {"error": f"HTTP error: {e.response.status_code} - {e.response.text}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -361,11 +385,13 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
 
     github_token = None
     if user_email and GITHUB_OAUTH_PROVIDER_ID:
-        ls_user_id = await get_ls_user_id_from_email(user_email)
-        logger.info("LangSmith user ID for %s: %s", user_email, ls_user_id)
+        user_info = await get_ls_user_id_from_email(user_email)
+        ls_user_id = user_info.get("ls_user_id")
+        tenant_id = user_info.get("tenant_id")
+        logger.info("LangSmith user ID for %s: %s, tenant_id: %s", user_email, ls_user_id, tenant_id)
 
-        if ls_user_id:
-            auth_result = await get_github_token_for_user(ls_user_id)
+        if ls_user_id and tenant_id:
+            auth_result = await get_github_token_for_user(ls_user_id, tenant_id)
             logger.info("Auth result keys: %s", list(auth_result.keys()))
 
             if "token" in auth_result:

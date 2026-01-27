@@ -27,6 +27,8 @@ Deep Agents is an agent harness.  An opinionated, ready-to-run agent out of the 
 
 ```bash
 pip install deepagents
+# or
+uv add deepagents
 ```
 
 ```python
@@ -77,7 +79,7 @@ The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, 
 - **Provider agnostic** — Works with Claude, OpenAI, Google, or any LangChain-compatible model
 - **Built on LangGraph** — Production-ready runtime with streaming, persistence, and checkpointing
 - **Batteries included** — Planning, file access, sub-agents, and context management work out of the box
-- **Get started in seconds** — `pip install deepagents` and you have a working agent
+- **Get started in seconds** — `pip install deepagents` or `uv add deepagents` and you have a working agent
 - **Customize in minutes** — Add tools, swap models, tune prompts when you need to
 
 ## Resources

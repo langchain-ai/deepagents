@@ -20,7 +20,9 @@ from deepagents.backends import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
+from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
 from tests.utils import assert_all_deepagent_qualities
 
 
@@ -874,9 +876,8 @@ class TestDeepAgentEndToEnd:
         assert "Output was truncated due to size limits" in file_content
         assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
 
-        # Verify the content is actually truncated (should be 80k chars + truncation message)
-        assert len(file_content) < 85000
-        assert len(file_content) > 80000  # Should include the 80k truncated content
+        # Verify the content stays under threshold (including truncation message)
+        assert len(file_content) <= 80000
 
     @pytest.mark.parametrize("backend_factory", BACKEND_FACTORIES)
     def test_deep_agent_read_file_no_truncation_small_file(self, tmp_path: Path, backend_factory: Callable[[Path], BackendProtocol]) -> None:
@@ -1124,3 +1125,64 @@ class TestDeepAgentEndToEnd:
 
         # To get more of the line, the model would need to increase limit, not offset
         # E.g., read_file(offset=0, limit=20) would get first 20 formatted lines
+
+    def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
+        """Test that read_file doesn't return excessive chars for a single-line file.
+
+        When tool results are evicted via str(dict), they become a single line.
+        read_file chunks this into 100 lines x 5000 chars = 500K chars - potential token overflow.
+        This test verifies that the truncation logic prevents such overflow.
+        """
+        max_reasonable_chars = TOOL_RESULT_TOKEN_LIMIT * NUM_CHARS_PER_TOKEN  # 80,000 chars
+
+        # str(dict) produces no newlines—exactly how evicted tool results are serialized
+        large_dict = {"records": [{"id": i, "data": "x" * 100} for i in range(4000)]}
+        large_content = str(large_dict)
+        assert "\n" not in large_content
+
+        fake_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {
+                                    "file_path": "/large_tool_results/evicted_data",
+                                    "content": large_content,
+                                },
+                                "id": "call_write",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/large_tool_results/evicted_data"},
+                                "id": "call_read",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(content="Done reading the file."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=fake_model)
+        result = agent.invoke({"messages": [HumanMessage(content="Write and read a large file")]})
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        read_file_response = tool_messages[-1]
+
+        # Verify truncation occurred and result stays under threshold
+        assert "Output was truncated due to size limits" in read_file_response.content, "Expected truncation message for large single-line file"
+        assert len(read_file_response.content) <= max_reasonable_chars, (
+            f"read_file returned {len(read_file_response.content):,} chars. "
+            f"Expected <= {max_reasonable_chars:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "
+            f"A single-line file should not cause token overflow."
+        )

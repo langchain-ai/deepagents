@@ -26,6 +26,9 @@ dependencies = [
   "aiosqlite>=0.19.0",
 ]
 
+[project.optional-dependencies]
+vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
+
 [project.scripts]
 deepagents = "deepagents_cli:cli_main"
 deepagents-cli = "deepagents_cli:cli_main"
@@ -109,7 +112,7 @@ ignore-var-parameters = true
 "deepagents_cli/app.py" = ["E501", "PLR0915", "SIM108", "TC001", "TC002", "TC003"]
 "deepagents_cli/cli.py" = ["E501", "EM101", "EM102", "PLR0912", "PLR0915", "T201", "TC002", "TC003", "TRY003"]
 "deepagents_cli/clipboard.py" = ["BLE001", "PTH123", "S112", "TRY300"]
-"deepagents_cli/config.py" = ["D107", "E402", "E501", "ERA001", "FBT001", "FBT002", "RET503"]
+"deepagents_cli/config.py" = ["D107", "E402", "E501", "ERA001", "FBT001", "FBT002", "PLR0912", "PLR0915", "RET503"]
 "deepagents_cli/file_ops.py" = ["ANN401", "BLE001", "D102", "PLR0912", "PLR0915"]
 "deepagents_cli/image_utils.py" = ["BLE001", "PERF401", "PLR0911", "PTH108", "PTH110", "PTH123", "PTH202", "S110", "S603", "S607", "SIM105"]
 "deepagents_cli/input.py" = ["ANN001", "ANN201", "BLE001", "D107", "FBT001", "FBT002", "PLR0912", "PLR0915", "TC002"]

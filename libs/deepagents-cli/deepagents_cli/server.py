@@ -336,15 +336,18 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
                         sandbox_backend.execute, f"cd {repo_dir} && git push origin {target_branch}"
                     )
 
+            # Try to get the default branch from git
             default_branch_result = await asyncio.to_thread(
                 sandbox_backend.execute,
-                f"cd {repo_dir} && git remote show origin | grep 'HEAD branch' | cut -d' ' -f5",
+                f"cd {repo_dir} && git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
             )
-            base_branch = (
-                default_branch_result.output.strip()
-                if default_branch_result.exit_code == 0
-                else "main"
-            )
+            base_branch = default_branch_result.output.strip() if default_branch_result.exit_code == 0 else ""
+
+            # Fallback to main if we couldn't determine the default branch
+            if not base_branch:
+                base_branch = "main"
+
+            logger.info("Using base branch: %s", base_branch)
 
             pr_title = "feat: Open SWE PR"
             pr_body = "Automated PR created by Open SWE agent."

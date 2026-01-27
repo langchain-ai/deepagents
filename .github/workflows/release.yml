@@ -1,17 +1,14 @@
 # Builds and publishes deepagents packages to PyPI.
 #
 # Triggers:
-# - Automatically when release-please creates a GitHub release
+# - Automatically via workflow_call from release-please.yml when a release PR is merged
 # - Manually via workflow_dispatch
-# - As a reusable workflow via workflow_call
 #
-# Handles building, testing, and publishing to PyPI with trusted publishing.
+# Flow: build -> release-notes -> test-pypi -> pre-release-checks -> publish -> mark-release
 
 name: "🚀 Package Release"
-run-name: "Release ${{ github.event.release.tag_name || inputs.package }}"
+run-name: "Release ${{ inputs.package }}"
 on:
-  release:
-    types: [published]
   workflow_call:
     inputs:
       package:
@@ -44,27 +41,17 @@ permissions:
   contents: write # Required for creating GitHub releases
 
 jobs:
-  # Determine package name and working directory from release tag or input
+  # Determine working directory from package input
   setup:
     runs-on: ubuntu-latest
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
-      triggered-by-release: ${{ steps.parse.outputs.triggered-by-release }}
     steps:
-      - name: Parse package from release tag or input
+      - name: Parse package input
         id: parse
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            # Parse package name from release tag (format: package==version)
-            TAG="${{ github.event.release.tag_name }}"
-            PACKAGE="${TAG%%==*}"
-            echo "triggered-by-release=true" >> $GITHUB_OUTPUT
-          else
-            PACKAGE="${{ inputs.package }}"
-            echo "triggered-by-release=false" >> $GITHUB_OUTPUT
-          fi
-
+          PACKAGE="${{ inputs.package }}"
           echo "package=$PACKAGE" >> $GITHUB_OUTPUT
 
           # Map package name to working directory
@@ -92,7 +79,7 @@ jobs:
   # Runs in isolated environment with minimal permissions for security
   build:
     needs: setup
-    if: github.event_name == 'release' || github.ref == 'refs/heads/master' || inputs.dangerous-nonmaster-release
+    if: github.ref == 'refs/heads/master' || inputs.dangerous-nonmaster-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -147,13 +134,11 @@ jobs:
               f.write(f"pkg-name={pkg_name}\n")
               f.write(f"version={version}\n")
 
-  # Generate release notes (only for manual/workflow_call triggers)
-  # Skipped when triggered by release event since release-please handles this
+  # Generate release notes from git history
   release-notes:
     needs:
       - setup
       - build
-    if: needs.setup.outputs.triggered-by-release != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -369,7 +354,7 @@ jobs:
 
       - name: Run integration tests
         # Only run integration tests if they exist (currently only for deepagents package)
-        if: false  # Temporarily disabled
+        if: false # Temporarily disabled
         run: make integration_test || echo "No integration tests found, skipping..."
         working-directory: ${{ env.WORKING_DIR }}
 
@@ -417,8 +402,7 @@ jobs:
           # Temp workaround since attestations are on by default as of gh-action-pypi-publish v1.11.0
           attestations: false
 
-  # Create GitHub release (only for manual/workflow_call triggers)
-  # Skipped when triggered by release event since release-please already created it
+  # Create GitHub release after checks pass
   mark-release:
     needs:
       - setup
@@ -427,7 +411,6 @@ jobs:
       - test-pypi-publish
       - pre-release-checks
       - publish
-    if: needs.setup.outputs.triggered-by-release != 'true'
     runs-on: ubuntu-latest
     permissions:
       # This permission is needed by `ncipollo/release-action` to

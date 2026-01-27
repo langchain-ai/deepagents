@@ -1,11 +1,11 @@
-# Creates release PRs and GitHub releases based on conventional commits.
+# Creates release PRs based on conventional commits.
 #
 # When commits land on master, release-please analyzes them and either:
 # - Creates/updates a release PR with changelog and version bump
-# - When a release PR is merged, creates a GitHub release with tags
+# - When a release PR is merged, triggers the release workflow
 #
-# PyPI publishing is handled by release.yml, which triggers on the
-# GitHub release created by this workflow.
+# GitHub releases are created by release.yml after all checks pass,
+# not by release-please directly (skip-github-release: true in config).
 
 name: Release Please
 
@@ -21,8 +21,58 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      deepagents--release_created: ${{ steps.release.outputs['libs/deepagents--release_created'] }}
+      deepagents-cli--release_created: ${{ steps.release.outputs['libs/deepagents-cli--release_created'] }}
+      deepagents-acp--release_created: ${{ steps.release.outputs['libs/acp--release_created'] }}
+      deepagents-harbor--release_created: ${{ steps.release.outputs['libs/harbor--release_created'] }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # Trigger release workflow for each package that was released
+  # GitHub release is created by release.yml AFTER all checks pass
+
+  release-deepagents:
+    needs: release-please
+    if: needs.release-please.outputs.deepagents--release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: deepagents
+    permissions:
+      contents: write
+      id-token: write
+
+  release-deepagents-cli:
+    needs: release-please
+    if: needs.release-please.outputs.deepagents-cli--release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: deepagents-cli
+    permissions:
+      contents: write
+      id-token: write
+
+  release-deepagents-acp:
+    needs: release-please
+    if: needs.release-please.outputs.deepagents-acp--release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: deepagents-acp
+    permissions:
+      contents: write
+      id-token: write
+
+  release-deepagents-harbor:
+    needs: release-please
+    if: needs.release-please.outputs.deepagents-harbor--release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: deepagents-harbor
+    permissions:
+      contents: write
+      id-token: write

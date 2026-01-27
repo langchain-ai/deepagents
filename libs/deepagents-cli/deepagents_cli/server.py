@@ -101,7 +101,7 @@ async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
             return False
 
 
-class LinearNotifyState(AgentState, total=False):
+class LinearNotifyState(AgentState):
     """Extended agent state for tracking Linear notifications."""
 
     linear_messages_sent_count: int

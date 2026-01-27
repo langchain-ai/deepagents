@@ -1,6 +1,7 @@
 """Middleware for providing filesystem tools to an agent."""
 
 # ruff: noqa: E501
+# ruff: noqa: TC002
 from __future__ import annotations
 
 import os
@@ -13,6 +14,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langchain.tools import ToolRuntime
+from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
@@ -38,10 +41,7 @@ from deepagents.middleware._utils import append_to_system_message
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-    from langchain.tools import ToolRuntime
-    from langchain.tools.tool_node import ToolCallRequest
     from langchain.types import Runtime
-
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 LINE_NUMBER_WIDTH = 6

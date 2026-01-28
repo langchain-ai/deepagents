@@ -221,3 +221,4 @@ libs/deepagents-cli/TEXTUAL_PROGRESS.md
 # macOS
 .DS_Store
 */tmp/.DS_Store
+.vscode/settings.json

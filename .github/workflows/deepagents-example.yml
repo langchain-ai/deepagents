@@ -1,0 +1,31 @@
+name: Deep Agents Example
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'Prompt for the agent'
+        required: true
+
+jobs:
+  deepagents:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.comment.body, '@deepagents')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Deep Agents
+        uses: langchain-ai/deepagents@v1
+        with:
+          prompt: ${{ github.event.inputs.prompt || github.event.comment.body }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Or: openai_api_key: ${{ secrets.OPENAI_API_KEY }}

@@ -21,6 +21,32 @@ if TYPE_CHECKING:
 # Maximum number of tool arguments to display inline
 _MAX_INLINE_ARGS = 3
 
+# Truncation limits for display
+_MAX_TODO_CONTENT_LEN = 70
+_MAX_WEB_CONTENT_LEN = 100
+_MAX_WEB_PREVIEW_LEN = 150
+
+# Tools that have their key info already in the header (no need for args line)
+_TOOLS_WITH_HEADER_INFO: set[str] = {
+    # Filesystem tools
+    "ls",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob",
+    "grep",
+    "execute",  # sandbox shell
+    # Shell tools
+    "shell",  # local shell
+    # Web tools
+    "web_search",
+    "fetch_url",
+    "http_request",
+    # Agent tools
+    "task",
+    "write_todos",
+}
+
 
 class UserMessage(Static):
     """Widget displaying a user message."""
@@ -29,18 +55,9 @@ class UserMessage(Static):
     UserMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0;
-        background: $surface;
-        border-left: thick $primary;
-    }
-
-    UserMessage .user-prefix {
-        color: $primary;
-        text-style: bold;
-    }
-
-    UserMessage .user-content {
-        margin-left: 1;
+        margin: 1 0 0 0;
+        background: transparent;
+        border-left: wide #10b981;
     }
     """
 
@@ -56,7 +73,6 @@ class UserMessage(Static):
 
     def compose(self) -> ComposeResult:
         """Compose the user message layout."""
-        # Use Text object to combine styled prefix with unstyled user content
         text = Text()
         text.append("> ", style="bold #10b981")
         text.append(self._content)
@@ -74,7 +90,7 @@ class AssistantMessage(Vertical):
     AssistantMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0;
+        margin: 1 0 0 0;
     }
 
     AssistantMessage Markdown {
@@ -168,63 +184,59 @@ class ToolCallMessage(Vertical):
     ToolCallMessage {
         height: auto;
         padding: 0 1;
-        margin: 1 0;
-        background: $surface;
-        border-left: thick $secondary;
+        margin: 0 0 1 0;
+        background: transparent;
+        border-left: wide #3b3b3b;
     }
 
     ToolCallMessage .tool-header {
-        color: $secondary;
-        text-style: bold;
+        height: auto;
     }
 
     ToolCallMessage .tool-args {
-        color: $text-muted;
-        margin-left: 2;
+        color: #6b7280;
+        margin-left: 3;
     }
 
     ToolCallMessage .tool-status {
-        margin-left: 2;
+        margin-left: 3;
     }
 
     ToolCallMessage .tool-status.pending {
-        color: $warning;
+        color: #f59e0b;
     }
 
     ToolCallMessage .tool-status.success {
-        color: $success;
+        color: #10b981;
     }
 
     ToolCallMessage .tool-status.error {
-        color: $error;
+        color: #ef4444;
     }
 
     ToolCallMessage .tool-status.rejected {
-        color: $warning;
+        color: #f59e0b;
     }
 
     ToolCallMessage .tool-output {
-        margin-left: 2;
-        margin-top: 1;
-        padding: 1;
-        background: $surface-darken-1;
-        color: $text-muted;
+        margin-left: 3;
+        margin-top: 0;
+        padding: 0;
         height: auto;
     }
 
     ToolCallMessage .tool-output-preview {
-        margin-left: 2;
-        color: $text-muted;
+        margin-left: 3;
+        margin-top: 0;
     }
 
     ToolCallMessage .tool-output-hint {
-        margin-left: 2;
-        color: $primary;
-        text-style: italic;
+        margin-left: 3;
+        color: #6b7280;
     }
 
     ToolCallMessage:hover {
-        background: $surface-lighten-1;
+        border-left: wide #525252;
     }
     """
 
@@ -232,8 +244,8 @@ class ToolCallMessage(Vertical):
     _SPINNER_FRAMES: ClassVar[tuple[str, ...]] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
     # Max lines/chars to show in preview mode
-    _PREVIEW_LINES = 3
-    _PREVIEW_CHARS = 200
+    _PREVIEW_LINES = 6
+    _PREVIEW_CHARS = 400
 
     def __init__(
         self,
@@ -268,22 +280,23 @@ class ToolCallMessage(Vertical):
         """Compose the tool call message layout."""
         tool_label = format_tool_display(self._tool_name, self._args)
         yield Static(
-            f"[bold yellow]Tool:[/bold yellow] {tool_label}",
+            f"[bold #f59e0b]{tool_label}[/bold #f59e0b]",
             classes="tool-header",
         )
-        args = self._filtered_args()
-        if args:
-            args_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:_MAX_INLINE_ARGS])
-            if len(args) > _MAX_INLINE_ARGS:
-                args_str += ", ..."
-            yield Static(f"({args_str})", classes="tool-args")
+        # Only show args for tools where header doesn't capture the key info
+        if self._tool_name not in _TOOLS_WITH_HEADER_INFO:
+            args = self._filtered_args()
+            if args:
+                args_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:_MAX_INLINE_ARGS])
+                if len(args) > _MAX_INLINE_ARGS:
+                    args_str += ", ..."
+                yield Static(f"[dim]({args_str})[/dim]", classes="tool-args")
         # Status - shows running animation while pending, then final status
         yield Static("", classes="tool-status", id="status")
         # Output area - hidden initially, shown when output is set
-        # Use markup=False for output content to prevent Rich markup injection
-        yield Static("", classes="tool-output-preview", id="output-preview", markup=False)
-        yield Static("", classes="tool-output-hint", id="output-hint")  # hint uses our markup
-        yield Static("", classes="tool-output", id="output-full", markup=False)
+        yield Static("", classes="tool-output-preview", id="output-preview")
+        yield Static("", classes="tool-output-hint", id="output-hint")
+        yield Static("", classes="tool-output", id="output-full")
 
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
@@ -399,6 +412,316 @@ class ToolCallMessage(Vertical):
         event.stop()  # Prevent click from bubbling up and scrolling
         self.toggle_output()
 
+    def _format_output(self, output: str, *, is_preview: bool = False) -> str:
+        """Format tool output based on tool type for nicer display.
+
+        Args:
+            output: Raw output string
+            is_preview: Whether this is for preview (truncated) display
+
+        Returns:
+            Formatted output string with Rich markup
+        """
+        output = output.strip()
+        if not output:
+            return ""
+
+        # Tool-specific formatting using dispatch table
+        formatters = {
+            "write_todos": self._format_todos_output,
+            "ls": self._format_ls_output,
+            "read_file": self._format_file_output,
+            "write_file": self._format_file_output,
+            "edit_file": self._format_file_output,
+            "grep": self._format_search_output,
+            "glob": self._format_search_output,
+            "shell": self._format_shell_output,
+            "bash": self._format_shell_output,
+            "execute": self._format_shell_output,
+            "web_search": self._format_web_output,
+            "fetch_url": self._format_web_output,
+            "http_request": self._format_web_output,
+            "task": self._format_task_output,
+        }
+
+        formatter = formatters.get(self._tool_name)
+        if formatter:
+            return formatter(output, is_preview=is_preview)
+
+        # Default: return as-is but escape markup
+        return self._escape_markup(output)
+
+    def _escape_markup(self, text: str) -> str:
+        """Escape Rich markup characters."""
+        return text.replace("[", r"\[").replace("]", r"\]")
+
+    def _format_todos_output(self, output: str, *, is_preview: bool = False) -> str:
+        """Format write_todos output as a checklist."""
+        items = self._parse_todo_items(output)
+        if items is None:
+            return self._escape_markup(output)
+
+        if not items:
+            return "    [dim]No todos[/dim]"
+
+        lines: list[str] = []
+        max_items = 4 if is_preview else len(items)
+
+        # Build stats header
+        stats_header = self._build_todo_stats(items)
+        if stats_header:
+            lines.extend([f"    [dim]{stats_header}[/dim]", ""])
+
+        # Format each item
+        lines.extend(self._format_single_todo(item) for item in items[:max_items])
+
+        if is_preview and len(items) > max_items:
+            lines.append(f"    [dim]... {len(items) - max_items} more[/dim]")
+
+        return "\n".join(lines)
+
+    def _parse_todo_items(self, output: str) -> list | None:
+        """Parse todo items from output. Returns None if parsing fails."""
+        import ast
+        import re
+
+        list_match = re.search(r"\[(\{.*\})\]", output.replace("\n", " "), re.DOTALL)
+        if list_match:
+            try:
+                return ast.literal_eval("[" + list_match.group(1) + "]")
+            except (ValueError, SyntaxError):
+                return None
+        try:
+            items = ast.literal_eval(output)
+            return items if isinstance(items, list) else None
+        except (ValueError, SyntaxError):
+            return None
+
+    def _build_todo_stats(self, items: list) -> str:
+        """Build stats string for todo list."""
+        completed = sum(1 for i in items if isinstance(i, dict) and i.get("status") == "completed")
+        active = sum(1 for i in items if isinstance(i, dict) and i.get("status") == "in_progress")
+        pending = len(items) - completed - active
+
+        parts = []
+        if active:
+            parts.append(f"[yellow]{active} active[/yellow]")
+        if pending:
+            parts.append(f"{pending} pending")
+        if completed:
+            parts.append(f"[green]{completed} done[/green]")
+        return " | ".join(parts)
+
+    def _format_single_todo(self, item: dict | str) -> str:
+        """Format a single todo item."""
+        if isinstance(item, dict):
+            content = item.get("content", str(item))
+            status = item.get("status", "pending")
+        else:
+            content = str(item)
+            status = "pending"
+
+        if len(content) > _MAX_TODO_CONTENT_LEN:
+            content = content[: _MAX_TODO_CONTENT_LEN - 3] + "..."
+
+        escaped = self._escape_markup(content)
+        if status == "completed":
+            return f"    [green]✓ done[/green]   [dim]{escaped}[/dim]"
+        if status == "in_progress":
+            return f"    [yellow]● active[/yellow] {escaped}"
+        return f"    [dim]○ todo[/dim]   {escaped}"
+
+    def _format_ls_output(self, output: str, *, is_preview: bool = False) -> str:
+        """Format ls output as a clean directory listing."""
+        import ast
+        from pathlib import Path
+
+        # Try to parse as a Python list (common format)
+        try:
+            items = ast.literal_eval(output)
+            if isinstance(items, list):
+                lines = []
+                max_items = 5 if is_preview else len(items)  # Show all when expanded
+                for item in items[:max_items]:
+                    path = Path(str(item))
+                    name = path.name
+                    # Color by file type
+                    if path.suffix in (".py", ".pyx"):
+                        lines.append(f"    [#3b82f6]{name}[/#3b82f6]")
+                    elif path.suffix in (".md", ".txt", ".rst"):
+                        lines.append(f"    {name}")
+                    elif path.suffix in (".json", ".yaml", ".yml", ".toml"):
+                        lines.append(f"    [#f59e0b]{name}[/#f59e0b]")
+                    elif path.suffix == "":
+                        # Likely a directory or no extension
+                        lines.append(f"    [#10b981]{name}/[/#10b981]")
+                    else:
+                        lines.append(f"    {name}")
+
+                if is_preview and len(items) > max_items:
+                    lines.append(f"    [dim]... {len(items) - max_items} more[/dim]")
+
+                return "\n".join(lines)
+        except (ValueError, SyntaxError):
+            pass
+
+        # Fallback: just escape and return
+        return self._escape_markup(output)
+
+    def _format_file_output(self, output: str, *, is_preview: bool = False) -> str:
+        """Format file read/write output."""
+        lines = output.split("\n")
+        max_lines = 4 if is_preview else len(lines)
+
+        formatted_lines = [self._escape_markup(line) for line in lines[:max_lines]]
+        result = "\n".join(formatted_lines)
+
+        if is_preview and len(lines) > max_lines:
+            result += f"\n[dim]... {len(lines) - max_lines} more lines[/dim]"
+
+        return result
+
+    def _format_search_output(self, output: str, *, is_preview: bool = False) -> str:
+        """Format grep/glob search output."""
+        import ast
+        from pathlib import Path
+
+        # Try to parse as a Python list (glob returns list of paths)
+        try:
+            items = ast.literal_eval(output.strip())
+            if isinstance(items, list):
+                lines = []
+                max_items = 5 if is_preview else len(items)  # Show all when expanded
+                for item in items[:max_items]:
+                    # Show just filename or relative path
+                    path = Path(str(item))
+                    try:
+                        rel = path.relative_to(Path.cwd())
+                        display = str(rel)
+                    except ValueError:
+                        display = path.name
+                    lines.append(f"    {display}")
+
+                if is_preview and len(items) > max_items:
+                    lines.append(f"    [dim]... {len(items) - max_items} more files[/dim]")
+
+                return "\n".join(lines)
+        except (ValueError, SyntaxError):
+            pass
+
+        # Fallback: line-based output (grep results)
+        lines = output.split("\n")
+        max_lines = 5 if is_preview else len(lines)
+
+        formatted_lines = [
+            f"    {self._escape_markup(raw_line.strip())}"
+            for raw_line in lines[:max_lines]
+            if raw_line.strip()
+        ]
+
+        result = "\n".join(formatted_lines)
+        if is_preview and len(lines) > max_lines:
+            result += f"\n    [dim]... {len(lines) - max_lines} more[/dim]"
+
+        return result
+
+    def _format_shell_output(self, output: str, *, is_preview: bool = False) -> str:
+        """Format shell command output."""
+        lines = output.split("\n")
+        max_lines = 4 if is_preview else len(lines)  # Show all when expanded
+
+        formatted_lines = [self._escape_markup(line) for line in lines[:max_lines]]
+        result = "\n".join(formatted_lines)
+
+        if is_preview and len(lines) > max_lines:
+            result += f"\n[dim]... {len(lines) - max_lines} more lines[/dim]"
+
+        return result
+
+    def _format_web_output(self, output: str, *, is_preview: bool = False) -> str:
+        """Format web_search/fetch_url/http_request output."""
+        data = self._try_parse_web_data(output)
+        if isinstance(data, dict):
+            return self._format_web_dict(data, is_preview=is_preview)
+
+        # Fallback: plain text
+        return self._format_lines_output(output.split("\n"), is_preview=is_preview)
+
+    def _try_parse_web_data(self, output: str) -> dict | None:
+        """Try to parse web output as JSON or dict."""
+        import ast
+        import json
+
+        try:
+            if output.strip().startswith("{"):
+                return json.loads(output)
+            return ast.literal_eval(output)
+        except (ValueError, SyntaxError, json.JSONDecodeError):
+            return None
+
+    def _format_web_dict(self, data: dict, *, is_preview: bool) -> str:
+        """Format a parsed web response dict."""
+        # Handle web_search results
+        if "results" in data:
+            return self._format_web_search_results(data.get("results", []), is_preview=is_preview)
+
+        # Handle fetch_url/http_request response
+        if "markdown_content" in data:
+            lines = data["markdown_content"].split("\n")
+            return self._format_lines_output(lines, is_preview=is_preview)
+
+        if "content" in data:
+            content = str(data["content"])
+            if is_preview and len(content) > _MAX_WEB_PREVIEW_LEN:
+                return self._escape_markup(content[:_MAX_WEB_PREVIEW_LEN]) + "\n[dim]...[/dim]"
+            return self._escape_markup(content)
+
+        # Generic dict - show key fields
+        lines = []
+        max_keys = 3 if is_preview else len(data)
+        for k, v in list(data.items())[:max_keys]:
+            v_str = str(v)
+            if is_preview and len(v_str) > _MAX_WEB_CONTENT_LEN:
+                v_str = v_str[:_MAX_WEB_CONTENT_LEN] + "..."
+            lines.append(f"  {k}: {self._escape_markup(v_str)}")
+        return "\n".join(lines)
+
+    def _format_web_search_results(self, results: list, *, is_preview: bool) -> str:
+        """Format web search results."""
+        if not results:
+            return "[dim]No results[/dim]"
+        lines = []
+        max_results = 3 if is_preview else len(results)
+        for r in results[:max_results]:
+            title = r.get("title", "")
+            url = r.get("url", "")
+            lines.append(f"  [bold]{self._escape_markup(title)}[/bold]")
+            lines.append(f"  [dim]{self._escape_markup(url)}[/dim]")
+        if is_preview and len(results) > max_results:
+            lines.append(f"  [dim]... {len(results) - max_results} more results[/dim]")
+        return "\n".join(lines)
+
+    def _format_lines_output(self, lines: list[str], *, is_preview: bool) -> str:
+        """Format a list of lines with optional preview truncation."""
+        max_lines = 4 if is_preview else len(lines)
+        result = "\n".join(self._escape_markup(line) for line in lines[:max_lines])
+        if is_preview and len(lines) > max_lines:
+            result += f"\n[dim]... {len(lines) - max_lines} more lines[/dim]"
+        return result
+
+    def _format_task_output(self, output: str, *, is_preview: bool = False) -> str:
+        """Format task (subagent) output."""
+        lines = output.split("\n")
+        max_lines = 4 if is_preview else len(lines)
+
+        formatted_lines = [self._escape_markup(line) for line in lines[:max_lines]]
+        result = "\n".join(formatted_lines)
+
+        if is_preview and len(lines) > max_lines:
+            result += f"\n[dim]... {len(lines) - max_lines} more lines[/dim]"
+
+        return result
+
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""
         if not self._output or not self._preview_widget:
@@ -413,34 +736,30 @@ class ToolCallMessage(Vertical):
         needs_truncation = total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
 
         if self._expanded:
-            # Show full output
+            # Show full output with formatting
             self._preview_widget.display = False
-            self._hint_widget.display = False
-            self._full_widget.update(self._output)
+            formatted = self._format_output(self._output, is_preview=False)
+            self._full_widget.update(formatted)
             self._full_widget.display = True
+            # Show collapse hint
+            self._hint_widget.update("[dim italic]click to collapse[/dim italic]")
+            self._hint_widget.display = True
         else:
             # Show preview
             self._full_widget.display = False
             if needs_truncation:
-                # Truncate by lines first, then by chars
-                if total_lines > self._PREVIEW_LINES:
-                    preview_text = "\n".join(lines[: self._PREVIEW_LINES])
-                else:
-                    preview_text = output_stripped
-
-                # Also truncate by chars if still too long
-                if len(preview_text) > self._PREVIEW_CHARS:
-                    preview_text = preview_text[: self._PREVIEW_CHARS] + "..."
-
-                self._preview_widget.update(preview_text)
+                # Show formatted preview
+                formatted_preview = self._format_output(self._output, is_preview=True)
+                self._preview_widget.update(formatted_preview)
                 self._preview_widget.display = True
 
                 # Show expand hint
-                self._hint_widget.update("[dim]... (click to expand)[/dim]")
+                self._hint_widget.update("[dim italic]click to expand[/dim italic]")
                 self._hint_widget.display = True
             elif output_stripped:
-                # Output fits in preview, just show it
-                self._preview_widget.update(output_stripped)
+                # Output fits in preview, show formatted
+                formatted = self._format_output(output_stripped, is_preview=False)
+                self._preview_widget.update(formatted)
                 self._preview_widget.display = True
                 self._hint_widget.display = False
             else:

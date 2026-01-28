@@ -92,6 +92,13 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             command = truncate_value(command, 120)
             return f'{tool_name}("{command}")'
 
+    elif tool_name == "execute":
+        # Execute (sandbox shell): show the command being executed
+        if "command" in tool_args:
+            command = str(tool_args["command"])
+            command = truncate_value(command, 120)
+            return f'{tool_name}("{command}")'
+
     elif tool_name == "ls":
         # ls: show directory, or empty if current directory
         if tool_args.get("path"):

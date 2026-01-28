@@ -34,7 +34,7 @@ class SubAgent(TypedDict):
     """The description of the agent."""
 
     system_prompt: NotRequired[str]
-    """The system prompt to use for the agent. If omitted, `prompt` will be used as a fallback. 
+    """The system prompt to use for the agent. If omitted, `prompt` will be used as a fallback.
     If neither are provided, `DEFAULT_SUBAGENT_PROMPT` will be used.
     """
 
@@ -550,7 +550,9 @@ class SubAgentMiddleware(AgentMiddleware):
             if hasattr(request, "system_message") and request.system_message:
                 request_system_prompt = request.system_message.content
             elif hasattr(request, "runtime"):
-                request_system_prompt = request.runtime.config.get("configurable", {}).get("system_prompt")
+                runtime_config = getattr(request.runtime, "config", None)
+                if isinstance(runtime_config, dict):
+                    request_system_prompt = runtime_config.get("configurable", {}).get("system_prompt")
 
             combined_prompt = (
                 f"{request_system_prompt}\n\n{self.system_prompt}"
@@ -572,7 +574,9 @@ class SubAgentMiddleware(AgentMiddleware):
             if hasattr(request, "system_message") and request.system_message:
                 request_system_prompt = request.system_message.content
             elif hasattr(request, "runtime"):
-                request_system_prompt = request.runtime.config.get("configurable", {}).get("system_prompt")
+                runtime_config = getattr(request.runtime, "config", None)
+                if isinstance(runtime_config, dict):
+                    request_system_prompt = runtime_config.get("configurable", {}).get("system_prompt")
 
             combined_prompt = (
                 f"{request_system_prompt}\n\n{self.system_prompt}"

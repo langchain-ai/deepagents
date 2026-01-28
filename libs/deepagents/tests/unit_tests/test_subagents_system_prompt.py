@@ -16,10 +16,10 @@ class FixedGenericChatModel(GenericFakeChatModel):
 
     def bind_tools(
         self,
-        tools: Sequence[dict[str, object] | type | Callable | BaseTool],
+        _tools: Sequence[dict[str, object] | type | Callable | BaseTool],
         *,
-        tool_choice: str | None = None,
-        **kwargs: object,
+        _tool_choice: str | None = None,
+        **_kwargs: object,
     ) -> Runnable:
         return self
 

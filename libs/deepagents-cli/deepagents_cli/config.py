@@ -384,6 +384,27 @@ class Settings:
         skills_dir.mkdir(parents=True, exist_ok=True)
         return skills_dir
 
+    def get_user_agents_dir(self, agent_name: str) -> Path:
+        """Get user-level agents directory path for custom subagent definitions.
+
+        Args:
+            agent_name: Name of the CLI agent (e.g., "deepagents")
+
+        Returns:
+            Path to ~/.deepagents/{agent_name}/agents/
+        """
+        return self.get_agent_dir(agent_name) / "agents"
+
+    def get_project_agents_dir(self) -> Path | None:
+        """Get project-level agents directory path for custom subagent definitions.
+
+        Returns:
+            Path to {project_root}/.deepagents/agents/, or None if not in a project
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".deepagents" / "agents"
+
 
 # Global settings instance (initialized once)
 settings = Settings.from_environment()

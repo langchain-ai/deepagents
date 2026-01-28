@@ -5,12 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from acp.schema import TextContentBlock
-from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
 from deepagents_acp.agent import ACPDeepAgent, run_agent
-from tests.chat_model import GenericFakeChatModel
 
 
 @tool(description="Read a file from the filesystem")
@@ -151,7 +149,7 @@ class TestACPDeepAgentInitialization:
                 mock_create.return_value = MagicMock()
                 checkpointer = MemorySaver()
 
-                agent = ACPDeepAgent(
+                ACPDeepAgent(
                     root_dir="/test/root",
                     mode="ask_before_edits",
                     checkpointer=checkpointer,
@@ -263,7 +261,7 @@ class TestACPDeepAgentInitialization:
             assert agent._mode == "ask_before_edits"
 
             # Change mode
-            response = await agent.set_session_mode(mode_id="auto", session_id="test-session")
+            await agent.set_session_mode(mode_id="auto", session_id="test-session")
 
             # Verify mode changed
             assert agent._mode == "auto"
@@ -392,7 +390,7 @@ class TestACPDeepAgentTodoHandling:
 
             # Create mock message with write_todos tool call
             mock_message = MagicMock()
-            todos_json = '{"todos": [{"content": "Task 1", "status": "pending"}, {"content": "Task 2", "status": "in_progress"}]}'
+            todos_json = '{"todos": [{"content": "Task 1", "status": "pending"}, {"content": "Task 2", "status": "in_progress"}]}'  # noqa
             mock_message.tool_call_chunks = [
                 {"id": "call_todos", "name": "write_todos", "args": todos_json, "index": 0},
             ]

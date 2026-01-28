@@ -176,6 +176,7 @@ class TestDeepAgentsCLIEndToEnd:
                 {"configurable": {"thread_id": thread_id}},
             )
             assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+            assert backend.ls_info("/conversation_history/")
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.

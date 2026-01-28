@@ -164,11 +164,11 @@ class TestDeepAgentsCLIEndToEnd:
             text_50_000_tokens = "x" * 50_000 * 4
             input_messages = [
                 HumanMessage(content=text_10_000_tokens),
-                AIMessage(content=text_50_000_tokens),
-                HumanMessage(content=text_50_000_tokens),
-                AIMessage(content=text_50_000_tokens),
-                HumanMessage(content=text_50_000_tokens),
-                AIMessage(content=text_50_000_tokens),
+                AIMessage(content=text_50_000_tokens),  # 60,000 tokens
+                HumanMessage(content=text_10_000_tokens),
+                AIMessage(content=text_50_000_tokens),  # 120,000 tokens
+                HumanMessage(content=text_10_000_tokens),
+                AIMessage(content=text_50_000_tokens),  # 180,000 tokens (summarizes)
                 HumanMessage(content="query"),
             ]
             result = agent.invoke(

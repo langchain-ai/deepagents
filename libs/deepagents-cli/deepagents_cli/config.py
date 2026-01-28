@@ -2,6 +2,7 @@
 
 import os
 import re
+import shlex
 import sys
 import uuid
 from dataclasses import dataclass
@@ -129,6 +130,39 @@ def _find_project_agent_md(project_root: Path) -> list[Path]:
     return paths
 
 
+def _parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
+    """Parse shell allow-list from string.
+
+    Args:
+        allow_list_str: Comma-separated list of commands, or "recommended" for safe defaults.
+                       Can also include "recommended" in the list to merge with custom commands.
+
+    Returns:
+        List of allowed commands, or None if no allow-list configured
+    """
+    if not allow_list_str:
+        return None
+
+    # Special value "recommended" uses our curated safe list
+    if allow_list_str.strip().lower() == "recommended":
+        return list(RECOMMENDED_SAFE_SHELL_COMMANDS)
+
+    # Split by comma and strip whitespace
+    commands = [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+
+    # If "recommended" is in the list, merge with recommended commands
+    result = []
+    for cmd in commands:
+        if cmd.lower() == "recommended":
+            result.extend(RECOMMENDED_SAFE_SHELL_COMMANDS)
+        else:
+            result.append(cmd)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    return [cmd for cmd in result if not (cmd in seen or seen.add(cmd))]
+
+
 @dataclass
 class Settings:
     """Global settings and environment detection for deepagents-cli.
@@ -147,6 +181,7 @@ class Settings:
         tavily_api_key: Tavily API key if available
         deepagents_langchain_project: LangSmith project name for deepagents agent tracing
         user_langchain_project: Original LANGSMITH_PROJECT from environment (for user code)
+        shell_allow_list: List of shell commands that don't require approval
     """
 
     # API keys
@@ -168,6 +203,9 @@ class Settings:
 
     # Project information
     project_root: Path | None = None
+
+    # Shell command allow-list for auto-approval
+    shell_allow_list: list[str] | None = None
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
@@ -197,6 +235,12 @@ class Settings:
         # Detect project
         project_root = _find_project_root(start_path)
 
+        # Parse shell command allow-list from environment
+        # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
+        # Special value "recommended" uses RECOMMENDED_SAFE_SHELL_COMMANDS
+        shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
+        shell_allow_list = _parse_shell_allow_list(shell_allow_list_str)
+
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -206,6 +250,7 @@ class Settings:
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
+            shell_allow_list=shell_allow_list,
         )
 
     @property
@@ -403,6 +448,161 @@ class SessionState:
         """Toggle auto-approve and return new state."""
         self.auto_approve = not self.auto_approve
         return self.auto_approve
+
+
+DANGEROUS_SHELL_PATTERNS = (
+    "$(",  # Command substitution
+    "`",  # Backtick command substitution
+    "$'",  # ANSI-C quoting (can encode dangerous chars via escape sequences)
+    "\n",  # Newline (command injection)
+    "\r",  # Carriage return (command injection)
+    "\t",  # Tab (can be used for injection in some shells)
+    "<(",  # Process substitution (input)
+    ">(",  # Process substitution (output)
+    "<<<",  # Here-string
+    "<<",  # Here-doc (can embed commands)
+    ">>",  # Append redirect
+    ">",  # Output redirect
+    "<",  # Input redirect
+    "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
+)
+
+# Recommended safe shell commands for non-interactive mode.
+# These commands are read-only and cannot modify the system.
+#
+# EXCLUDED (dangerous - listed on GTFOBins/LOOBins or can modify system):
+# - All shells: bash, sh, zsh, fish, dash, ksh, csh, tcsh, etc.
+# - Editors: vim, vi, nano, emacs, ed, etc. (can spawn shells)
+# - Interpreters: python, perl, ruby, node, php, lua, awk, gawk, etc.
+# - Package managers: pip, npm, gem, apt, yum, brew, etc.
+# - Compilers: gcc, cc, make, cmake, etc.
+# - Network tools: curl, wget, nc, ssh, scp, ftp, telnet, etc.
+# - Archivers with shell escape: tar, zip, 7z, etc.
+# - System modifiers: chmod, chown, chattr, mv, rm, cp, dd, etc.
+# - Privilege tools: sudo, su, doas, pkexec, etc.
+# - Process tools: env, xargs, find (with -exec), etc.
+# - Git (can run hooks), docker, kubectl, etc.
+#
+# SAFE commands included below are pure readers/formatters with no shell escape,
+# no network access, no file write capability, and no code execution.
+RECOMMENDED_SAFE_SHELL_COMMANDS = (
+    # Directory listing
+    "ls",
+    "dir",
+    # File content viewing (read-only)
+    "cat",
+    "head",
+    "tail",
+    # Text searching (read-only)
+    "grep",
+    "wc",
+    "strings",
+    # Text processing (read-only, no shell execution)
+    "cut",
+    "tr",
+    "diff",
+    "md5sum",
+    "sha256sum",
+    # Path utilities
+    "pwd",
+    "which",
+    # System info (read-only)
+    "uname",
+    "hostname",
+    "whoami",
+    "id",
+    "groups",
+    "uptime",
+    "nproc",
+    "lscpu",
+    "lsmem",
+    # Process viewing (read-only)
+    "ps",
+)
+
+
+def _contains_dangerous_patterns(command: str) -> bool:
+    """Check if a command contains dangerous shell patterns.
+
+    These patterns can be used to bypass allow-list validation by embedding
+    arbitrary commands within seemingly safe commands.
+
+    Args:
+        command: The shell command to check
+
+    Returns:
+        True if dangerous patterns are found, False otherwise
+    """
+    return any(pattern in command for pattern in DANGEROUS_SHELL_PATTERNS)
+
+
+def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool:
+    """Check if a shell command is in the allow-list.
+
+    The allow-list matches against the first token of the command (the executable name).
+    This allows read-only commands like ls, cat, grep, etc. to be auto-approved.
+
+    SECURITY: This function rejects commands containing dangerous shell patterns
+    (command substitution, redirects, process substitution, etc.) BEFORE parsing,
+    to prevent injection attacks that could bypass the allow-list.
+
+    Args:
+        command: The full shell command to check
+        allow_list: List of allowed command names (e.g., ["ls", "cat", "grep"])
+
+    Returns:
+        True if the command is allowed, False otherwise
+
+    Examples:
+        >>> is_shell_command_allowed("ls -la", ["ls", "cat"])
+        True
+        >>> is_shell_command_allowed("cat file.txt", ["ls", "cat"])
+        True
+        >>> is_shell_command_allowed("rm file.txt", ["ls", "cat"])
+        False
+        >>> is_shell_command_allowed("ls | grep test", ["ls", "grep"])
+        True
+        >>> is_shell_command_allowed("ls $(rm -rf /)", ["ls"])  # Injection blocked
+        False
+    """
+    if not allow_list or not command or not command.strip():
+        return False
+
+    # SECURITY: Check for dangerous patterns BEFORE any parsing
+    # This prevents injection attacks like: ls "$(rm -rf /)"
+    if _contains_dangerous_patterns(command):
+        return False
+
+    allow_set = set(allow_list)
+
+    # Extract the first command token
+    # Handle pipes and other shell operators by checking each command in the pipeline
+    # Split by common shell operators (pipes, semicolons, &&, ||)
+    segments = re.split(r"[|;&]|&&|\|\|", command)
+
+    # Track if we found at least one valid command
+    found_command = False
+
+    for raw_segment in segments:
+        segment = raw_segment.strip()
+        if not segment:
+            continue
+
+        try:
+            # Try to parse as shell command to extract the executable name
+            tokens = shlex.split(segment)
+            if tokens:
+                found_command = True
+                cmd_name = tokens[0]
+                # Check if this command is in the allow set
+                if cmd_name not in allow_set:
+                    return False
+        except ValueError:
+            # If we can't parse it, be conservative and require approval
+            return False
+
+    # All segments are allowed (and we found at least one command)
+    return found_command
 
 
 def get_default_coding_instructions() -> str:

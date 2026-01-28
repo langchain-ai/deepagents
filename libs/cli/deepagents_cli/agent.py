@@ -27,6 +27,7 @@ from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.shell import ShellMiddleware
 from deepagents_cli.subagents import list_subagents
+from deepagents_cli.swarm import TaskBoardMiddleware
 
 
 def list_agents() -> None:
@@ -182,7 +183,38 @@ When using the write_todos tool:
    - If they want changes, adjust the plan accordingly
 6. Update todo status promptly as you complete each item
 
-The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking."""
+The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking.
+
+### Task Board (Multi-Agent Coordination)
+
+You have Task Board tools for tracking work items with dependencies when coordinating complex multi-step work:
+
+**Tools:**
+- `TaskCreate(subject, description)` - Create a task (starts as 'pending')
+- `TaskGet(task_id)` - Get task details
+- `TaskUpdate(task_id, status?, add_blocked_by?)` - Update status or dependencies
+- `TaskList()` - See all tasks with status
+
+**Workflow:** pending → in_progress → completed
+
+**Dependencies:** Use `add_blocked_by` to make tasks wait for others:
+```
+TaskCreate(subject="Build frontend") → #1
+TaskCreate(subject="Build backend") → #2
+TaskCreate(subject="Integration tests") → #3
+TaskUpdate(task_id="3", add_blocked_by=["1", "2"])
+```
+
+**Key Insight:** The Task Board is for YOU (the main agent) to track work. Subagents do NOT have access to the Task Board - they can only coordinate via shared files.
+
+**When to Use:**
+- Complex multi-step projects with dependencies between tasks
+- When you need to track what's blocked and what's ready
+- Coordinating work that will involve multiple subagent calls
+
+**When NOT to Use:**
+- Simple 1-3 step tasks (use write_todos or just do them)
+- Tasks without dependencies between them"""
     )
 
 
@@ -401,6 +433,9 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware = []
+
+    # Add task board middleware (always enabled for main agent)
+    agent_middleware.append(TaskBoardMiddleware())
 
     # Add memory middleware
     if enable_memory:

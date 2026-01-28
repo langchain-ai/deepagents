@@ -245,7 +245,7 @@ class TestSummarizationMiddlewareInit:
         )
 
         assert middleware._backend is backend
-        assert middleware._history_path_prefix == "conversation_history"
+        assert middleware._history_path_prefix == "/conversation_history"
 
     def test_init_with_backend_factory(self) -> None:
         """Test initialization with a backend factory function."""
@@ -289,7 +289,7 @@ class TestOffloadingBasic:
         assert len(backend.write_calls) == 1
 
         path, content = backend.write_calls[0]
-        assert path == "conversation_history/test-thread-123.md"
+        assert path == "/conversation_history/test-thread-123.md"
 
         assert "## Summarized at" in content
         assert "Human:" in content or "AI:" in content
@@ -488,7 +488,7 @@ class TestSummaryMessageFormat:
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
-        assert "conversation_history/test-thread.md" in summary_msg.content
+        assert "/conversation_history/test-thread.md" in summary_msg.content
 
         # Should include the summary in XML tags
         assert "<summary>" in summary_msg.content
@@ -584,7 +584,7 @@ class TestSummaryMessageFormat:
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
-        assert "conversation_history/multi-summarize-thread.md" in summary_msg.content
+        assert "/conversation_history/multi-summarize-thread.md" in summary_msg.content
 
         # Should include the summary in XML tags
         assert "<summary>" in summary_msg.content
@@ -694,7 +694,7 @@ class TestThreadIdExtraction:
             middleware.before_model(state, runtime)
 
         path, _ = backend.write_calls[0]
-        assert path == "conversation_history/custom-thread-456.md"
+        assert path == "/conversation_history/custom-thread-456.md"
 
     def test_fallback_thread_id_when_missing(self) -> None:
         """Test that a fallback ID is generated when `thread_id` is not in config."""

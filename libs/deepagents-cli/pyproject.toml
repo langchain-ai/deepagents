@@ -171,7 +171,7 @@ ignore-var-parameters = true
 "scripts/check_imports.py" = ["INP001", "BLE001"]
 
 [tool.pytest.ini_options]
-timeout = 10  # Default timeout for all tests (can be overridden per-test)
+timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }

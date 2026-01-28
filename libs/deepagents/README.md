@@ -1,9 +1,9 @@
 # 🧠🤖Deep Agents
 
 Using an LLM to call tools in a loop is the simplest form of an agent.
-This architecture, however, can yield agents that are “shallow” and fail to plan and act over longer, more complex tasks.
+This architecture, however, can yield agents that are "shallow" and fail to plan and act over longer, more complex tasks.
 
-Applications like “Deep Research”, "Manus", and “Claude Code” have gotten around this limitation by implementing a combination of four things:
+Applications like "Deep Research", "Manus", and "Claude Code" have gotten around this limitation by implementing a combination of four things:
 a **planning tool**, **sub agents**, access to a **file system**, and a **detailed prompt**.
 
 <img src="../../deep_agents.png" alt="deep agent" width="600"/>
@@ -230,7 +230,7 @@ class CompiledSubAgent(TypedDict):
 **CompiledSubAgent fields:**
 
 - **name**: This is the name of the subagent, and how the main agent will call the subagent
-- **description**: This is the description of the subagent that is shown to the main agent  
+- **description**: This is the description of the subagent that is shown to the main agent
 - **runnable**: A pre-built LangGraph graph/agent that will be used as the subagent. **Important:** The runnable's state schema must include a `messages` key. This is required for the subagent to communicate results back to the main agent.
 
 #### Using `SubAgent`

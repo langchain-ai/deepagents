@@ -1,0 +1,111 @@
+name: 'Deep Agents'
+description: 'Run Deep Agents AI coding assistant in GitHub workflows'
+author: 'LangChain AI'
+branding:
+  icon: 'cpu'
+  color: 'blue'
+
+inputs:
+  prompt:
+    description: 'The prompt/instruction to send to the agent'
+    required: true
+  model:
+    description: 'Model to use (claude-*, gpt-*, gemini-*). Auto-detects provider.'
+    required: false
+  anthropic_api_key:
+    description: 'Anthropic API key'
+    required: false
+  openai_api_key:
+    description: 'OpenAI API key'
+    required: false
+  google_api_key:
+    description: 'Google API key'
+    required: false
+  github_token:
+    description: 'GitHub token for API access'
+    required: false
+    default: ${{ github.token }}
+  auto_approve:
+    description: 'Auto-approve tool usage (default: true for CI)'
+    required: false
+    default: 'true'
+  working_directory:
+    description: 'Working directory for the agent'
+    required: false
+    default: '.'
+  timeout:
+    description: 'Timeout in minutes'
+    required: false
+    default: '30'
+  cli_version:
+    description: 'deepagents-cli version (empty = latest)'
+    required: false
+    default: ''
+
+outputs:
+  response:
+    description: 'Full text response from the agent'
+    value: ${{ steps.run-agent.outputs.response }}
+  exit_code:
+    description: 'Exit code from the agent'
+    value: ${{ steps.run-agent.outputs.exit_code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python and uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        python-version: '3.11'
+        enable-cache: true
+
+    - name: Install deepagents-cli
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.cli_version }}" ]; then
+          uvx --from deepagents-cli==${{ inputs.cli_version }} deepagents --version
+        else
+          uvx --from deepagents-cli deepagents --version
+        fi
+
+    - name: Run Deep Agents
+      id: run-agent
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        GOOGLE_API_KEY: ${{ inputs.google_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        # Build command
+        CMD="uvx --from deepagents-cli deepagents"
+
+        if [ -n "${{ inputs.model }}" ]; then
+          CMD="$CMD --model ${{ inputs.model }}"
+        fi
+
+        if [ "${{ inputs.auto_approve }}" == "true" ]; then
+          CMD="$CMD --auto-approve"
+        fi
+
+        # Create temp file for output
+        OUTPUT_FILE=$(mktemp)
+
+        # Run with prompt via -m flag
+        set +e
+        $CMD -m "${{ inputs.prompt }}" 2>&1 | tee "$OUTPUT_FILE"
+        EXIT_CODE=$?
+        set -e
+
+        # Set outputs using heredoc for multiline
+        {
+          echo "exit_code=$EXIT_CODE"
+          echo "response<<DEEPAGENTS_EOF"
+          cat "$OUTPUT_FILE"
+          echo "DEEPAGENTS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        rm -f "$OUTPUT_FILE"
+        exit $EXIT_CODE

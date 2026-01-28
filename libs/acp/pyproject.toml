@@ -36,8 +36,9 @@ test = [
     "pytest-mock>=3.14.0",
     "pytest-socket>=0.7.0",
     "pytest-timeout>=2.3.1",
+    "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.9.7",
-    "dirty-equals>=0.11",
+    "ty>=0.0.1,<1.0.0",
 ]
 
 
@@ -57,7 +58,7 @@ package = true
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "TID252"]
 ignore = []
 
 [tool.ruff.lint.isort]

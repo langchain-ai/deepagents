@@ -1,4 +1,5 @@
 import re
+import uuid
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
@@ -73,7 +74,7 @@ def _setup_summarization_test(tmp_path: Path, model_name: str) -> tuple[Any, Fil
         checkpointer=checkpointer,
     )
 
-    config = {"configurable": {"thread_id": "1"}}
+    config = {"configurable": {"thread_id": uuid.uuid4().hex[:8]}}
 
     return agent, backend, root, config
 
@@ -145,8 +146,9 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     conversation_history_root = root / "conversation_history"
     assert conversation_history_root.exists(), f"Conversation history root directory not found at {conversation_history_root}"
 
-    # Verify the markdown file exists for thread_id "1"
-    history_file = conversation_history_root / "1.md"
+    # Verify the markdown file exists for thread_id
+    thread_id = config["configurable"]["thread_id"]
+    history_file = conversation_history_root / f"{thread_id}.md"
     assert history_file.exists(), f"Expected markdown file at {history_file}"
 
     # Read and verify markdown content
@@ -161,7 +163,7 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     # Verify the summary message references the conversation_history path
     summary_message = result["messages"][0]
     assert "conversation_history" in summary_message.content
-    assert "1.md" in summary_message.content
+    assert f"{thread_id}.md" in summary_message.content
 
     # --- Needle in the haystack follow-up ---
     # Ask about a specific detail from the beginning of the file that was read

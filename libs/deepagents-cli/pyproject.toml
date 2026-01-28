@@ -1,12 +1,12 @@
 [project]
 name = "deepagents-cli"
-version = "0.0.13a2"
+version = "0.0.13"
 description = "Deepagents CLI"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "deepagents==0.3.7a1",
+  "deepagents==0.3.8",
   "langchain>=1.2.3,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
   "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -26,6 +26,9 @@ dependencies = [
   "aiosqlite>=0.19.0",
 ]
 
+[project.optional-dependencies]
+vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
+
 [project.scripts]
 deepagents = "deepagents_cli:cli_main"
 deepagents-cli = "deepagents_cli:cli_main"
@@ -38,25 +41,14 @@ test = [
     "pytest-mock>=3.14.0",
     "pytest-socket>=0.7.0",
     "pytest-timeout>=2.3.1",
+    "pytest-watcher>=0.3.4,<1.0.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
     "responses>=0.25.0",
-    "ruff>=0.9.7",
-]
-
-
-dev = [
-    "pytest",
-    "pytest-cov",
     "build",
     "twine",
     "langchain-openai",
-    "pytest-timeout>=2.4.0",
-    "pytest-socket>=0.7.0",
-    "pytest-asyncio>=1.2.0",
-]
-
-lint = [
-    "ruff",
-    "mypy"
+    "ruff>=0.9.7",
+    "ty>=0.0.1,<1.0.0",
 ]
 
 [build-system]
@@ -120,7 +112,7 @@ ignore-var-parameters = true
 "deepagents_cli/app.py" = ["E501", "PLR0915", "SIM108", "TC001", "TC002", "TC003"]
 "deepagents_cli/cli.py" = ["E501", "EM101", "EM102", "PLR0912", "PLR0915", "T201", "TC002", "TC003", "TRY003"]
 "deepagents_cli/clipboard.py" = ["BLE001", "PTH123", "S112", "TRY300"]
-"deepagents_cli/config.py" = ["D107", "E402", "E501", "ERA001", "FBT001", "FBT002", "RET503"]
+"deepagents_cli/config.py" = ["D107", "E402", "E501", "ERA001", "FBT001", "FBT002", "PLR0912", "PLR0915", "RET503"]
 "deepagents_cli/file_ops.py" = ["ANN401", "BLE001", "D102", "PLR0912", "PLR0915"]
 "deepagents_cli/image_utils.py" = ["BLE001", "PERF401", "PLR0911", "PTH108", "PTH110", "PTH123", "PTH202", "S110", "S603", "S607", "SIM105"]
 "deepagents_cli/input.py" = ["ANN001", "ANN201", "BLE001", "D107", "FBT001", "FBT002", "PLR0912", "PLR0915", "TC002"]
@@ -173,18 +165,13 @@ ignore-var-parameters = true
 "tests/unit_tests/test_local_context.py" = ["ANN001"]
 "tests/unit_tests/test_sessions.py" = ["ANN001", "ANN202", "E501"]
 "tests/unit_tests/test_version.py" = ["S603"]
+"examples/skills/arxiv-search/arxiv_search.py" = ["BLE001", "D103", "TRY300"]
+"examples/skills/skill-creator/scripts/init_skill.py" = ["ANN001", "ANN201", "BLE001", "D103", "D415", "PLR2004", "T201"]
+"examples/skills/skill-creator/scripts/quick_validate.py" = ["ANN001", "ANN201", "D415", "E501", "N806", "PLR0911", "PLR0912", "PLR2004", "T201"]
+"scripts/check_imports.py" = ["INP001", "BLE001"]
 
 [tool.pytest.ini_options]
 timeout = 10  # Default timeout for all tests (can be overridden per-test)
-
-[tool.mypy]
-strict = true
-ignore_missing_imports = true
-enable_error_code = ["deprecated"]
-exclude = ["build/"]
-# Optional: reduce strictness if needed
-disallow_any_generics = false
-warn_return_any = false
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }

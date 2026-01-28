@@ -6,7 +6,6 @@ import difflib
 from typing import TYPE_CHECKING, Any
 
 from deepagents_cli.widgets.tool_widgets import (
-    BashApprovalWidget,
     EditFileApprovalWidget,
     GenericApprovalWidget,
     WriteFileApprovalWidget,
@@ -100,25 +99,11 @@ class EditFileRenderer(ToolRenderer):
         return diff_list[2:] if len(diff_list) > 2 else diff_list
 
 
-class BashRenderer(ToolRenderer):
-    """Renderer for bash/shell tool - shows command."""
-
-    def get_approval_widget(
-        self, tool_args: dict[str, Any]
-    ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
-        data = {
-            "command": tool_args.get("command", ""),
-            "description": tool_args.get("description", ""),
-        }
-        return BashApprovalWidget, data
-
-
 # Registry mapping tool names to renderers
+# Note: bash/shell use minimal approval (no renderer needed) - see ApprovalMenu._MINIMAL_TOOLS
 _RENDERER_REGISTRY: dict[str, type[ToolRenderer]] = {
     "write_file": WriteFileRenderer,
     "edit_file": EditFileRenderer,
-    "bash": BashRenderer,
-    "shell": BashRenderer,
 }
 
 

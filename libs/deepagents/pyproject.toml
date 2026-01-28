@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.3.7a1"
+version = "0.3.8"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,12 +28,12 @@ test = [
   "pytest",
   "pytest-cov",
   "pytest-xdist",
+  "pytest-timeout>=2.3.1,<3.0.0",
+  "pytest-socket",
+  "pytest-watcher>=0.3.4,<1.0.0",
   "ruff>=0.12.2,<0.13.0",
-  "mypy>=1.18.1,<1.19.0",
+  "ty>=0.0.1,<1.0.0",
   "pytest-asyncio>=1.3.0",
-]
-
-dev = [
   "langchain-openai",
   "twine",
   "build",
@@ -103,9 +103,9 @@ ignore-var-parameters = true
 "deepagents/middleware/filesystem.py" = ["EM102", "TRY003"]
 "deepagents/middleware/memory.py" = ["E501", "EM102", "G004", "PERF401", "SIM108", "T201", "TC002", "TC003", "TRY003"]
 "deepagents/middleware/skills.py" = ["EM101", "SIM108", "TC002", "TC003", "TRY003"]
-"tests/integration_tests/test_deepagents.py" = ["ANN201", "C419", "E731", "PLR2004", "SIM118", "TID252"]
-"tests/integration_tests/test_filesystem_middleware.py" = ["ANN001", "ANN201", "ANN202", "ARG002", "E731", "PLR2004", "SIM118", "T201", "TID252"]
-"tests/integration_tests/test_hitl.py" = ["ANN201", "C419", "E501", "PLR2004", "TID252"]
+"tests/integration_tests/test_deepagents.py" = ["ANN201", "C419", "E731", "PLR2004", "SIM118"]
+"tests/integration_tests/test_filesystem_middleware.py" = ["ANN001", "ANN201", "ANN202", "ARG002", "E731", "PLR2004", "SIM118", "T201"]
+"tests/integration_tests/test_hitl.py" = ["ANN201", "C419", "E501", "PLR2004"]
 "tests/integration_tests/test_subagent_middleware.py" = ["ANN001", "ANN201", "F841", "RUF012", "SIM118"]
 "tests/unit_tests/backends/test_composite_backend.py" = ["ANN001", "ANN201", "ANN202", "ARG001", "ARG002", "F841", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/backends/test_composite_backend_async.py" = ["ANN001", "ANN201", "ANN202", "ARG001", "ARG002", "F841", "INP001", "PLR2004", "PT018"]
@@ -127,15 +127,7 @@ ignore-var-parameters = true
 "tests/unit_tests/test_subagents.py" = ["PLR2004"]
 "tests/unit_tests/test_todo_middleware.py" = ["E501", "PLR2004"]
 "tests/utils.py" = ["ANN001", "ANN201", "RUF012", "SIM118"]
-
-[tool.mypy]
-strict = true
-ignore_missing_imports = true
-enable_error_code = ["deprecated"]
-exclude = ["build/"]
-# Optional: reduce strictness if needed
-disallow_any_generics = false
-warn_return_any = false
+"scripts/check_imports.py" = ["INP001", "BLE001"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

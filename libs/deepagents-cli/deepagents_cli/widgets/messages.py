@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from time import time
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.containers import Vertical
-from textual.css.query import NoMatches
+from textual.events import Click
+from textual.timer import Timer
 from textual.widgets import Markdown, Static
 from textual.widgets._markdown import MarkdownStream
 
@@ -159,6 +161,7 @@ class ToolCallMessage(Vertical):
 
     Tool outputs are shown as a 3-line preview by default.
     Press Ctrl+O to expand/collapse the full output.
+    Shows an animated "Running..." indicator while the tool is executing.
     """
 
     DEFAULT_CSS = """
@@ -206,8 +209,7 @@ class ToolCallMessage(Vertical):
         padding: 1;
         background: $surface-darken-1;
         color: $text-muted;
-        max-height: 20;
-        overflow-y: auto;
+        height: auto;
     }
 
     ToolCallMessage .tool-output-preview {
@@ -220,7 +222,14 @@ class ToolCallMessage(Vertical):
         color: $primary;
         text-style: italic;
     }
+
+    ToolCallMessage:hover {
+        background: $surface-lighten-1;
+    }
     """
+
+    # Spinner frames for running animation
+    _SPINNER_FRAMES: ClassVar[tuple[str, ...]] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
     # Max lines/chars to show in preview mode
     _PREVIEW_LINES = 3
@@ -242,9 +251,18 @@ class ToolCallMessage(Vertical):
         super().__init__(**kwargs)
         self._tool_name = tool_name
         self._args = args or {}
-        self._status = "pending"
+        self._status = "pending"  # Waiting for approval or auto-approve
         self._output: str = ""
         self._expanded: bool = False
+        # Widget references (set in on_mount)
+        self._status_widget: Static | None = None
+        self._preview_widget: Static | None = None
+        self._hint_widget: Static | None = None
+        self._full_widget: Static | None = None
+        # Animation state
+        self._spinner_position = 0
+        self._start_time: float | None = None
+        self._animation_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout."""
@@ -259,11 +277,8 @@ class ToolCallMessage(Vertical):
             if len(args) > _MAX_INLINE_ARGS:
                 args_str += ", ..."
             yield Static(f"({args_str})", classes="tool-args")
-        yield Static(
-            "[yellow]Pending...[/yellow]",
-            classes="tool-status pending",
-            id="status",
-        )
+        # Status - shows running animation while pending, then final status
+        yield Static("", classes="tool-status", id="status")
         # Output area - hidden initially, shown when output is set
         # Use markup=False for output content to prevent Rich markup injection
         yield Static("", classes="tool-output-preview", id="output-preview", markup=False)
@@ -271,13 +286,53 @@ class ToolCallMessage(Vertical):
         yield Static("", classes="tool-output", id="output-full", markup=False)
 
     def on_mount(self) -> None:
-        """Hide output areas initially."""
-        try:
-            self.query_one("#output-preview").display = False
-            self.query_one("#output-hint").display = False
-            self.query_one("#output-full").display = False
-        except NoMatches:
-            pass
+        """Cache widget references and hide all status/output areas initially."""
+        self._status_widget = self.query_one("#status", Static)
+        self._preview_widget = self.query_one("#output-preview", Static)
+        self._hint_widget = self.query_one("#output-hint", Static)
+        self._full_widget = self.query_one("#output-full", Static)
+        # Hide everything initially - status only shown when running or on error/reject
+        self._status_widget.display = False
+        self._preview_widget.display = False
+        self._hint_widget.display = False
+        self._full_widget.display = False
+
+    def set_running(self) -> None:
+        """Mark the tool as running (approved and executing).
+
+        Call this when approval is granted to start the running animation.
+        """
+        if self._status == "running":
+            return  # Already running
+
+        self._status = "running"
+        self._start_time = time()
+        if self._status_widget:
+            self._status_widget.add_class("pending")
+            self._status_widget.display = True
+        self._update_running_animation()
+        self._animation_timer = self.set_interval(0.1, self._update_running_animation)
+
+    def _update_running_animation(self) -> None:
+        """Update the running spinner animation."""
+        if self._status != "running" or self._status_widget is None:
+            return
+
+        frame = self._SPINNER_FRAMES[self._spinner_position]
+        self._spinner_position = (self._spinner_position + 1) % len(self._SPINNER_FRAMES)
+
+        elapsed = ""
+        if self._start_time is not None:
+            elapsed_secs = int(time() - self._start_time)
+            elapsed = f" ({elapsed_secs}s)"
+
+        self._status_widget.update(f"[yellow]{frame} Running...{elapsed}[/yellow]")
+
+    def _stop_animation(self) -> None:
+        """Stop the running animation."""
+        if self._animation_timer is not None:
+            self._animation_timer.stop()
+            self._animation_timer = None
 
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
@@ -285,15 +340,13 @@ class ToolCallMessage(Vertical):
         Args:
             result: Tool output/result to display
         """
+        self._stop_animation()
         self._status = "success"
         self._output = result
-        try:
-            status = self.query_one("#status", Static)
-            status.remove_class("pending", "error")
-            status.add_class("success")
-            status.update("[green]✓ Success[/green]")
-        except NoMatches:
-            pass
+        if self._status_widget:
+            self._status_widget.remove_class("pending")
+            # Hide status on success - output speaks for itself
+            self._status_widget.display = False
         self._update_output_display()
 
     def set_error(self, error: str) -> None:
@@ -302,29 +355,37 @@ class ToolCallMessage(Vertical):
         Args:
             error: Error message
         """
+        self._stop_animation()
         self._status = "error"
         self._output = error
-        try:
-            status = self.query_one("#status", Static)
-            status.remove_class("pending", "success")
-            status.add_class("error")
-            status.update("[red]✗ Error[/red]")
-        except NoMatches:
-            pass
+        if self._status_widget:
+            self._status_widget.remove_class("pending")
+            self._status_widget.add_class("error")
+            self._status_widget.update("[red]✗ Error[/red]")
+            self._status_widget.display = True
         # Always show full error - errors should be visible
         self._expanded = True
         self._update_output_display()
 
     def set_rejected(self) -> None:
         """Mark the tool call as rejected by user."""
+        self._stop_animation()
         self._status = "rejected"
-        try:
-            status = self.query_one("#status", Static)
-            status.remove_class("pending", "success", "error")
-            status.add_class("rejected")
-            status.update("[yellow]✗ Rejected[/yellow]")
-        except NoMatches:
-            pass
+        if self._status_widget:
+            self._status_widget.remove_class("pending")
+            self._status_widget.add_class("rejected")
+            self._status_widget.update("[yellow]✗ Rejected[/yellow]")
+            self._status_widget.display = True
+
+    def set_skipped(self) -> None:
+        """Mark the tool call as skipped (due to another rejection)."""
+        self._stop_animation()
+        self._status = "skipped"
+        if self._status_widget:
+            self._status_widget.remove_class("pending")
+            self._status_widget.add_class("rejected")  # Use same styling as rejected
+            self._status_widget.update("[dim]- Skipped[/dim]")
+            self._status_widget.display = True
 
     def toggle_output(self) -> None:
         """Toggle between preview and full output display."""
@@ -333,62 +394,58 @@ class ToolCallMessage(Vertical):
         self._expanded = not self._expanded
         self._update_output_display()
 
+    def on_click(self, event: Click) -> None:
+        """Handle click to toggle output expansion."""
+        event.stop()  # Prevent click from bubbling up and scrolling
+        self.toggle_output()
+
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""
-        if not self._output:
+        if not self._output or not self._preview_widget:
             return
 
-        try:
-            preview = self.query_one("#output-preview", Static)
-            hint = self.query_one("#output-hint", Static)
-            full = self.query_one("#output-full", Static)
+        output_stripped = self._output.strip()
+        lines = output_stripped.split("\n")
+        total_lines = len(lines)
+        total_chars = len(output_stripped)
 
-            output_stripped = self._output.strip()
-            lines = output_stripped.split("\n")
-            total_lines = len(lines)
-            total_chars = len(output_stripped)
+        # Truncate if too many lines OR too many characters
+        needs_truncation = total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
 
-            # Truncate if too many lines OR too many characters
-            needs_truncation = (
-                total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
-            )
-
-            if self._expanded:
-                # Show full output
-                preview.display = False
-                hint.display = False
-                full.update(self._output)
-                full.display = True
-            else:
-                # Show preview
-                full.display = False
-                if needs_truncation:
-                    # Truncate by lines first, then by chars
-                    if total_lines > self._PREVIEW_LINES:
-                        preview_text = "\n".join(lines[: self._PREVIEW_LINES])
-                    else:
-                        preview_text = output_stripped
-
-                    # Also truncate by chars if still too long
-                    if len(preview_text) > self._PREVIEW_CHARS:
-                        preview_text = preview_text[: self._PREVIEW_CHARS] + "..."
-
-                    preview.update(preview_text)
-                    preview.display = True
-
-                    # Show expand hint
-                    hint.update("[dim]... (Ctrl+O to expand)[/dim]")
-                    hint.display = True
-                elif output_stripped:
-                    # Output fits in preview, just show it
-                    preview.update(output_stripped)
-                    preview.display = True
-                    hint.display = False
+        if self._expanded:
+            # Show full output
+            self._preview_widget.display = False
+            self._hint_widget.display = False
+            self._full_widget.update(self._output)
+            self._full_widget.display = True
+        else:
+            # Show preview
+            self._full_widget.display = False
+            if needs_truncation:
+                # Truncate by lines first, then by chars
+                if total_lines > self._PREVIEW_LINES:
+                    preview_text = "\n".join(lines[: self._PREVIEW_LINES])
                 else:
-                    preview.display = False
-                    hint.display = False
-        except NoMatches:
-            pass
+                    preview_text = output_stripped
+
+                # Also truncate by chars if still too long
+                if len(preview_text) > self._PREVIEW_CHARS:
+                    preview_text = preview_text[: self._PREVIEW_CHARS] + "..."
+
+                self._preview_widget.update(preview_text)
+                self._preview_widget.display = True
+
+                # Show expand hint
+                self._hint_widget.update("[dim]... (click to expand)[/dim]")
+                self._hint_widget.display = True
+            elif output_stripped:
+                # Output fits in preview, just show it
+                self._preview_widget.update(output_stripped)
+                self._preview_widget.display = True
+                self._hint_widget.display = False
+            else:
+                self._preview_widget.display = False
+                self._hint_widget.display = False
 
     @property
     def has_output(self) -> bool:

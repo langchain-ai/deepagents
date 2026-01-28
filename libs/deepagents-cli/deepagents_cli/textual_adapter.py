@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.human_in_the_loop import (
-    ActionRequest,
     HITLRequest,
     HITLResponse,
 )
@@ -21,11 +20,10 @@ from pydantic import TypeAdapter, ValidationError
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
-from deepagents_cli.ui import format_tool_display, format_tool_message_content
+from deepagents_cli.ui import format_tool_message_content
 from deepagents_cli.widgets.messages import (
     AssistantMessage,
     DiffMessage,
-    ErrorMessage,
     SystemMessage,
     ToolCallMessage,
 )
@@ -64,6 +62,8 @@ class TextualUIAdapter:
         request_approval: Callable,  # async callable returning Future
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
+        show_thinking: Callable[[], None] | None = None,
+        hide_thinking: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -73,12 +73,16 @@ class TextualUIAdapter:
             request_approval: Callable that returns a Future for HITL approval
             on_auto_approve_enabled: Callback when auto-approve is enabled
             scroll_to_bottom: Callback to scroll chat to bottom
+            show_thinking: Callback to show/reposition thinking spinner
+            hide_thinking: Callback to hide thinking spinner
         """
         self._mount_message = mount_message
         self._update_status = update_status
         self._request_approval = request_approval
         self._on_auto_approve_enabled = on_auto_approve_enabled
         self._scroll_to_bottom = scroll_to_bottom
+        self._show_thinking = show_thinking
+        self._hide_thinking = hide_thinking
 
         # State tracking
         self._current_assistant_message: AssistantMessage | None = None
@@ -205,8 +209,9 @@ async def execute_task_textual(
     captured_input_tokens = 0
     captured_output_tokens = 0
 
-    # Update status to show thinking
-    adapter._update_status("Agent is thinking...")
+    # Show thinking spinner
+    if adapter._show_thinking:
+        await adapter._show_thinking()
 
     # Hide token display during streaming (will be shown with accurate count at end)
     if adapter._token_tracker:
@@ -288,9 +293,8 @@ async def execute_task_textual(
 
                     message, _metadata = data
 
-                    # Filter out summarization LLM output & update status to reflect
+                    # Filter out summarization LLM output
                     if _is_summarization_chunk(_metadata):
-                        adapter._update_status("Summarizing conversation...")
                         continue
 
                     if isinstance(message, HumanMessage):
@@ -310,7 +314,9 @@ async def execute_task_textual(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        adapter._update_status("Agent is thinking...")
+                        # Reshow thinking spinner after tool result
+                        if adapter._show_thinking:
+                            await adapter._show_thinking()
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
@@ -323,17 +329,6 @@ async def execute_task_textual(
                                 tool_msg.set_error(output_str or "Error")
                             # Clean up - remove from tracking dict after status update
                             del adapter._current_tool_messages[tool_id]
-
-                        # Show shell errors
-                        if tool_name == "shell" and tool_status != "success":
-                            pending_text = pending_text_by_namespace.get(ns_key, "")
-                            if pending_text:
-                                await _flush_assistant_text_ns(
-                                    adapter, pending_text, ns_key, assistant_message_by_namespace
-                                )
-                                pending_text_by_namespace[ns_key] = ""
-                            if tool_content:
-                                await adapter._mount_message(ErrorMessage(str(tool_content)))
 
                         # Show file operation results - always show diffs in chat
                         if record:
@@ -384,17 +379,21 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
+                                    # Hide thinking spinner when assistant starts responding
+                                    if adapter._hide_thinking:
+                                        await adapter._hide_thinking()
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
-                                    # Anchor scroll once when message is created
-                                    # anchor() keeps scroll locked to bottom as content grows
-                                    if adapter._scroll_to_bottom:
-                                        adapter._scroll_to_bottom()
 
                                 # Append just the new text chunk for smoother streaming
                                 # (uses MarkdownStream internally for better performance)
                                 await current_msg.append_content(text)
+
+                                # Sticky scroll: scroll to bottom only if user is near bottom
+                                # This lets users scroll away and stay where they are
+                                if adapter._scroll_to_bottom:
+                                    adapter._scroll_to_bottom()
 
                         elif block_type in ("tool_call_chunk", "tool_call"):
                             chunk_name = block.get("name")
@@ -464,14 +463,20 @@ async def execute_task_textual(
                                 displayed_tool_ids.add(buffer_id)
                                 file_op_tracker.start_operation(buffer_name, parsed_args, buffer_id)
 
+                                # Hide thinking spinner before showing tool call
+                                if adapter._hide_thinking:
+                                    await adapter._hide_thinking()
+
                                 # Mount tool call message
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
 
+                                # Sticky scroll after tool call is shown
+                                if adapter._scroll_to_bottom:
+                                    adapter._scroll_to_bottom()
+
                             tool_call_buffers.pop(buffer_key, None)
-                            display_str = format_tool_display(buffer_name, parsed_args)
-                            adapter._update_status(f"Executing {display_str}...")
 
                     if getattr(message, "chunk_position", None) == "last":
                         pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -496,81 +501,72 @@ async def execute_task_textual(
                 any_rejected = False
 
                 for interrupt_id, hitl_request in pending_interrupts.items():
+                    action_requests = hitl_request["action_requests"]
+
                     if session_state.auto_approve:
-                        # Auto-approve silently (user sees tool calls already)
-                        decisions = [{"type": "approve"} for _ in hitl_request["action_requests"]]
+                        # Auto-approve silently - start running animation
+                        decisions = [{"type": "approve"} for _ in action_requests]
                         hitl_response[interrupt_id] = {"decisions": decisions}
+                        # Mark all tools as running
+                        for tool_msg in adapter._current_tool_messages.values():
+                            tool_msg.set_running()
                     else:
-                        # Request approval via adapter
-                        decisions = []
+                        # Batch approval - one dialog for all parallel tool calls
+                        future = await adapter._request_approval(action_requests, assistant_id)
+                        decision = await future
 
-                        def mark_hitl_approved(action_request: ActionRequest) -> None:
-                            tool_name = action_request.get("name")
-                            if tool_name not in {"write_file", "edit_file"}:
-                                return
-                            args = action_request.get("args", {})
-                            if isinstance(args, dict):
-                                file_op_tracker.mark_hitl_approved(tool_name, args)
+                        # Handle the batch decision
+                        if isinstance(decision, dict):
+                            decision_type = decision.get("type")
 
-                        for action_request in hitl_request["action_requests"]:
-                            future = await adapter._request_approval(action_request, assistant_id)
-                            decision = await future
-
-                            # Check for auto-approve-all
-                            if (
-                                isinstance(decision, dict)
-                                and decision.get("type") == "auto_approve_all"
-                            ):
+                            if decision_type == "auto_approve_all":
+                                # Enable auto-approve for session
                                 session_state.auto_approve = True
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
-                                decisions.append({"type": "approve"})
-                                mark_hitl_approved(action_request)
-                                # Approve remaining actions
-                                for _ in hitl_request["action_requests"][len(decisions) :]:
-                                    decisions.append({"type": "approve"})
-                                break
+                                # Approve all
+                                decisions = [{"type": "approve"} for _ in action_requests]
+                                for tool_msg in adapter._current_tool_messages.values():
+                                    tool_msg.set_running()
+                                # Mark file ops as approved
+                                for action_request in action_requests:
+                                    tool_name = action_request.get("name")
+                                    if tool_name in {"write_file", "edit_file"}:
+                                        args = action_request.get("args", {})
+                                        if isinstance(args, dict):
+                                            file_op_tracker.mark_hitl_approved(tool_name, args)
 
-                            decisions.append(decision)
-                            # Try multiple keys for tool call id
-                            tool_id = (
-                                action_request.get("id")
-                                or action_request.get("tool_call_id")
-                                or action_request.get("call_id")
-                            )
-                            tool_name = action_request.get("name", "")
+                            elif decision_type == "approve":
+                                # Approve all
+                                decisions = [{"type": "approve"} for _ in action_requests]
+                                for tool_msg in adapter._current_tool_messages.values():
+                                    tool_msg.set_running()
+                                # Mark file ops as approved
+                                for action_request in action_requests:
+                                    tool_name = action_request.get("name")
+                                    if tool_name in {"write_file", "edit_file"}:
+                                        args = action_request.get("args", {})
+                                        if isinstance(args, dict):
+                                            file_op_tracker.mark_hitl_approved(tool_name, args)
 
-                            # Find matching tool message - by id or by name as fallback
-                            tool_msg = None
-                            tool_msg_key = None  # Track key for cleanup
-                            if tool_id and tool_id in adapter._current_tool_messages:
-                                tool_msg = adapter._current_tool_messages[tool_id]
-                                tool_msg_key = tool_id
-                            elif tool_name:
-                                # Fallback: find last tool message with matching name
-                                for key, msg in reversed(
-                                    list(adapter._current_tool_messages.items())
-                                ):
-                                    if msg._tool_name == tool_name:
-                                        tool_msg = msg
-                                        tool_msg_key = key
-                                        break
-
-                            if isinstance(decision, dict) and decision.get("type") == "approve":
-                                mark_hitl_approved(action_request)
-                                # Don't call set_success here - wait for actual tool output
-                                # The ToolMessage handler will update with real results
-                            elif isinstance(decision, dict) and decision.get("type") == "reject":
-                                if tool_msg:
+                            elif decision_type == "reject":
+                                # Reject all
+                                decisions = [{"type": "reject"} for _ in action_requests]
+                                for tool_msg in adapter._current_tool_messages.values():
                                     tool_msg.set_rejected()
-                                # Only remove from tracking on reject (approved tools need output update)
-                                if tool_msg_key and tool_msg_key in adapter._current_tool_messages:
-                                    del adapter._current_tool_messages[tool_msg_key]
-
-                        if any(d.get("type") == "reject" for d in decisions):
+                                adapter._current_tool_messages.clear()
+                                any_rejected = True
+                            else:
+                                decisions = [{"type": "reject"} for _ in action_requests]
+                                any_rejected = True
+                        else:
+                            decisions = [{"type": "reject"} for _ in action_requests]
                             any_rejected = True
 
                         hitl_response[interrupt_id] = {"decisions": decisions}
+
+                        if any_rejected:
+                            break
 
                 suppress_resumed_output = any_rejected
 
@@ -586,8 +582,6 @@ async def execute_task_textual(
                 break
 
     except asyncio.CancelledError:
-        adapter._update_status("Interrupted")
-
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected
@@ -620,8 +614,6 @@ async def execute_task_textual(
         return
 
     except KeyboardInterrupt:
-        adapter._update_status("Interrupted")
-
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected
@@ -652,8 +644,6 @@ async def execute_task_textual(
             else:
                 adapter._token_tracker.show()  # Restore previous value
         return
-
-    adapter._update_status("Ready")
 
     # Update token tracker
     if adapter._token_tracker and (captured_input_tokens or captured_output_tokens):

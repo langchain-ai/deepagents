@@ -519,7 +519,7 @@ class TestSummaryMessageFormat:
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
 
     def test_summarization_aborts_on_backend_failure(self) -> None:
-        """Test that summarization aborts when backend write fails to prevent data loss."""
+        """Test that summarization warns when backend write fails but still summarizes."""
         backend = MockBackend(should_fail=True)
         mock_model = make_mock_model(summary_response="Unused summary")
 
@@ -534,10 +534,12 @@ class TestSummaryMessageFormat:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result = middleware.before_model(state, runtime)
+        with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
+            result = middleware.before_model(state, runtime)
 
-        # Should abort summarization to preserve messages
-        assert result is None
+        # Should still produce summarization result despite backend failure
+        assert result is not None
+        assert "messages" in result
 
     def test_summary_includes_file_path_after_second_summarization(self) -> None:
         """Test that summary message includes file path reference after multiple summarizations.
@@ -627,7 +629,7 @@ class TestBackendFailureHandling:
     """Tests for backend failure handling - summarization aborts to prevent data loss."""
 
     def test_summarization_aborts_on_write_failure(self) -> None:
-        """Test that summarization aborts when backend write fails to preserve messages."""
+        """Test that summarization warns when backend write fails but still summarizes."""
         backend = MockBackend(should_fail=True, error_message="Storage unavailable")
         mock_model = make_mock_model()
 
@@ -642,13 +644,15 @@ class TestBackendFailureHandling:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        # Should not raise, but should return None to preserve messages
-        result = middleware.before_model(state, runtime)
+        with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
+            result = middleware.before_model(state, runtime)
 
-        assert result is None
+        # Should still produce summarization result despite backend failure
+        assert result is not None
+        assert "messages" in result
 
     def test_summarization_aborts_on_write_exception(self) -> None:
-        """Test that summarization aborts when backend raises exception to preserve messages."""
+        """Test that summarization warns when backend raises exception but still summarizes."""
         backend = MagicMock()
         backend.download_files.return_value = []
         backend.write.side_effect = Exception("Network error")
@@ -665,10 +669,12 @@ class TestBackendFailureHandling:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        # Should not raise, but should return None to preserve messages
-        result = middleware.before_model(state, runtime)
+        with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
+            result = middleware.before_model(state, runtime)
 
-        assert result is None
+        # Should still produce summarization result despite backend failure
+        assert result is not None
+        assert "messages" in result
 
 
 class TestThreadIdExtraction:
@@ -751,7 +757,7 @@ class TestAsyncBehavior:
 
     @pytest.mark.anyio
     async def test_async_aborts_on_failure(self) -> None:
-        """Test that async summarization aborts on backend failure to preserve messages."""
+        """Test that async summarization warns on backend failure but still summarizes."""
         backend = MockBackend(should_fail=True)
         mock_model = make_mock_model()
         mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
@@ -767,10 +773,12 @@ class TestAsyncBehavior:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result = await middleware.abefore_model(state, runtime)
+        with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
+            result = await middleware.abefore_model(state, runtime)
 
-        # Should abort to preserve messages
-        assert result is None
+        # Should still produce summarization result despite backend failure
+        assert result is not None
+        assert "messages" in result
 
 
 class TestBackendFactoryInvocation:
@@ -922,7 +930,7 @@ class TestWriteEditException:
     """Tests for exception handling when `write`/`edit` raises - summarization aborts."""
 
     def test_summarization_aborts_on_write_exception(self) -> None:
-        """Test that summarization aborts when `write` raises an exception.
+        """Test that summarization warns when `write` raises an exception but still summarizes.
 
         Covers lines 314-322: Exception handler for write in _offload_to_backend.
         """
@@ -940,14 +948,16 @@ class TestWriteEditException:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        # Should not raise, but should abort to preserve messages
-        result = middleware.before_model(state, runtime)
+        with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
+            result = middleware.before_model(state, runtime)
 
-        assert result is None
+        # Should still produce summarization result despite backend failure
+        assert result is not None
+        assert "messages" in result
 
     @pytest.mark.anyio
     async def test_async_summarization_aborts_on_write_exception(self) -> None:
-        """Test that async summarization aborts when `awrite` raises.
+        """Test that async summarization warns when `awrite` raises but still summarizes.
 
         Covers lines 387-395: Exception handler for awrite in _aoffload_to_backend.
         """
@@ -966,13 +976,15 @@ class TestWriteEditException:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        # Should not raise, but should abort to preserve messages
-        result = await middleware.abefore_model(state, runtime)
+        with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
+            result = await middleware.abefore_model(state, runtime)
 
-        assert result is None
+        # Should still produce summarization result despite backend failure
+        assert result is not None
+        assert "messages" in result
 
     def test_summarization_aborts_on_edit_exception(self) -> None:
-        """Test that summarization aborts when `edit` raises an exception (existing content).
+        """Test that summarization warns when `edit` raises an exception but still summarizes (existing content).
 
         Covers lines 314-322: Exception handler for edit in _offload_to_backend.
         """
@@ -991,14 +1003,16 @@ class TestWriteEditException:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        # Should not raise, but should abort to preserve messages
-        result = middleware.before_model(state, runtime)
+        with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
+            result = middleware.before_model(state, runtime)
 
-        assert result is None
+        # Should still produce summarization result despite backend failure
+        assert result is not None
+        assert "messages" in result
 
     @pytest.mark.anyio
     async def test_async_summarization_aborts_on_edit_exception(self) -> None:
-        """Test that async summarization aborts when `aedit` raises (existing content).
+        """Test that async summarization warns when `aedit` raises but still summarizes (existing content).
 
         Covers lines 387-395: Exception handler for aedit in _aoffload_to_backend.
         """
@@ -1018,10 +1032,12 @@ class TestWriteEditException:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        # Should not raise, but should abort to preserve messages
-        result = await middleware.abefore_model(state, runtime)
+        with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
+            result = await middleware.abefore_model(state, runtime)
 
-        assert result is None
+        # Should still produce summarization result despite backend failure
+        assert result is not None
+        assert "messages" in result
 
 
 class TestCutoffIndexEdgeCases:

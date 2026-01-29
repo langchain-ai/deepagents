@@ -331,6 +331,7 @@ class DeepAgentsApp(App):
                 scroll_to_bottom=self._scroll_chat_to_bottom,
                 show_thinking=self._show_thinking,
                 hide_thinking=self._hide_thinking,
+                set_thinking_status=self._set_thinking_status,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -409,6 +410,11 @@ class DeepAgentsApp(App):
         if self._loading_widget:
             await self._loading_widget.remove()
             self._loading_widget = None
+
+    def _set_thinking_status(self, status: str) -> None:
+        """Update the thinking spinner status text."""
+        if self._loading_widget:
+            self._loading_widget.set_status(status)
 
     def _size_initial_spacer(self) -> None:
         """Size the spacer to fill remaining viewport below input."""

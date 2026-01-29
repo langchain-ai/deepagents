@@ -24,6 +24,7 @@ from deepagents_cli.ui import format_tool_message_content
 from deepagents_cli.widgets.messages import (
     AssistantMessage,
     DiffMessage,
+    SummarizationMessage,
     SystemMessage,
     ToolCallMessage,
 )
@@ -45,7 +46,12 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     """
     if metadata is None:
         return False
-    return metadata.get("lc_source") == "summarization"
+    # Check lc_source for backward compatibility
+    if metadata.get("lc_source") == "summarization":
+        return True
+    # Check langgraph_node for SummarizationMiddleware
+    node = metadata.get("langgraph_node", "")
+    return "SummarizationMiddleware" in node
 
 
 class TextualUIAdapter:
@@ -64,6 +70,7 @@ class TextualUIAdapter:
         scroll_to_bottom: Callable[[], None] | None = None,
         show_thinking: Callable[[], None] | None = None,
         hide_thinking: Callable[[], None] | None = None,
+        set_thinking_status: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -75,6 +82,7 @@ class TextualUIAdapter:
             scroll_to_bottom: Callback to scroll chat to bottom
             show_thinking: Callback to show/reposition thinking spinner
             hide_thinking: Callback to hide thinking spinner
+            set_thinking_status: Callback to update the thinking spinner status text
         """
         self._mount_message = mount_message
         self._update_status = update_status
@@ -83,6 +91,7 @@ class TextualUIAdapter:
         self._scroll_to_bottom = scroll_to_bottom
         self._show_thinking = show_thinking
         self._hide_thinking = hide_thinking
+        self._set_thinking_status = set_thinking_status
 
         # State tracking
         self._current_assistant_message: AssistantMessage | None = None
@@ -232,6 +241,9 @@ async def execute_task_textual(
 
     stream_input: dict | Command = {"messages": [{"role": "user", "content": message_content}]}
 
+    # Track summarization state for UI feedback
+    summarization_in_progress = False
+
     try:
         while True:
             interrupt_occurred = False
@@ -293,9 +305,25 @@ async def execute_task_textual(
 
                     message, _metadata = data
 
-                    # Filter out summarization LLM output
+                    # Filter out summarization LLM output but show UI feedback
                     if _is_summarization_chunk(_metadata):
+                        # HumanMessage in summarization chunk = summary complete (#810)
+                        if isinstance(message, HumanMessage):
+                            await adapter._mount_message(SummarizationMessage())
+                            summarization_in_progress = False
+                            if adapter._set_thinking_status:
+                                adapter._set_thinking_status("Thinking")
+                        elif not summarization_in_progress:
+                            summarization_in_progress = True
+                            if adapter._set_thinking_status:
+                                adapter._set_thinking_status("Summarizing")
                         continue
+
+                    # Reset summarization status when regular chunks resume (#814)
+                    if summarization_in_progress:
+                        summarization_in_progress = False
+                        if adapter._set_thinking_status:
+                            adapter._set_thinking_status("Thinking")
 
                     if isinstance(message, HumanMessage):
                         content = message.text

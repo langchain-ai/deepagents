@@ -958,14 +958,51 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
-    def on_click(self, _event: Click) -> None:
+    def on_click(self, event: Click) -> None:
         """Handle clicks anywhere in the terminal to focus on the command line."""
         if not self._chat_input:
             return
         # Don't steal focus from approval widget
         if self._pending_approval_widget:
             return
-        self.call_after_refresh(self._chat_input.focus_input)
+        # Check if click is within the messages area - if so, don't focus input
+        # This allows text selection in message widgets without auto-scrolling
+        try:
+            messages_container = self.query_one("#messages", Container)
+            if event.control and messages_container:
+                # Check if click is within messages area by traversing parent chain
+                control = event.control
+                while control:
+                    if control == messages_container:
+                        # Click is within messages area, don't focus input
+                        # Stop event propagation to prevent auto-scrolling
+                        event.stop()
+                        return
+                    control = control.parent
+        except NoMatches:
+            # No messages container found, continue
+            pass
+        # Only focus input if click is within the input area or its immediate container
+        # This prevents accidental focusing when clicking other parts of the UI
+        try:
+            input_container = self.query_one("#bottom-app-container", Container)
+            if event.control and input_container:
+                # Check if click is within input area by traversing parent chain
+                control = event.control
+                while control:
+                    if control == input_container:
+                        # Click is within input area, focus input
+                        self.call_after_refresh(self._chat_input.focus_input)
+                        return
+                    control = control.parent
+                # Click is outside input area, stop event to prevent auto-scrolling
+                event.stop()
+            else:
+                # No control or container, stop event to prevent auto-scrolling
+                event.stop()
+        except NoMatches:
+            # Input container not found, stop event to prevent auto-scrolling
+            event.stop()
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002
         """Copy selection to clipboard on mouse release."""

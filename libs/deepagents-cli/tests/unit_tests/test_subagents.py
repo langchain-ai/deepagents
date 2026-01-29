@@ -212,9 +212,7 @@ class TestLoadSubagentsFromDir:
         agents_dir = tmp_path / "agents"
         folder = agents_dir / "researcher"
         folder.mkdir(parents=True)
-        (folder / "researcher.md").write_text(
-            make_subagent_content("researcher", "Research assistant")
-        )
+        (folder / "AGENTS.md").write_text(make_subagent_content("researcher", "Research assistant"))
 
         result = _load_subagents_from_dir(agents_dir, "user")
 
@@ -229,7 +227,7 @@ class TestLoadSubagentsFromDir:
         for name in ["researcher", "writer", "reviewer"]:
             folder = agents_dir / name
             folder.mkdir(parents=True)
-            (folder / f"{name}.md").write_text(
+            (folder / "AGENTS.md").write_text(
                 make_subagent_content(name, f"{name.title()} assistant")
             )
 
@@ -239,11 +237,11 @@ class TestLoadSubagentsFromDir:
         assert all(s["source"] == "project" for s in result.values())
 
     def test_load_skips_misnamed_files(self, tmp_path: Path) -> None:
-        """Test that files not matching folder name are skipped."""
+        """Test that files not matching expected name are skipped."""
         agents_dir = tmp_path / "agents"
         folder = agents_dir / "researcher"
         folder.mkdir(parents=True)
-        # Wrong filename - should be researcher.md
+        # Wrong filename - should be AGENTS.md
         (folder / "agent.md").write_text(make_subagent_content("researcher", "Research assistant"))
 
         result = _load_subagents_from_dir(agents_dir, "user")
@@ -256,12 +254,12 @@ class TestLoadSubagentsFromDir:
         # Valid subagent
         valid_folder = agents_dir / "valid"
         valid_folder.mkdir(parents=True)
-        (valid_folder / "valid.md").write_text(make_subagent_content("valid", "Valid assistant"))
+        (valid_folder / "AGENTS.md").write_text(make_subagent_content("valid", "Valid assistant"))
 
         # Invalid subagent (missing description)
         invalid_folder = agents_dir / "invalid"
         invalid_folder.mkdir(parents=True)
-        (invalid_folder / "invalid.md").write_text("""---
+        (invalid_folder / "AGENTS.md").write_text("""---
 name: invalid
 ---
 Content
@@ -300,9 +298,7 @@ class TestListSubagents:
         user_dir = tmp_path / "user_agents"
         folder = user_dir / "researcher"
         folder.mkdir(parents=True)
-        (folder / "researcher.md").write_text(
-            make_subagent_content("researcher", "Research assistant")
-        )
+        (folder / "AGENTS.md").write_text(make_subagent_content("researcher", "Research assistant"))
 
         result = list_subagents(user_agents_dir=user_dir)
 
@@ -315,7 +311,7 @@ class TestListSubagents:
         project_dir = tmp_path / "project_agents"
         folder = project_dir / "reviewer"
         folder.mkdir(parents=True)
-        (folder / "reviewer.md").write_text(make_subagent_content("reviewer", "Code reviewer"))
+        (folder / "AGENTS.md").write_text(make_subagent_content("reviewer", "Code reviewer"))
 
         result = list_subagents(project_agents_dir=project_dir)
 
@@ -331,14 +327,14 @@ class TestListSubagents:
         # User subagent
         user_folder = user_dir / "researcher"
         user_folder.mkdir(parents=True)
-        (user_folder / "researcher.md").write_text(
+        (user_folder / "AGENTS.md").write_text(
             make_subagent_content("researcher", "Research assistant")
         )
 
         # Project subagent
         project_folder = project_dir / "reviewer"
         project_folder.mkdir(parents=True)
-        (project_folder / "reviewer.md").write_text(
+        (project_folder / "AGENTS.md").write_text(
             make_subagent_content("reviewer", "Code reviewer")
         )
 
@@ -359,12 +355,12 @@ class TestListSubagents:
         # User version
         user_folder = user_dir / "shared"
         user_folder.mkdir(parents=True)
-        (user_folder / "shared.md").write_text(make_subagent_content("shared", "User version"))
+        (user_folder / "AGENTS.md").write_text(make_subagent_content("shared", "User version"))
 
         # Project version (same name)
         project_folder = project_dir / "shared"
         project_folder.mkdir(parents=True)
-        (project_folder / "shared.md").write_text(
+        (project_folder / "AGENTS.md").write_text(
             make_subagent_content("shared", "Project version")
         )
 
@@ -404,7 +400,7 @@ class TestListSubagents:
         user_dir = tmp_path / "agents"
         folder = user_dir / "fast-researcher"
         folder.mkdir(parents=True)
-        (folder / "fast-researcher.md").write_text(
+        (folder / "AGENTS.md").write_text(
             make_subagent_content(
                 "fast-researcher",
                 "Fast research using Haiku",

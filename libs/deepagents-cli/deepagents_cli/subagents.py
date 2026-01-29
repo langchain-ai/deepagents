@@ -4,9 +4,9 @@ Loads custom subagent definitions from the filesystem. Subagents are defined
 as markdown files with YAML frontmatter in the agents/ directory.
 
 Directory structure:
-    .deepagents/agents/{agent_name}/{agent_name}.md
+    .deepagents/agents/{agent_name}/AGENTS.md
 
-Example file (researcher/researcher.md):
+Example file (researcher/AGENTS.md):
     ---
     name: researcher
     description: Research topics on the web before writing content
@@ -110,7 +110,7 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
 def _load_subagents_from_dir(agents_dir: Path, source: str) -> dict[str, SubagentMetadata]:
     """Load subagents from a directory.
 
-    Expects structure: agents_dir/{subagent_name}/{subagent_name}.md
+    Expects structure: agents_dir/{subagent_name}/AGENTS.md
 
     Args:
         agents_dir: Directory containing subagent folders.
@@ -128,8 +128,8 @@ def _load_subagents_from_dir(agents_dir: Path, source: str) -> dict[str, Subagen
         if not folder.is_dir():
             continue
 
-        # Look for {folder_name}/{folder_name}.md
-        subagent_file = folder / f"{folder.name}.md"
+        # Look for {folder_name}/AGENTS.md
+        subagent_file = folder / "AGENTS.md"
         if not subagent_file.exists():
             continue
 

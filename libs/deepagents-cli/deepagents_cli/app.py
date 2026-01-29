@@ -14,7 +14,7 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import Click, MouseUp
+from textual.events import Click, MouseUp, Resize
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
@@ -218,9 +218,8 @@ class DeepAgentsApp(App):
     CSS_PATH = "app.tcss"
     ENABLE_COMMAND_PALETTE = False
 
-    # Slow down scroll speed (default is 3 lines per scroll event)
-    # Using 0.25 to require 4 scroll events per line - very smooth
-    SCROLL_SENSITIVITY_Y = 0.25
+    # Scroll speed (default is 3 lines per scroll event)
+    SCROLL_SENSITIVITY_Y = 1.0
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -293,7 +292,7 @@ class DeepAgentsApp(App):
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
         # Main chat area with scrollable messages
-        # Input is inside scroll so it appears right below content initially
+        # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
             yield WelcomeBanner(id="welcome-banner")
             yield Container(id="messages")  # Container can have children mounted
@@ -358,6 +357,15 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._handle_user_message(self._initial_prompt))
             )
 
+    def on_resize(self, _event: Resize) -> None:
+        """Handle terminal resize to recalculate layout."""
+        try:
+            self.query_one("#chat-spacer", Static)
+            # Spacer exists, recalculate its height
+            self.call_after_refresh(self._size_initial_spacer)
+        except NoMatches:
+            pass  # Spacer already removed, no action needed
+
     def _update_status(self, message: str) -> None:
         """Update the status display with a message."""
         try:
@@ -386,14 +394,22 @@ class DeepAgentsApp(App):
             self._status_bar.hide_tokens()
 
     def _scroll_chat_to_bottom(self) -> None:
-        """Scroll the chat area to the bottom.
+        """Scroll chat to bottom using sticky scroll pattern.
 
-        Uses anchor() for smoother streaming - keeps scroll locked to bottom
-        as new content is added without causing visual jumps.
+        Only scrolls if user is already at/near the bottom.
+        This prevents dragging the user back if they've scrolled up to read.
         """
         chat = self.query_one("#chat", VerticalScroll)
-        if chat.virtual_size.height > chat.size.height:
-            chat.anchor()
+
+        # Nothing to scroll if content fits in viewport
+        if chat.max_scroll_y <= 0:
+            return
+
+        # Sticky scroll: only scroll to bottom if user is near the bottom
+        # "Near" means within 100 pixels of the bottom (about 6-7 lines)
+        distance_from_bottom = chat.max_scroll_y - chat.scroll_y
+        if distance_from_bottom < 100:
+            chat.scroll_end(animate=False)
 
     async def _show_thinking(self) -> None:
         """Show or reposition the thinking spinner at the bottom of messages."""
@@ -404,7 +420,8 @@ class DeepAgentsApp(App):
         self._loading_widget = LoadingWidget("Thinking")
         messages = self.query_one("#messages", Container)
         await messages.mount(self._loading_widget)
-        self._scroll_chat_to_bottom()
+        # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
+        # and drag user back to bottom if they've scrolled away during streaming
 
     async def _hide_thinking(self) -> None:
         """Hide the thinking spinner."""
@@ -414,14 +431,17 @@ class DeepAgentsApp(App):
 
     def _size_initial_spacer(self) -> None:
         """Size the spacer to fill remaining viewport below input."""
-        chat = self.query_one("#chat", VerticalScroll)
-        welcome = self.query_one("#welcome-banner", WelcomeBanner)
-        input_container = self.query_one("#bottom-app-container", Container)
-        spacer = self.query_one("#chat-spacer", Static)
-        content_height = welcome.size.height + input_container.size.height + 4
-        spacer_height = chat.size.height - content_height
-        if spacer_height > 0:
-            spacer.styles.height = spacer_height
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            welcome = self.query_one("#welcome-banner", WelcomeBanner)
+            input_container = self.query_one("#bottom-app-container", Container)
+            spacer = self.query_one("#chat-spacer", Static)
+            content_height = welcome.size.height + input_container.size.height + 4
+            spacer_height = chat.size.height - content_height
+            spacer.styles.height = max(0, spacer_height)
+        except NoMatches:
+            # Spacer may have been removed already (e.g., when resuming a session)
+            pass
 
     async def _remove_spacer(self) -> None:
         """Remove the initial spacer when first message is sent."""
@@ -464,7 +484,8 @@ class DeepAgentsApp(App):
         try:
             messages = self.query_one("#messages", Container)
             await messages.mount(menu)
-            self._scroll_chat_to_bottom()
+            # Scroll to make approval visible (but don't re-anchor)
+            self.call_after_refresh(menu.scroll_visible)
             # Focus approval menu
             self.call_after_refresh(menu.focus)
         except Exception as e:
@@ -555,8 +576,9 @@ class DeepAgentsApp(App):
             if result.returncode != 0:
                 await self._mount_message(ErrorMessage(f"Exit code: {result.returncode}"))
 
-            # Scroll to show the output
-            self._scroll_chat_to_bottom()
+            # Scroll to show the output (user-initiated command, so scroll is expected)
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.scroll_end(animate=False)
 
         except subprocess.TimeoutExpired:
             await self._mount_message(ErrorMessage("Command timed out (60s limit)"))
@@ -646,6 +668,11 @@ class DeepAgentsApp(App):
         """
         # Mount the user message
         await self._mount_message(UserMessage(message))
+
+        # Scroll to bottom when user sends a new message
+        chat = self.query_one("#chat", VerticalScroll)
+        if chat.max_scroll_y > 0:
+            chat.scroll_end(animate=False)
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
@@ -739,8 +766,21 @@ class DeepAgentsApp(App):
                 elif isinstance(msg, AIMessage):
                     # Render text content if present
                     content = msg.content
-                    if isinstance(content, str) and content.strip():
-                        widget = AssistantMessage(content)
+                    # Handle both string content and list of content blocks
+                    text_content = ""
+                    if isinstance(content, str):
+                        text_content = content.strip()
+                    elif isinstance(content, list):
+                        # Extract text from content blocks
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_content += block.get("text", "")
+                            elif isinstance(block, str):
+                                text_content += block
+                        text_content = text_content.strip()
+
+                    if text_content:
+                        widget = AssistantMessage(text_content)
                         await self._mount_message(widget)
                         await widget.write_initial_content()
 
@@ -787,12 +827,13 @@ class DeepAgentsApp(App):
             # Show system message indicating this is a resumed session
             await self._mount_message(SystemMessage(f"Resumed session: {self._lc_thread_id}"))
 
-            # Scroll to bottom after UI renders
+            # Scroll to bottom after UI fully renders
+            # Use set_timer to ensure layout is complete (Markdown rendering is async)
             def scroll_to_end() -> None:
                 chat = self.query_one("#chat", VerticalScroll)
-                chat.scroll_end(animate=False)
+                chat.scroll_end(animate=False, immediate=True)
 
-            self.call_after_refresh(scroll_to_end)
+            self.set_timer(0.1, scroll_to_end)
 
         except Exception as e:
             # Don't fail the app if history loading fails
@@ -940,7 +981,9 @@ class DeepAgentsApp(App):
         """Handle clicks anywhere in the terminal to focus on the command line."""
         if not self._chat_input:
             return
-
+        # Don't steal focus from approval widget
+        if self._pending_approval_widget:
+            return
         self.call_after_refresh(self._chat_input.focus_input)
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002

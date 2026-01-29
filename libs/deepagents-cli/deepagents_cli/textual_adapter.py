@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.human_in_the_loop import (
-    ActionRequest,
     HITLRequest,
     HITLResponse,
 )
@@ -386,14 +385,15 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
-                                    # Anchor scroll once when message is created
-                                    # anchor() keeps scroll locked to bottom as content grows
-                                    if adapter._scroll_to_bottom:
-                                        adapter._scroll_to_bottom()
 
                                 # Append just the new text chunk for smoother streaming
                                 # (uses MarkdownStream internally for better performance)
                                 await current_msg.append_content(text)
+
+                                # Sticky scroll: scroll to bottom only if user is near bottom
+                                # This lets users scroll away and stay where they are
+                                if adapter._scroll_to_bottom:
+                                    adapter._scroll_to_bottom()
 
                         elif block_type in ("tool_call_chunk", "tool_call"):
                             chunk_name = block.get("name")
@@ -472,6 +472,10 @@ async def execute_task_textual(
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
 
+                                # Sticky scroll after tool call is shown
+                                if adapter._scroll_to_bottom:
+                                    adapter._scroll_to_bottom()
+
                             tool_call_buffers.pop(buffer_key, None)
 
                     if getattr(message, "chunk_position", None) == "last":
@@ -497,89 +501,70 @@ async def execute_task_textual(
                 any_rejected = False
 
                 for interrupt_id, hitl_request in pending_interrupts.items():
+                    action_requests = hitl_request["action_requests"]
+
                     if session_state.auto_approve:
-                        # Auto-approve silently (user sees tool calls already)
-                        decisions = [{"type": "approve"} for _ in hitl_request["action_requests"]]
+                        # Auto-approve silently - start running animation
+                        decisions = [{"type": "approve"} for _ in action_requests]
                         hitl_response[interrupt_id] = {"decisions": decisions}
+                        # Mark all tools as running
+                        for tool_msg in adapter._current_tool_messages.values():
+                            tool_msg.set_running()
                     else:
-                        # Request approval via adapter
-                        decisions = []
+                        # Batch approval - one dialog for all parallel tool calls
+                        future = await adapter._request_approval(action_requests, assistant_id)
+                        decision = await future
 
-                        def mark_hitl_approved(action_request: ActionRequest) -> None:
-                            tool_name = action_request.get("name")
-                            if tool_name not in {"write_file", "edit_file"}:
-                                return
-                            args = action_request.get("args", {})
-                            if isinstance(args, dict):
-                                file_op_tracker.mark_hitl_approved(tool_name, args)
+                        # Handle the batch decision
+                        if isinstance(decision, dict):
+                            decision_type = decision.get("type")
 
-                        for action_request in hitl_request["action_requests"]:
-                            future = await adapter._request_approval(action_request, assistant_id)
-                            decision = await future
-
-                            # Check for auto-approve-all
-                            if (
-                                isinstance(decision, dict)
-                                and decision.get("type") == "auto_approve_all"
-                            ):
+                            if decision_type == "auto_approve_all":
+                                # Enable auto-approve for session
                                 session_state.auto_approve = True
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
-                                decisions.append({"type": "approve"})
-                                mark_hitl_approved(action_request)
-                                # Approve remaining actions
-                                for _ in hitl_request["action_requests"][len(decisions) :]:
-                                    decisions.append({"type": "approve"})
-                                break
+                                # Approve all
+                                decisions = [{"type": "approve"} for _ in action_requests]
+                                for tool_msg in adapter._current_tool_messages.values():
+                                    tool_msg.set_running()
+                                # Mark file ops as approved
+                                for action_request in action_requests:
+                                    tool_name = action_request.get("name")
+                                    if tool_name in {"write_file", "edit_file"}:
+                                        args = action_request.get("args", {})
+                                        if isinstance(args, dict):
+                                            file_op_tracker.mark_hitl_approved(tool_name, args)
 
-                            decisions.append(decision)
-                            # Try multiple keys for tool call id
-                            tool_id = (
-                                action_request.get("id")
-                                or action_request.get("tool_call_id")
-                                or action_request.get("call_id")
-                            )
-                            tool_name = action_request.get("name", "")
+                            elif decision_type == "approve":
+                                # Approve all
+                                decisions = [{"type": "approve"} for _ in action_requests]
+                                for tool_msg in adapter._current_tool_messages.values():
+                                    tool_msg.set_running()
+                                # Mark file ops as approved
+                                for action_request in action_requests:
+                                    tool_name = action_request.get("name")
+                                    if tool_name in {"write_file", "edit_file"}:
+                                        args = action_request.get("args", {})
+                                        if isinstance(args, dict):
+                                            file_op_tracker.mark_hitl_approved(tool_name, args)
 
-                            # Find matching tool message - by id or by name as fallback
-                            tool_msg = None
-                            tool_msg_key = None  # Track key for cleanup
-                            if tool_id and tool_id in adapter._current_tool_messages:
-                                tool_msg = adapter._current_tool_messages[tool_id]
-                                tool_msg_key = tool_id
-                            elif tool_name:
-                                # Fallback: find last tool message with matching name
-                                for key, msg in reversed(
-                                    list(adapter._current_tool_messages.items())
-                                ):
-                                    if msg._tool_name == tool_name:
-                                        tool_msg = msg
-                                        tool_msg_key = key
-                                        break
-
-                            if isinstance(decision, dict) and decision.get("type") == "approve":
-                                mark_hitl_approved(action_request)
-                                # Don't call set_success here - wait for actual tool output
-                                # The ToolMessage handler will update with real results
-                            elif isinstance(decision, dict) and decision.get("type") == "reject":
-                                if tool_msg:
+                            elif decision_type == "reject":
+                                # Reject all
+                                decisions = [{"type": "reject"} for _ in action_requests]
+                                for tool_msg in adapter._current_tool_messages.values():
                                     tool_msg.set_rejected()
-                                # Only remove from tracking on reject (approved tools need output update)
-                                if tool_msg_key and tool_msg_key in adapter._current_tool_messages:
-                                    del adapter._current_tool_messages[tool_msg_key]
-                                # Mark remaining pending tools as skipped and return immediately
-                                for remaining_msg in list(adapter._current_tool_messages.values()):
-                                    remaining_msg.set_skipped()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
-                                break  # Exit approval loop immediately
-
-                        if any(d.get("type") == "reject" for d in decisions):
+                            else:
+                                decisions = [{"type": "reject"} for _ in action_requests]
+                                any_rejected = True
+                        else:
+                            decisions = [{"type": "reject"} for _ in action_requests]
                             any_rejected = True
 
                         hitl_response[interrupt_id] = {"decisions": decisions}
 
-                        # If rejected, break out of outer loop too
                         if any_rejected:
                             break
 

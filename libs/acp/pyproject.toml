@@ -31,16 +31,16 @@ dependencies = [
 [dependency-groups]
 dev = [
     "batrachian-toad>=0.5.2",
-]
-test = [
+    "dirty-equals>=0.11",
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
     "pytest-mock>=3.14.0",
     "pytest-socket>=0.7.0",
     "pytest-timeout>=2.3.1",
+    "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.9.7",
-    "dirty-equals>=0.11",
+    "ty>=0.0.1,<1.0.0",
 ]
 
 
@@ -58,7 +58,7 @@ deepacp = "deepagents_acp.server:cli_main"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "TID252"]
 ignore = []
 
 [tool.ruff.lint.isort]

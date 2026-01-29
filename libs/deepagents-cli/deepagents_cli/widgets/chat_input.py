@@ -358,6 +358,9 @@ class ChatInput(Vertical):
             cursor_offset = self._get_cursor_offset()
             self._completion_manager.on_text_changed(text, cursor_offset)
 
+        # Scroll input into view when content changes (handles text wrap)
+        self.scroll_visible()
+
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission."""
         if not self._submit_enabled:

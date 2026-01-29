@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config import COLORS, DEEP_AGENTS_ASCII, MAX_ARG_LENGTH, console
+from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, MAX_ARG_LENGTH, console
 
 
 def truncate_value(value: str, max_length: int = MAX_ARG_LENGTH) -> str:
@@ -87,6 +87,13 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
 
     elif tool_name == "shell":
         # Shell: show the command being executed
+        if "command" in tool_args:
+            command = str(tool_args["command"])
+            command = truncate_value(command, 120)
+            return f'{tool_name}("{command}")'
+
+    elif tool_name == "execute":
+        # Execute (sandbox shell): show the command being executed
         if "command" in tool_args:
             command = str(tool_args["command"])
             command = truncate_value(command, 120)

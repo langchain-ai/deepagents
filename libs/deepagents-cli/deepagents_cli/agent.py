@@ -455,15 +455,19 @@ def create_cli_agent(
     # the working directory. For sandbox backends, no special routing is needed.
     if sandbox is None:
         # Local mode: Route large results to a unique temp directory
-        large_results_dir = tempfile.mkdtemp(prefix="deepagents_large_results_")
         large_results_backend = FilesystemBackend(
-            root_dir=large_results_dir,
+            root_dir=tempfile.mkdtemp(prefix="deepagents_large_results_"),
+            virtual_mode=True,
+        )
+        conversation_history_backend = FilesystemBackend(
+            root_dir=tempfile.mkdtemp(prefix="deepagents_conversation_history_"),
             virtual_mode=True,
         )
         composite_backend = CompositeBackend(
             default=backend,
             routes={
                 "/large_tool_results/": large_results_backend,
+                "/conversation_history/": conversation_history_backend,
             },
         )
     else:

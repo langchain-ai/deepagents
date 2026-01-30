@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
-      deepagents-cli--release_created: ${{ steps.release.outputs['libs/deepagents-cli--release_created'] }}
+      deepagents-cli--release_created: ${{ steps.release.outputs['libs/cli--release_created'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release

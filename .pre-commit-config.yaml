@@ -28,8 +28,8 @@ repos:
       - id: deepagents-cli
         name: format and lint deepagents-cli
         language: system
-        entry: make -C libs/deepagents-cli format lint
-        files: ^libs/deepagents-cli/
+        entry: make -C libs/cli format lint
+        files: ^libs/cli/
         pass_filenames: false
       - id: harbor
         name: format and lint harbor

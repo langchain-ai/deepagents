@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sandbox",
-        choices=["none", "modal", "daytona", "runloop"],
+        choices=["none", "modal", "daytona", "runloop", "langsmith"],
         default="none",
         help="Remote sandbox for code execution (default: none - local only)",
     )

@@ -108,9 +108,10 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 # updates from subagents.
 # When returning updates:
 # 1. The messages key is handled explicitly to ensure only the final message is included
-# 2. The todos and structured_response keys are excluded as they do not have a defined reducer
-#    and no clear meaning for returning them from a subagent to the main agent.
-_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response"}
+# 2. The todos, structured_response, and skills_metadata keys are excluded as they do not have
+#    a defined reducer and no clear meaning for returning them from a subagent to the main agent.
+#    Each agent loads its own skills independently based on its middleware configuration.
+_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata"}
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 

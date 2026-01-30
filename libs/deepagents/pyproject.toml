@@ -114,6 +114,7 @@ ignore-var-parameters = true
 "tests/unit_tests/backends/test_state_backend.py" = ["ANN001", "ANN201", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/backends/test_state_backend_async.py" = ["ANN001", "ANN201", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/backends/test_store_backend.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
+"tests/unit_tests/backends/test_sandbox_backend.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/backends/test_store_backend_async.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/chat_model.py" = ["ARG002", "D301", "PLR0912", "RUF012"]
 "tests/unit_tests/middleware/test_memory_middleware.py" = ["F841", "PGH003", "PLR2004", "RUF001", "TC002"]

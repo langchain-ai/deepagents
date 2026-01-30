@@ -2,15 +2,6 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "skip-github-release": true,
   "packages": {
-    "libs/deepagents": {
-      "release-type": "python",
-      "package-name": "deepagents",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "extra-files": [
-        "pyproject.toml"
-      ]
-    },
     "libs/deepagents-cli": {
       "release-type": "python",
       "package-name": "deepagents-cli",
@@ -19,27 +10,8 @@
       "extra-files": [
         "pyproject.toml"
       ]
-    },
-    "libs/acp": {
-      "release-type": "python",
-      "package-name": "deepagents-acp",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "extra-files": [
-        "pyproject.toml"
-      ]
-    },
-    "libs/harbor": {
-      "release-type": "python",
-      "package-name": "deepagents-harbor",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "extra-files": [
-        "pyproject.toml"
-      ]
     }
   },
-  "separate-pull-requests": true,
   "tag-separator": "==",
   "include-component-in-tag": true,
   "include-v-in-tag": false

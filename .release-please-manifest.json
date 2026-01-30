@@ -1,6 +1,3 @@
 {
-  "libs/deepagents": "0.3.8",
-  "libs/deepagents-cli": "0.0.13",
-  "libs/acp": "0.0.1",
-  "libs/harbor": "0.0.1"
+  "libs/deepagents-cli": "0.0.13"
 }

@@ -60,7 +60,7 @@ jobs:
               echo "working-dir=libs/deepagents" >> $GITHUB_OUTPUT
               ;;
             deepagents-cli)
-              echo "working-dir=libs/deepagents-cli" >> $GITHUB_OUTPUT
+              echo "working-dir=libs/cli" >> $GITHUB_OUTPUT
               ;;
             deepagents-acp)
               echo "working-dir=libs/acp" >> $GITHUB_OUTPUT

@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "skip-github-release": true,
   "packages": {
-    "libs/deepagents-cli": {
+    "libs/cli": {
       "release-type": "python",
       "package-name": "deepagents-cli",
       "bump-minor-pre-major": true,

@@ -179,10 +179,10 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
     if has_profile:
         return {
             "trigger": ("fraction", 0.85),
-            "keep": ("fraction", 0.10),
+            "keep": ("fraction", 0.15),
             "truncate_args_settings": {
                 "trigger": ("fraction", 0.85),
-                "keep": ("fraction", 0.10),
+                "keep": ("fraction", 0.15),
             },
         }
     return {

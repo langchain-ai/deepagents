@@ -107,7 +107,7 @@ class MockBackend(BackendProtocol):
         self.download_raises = download_raises
         self.write_raises = write_raises
 
-    def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:  # noqa: ARG002
+    def read(self, path: str, offset: int = 0, limit: int = 2000) -> str:
         self.read_calls.append(path)
         if self.existing_content is not None:
             return self.existing_content
@@ -164,7 +164,7 @@ class MockBackend(BackendProtocol):
             raise RuntimeError(msg)
         return self.write(path, content)
 
-    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: ARG002, FBT001, FBT002
+    def edit(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> EditResult:  # noqa: FBT001, FBT002
         """Edit a file by replacing string occurrences."""
         self.edit_calls.append((path, old_string, new_string))
         if self.write_raises:
@@ -1698,7 +1698,7 @@ def test_truncate_mixed_tool_calls() -> None:
     cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
-    assert len(first_ai_msg.tool_calls) == 3  # noqa: PLR2004
+    assert len(first_ai_msg.tool_calls) == 3
 
     # read_file should be unchanged
     assert first_ai_msg.tool_calls[0]["name"] == "read_file"

@@ -70,12 +70,12 @@ try:
     file_path = data['path']
     content = base64.b64decode(data['content']).decode('utf-8')
 except Exception as e:
-    print(f'Error: Failed to decode write payload: {e}', file=sys.stderr)
+    print(f'Error: Failed to decode write payload: {{e}}', file=sys.stderr)
     sys.exit(1)
 
 # Check if file already exists (atomic with write)
 if os.path.exists(file_path):
-    print(f'Error: File \\'{file_path}\\' already exists', file=sys.stderr)
+    print(f'Error: File \\'{{file_path}}\\' already exists', file=sys.stderr)
     sys.exit(1)
 
 # Create parent directory if needed
@@ -111,7 +111,7 @@ try:
     old = data['old']
     new = data['new']
 except Exception as e:
-    print(f'Error: Failed to decode edit payload: {e}', file=sys.stderr)
+    print(f'Error: Failed to decode edit payload: {{e}}', file=sys.stderr)
     sys.exit(4)
 
 # Check if file exists

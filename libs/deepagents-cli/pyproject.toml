@@ -24,6 +24,7 @@ dependencies = [
   "textual>=1.0.0",
   "textual-autocomplete>=3.0.0",
   "aiosqlite>=0.19.0",
+  "pyperclip>=1.11.0",
 ]
 
 [project.optional-dependencies]

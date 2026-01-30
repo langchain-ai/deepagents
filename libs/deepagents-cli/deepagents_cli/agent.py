@@ -430,6 +430,9 @@ def create_cli_agent(  # noqa: PLR0915
         )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
+    # Track subagent middleware to pass to create_deep_agent
+    subagent_mw: list = []
+
     if sandbox is None:
         # ========== LOCAL MODE ==========
         backend = FilesystemBackend()
@@ -445,12 +448,13 @@ def create_cli_agent(  # noqa: PLR0915
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-            agent_middleware.append(
-                ShellMiddleware(
-                    workspace_root=str(Path.cwd()),
-                    env=shell_env,
-                )
+            shell_middleware = ShellMiddleware(
+                workspace_root=str(Path.cwd()),
+                env=shell_env,
             )
+            agent_middleware.append(shell_middleware)
+            # Also give subagents shell access
+            subagent_mw.append(shell_middleware)
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)
@@ -505,6 +509,7 @@ def create_cli_agent(  # noqa: PLR0915
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,
+        subagent_middleware=subagent_mw if subagent_mw else None,
         interrupt_on=interrupt_on,
         checkpointer=final_checkpointer,
         subagents=custom_subagents if custom_subagents else None,

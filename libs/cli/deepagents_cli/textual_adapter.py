@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -64,6 +65,7 @@ class TextualUIAdapter:
         scroll_to_bottom: Callable[[], None] | None = None,
         show_thinking: Callable[[], None] | None = None,
         hide_thinking: Callable[[], None] | None = None,
+        set_active_message: Callable[[str | None], None] | None = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -75,6 +77,7 @@ class TextualUIAdapter:
             scroll_to_bottom: Callback to scroll chat to bottom
             show_thinking: Callback to show/reposition thinking spinner
             hide_thinking: Callback to hide thinking spinner
+            set_active_message: Callback to set the active streaming message ID
         """
         self._mount_message = mount_message
         self._update_status = update_status
@@ -83,6 +86,7 @@ class TextualUIAdapter:
         self._scroll_to_bottom = scroll_to_bottom
         self._show_thinking = show_thinking
         self._hide_thinking = hide_thinking
+        self._set_active_message = set_active_message
 
         # State tracking
         self._current_assistant_message: AssistantMessage | None = None
@@ -382,9 +386,14 @@ async def execute_task_textual(
                                     # Hide thinking spinner when assistant starts responding
                                     if adapter._hide_thinking:
                                         await adapter._hide_thinking()
-                                    current_msg = AssistantMessage()
+                                    # Generate ID for the message for virtualization tracking
+                                    msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+                                    current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
+                                    # Mark as active so it won't be pruned during streaming
+                                    if adapter._set_active_message:
+                                        adapter._set_active_message(msg_id)
 
                                 # Append just the new text chunk for smoother streaming
                                 # (uses MarkdownStream internally for better performance)
@@ -667,10 +676,15 @@ async def _flush_assistant_text_ns(
     current_msg = assistant_message_by_namespace.get(ns_key)
     if current_msg is None:
         # No message was created during streaming - create one with full content
-        current_msg = AssistantMessage(text)
+        msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+        current_msg = AssistantMessage(text, id=msg_id)
         await adapter._mount_message(current_msg)
         await current_msg.write_initial_content()
         assistant_message_by_namespace[ns_key] = current_msg
     else:
         # Stop the stream to finalize the content
         await current_msg.stop_stream()
+
+    # Clear active message since streaming is done
+    if adapter._set_active_message:
+        adapter._set_active_message(None)

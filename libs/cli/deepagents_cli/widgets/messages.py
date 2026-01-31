@@ -275,6 +275,10 @@ class ToolCallMessage(Vertical):
         self._spinner_position = 0
         self._start_time: float | None = None
         self._animation_timer: Timer | None = None
+        # Deferred state for hydration (set by MessageData.to_widget)
+        self._deferred_status: str | None = None
+        self._deferred_output: str | None = None
+        self._deferred_expanded: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout."""
@@ -309,6 +313,61 @@ class ToolCallMessage(Vertical):
         self._preview_widget.display = False
         self._hint_widget.display = False
         self._full_widget.display = False
+
+        # Restore deferred state if this widget was hydrated from data
+        self._restore_deferred_state()
+
+    def _restore_deferred_state(self) -> None:
+        """Restore state from deferred values (used when hydrating from data)."""
+        if self._deferred_status is None:
+            return
+
+        status = self._deferred_status
+        output = self._deferred_output or ""
+        self._expanded = self._deferred_expanded
+
+        # Clear deferred values
+        self._deferred_status = None
+        self._deferred_output = None
+        self._deferred_expanded = False
+
+        # Restore based on status (don't restart animations for running tools)
+        match status:
+            case "success":
+                self._status = "success"
+                self._output = output
+                self._update_output_display()
+            case "error":
+                self._status = "error"
+                self._output = output
+                if self._status_widget:
+                    self._status_widget.add_class("error")
+                    self._status_widget.update("[red]✗ Error[/red]")
+                    self._status_widget.display = True
+                self._update_output_display()
+            case "rejected":
+                self._status = "rejected"
+                if self._status_widget:
+                    self._status_widget.add_class("rejected")
+                    self._status_widget.update("[yellow]✗ Rejected[/yellow]")
+                    self._status_widget.display = True
+            case "skipped":
+                self._status = "skipped"
+                if self._status_widget:
+                    self._status_widget.add_class("rejected")
+                    self._status_widget.update("[dim]- Skipped[/dim]")
+                    self._status_widget.display = True
+            case "running":
+                # For running tools, show static "Running..." without animation
+                # (animations shouldn't be restored for archived tools)
+                self._status = "running"
+                if self._status_widget:
+                    self._status_widget.add_class("pending")
+                    self._status_widget.update("[yellow]⠿ Running...[/yellow]")
+                    self._status_widget.display = True
+            case _:
+                # pending or unknown - leave as default
+                pass
 
     def set_running(self) -> None:
         """Mark the tool as running (approved and executing).
@@ -863,6 +922,8 @@ class ErrorMessage(Static):
             error: The error message
             **kwargs: Additional arguments passed to parent
         """
+        # Store raw content for serialization
+        self._content = error
         # Use Text object to combine styled prefix with unstyled error content
         text = Text("Error: ", style="bold red")
         text.append(error)
@@ -889,5 +950,7 @@ class SystemMessage(Static):
             message: The system message
             **kwargs: Additional arguments passed to parent
         """
+        # Store raw content for serialization
+        self._content = message
         # Use Text object to safely render message without markup parsing
         super().__init__(Text(message, style="dim italic"), **kwargs)

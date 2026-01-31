@@ -70,7 +70,7 @@ class MessageData:
     # Cached height hint for scroll calculations (set after first render)
     height_hint: int | None = None
 
-    def to_widget(self) -> Widget:
+    def to_widget(self) -> Widget:  # noqa: PLR0911
         """Recreate a widget from this message data.
 
         Returns:
@@ -126,7 +126,7 @@ class MessageData:
                 return SystemMessage(self.content, id=self.id)
 
     @classmethod
-    def from_widget(cls, widget: Widget) -> MessageData:
+    def from_widget(cls, widget: Widget) -> MessageData:  # noqa: PLR0911
         """Create MessageData from an existing widget.
 
         Args:
@@ -419,7 +419,9 @@ class MessageStore:
         threshold = viewport_height * 2
         return scroll_position < threshold
 
-    def should_prune_below(self, scroll_position: float, viewport_height: int, content_height: int) -> bool:
+    def should_prune_below(
+        self, scroll_position: float, viewport_height: int, content_height: int
+    ) -> bool:
         """Check if we should prune messages below the current view.
 
         Args:

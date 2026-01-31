@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import overload
 
 import wcmatch.glob as wcglob
+from typing_extensions import deprecated
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -79,6 +80,7 @@ class FilesystemBackend(BackendProtocol):
     ) -> None: ...
 
     @overload
+    @deprecated("virtual_mode is deprecated, use restrict_to_root instead")
     def __init__(
         self,
         root_dir: str | Path | None = None,
@@ -132,9 +134,6 @@ class FilesystemBackend(BackendProtocol):
 
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
 
-        Raises:
-            ValueError: If allowed_paths is an empty list.
-
         Examples:
             Restrict to project directory (recommended):
 
@@ -166,8 +165,7 @@ class FilesystemBackend(BackendProtocol):
             )
             ```
         """
-        # Handle parameter migration and defaults
-        # Goal: Migrate from virtual_mode AND require explicit restrict_to_root
+        # Migrate from virtual_mode AND require explicit restrict_to_root
 
         if restrict_to_root is not None:
             # User explicitly set restrict_to_root - no warnings needed

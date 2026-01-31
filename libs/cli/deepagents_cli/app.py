@@ -15,6 +15,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
 from textual.events import Click, MouseUp, Resize
+from textual.scrollbar import ScrollUp
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
@@ -22,6 +23,7 @@ from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textua
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
+from deepagents_cli.widgets.message_store import MessageData, MessageStore
 from deepagents_cli.widgets.messages import (
     AssistantMessage,
     ErrorMessage,
@@ -288,6 +290,8 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
+        # Message virtualization store
+        self._message_store = MessageStore()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout."""
@@ -331,6 +335,7 @@ class DeepAgentsApp(App):
                 scroll_to_bottom=self._scroll_chat_to_bottom,
                 show_thinking=self._show_thinking,
                 hide_thinking=self._hide_thinking,
+                set_active_message=self._set_active_message,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -358,6 +363,10 @@ class DeepAgentsApp(App):
             self.call_after_refresh(self._size_initial_spacer)
         except NoMatches:
             pass  # Spacer already removed, no action needed
+
+    def on_scroll_up(self, _event: ScrollUp) -> None:
+        """Handle scroll up to check if we need to hydrate older messages."""
+        self._check_hydration_needed()
 
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
@@ -391,6 +400,76 @@ class DeepAgentsApp(App):
         distance_from_bottom = chat.max_scroll_y - chat.scroll_y
         if distance_from_bottom < 100:
             chat.scroll_end(animate=False)
+
+    def _check_hydration_needed(self) -> None:
+        """Check if we need to hydrate messages from the store.
+
+        Called when user scrolls up near the top of visible messages.
+        """
+        if not self._message_store.has_messages_above:
+            return
+
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            return
+
+        scroll_y = chat.scroll_y
+        viewport_height = chat.size.height
+
+        if self._message_store.should_hydrate_above(scroll_y, viewport_height):
+            # Schedule hydration (don't block scroll)
+            self.call_later(self._hydrate_messages_above)
+
+    async def _hydrate_messages_above(self) -> None:
+        """Hydrate older messages when user scrolls near the top.
+
+        This recreates widgets for archived messages and inserts them
+        at the top of the messages container.
+        """
+        if not self._message_store.has_messages_above:
+            return
+
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            messages_container = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+
+        # Get messages to hydrate
+        to_hydrate = self._message_store.get_messages_to_hydrate()
+        if not to_hydrate:
+            return
+
+        # Remember current scroll position and first widget
+        old_scroll_y = chat.scroll_y
+        first_child = messages_container.children[0] if messages_container.children else None
+
+        # Hydrate messages in reverse order (oldest first, inserted at top)
+        hydrated_widgets = []
+        for msg_data in to_hydrate:
+            widget = msg_data.to_widget()
+            hydrated_widgets.append(widget)
+
+        # Mount all widgets at once, before the first current widget
+        for widget in reversed(hydrated_widgets):
+            if first_child:
+                await messages_container.mount(widget, before=first_child)
+            else:
+                await messages_container.mount(widget)
+            first_child = widget
+
+        # Update the store
+        self._message_store.mark_hydrated(len(to_hydrate))
+
+        # Adjust scroll position to maintain view
+        # We need to add the height of the new widgets to keep the same view
+        # This is tricky because widget heights aren't known until after layout
+        # For now, use a simple heuristic based on average message height
+        # A more accurate approach would measure actual heights after mount
+        estimated_height_per_message = 60  # pixels, rough estimate
+        added_height = len(hydrated_widgets) * estimated_height_per_message
+        chat.scroll_y = old_scroll_y + added_height
 
     async def _show_thinking(self) -> None:
         """Show or reposition the thinking spinner at the bottom of messages."""
@@ -823,18 +902,68 @@ class DeepAgentsApp(App):
     async def _mount_message(self, widget: Static) -> None:
         """Mount a message widget to the messages area.
 
+        This method also stores the message data and handles pruning
+        when the widget count exceeds the maximum.
+
         Args:
             widget: The message widget to mount
         """
         await self._remove_spacer()
         messages = self.query_one("#messages", Container)
+
+        # Store message data for virtualization
+        message_data = MessageData.from_widget(widget)
+        self._message_store.append(message_data)
+
+        # Mount the widget
         await messages.mount(widget)
+
+        # Prune old widgets if window exceeded
+        await self._prune_old_messages()
+
         # Scroll to keep input bar visible
         input_container = self.query_one("#bottom-app-container", Container)
         input_container.scroll_visible()
 
+    async def _prune_old_messages(self) -> None:
+        """Prune oldest message widgets if we exceed the window size.
+
+        This removes widgets from the DOM but keeps data in MessageStore
+        for potential re-hydration when scrolling up.
+        """
+        if not self._message_store.window_exceeded():
+            return
+
+        messages_container = self.query_one("#messages", Container)
+        to_prune = self._message_store.get_messages_to_prune()
+
+        if not to_prune:
+            return
+
+        pruned_ids = []
+        for msg_data in to_prune:
+            try:
+                widget = messages_container.query_one(f"#{msg_data.id}")
+                await widget.remove()
+                pruned_ids.append(msg_data.id)
+            except NoMatches:
+                # Widget already removed or never existed
+                pruned_ids.append(msg_data.id)
+
+        self._message_store.mark_pruned(pruned_ids)
+
+    def _set_active_message(self, message_id: str | None) -> None:
+        """Set the active streaming message (won't be pruned).
+
+        Args:
+            message_id: The ID of the active message, or None to clear.
+        """
+        self._message_store.set_active_message(message_id)
+
     async def _clear_messages(self) -> None:
-        """Clear the messages area."""
+        """Clear the messages area and message store."""
+        # Clear the message store first
+        self._message_store.clear()
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()

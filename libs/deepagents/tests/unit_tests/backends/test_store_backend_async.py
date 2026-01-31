@@ -263,17 +263,16 @@ async def test_store_backend_aupload_adownload():
 
 
 async def test_store_backend_agrep_invalid_regex():
-    """Test async grep with invalid regex pattern."""
+    """Test async grep with special characters (literal search, not regex)."""
     rt = make_runtime()
     be = StoreBackend(rt)
 
     res = await be.awrite("/test.txt", "some content")
     assert res.error is None
 
-    # Invalid regex should return error string
+    # Special characters are treated literally, not regex
     result = await be.agrep_raw("[invalid", path="/")
-    assert isinstance(result, str)
-    assert "Invalid regex" in result or "error" in result.lower()
+    assert isinstance(result, list)  # Returns empty list, not error
 
 
 async def test_store_backend_intercept_large_tool_result_async():

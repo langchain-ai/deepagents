@@ -83,9 +83,9 @@ async def test_filesystem_backend_async_virtual_mode(tmp_path: Path):
     g = await be.aglob_info("**/*.md", path="/")
     assert any(i["path"] == "/dir/b.md" for i in g)
 
-    # invalid regex returns error string
-    err = await be.agrep_raw("[", path="/")
-    assert isinstance(err, str)
+    # literal search should work with special regex chars like "[" and "("
+    matches_bracket = await be.agrep_raw("[", path="/")
+    assert isinstance(matches_bracket, list)  # Should not error, returns empty list or matches
 
     # path traversal blocked
     with pytest.raises(ValueError):

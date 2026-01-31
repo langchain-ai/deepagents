@@ -560,6 +560,7 @@ class TestFilesystemMiddleware:
         assert "/tests/test.py" not in result
 
     def test_grep_search_shortterm_regex_pattern(self):
+        """Test grep with literal pattern (not regex)."""
         state = FilesystemState(
             messages=[],
             files={
@@ -572,9 +573,10 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        # Search for literal "def " - literal search, not regex
         result = grep_search_tool.invoke(
             {
-                "pattern": r"def \w+\(",
+                "pattern": "def ",
                 "output_mode": "content",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
@@ -606,6 +608,7 @@ class TestFilesystemMiddleware:
         assert result == "No matches found"
 
     def test_grep_search_shortterm_invalid_regex(self):
+        """Test grep with special characters (literal search, not regex)."""
         state = FilesystemState(
             messages=[],
             files={
@@ -618,13 +621,14 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        # Special characters are treated literally, so no matches expected
         result = grep_search_tool.invoke(
             {
                 "pattern": "[invalid",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        assert "Invalid regex pattern" in result
+        assert "No matches found" in result
 
     def test_search_store_paginated_empty(self):
         """Test pagination with no items."""

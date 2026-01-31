@@ -388,24 +388,20 @@ class FilesystemBackend(BackendProtocol):
         path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
-        """Search for a regex pattern in files.
+        """Search for a literal text pattern in files.
 
         Uses ripgrep if available, falling back to Python regex search.
 
         Args:
-            pattern: Regular expression pattern to search for.
+            pattern: Literal string to search for (NOT regex).
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
 
         Returns:
             List of GrepMatch dicts containing path, line number, and matched text.
-            Returns an error string if the regex pattern is invalid.
         """
-        # Validate regex
-        try:
-            re.compile(pattern)
-        except re.error as e:
-            return f"Invalid regex pattern: {e}"
+        # Escape pattern to make it literal (not regex)
+        escaped_pattern = re.escape(pattern)
 
         # Resolve base path
         try:
@@ -417,9 +413,9 @@ class FilesystemBackend(BackendProtocol):
             return []
 
         # Try ripgrep first
-        results = self._ripgrep_search(pattern, base_full, glob)
+        results = self._ripgrep_search(escaped_pattern, base_full, glob)
         if results is None:
-            results = self._python_search(pattern, base_full, glob)
+            results = self._python_search(escaped_pattern, base_full, glob)
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -431,7 +427,7 @@ class FilesystemBackend(BackendProtocol):
         """Search using ripgrep with JSON output parsing.
 
         Args:
-            pattern: Regex pattern to search for.
+            pattern: Escaped regex pattern (from re.escape) for literal search.
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files.
 
@@ -489,17 +485,15 @@ class FilesystemBackend(BackendProtocol):
         Recursively searches files, respecting `max_file_size_bytes` limit.
 
         Args:
-            pattern: Regex pattern to search for.
+            pattern: Escaped regex pattern (from re.escape) for literal search.
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
         """
-        try:
-            regex = re.compile(pattern)
-        except re.error:
-            return {}
+        # Pattern is already escaped by grep_raw, compile it as-is
+        regex = re.compile(pattern)
 
         results: dict[str, list[tuple[int, str]]] = {}
         root = base_full if base_full.is_dir() else base_full.parent

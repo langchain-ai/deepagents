@@ -14,6 +14,12 @@ from textual.widgets import Static
 
 from deepagents_cli.widgets.tool_renderers import get_renderer
 
+# Tools that support expandable command display
+_EXPANDABLE_COMMAND_TOOLS: set[str] = {"shell", "execute"}
+
+# Max length for truncated shell command display
+_SHELL_COMMAND_TRUNCATE_LENGTH = 120
+
 
 class ApprovalMenu(Container):
     """Approval menu using standard Textual patterns.
@@ -44,6 +50,7 @@ class ApprovalMenu(Container):
         Binding("n", "select_reject", "Reject", show=False),
         Binding("3", "select_auto", "Auto-approve", show=False),
         Binding("a", "select_auto", "Auto-approve", show=False),
+        Binding("e", "toggle_expand", "Expand command", show=False),
     ]
 
     class Decided(Message):
@@ -78,10 +85,34 @@ class ApprovalMenu(Container):
         self._tool_info_container: Vertical | None = None
         # Minimal display if ALL tools are bash/shell
         self._is_minimal = all(name in self._MINIMAL_TOOLS for name in self._tool_names)
+        # For expandable shell commands
+        self._command_expanded = False
+        self._command_widget: Static | None = None
+        self._has_expandable_command = self._check_expandable_command()
 
     def set_future(self, future: asyncio.Future[dict[str, str]]) -> None:
         """Set the future to resolve when user decides."""
         self._future = future
+
+    def _check_expandable_command(self) -> bool:
+        """Check if there's a shell command that can be expanded."""
+        if len(self._action_requests) != 1:
+            return False
+        req = self._action_requests[0]
+        tool_name = req.get("name", "")
+        if tool_name not in _EXPANDABLE_COMMAND_TOOLS:
+            return False
+        command = req.get("args", {}).get("command", "")
+        return len(str(command)) > _SHELL_COMMAND_TRUNCATE_LENGTH
+
+    def _get_command_display(self, *, expanded: bool) -> str:
+        """Get the command display string (truncated or full)."""
+        req = self._action_requests[0]
+        command = str(req.get("args", {}).get("command", ""))
+        if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
+            return f"[bold #f59e0b]{command}[/bold #f59e0b]"
+        truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + "..."
+        return f"[bold #f59e0b]{truncated}[/bold #f59e0b] [dim](press 'e' to expand)[/dim]"
 
     def compose(self) -> ComposeResult:
         """Compose the widget with Static children.
@@ -96,6 +127,14 @@ class ApprovalMenu(Container):
         else:
             title = f">>> {count} Tool Calls Require Approval <<<"
         yield Static(title, classes="approval-title")
+
+        # For shell commands, show the command (expandable if long)
+        if self._is_minimal and len(self._action_requests) == 1:
+            self._command_widget = Static(
+                self._get_command_display(expanded=self._command_expanded),
+                classes="approval-command",
+            )
+            yield self._command_widget
 
         # Tool info - only for non-minimal tools (diffs, writes show actual content)
         if not self._is_minimal:
@@ -115,10 +154,10 @@ class ApprovalMenu(Container):
                 yield widget
 
         # Help text at the very bottom
-        yield Static(
-            "↑/↓ navigate • Enter select • y/n/a quick keys",
-            classes="approval-help",
-        )
+        help_text = "↑/↓ navigate • Enter select • y/n/a quick keys"
+        if self._has_expandable_command:
+            help_text += " • e expand"
+        yield Static(help_text, classes="approval-help")
 
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
@@ -207,6 +246,13 @@ class ApprovalMenu(Container):
         self._selected = 2
         self._update_options()
         self._handle_selection(2)
+
+    def action_toggle_expand(self) -> None:
+        """Toggle shell command expansion."""
+        if not self._has_expandable_command or not self._command_widget:
+            return
+        self._command_expanded = not self._command_expanded
+        self._command_widget.update(self._get_command_display(expanded=self._command_expanded))
 
     def _handle_selection(self, option: int) -> None:
         """Handle the selected option."""

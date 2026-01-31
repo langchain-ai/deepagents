@@ -16,8 +16,17 @@ def append_to_system_message(
     Returns:
         New SystemMessage with the text appended.
     """
-    new_content: list[str | dict[str, str]] = list(system_message.content_blocks) if system_message else []
-    if new_content:
+    if system_message is None:
+        return SystemMessage(content=text)
+
+    # Preserve string format for OpenAI API compatibility
+    if isinstance(system_message.content, str):
+        new_content = f"{system_message.content}\n\n{text}"
+        return SystemMessage(content=new_content)
+
+    # Handle list format (for multimodal or other use cases)
+    new_content_list: list[str | dict[str, str]] = list(system_message.content_blocks)
+    if new_content_list:
         text = f"\n\n{text}"
-    new_content.append({"type": "text", "text": text})
-    return SystemMessage(content=new_content)
+    new_content_list.append({"type": "text", "text": text})
+    return SystemMessage(content=new_content_list)

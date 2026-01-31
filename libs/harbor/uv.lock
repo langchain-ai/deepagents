@@ -703,7 +703,7 @@ test = [
 [[package]]
 name = "deepagents-cli"
 version = "0.0.15"
-source = { directory = "../deepagents-cli" }
+source = { directory = "../cli" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "daytona" },
@@ -798,7 +798,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
-    { name = "deepagents-cli", directory = "../deepagents-cli" },
+    { name = "deepagents-cli", directory = "../cli" },
     { name = "harbor", specifier = ">=0.1.12" },
     { name = "langchain-anthropic", specifier = ">=1.0.0" },
     { name = "langchain-openai", specifier = ">=1.0.0" },

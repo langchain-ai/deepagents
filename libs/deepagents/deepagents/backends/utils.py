@@ -390,14 +390,14 @@ def grep_matches_from_files(
 ) -> list[GrepMatch] | str:
     """Return structured grep matches from an in-memory files mapping.
 
-    Returns a list of GrepMatch on success, or a string for invalid inputs
-    (e.g., invalid regex). We deliberately do not raise here to keep backends
-    non-throwing in tool contexts and preserve user-facing error messages.
+    Performs literal text search (not regex).
+
+    Returns a list of GrepMatch on success, or a string for invalid inputs.
+    We deliberately do not raise here to keep backends non-throwing in tool
+    contexts and preserve user-facing error messages.
     """
-    try:
-        regex = re.compile(pattern)
-    except re.error as e:
-        return f"Invalid regex pattern: {e}"
+    # Escape pattern to make it literal (not regex)
+    regex = re.compile(re.escape(pattern))
 
     try:
         normalized_path = _validate_path(path)

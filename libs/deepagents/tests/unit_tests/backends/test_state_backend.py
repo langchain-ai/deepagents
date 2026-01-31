@@ -51,9 +51,9 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     matches = be.grep_raw("hi", path="/")
     assert isinstance(matches, list) and any(m["path"] == "/notes.txt" for m in matches)
 
-    # invalid regex yields string error
-    err = be.grep_raw("[", path="/")
-    assert isinstance(err, str)
+    # special characters are treated literally, not regex
+    result = be.grep_raw("[", path="/")
+    assert isinstance(result, list)  # Returns empty list, not error
 
     # glob_info
     infos = be.glob_info("*.txt", path="/")

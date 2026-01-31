@@ -7,6 +7,7 @@ import subprocess
 import warnings
 from datetime import datetime
 from pathlib import Path
+from typing import overload
 
 import wcmatch.glob as wcglob
 
@@ -63,8 +64,34 @@ class FilesystemBackend(BackendProtocol):
             interaction
         4. Use `restrict_to_root=True` with `root_dir` to enable path-based
            access restrictions (blocks `..`, `~`, and absolute paths outside root).
-           In a future version, `restrict_to_root` will default to `True` for safety.
+           In deepagents 0.5, `restrict_to_root` will default to `True`.
     """
+
+    # Overload signatures to mark virtual_mode as deprecated
+    @overload
+    def __init__(
+        self,
+        root_dir: str | Path | None = None,
+        *,
+        restrict_to_root: bool | None = None,
+        allowed_paths: list[str | Path] | None = None,
+        max_file_size_mb: int = 10,
+    ) -> None:
+        """Preferred signature without deprecated virtual_mode parameter."""
+        ...
+
+    @overload
+    def __init__(
+        self,
+        root_dir: str | Path | None = None,
+        virtual_mode: bool | None = None,
+        *,
+        restrict_to_root: bool | None = None,
+        allowed_paths: list[str | Path] | None = None,
+        max_file_size_mb: int = 10,
+    ) -> None:
+        """Deprecated: Use restrict_to_root instead of virtual_mode."""
+        ...
 
     def __init__(
         self,
@@ -82,13 +109,13 @@ class FilesystemBackend(BackendProtocol):
                 Defaults to current working directory.
 
             virtual_mode: **DEPRECATED**. Use `restrict_to_root` instead.
-                This parameter will be removed in a future version.
+                This parameter will be removed in deepagents 0.5.
 
             restrict_to_root: Whether to restrict file access to root_dir.
                 - True: Restrict to root_dir (blocks traversal, enforces boundary)
                 - False: No restrictions, full filesystem access (unless allowed_paths is set)
                 - None: Currently defaults to False with a warning.
-                  This parameter will default to True in a future version.
+                  This parameter will default to True in deepagents 0.5.
 
             allowed_paths: List of directories to restrict file access to.
 
@@ -153,7 +180,7 @@ class FilesystemBackend(BackendProtocol):
         elif virtual_mode is not None:
             # User is using deprecated virtual_mode parameter
             warnings.warn(
-                "The 'virtual_mode' parameter is deprecated and will be removed in a future version. "
+                "The 'virtual_mode' parameter is deprecated and will be removed in deepagents 0.5. "
                 "Use 'restrict_to_root' instead for the same behavior.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -162,8 +189,9 @@ class FilesystemBackend(BackendProtocol):
         else:
             # Neither parameter specified - warn about missing explicit choice
             warnings.warn(
-                "The default value of 'restrict_to_root' will change to True in a future version for security. "
-                "Explicitly set restrict_to_root=False or restrict_to_root=True.",
+                "The default value of 'restrict_to_root' will change to True in deepagents 0.5. "
+                "Please explicitly set restrict_to_root=False (to maintain current behavior) or "
+                "restrict_to_root=True (to adopt the new default early).",
                 FutureWarning,
                 stacklevel=2,
             )

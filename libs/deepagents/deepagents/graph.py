@@ -30,6 +30,24 @@ from deepagents.middleware.summarization import SummarizationMiddleware
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
 
+def _combine_system_prompt(system_prompt: str | SystemMessage | None) -> str | SystemMessage:
+    """Combine system_prompt with BASE_AGENT_PROMPT, preserving content format."""
+    if system_prompt is None:
+        return BASE_AGENT_PROMPT
+    if isinstance(system_prompt, SystemMessage):
+        # Preserve string format for OpenAI API compatibility
+        if isinstance(system_prompt.content, str):
+            return SystemMessage(content=f"{system_prompt.content}\n\n{BASE_AGENT_PROMPT}")
+        # Handle list format (for multimodal content)
+        new_content_list = [
+            *system_prompt.content_blocks,
+            {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
+        ]
+        return SystemMessage(content=new_content_list)
+    # String: simple concatenation
+    return system_prompt + "\n\n" + BASE_AGENT_PROMPT
+
+
 def get_default_model() -> ChatAnthropic:
     """Get the default model for deep agents.
 
@@ -222,24 +240,7 @@ def create_deep_agent(
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-    # Combine system_prompt with BASE_AGENT_PROMPT
-    if system_prompt is None:
-        final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
-    elif isinstance(system_prompt, SystemMessage):
-        # Preserve string format for OpenAI API compatibility
-        if isinstance(system_prompt.content, str):
-            new_content = f"{system_prompt.content}\n\n{BASE_AGENT_PROMPT}"
-            final_system_prompt = SystemMessage(content=new_content)
-        else:
-            # Handle list format (for multimodal content)
-            new_content_list = [
-                *system_prompt.content_blocks,
-                {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
-            ]
-            final_system_prompt = SystemMessage(content=new_content_list)
-    else:
-        # String: simple concatenation
-        final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
+    final_system_prompt = _combine_system_prompt(system_prompt)
 
     return create_agent(
         model,

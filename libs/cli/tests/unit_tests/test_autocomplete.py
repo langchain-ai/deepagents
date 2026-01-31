@@ -180,8 +180,7 @@ class TestSlashCommandController:
     @pytest.fixture
     def mock_view(self):
         """Create a mock CompletionView."""
-        view = MagicMock()
-        return view
+        return MagicMock()
 
     @pytest.fixture
     def controller(self, mock_view):

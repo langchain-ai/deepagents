@@ -44,14 +44,14 @@ run:
 # Define a variable for Python and notebook files.
 PYTHON_FILES=.
 lint format: PYTHON_FILES=.
-lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/deepagents-cli --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
+lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=libs/cli --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
 lint_package: PYTHON_FILES=deepagents_cli
 lint_tests: PYTHON_FILES=tests
 
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
-	# [ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ty check $(PYTHON_FILES)
+	#[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ty check $(PYTHON_FILES)
 
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)

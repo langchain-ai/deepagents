@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -703,7 +703,7 @@ test = [
 [[package]]
 name = "deepagents-cli"
 version = "0.0.15"
-source = { directory = "../deepagents-cli" }
+source = { directory = "../cli" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "daytona" },
@@ -727,43 +727,42 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.19.0" },
-    { name = "daytona", specifier = ">=0.113.0" },
+    { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
+    { name = "daytona", specifier = ">=0.113.0,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.2.7,<2.0.0" },
     { name = "langchain-google-vertexai", marker = "extra == 'vertexai'", specifier = ">=3.0.0,<4.0.0" },
     { name = "langchain-openai", specifier = ">=1.1.7,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
-    { name = "markdownify", specifier = ">=0.13.0" },
-    { name = "modal", specifier = ">=0.65.0" },
-    { name = "pillow", specifier = ">=10.0.0" },
-    { name = "prompt-toolkit", specifier = ">=3.0.52" },
-    { name = "python-dotenv" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "requests" },
-    { name = "rich", specifier = ">=13.0.0" },
+    { name = "markdownify", specifier = ">=0.13.0,<2.0.0" },
+    { name = "modal", specifier = ">=0.65.0,<2.0.0" },
+    { name = "pillow", specifier = ">=10.0.0,<13.0.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0.52,<4.0.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
+    { name = "requests", specifier = ">=2.0.0,<3.0.0" },
+    { name = "rich", specifier = ">=14.0.0,<15.0.0" },
     { name = "runloop-api-client", specifier = ">=0.69.0" },
-    { name = "tavily-python" },
-    { name = "textual", specifier = ">=1.0.0" },
-    { name = "textual-autocomplete", specifier = ">=3.0.0" },
+    { name = "tavily-python", specifier = ">=0.7.21,<1.0.0" },
+    { name = "textual", specifier = ">=6.0.0,<8.0.0" },
+    { name = "textual-autocomplete", specifier = ">=3.0.0,<5.0.0" },
 ]
 provides-extras = ["vertexai"]
 
 [package.metadata.requires-dev]
 test = [
-    { name = "build" },
-    { name = "langchain-openai" },
-    { name = "pytest", specifier = ">=8.3.4" },
-    { name = "pytest-asyncio", specifier = ">=0.25.3" },
-    { name = "pytest-cov", specifier = ">=6.0.0" },
-    { name = "pytest-mock", specifier = ">=3.14.0" },
-    { name = "pytest-socket", specifier = ">=0.7.0" },
-    { name = "pytest-timeout", specifier = ">=2.3.1" },
+    { name = "build", specifier = ">=1.0.0,<2.0.0" },
+    { name = "pytest", specifier = ">=8.3.4,<9.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.25.3,<1.0.0" },
+    { name = "pytest-cov", specifier = ">=6.0.0,<7.0.0" },
+    { name = "pytest-mock", specifier = ">=3.14.0,<4.0.0" },
+    { name = "pytest-socket", specifier = ">=0.7.0,<1.0.0" },
+    { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },
     { name = "pytest-watcher", specifier = ">=0.3.4,<1.0.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0,<4.0.0" },
-    { name = "responses", specifier = ">=0.25.0" },
-    { name = "ruff", specifier = ">=0.9.7" },
-    { name = "twine" },
+    { name = "responses", specifier = ">=0.25.0,<1.0.0" },
+    { name = "ruff", specifier = ">=0.14.11,<0.15.0" },
+    { name = "twine", specifier = ">=6.0.0,<7.0.0" },
     { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]
 
@@ -796,7 +795,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
-    { name = "deepagents-cli", directory = "../deepagents-cli" },
+    { name = "deepagents-cli", directory = "../cli" },
     { name = "harbor", specifier = ">=0.1.12" },
     { name = "langchain-anthropic", specifier = ">=1.0.0" },
     { name = "langchain-openai", specifier = ">=1.0.0" },
@@ -3549,16 +3548,16 @@ wheels = [
 
 [[package]]
 name = "tavily-python"
-version = "0.7.18"
+version = "0.7.21"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "requests" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/54/47ea4695ed39791f56baf6ce2c2169f21d497d148f03e8a663abd554eccf/tavily_python-0.7.18.tar.gz", hash = "sha256:5e97d82eb5ebfd9483f7c1b212a9c15a1f88fb0869ae519c53cbbbb24184bd97", size = 21451, upload-time = "2026-01-14T16:49:18.958Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/1f/9d5c4ca7034754d1fc232af64638b905162bdf3012e9629030e3d755856f/tavily_python-0.7.21.tar.gz", hash = "sha256:897bedf9b1c2fad8605be642e417d6c7ec1b79bf6199563477cf69c4313f824a", size = 21813, upload-time = "2026-01-30T16:57:33.186Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/2d/2afb9306e68ae9e852f113de400005e61801b6eb020c57cce2a76042aa49/tavily_python-0.7.18-py3-none-any.whl", hash = "sha256:7c146bff673be6ceec51ef9af466089f14845cf8d5b4b390a106bec2399ca28e", size = 18332, upload-time = "2026-01-14T16:49:17.568Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/39/85e5be4e9a912022f86f38288d1f4dd2d100b60ec75ebf3da37ca0122375/tavily_python-0.7.21-py3-none-any.whl", hash = "sha256:acfb5b62f2d1053d56321b4fb1ddfd2e98bb975cc4446b86b3fe2d3dd0850288", size = 17957, upload-time = "2026-01-30T16:57:32.278Z" },
 ]
 
 [[package]]

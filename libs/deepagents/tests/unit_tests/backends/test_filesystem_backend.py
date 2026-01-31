@@ -494,29 +494,29 @@ def test_filesystem_download_directory_as_file(tmp_path: Path):
 def test_grep_literal_search_with_special_chars(tmp_path: Path):
     """Test that grep treats patterns as literal strings, not regex."""
     root = tmp_path
-    
+
     # Create test files with special regex characters
     (root / "test1.py").write_text("def __init__(self, arg):\n    pass")
     (root / "test2.py").write_text("@overload\ndef func(x: str | int):\n    return x")
     (root / "test3.py").write_text("pattern = r'[a-z]+'\nregex_chars = '(.*)'")
-    
+
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
-    
+
     # Test parentheses (should be literal, not regex grouping)
     matches = be.grep_raw("def __init__(", path="/")
     assert isinstance(matches, list)
     assert any("test1.py" in m["path"] for m in matches)
-    
+
     # Test pipe character (should be literal, not regex OR)
     matches = be.grep_raw("str | int", path="/")
     assert isinstance(matches, list)
     assert any("test2.py" in m["path"] for m in matches)
-    
+
     # Test brackets (should be literal, not character class)
     matches = be.grep_raw("[a-z]", path="/")
     assert isinstance(matches, list)
     assert any("test3.py" in m["path"] for m in matches)
-    
+
     # Test regex special chars together
     matches = be.grep_raw("(.*)", path="/")
     assert isinstance(matches, list)

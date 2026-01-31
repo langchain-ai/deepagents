@@ -1,10 +1,12 @@
 """Middleware for providing filesystem tools to an agent."""
+
 # ruff: noqa: E501
+# ruff: noqa: TC002
+from __future__ import annotations
 
 import os
 import re
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from typing import TYPE_CHECKING, Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -35,6 +37,11 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
 )
 from deepagents.middleware._utils import append_to_system_message
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Sequence
+
+    from langchain.types import Runtime
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 LINE_NUMBER_WIDTH = 6
@@ -470,7 +477,7 @@ class FilesystemMiddleware(AgentMiddleware):
             self._create_execute_tool(),
         ]
 
-    def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
+    def _get_backend(self, runtime: Runtime) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
 
         Args:

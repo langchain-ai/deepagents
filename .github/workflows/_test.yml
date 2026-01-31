@@ -46,6 +46,8 @@ jobs:
 
       - name: "🧪 Run Unit Tests"
         shell: bash
+        env:
+          RUN_SANDBOX_TESTS: "true"
         run: make test
 
       - name: "🧹 Verify Clean Working Directory"

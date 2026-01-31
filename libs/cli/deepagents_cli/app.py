@@ -1,5 +1,5 @@
 """Textual UI application for deepagents-cli."""
-# ruff: noqa: BLE001, PLR0912, PLR2004, S110
+# ruff: noqa: BLE001, PLR2004, S110
 
 from __future__ import annotations
 

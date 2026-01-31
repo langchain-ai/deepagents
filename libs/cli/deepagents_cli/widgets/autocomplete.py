@@ -150,9 +150,7 @@ class SlashCommandController:
         else:
             self.reset()
 
-    def on_key(  # noqa: PLR0911
-        self, event: events.Key, _text: str, cursor_index: int
-    ) -> CompletionResult:
+    def on_key(self, event: events.Key, _text: str, cursor_index: int) -> CompletionResult:
         """Handle key events for navigation and selection."""
         if not self._suggestions:
             return CompletionResult.IGNORED
@@ -250,7 +248,7 @@ def _get_project_files(root: Path) -> list[str]:
     return files
 
 
-def _fuzzy_score(query: str, candidate: str) -> float:  # noqa: PLR0911
+def _fuzzy_score(query: str, candidate: str) -> float:
     """Score a candidate against query. Higher = better match."""
     query_lower = query.lower()
     candidate_lower = candidate.lower()
@@ -415,9 +413,7 @@ class FuzzyFileController:
 
         return suggestions
 
-    def on_key(  # noqa: PLR0911
-        self, event: events.Key, text: str, cursor_index: int
-    ) -> CompletionResult:
+    def on_key(self, event: events.Key, text: str, cursor_index: int) -> CompletionResult:
         """Handle key events for navigation and selection."""
         if not self._suggestions:
             return CompletionResult.IGNORED

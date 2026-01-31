@@ -76,9 +76,7 @@ class FilesystemBackend(BackendProtocol):
         restrict_to_root: bool | None = None,
         allowed_paths: list[str | Path] | None = None,
         max_file_size_mb: int = 10,
-    ) -> None:
-        """Preferred signature without deprecated virtual_mode parameter."""
-        ...
+    ) -> None: ...
 
     @overload
     def __init__(
@@ -89,9 +87,7 @@ class FilesystemBackend(BackendProtocol):
         restrict_to_root: bool | None = None,
         allowed_paths: list[str | Path] | None = None,
         max_file_size_mb: int = 10,
-    ) -> None:
-        """Deprecated: Use restrict_to_root instead of virtual_mode."""
-        ...
+    ) -> None: ...
 
     def __init__(
         self,

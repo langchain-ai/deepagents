@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "deepagents-cli"
 version = "0.0.15"
@@ -6,24 +10,33 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
+  # Framework
   "deepagents==0.3.9",
   "langchain>=1.2.7,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
   "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
-  "requests",
-  "rich>=13.0.0",
-  "prompt-toolkit>=3.0.52",
-  "tavily-python",
-  "python-dotenv",
-  "daytona>=0.113.0",
-  "modal>=0.65.0",
-  "markdownify>=0.13.0",
+
+  # UI/Terminal
+  "textual>=6.0.0,<8.0.0",
+  "textual-autocomplete>=3.0.0,<5.0.0",
+  "prompt-toolkit>=3.0.52,<4.0.0",
+  "rich>=14.0.0,<15.0.0",
+  "markdownify>=0.13.0,<2.0.0",
+
+  # Sandbox integrations
+  "daytona>=0.113.0,<1.0.0",
+  "modal>=0.65.0,<2.0.0",
   "runloop-api-client>=0.69.0",
-  "pillow>=10.0.0",
-  "pyyaml>=6.0",
-  "textual>=1.0.0",
-  "textual-autocomplete>=3.0.0",
-  "aiosqlite>=0.19.0",
+
+  # Tools
+  "tavily-python>=0.7.21,<1.0.0",
+
+  # Utilities
+  "python-dotenv>=1.0.0,<2.0.0",
+  "requests>=2.0.0,<3.0.0",
+  "pillow>=10.0.0,<13.0.0",
+  "pyyaml>=6.0.0",
+  "aiosqlite>=0.19.0,<1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -35,60 +48,62 @@ deepagents-cli = "deepagents_cli:cli_main"
 
 [dependency-groups]
 test = [
-    "pytest>=8.3.4",
-    "pytest-asyncio>=0.25.3",
-    "pytest-cov>=6.0.0",
-    "pytest-mock>=3.14.0",
-    "pytest-socket>=0.7.0",
-    "pytest-timeout>=2.3.1",
+    "build",
+    "ruff>=0.14.11,<0.15.0",
+    "mypy>=1.19.1,<1.20.0",
+    "pytest>=8.3.4,<9.0.0",
+    "pytest-asyncio>=0.25.3,<1.0.0",
+    "pytest-cov>=6.0.0,<7.0.0",
+    "pytest-mock>=3.14.0,<4.0.0",
+    "pytest-socket>=0.7.0,<1.0.0",
+    "pytest-timeout>=2.3.1,<3.0.0",
     "pytest-watcher>=0.3.4,<1.0.0",
     "pytest-xdist>=3.8.0,<4.0.0",
-    "responses>=0.25.0",
-    "build",
-    "twine",
-    "langchain-openai",
-    "ruff>=0.9.7",
-    "ty>=0.0.1,<1.0.0",
+    "responses>=0.25.0,<1.0.0",
+    "twine>=6.0.0,<7.0.0",
+    "types-pyyaml>=6.0.12.2,<7.0.0.0",
+    "types-requests>=2.28.11.5,<3.0.0.0",
 ]
 
-[build-system]
-requires = ["setuptools>=73.0.0", "wheel"]
-build-backend = "setuptools.build_meta"
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents_cli"]
 
-[tool.setuptools.packages.find]
-include = ["deepagents_cli*"]
+[tool.hatch.build.targets.wheel.shared-data]
+"deepagents_cli/default_agent_prompt.md" = "deepagents_cli/default_agent_prompt.md"
+"deepagents_cli/*.tcss" = "deepagents_cli/"
 
-[tool.setuptools.package-data]
-deepagents_cli = ["default_agent_prompt.md", "*.tcss", "py.typed"]
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
+
+[tool.mypy]
+strict = true
 
 [tool.ruff]
 line-length = 100
-exclude = []
 
 [tool.ruff.format]
 docstring-code-format = true  # Formats code blocks in docstrings
 
 [tool.ruff.lint]
-select = [
-    "ALL"  # Enable all rules by default
-]
+select = ["ALL"]
 ignore = [
+    "C90",     # McCabe complexity
     "COM812",  # Messes with the formatter
+    "CPY",     # No copyright
     "ISC001",  # Messes with the formatter
     "PERF203", # Rarely useful
+    "PLR09",   # Too many something (arg, statements, etc)
     "SLF001",  # Private member access
     "PLC0415", # Imports should be at the top. Not always desirable
-    "PLR0913", # Too many arguments in function definition
     "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
-    "C901",    # Too complex
 ]
-unfixable = ["B028"]  # Rules that shouldn't be auto-fixed
+unfixable = ["B028"]
 
-[tool.ruff.lint.pyupgrade]
-keep-runtime-typing = true
+flake8-annotations.allow-star-arg-any = true
+flake8-annotations.mypy-init-return = true
 
-[tool.ruff.lint.flake8-annotations]
-allow-star-arg-any = true
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
 force-single-line = false
@@ -96,18 +111,12 @@ combine-as-imports = true
 known-first-party = ["deepagents_cli"]
 
 [tool.ruff.lint.pydocstyle]
-convention = "google"  # Google-style docstrings
+convention = "google"
 ignore-var-parameters = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = [
-    "D1",      # Skip documentation rules in tests
-    "S101",    # Allow asserts in tests
-    "S311",    # Allow pseudo-random generators in tests
-    "ANN201",  # Missing return type annotation
-    "INP001",  # Implicit namespace package
-    "PLR2004", # Magic value comparisons are fine in tests
-]
+"tests/**" = ["ANN001", "ANN201", "D1", "PLR2004", "S", "SLF"]
+"scripts/**" = ["BLE001", "INP", "S", "T201"]
 "deepagents_cli/agent.py" = ["E501", "PLR0912", "PLR2004", "SIM108"]
 "deepagents_cli/app.py" = ["E501", "PLR0915", "SIM108", "TC001", "TC002", "TC003"]
 "deepagents_cli/cli.py" = ["E501", "EM101", "EM102", "PLR0912", "PLR0915", "T201", "TC002", "TC003", "TRY003"]
@@ -148,30 +157,16 @@ ignore-var-parameters = true
 "deepagents_cli/textual_app/markdown_with_code_actions.py" = ["ANN202", "BLE001", "D102", "E501", "EM102", "SLF001", "TC002", "TC003", "TRY003"]
 "deepagents_cli/textual_app/running_shell_widget.py" = ["ANN202", "D102", "TC003"]
 "deepagents_cli/utils.py" = ["ANN401", "EM101", "EM102", "PLR0912", "S604", "S607", "TC002", "TC003", "TRY003"]
-"tests/integration_tests/test_cli.py" = ["ANN001", "E501", "PLR0915", "S603", "S607"]
-"tests/integration_tests/test_core_agents_api.py" = ["ANN001", "PLR0915"]
-"tests/integration_tests/test_memory.py" = ["BLE001"]
-"tests/integration_tests/test_runloop.py" = ["S106"]
-"tests/integration_tests/test_sandbox_factory.py" = ["S108"]
-"tests/integration_tests/test_sandbox_operations.py" = ["E501", "RUF001", "S108"]
-"tests/integration_tests/test_ui_memory.py" = ["SIM118"]
-"tests/unit_tests/skills/test_commands.py" = ["S108"]
-"tests/unit_tests/test_api_credentials.py" = ["ANN001", "S106"]
-"tests/unit_tests/test_autocomplete.py" = ["ANN001", "ARG002", "RET504"]
-"tests/unit_tests/test_cli.py" = ["ANN001", "E501", "PLR0915"]
-"tests/unit_tests/test_core_agents_api.py" = ["ANN001", "PLR0915"]
-"tests/unit_tests/test_end_to_end.py" = ["ARG002", "E501", "RUF059"]
-"tests/unit_tests/test_env_manager.py" = ["ANN001", "ANN202"]
-"tests/unit_tests/test_local_context.py" = ["ANN001"]
-"tests/unit_tests/test_sessions.py" = ["ANN001", "ANN202", "E501"]
-"tests/unit_tests/test_version.py" = ["S603"]
 "examples/skills/arxiv-search/arxiv_search.py" = ["BLE001", "D103", "TRY300"]
 "examples/skills/skill-creator/scripts/init_skill.py" = ["ANN001", "ANN201", "BLE001", "D103", "D415", "PLR2004", "T201"]
 "examples/skills/skill-creator/scripts/quick_validate.py" = ["ANN001", "ANN201", "D415", "E501", "N806", "PLR0911", "PLR0912", "PLR2004", "T201"]
-"scripts/check_imports.py" = ["INP001", "BLE001"]
+
+[tool.coverage.run]
+omit = ["tests/*"]
 
 [tool.pytest.ini_options]
 timeout = 10  # Default timeout for all tests (can be overridden per-test)
 
-[tool.uv.sources]
-deepagents = { path = "../deepagents", editable = true }
+addopts = "--strict-markers --strict-config --durations=5"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

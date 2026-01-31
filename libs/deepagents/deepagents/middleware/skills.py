@@ -155,7 +155,7 @@ class SkillsState(AgentState):
     """State for the skills middleware."""
 
     skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
-    """List of loaded skill metadata from all configured sources."""
+    """List of loaded skill metadata from configured sources. Not propagated to parent agents."""
 
 
 class SkillsStateUpdate(TypedDict):

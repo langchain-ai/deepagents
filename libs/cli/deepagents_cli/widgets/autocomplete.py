@@ -240,7 +240,7 @@ def _get_project_files(root: Path) -> list[str]:
         for pattern in ["*", "*/*", "*/*/*", "*/*/*/*"]:
             for p in root.glob(pattern):
                 if p.is_file() and not any(part.startswith(".") for part in p.parts):
-                    files.append(str(p.relative_to(root)))
+                    files.append(p.relative_to(root).as_posix())
                 if len(files) >= _MAX_FALLBACK_FILES:
                     break
             if len(files) >= _MAX_FALLBACK_FILES:
@@ -253,10 +253,12 @@ def _get_project_files(root: Path) -> list[str]:
 def _fuzzy_score(query: str, candidate: str) -> float:  # noqa: PLR0911
     """Score a candidate against query. Higher = better match."""
     query_lower = query.lower()
-    candidate_lower = candidate.lower()
+    # Normalize path separators for cross-platform support
+    candidate_normalized = candidate.replace("\\", "/")
+    candidate_lower = candidate_normalized.lower()
 
     # Extract filename for matching (prioritize filename over full path)
-    filename = candidate.rsplit("/", 1)[-1].lower()
+    filename = candidate_normalized.rsplit("/", 1)[-1].lower()
     filename_start = candidate_lower.rfind("/") + 1
 
     # Check filename first (higher priority)

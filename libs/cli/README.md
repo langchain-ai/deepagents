@@ -29,6 +29,15 @@ deepagents --auto-approve
 
 # Execute code in a remote sandbox
 deepagents --sandbox modal
+
+# Run non-interactively (local shell disabled by default for security)
+deepagents -n "Summarize the README"
+
+# Enable local shell with recommended safe commands
+deepagents -n "List all Python files" --shell-allow-list recommended
+
+# Or specify your own allow-list
+deepagents -n "Search logs" --shell-allow-list ls,cat,grep,head,tail
 ```
 
 ## Model Configuration
@@ -40,6 +49,20 @@ The CLI auto-detects your provider based on available API keys:
 | 1st | `OPENAI_API_KEY` | `gpt-5.2` |
 | 2nd | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` |
 | 3rd | `GOOGLE_API_KEY` | `gemini-3-pro-preview` |
+
+## Non-Interactive Mode Security
+
+In non-interactive mode (`-n`), shell access is **disabled by default** for security. To enable shell commands, use `--shell-allow-list`:
+
+- `--shell-allow-list recommended` — Use safe commands
+- `--shell-allow-list ls,cat,grep` — Specify your own comma-separated list
+
+The recommended list includes common read-only utilities (`ls`, `cat`, `grep`, `head`, `tail`, `find`, `ps`, `wc`, etc.) while excluding anything that can:
+- Spawn shells or execute code (`bash`, `python`, `vim`, `less`, etc.)
+- Modify files (`rm`, `mv`, `chmod`, `dd`, etc.)
+- Access the network (`curl`, `wget`, `ssh`, `nc`, etc.)
+
+See [`RECOMMENDED_SAFE_SHELL_COMMANDS`](deepagents_cli/config.py) for the full list.
 
 ## Customization
 

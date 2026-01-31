@@ -177,6 +177,7 @@ def show_help() -> None:
 
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
     console.print("  deepagents [OPTIONS]                           Start interactive session")
+    console.print("  deepagents -n 'MESSAGE'                        Run non-interactively")
     console.print("  deepagents list                                List all available agents")
     console.print("  deepagents reset --agent AGENT                 Reset agent to default prompt")
     console.print(
@@ -199,6 +200,8 @@ def show_help() -> None:
     console.print(
         "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"
     )
+    console.print("  -n, --non-interactive MSG     Run a single task and exit")
+    console.print("  --shell-allow-list CMDS       Comma-separated local shell commands to allow")
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -227,6 +230,21 @@ def show_help() -> None:
     )
     console.print(
         "  deepagents --sandbox runloop            # Execute code in Runloop sandbox",
+        style=COLORS["dim"],
+    )
+    console.print()
+
+    console.print("[bold]Non-Interactive Mode:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  deepagents -n 'Summarize README.md'     # Run task (no local shell access)",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Or specify your own list",
         style=COLORS["dim"],
     )
     console.print()

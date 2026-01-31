@@ -154,6 +154,14 @@ def parse_args() -> argparse.Namespace:
         help="Initial prompt to auto-submit when session starts",
     )
 
+    # Non-interactive mode - execute single task and exit
+    parser.add_argument(
+        "-n",
+        "--non-interactive",
+        dest="non_interactive_message",
+        help="Run a single task non-interactively and exit (auto-approves all actions)",
+    )
+
     parser.add_argument(
         "--model",
         help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5.2). "
@@ -177,6 +185,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-setup",
         help="Path to setup script to run in sandbox after creation",
+    )
+    parser.add_argument(
+        "--shell-allow-list",
+        help="Comma-separated list of shell commands to allow, or 'recommended' for safe defaults",
     )
     return parser.parse_args()
 
@@ -286,6 +298,12 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
+        # Apply shell-allow-list from command line if provided (overrides env var)
+        if hasattr(args, "shell_allow_list") and args.shell_allow_list:
+            from deepagents_cli.config import _parse_shell_allow_list
+
+            settings.shell_allow_list = _parse_shell_allow_list(args.shell_allow_list)
+
         if args.command == "help":
             show_help()
         elif args.command == "list":
@@ -306,6 +324,20 @@ def cli_main() -> None:
                 asyncio.run(delete_thread_command(args.thread_id))
             else:
                 console.print("[yellow]Usage: deepagents threads <list|delete>[/yellow]")
+        elif getattr(args, "non_interactive_message", None):
+            # Non-interactive mode - execute single task and exit
+            from deepagents_cli.non_interactive import run_non_interactive
+
+            exit_code = asyncio.run(
+                run_non_interactive(
+                    message=args.non_interactive_message,
+                    assistant_id=args.agent,
+                    model_name=getattr(args, "model", None),
+                    sandbox_type=args.sandbox,
+                    sandbox_id=args.sandbox_id,
+                )
+            )
+            sys.exit(exit_code)
         else:
             # Interactive mode - handle thread resume
             thread_id = None

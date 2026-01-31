@@ -20,6 +20,7 @@ from langgraph.types import Checkpointer
 
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware.config import MiddlewareConfig, resolve_middleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -48,6 +49,7 @@ def create_deep_agent(
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
+    middleware_config: MiddlewareConfig | None = None,
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
@@ -88,11 +90,31 @@ def create_deep_agent(
         system_prompt: Custom system instructions to prepend before the base deep agent
             prompt.
 
-            If a string, it's concatenated with the base prompt.
+            If a string, it's concatenated with the base prompt. Can be a string or a `SystemMessage`.
         middleware: Additional middleware to apply after the standard middleware stack
-            (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
-            `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
-            `PatchToolCallsMiddleware`).
+            (``TodoListMiddleware``, ``FilesystemMiddleware``, ``SubAgentMiddleware``,
+            ``SummarizationMiddleware``, ``AnthropicPromptCachingMiddleware``,
+            ``PatchToolCallsMiddleware``).
+        middleware_config: Configuration for built-in middleware.
+
+            Use this to disable or replace built-in middleware. Each field can be:
+
+            - ``True`` (default): Use the built-in middleware
+            - ``False``: Disable the middleware entirely
+            - ``AgentMiddleware`` instance: Replace with a custom implementation
+
+            Example::
+
+                from deepagents import create_deep_agent, MiddlewareConfig
+
+                # Disable todo list and replace filesystem middleware
+                agent = create_deep_agent(
+                    model="claude-sonnet-4-5-20250929",
+                    middleware_config=MiddlewareConfig(
+                        todo_list=False,
+                        filesystem=MyCustomFilesystemMiddleware(),
+                    ),
+                )
         subagents: The subagents to use.
 
             Each subagent should be a `dict` with the following keys:
@@ -161,62 +183,95 @@ def create_deep_agent(
             "keep": ("messages", 20),
         }
 
-    # Build middleware stack for subagents (includes skills if provided)
-    subagent_middleware: list[AgentMiddleware] = [
-        TodoListMiddleware(),
-    ]
+    # Use default config if not provided
+    config = middleware_config if middleware_config is not None else MiddlewareConfig()
 
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
+    # Build middleware stack for subagents (includes skills if provided)
+    # Subagents inherit the same middleware config as the main agent
+    subagent_middleware: list[AgentMiddleware] = []
+
+    if todo := resolve_middleware(config.todo_list, TodoListMiddleware):
+        subagent_middleware.append(todo)
+
     if skills is not None:
         subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    subagent_middleware.extend(
-        [
-            FilesystemMiddleware(backend=backend),
-            SummarizationMiddleware(
-                model=model,
-                backend=backend,
-                trigger=trigger,
-                keep=keep,
-                trim_tokens_to_summarize=None,
-                truncate_args_settings=truncate_args_settings,
-            ),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-            PatchToolCallsMiddleware(),
-        ]
-    )
+
+    if fs := resolve_middleware(config.filesystem, lambda: FilesystemMiddleware(backend=backend)):
+        subagent_middleware.append(fs)
+
+    if summ := resolve_middleware(
+        config.summarization,
+        lambda: SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=trigger,
+            keep=keep,
+            trim_tokens_to_summarize=None,
+            truncate_args_settings=truncate_args_settings,
+        ),
+    ):
+        subagent_middleware.append(summ)
+
+    if caching := resolve_middleware(
+        config.prompt_caching,
+        lambda: AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+    ):
+        subagent_middleware.append(caching)
+
+    if patch := resolve_middleware(config.patch_tool_calls, PatchToolCallsMiddleware):
+        subagent_middleware.append(patch)
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware] = [
-        TodoListMiddleware(),
-    ]
+    deepagent_middleware: list[AgentMiddleware] = []
+
+    if todo := resolve_middleware(config.todo_list, TodoListMiddleware):
+        deepagent_middleware.append(todo)
+
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    deepagent_middleware.extend(
-        [
-            FilesystemMiddleware(backend=backend),
-            SubAgentMiddleware(
-                default_model=model,
-                default_tools=tools,
-                subagents=subagents if subagents is not None else [],
-                default_middleware=subagent_middleware,
-                default_interrupt_on=interrupt_on,
-                general_purpose_agent=True,
-            ),
-            SummarizationMiddleware(
-                model=model,
-                backend=backend,
-                trigger=trigger,
-                keep=keep,
-                trim_tokens_to_summarize=None,
-                truncate_args_settings=truncate_args_settings,
-            ),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-            PatchToolCallsMiddleware(),
-        ]
-    )
+
+    if fs := resolve_middleware(config.filesystem, lambda: FilesystemMiddleware(backend=backend)):
+        deepagent_middleware.append(fs)
+
+    if subagent := resolve_middleware(
+        config.subagents,
+        lambda: SubAgentMiddleware(
+            default_model=model,
+            default_tools=tools,
+            subagents=subagents if subagents is not None else [],
+            default_middleware=subagent_middleware,
+            default_interrupt_on=interrupt_on,
+            general_purpose_agent=True,
+        ),
+    ):
+        deepagent_middleware.append(subagent)
+
+    if summ := resolve_middleware(
+        config.summarization,
+        lambda: SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=trigger,
+            keep=keep,
+            trim_tokens_to_summarize=None,
+            truncate_args_settings=truncate_args_settings,
+        ),
+    ):
+        deepagent_middleware.append(summ)
+
+    if caching := resolve_middleware(
+        config.prompt_caching,
+        lambda: AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+    ):
+        deepagent_middleware.append(caching)
+
+    if patch := resolve_middleware(config.patch_tool_calls, PatchToolCallsMiddleware):
+        deepagent_middleware.append(patch)
+
     if middleware:
         deepagent_middleware.extend(middleware)
     if interrupt_on is not None:

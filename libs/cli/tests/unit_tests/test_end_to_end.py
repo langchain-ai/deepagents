@@ -29,10 +29,10 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
 
     def bind_tools(
         self,
-        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        _tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
         *,
-        tool_choice: str | None = None,
-        **kwargs: Any,
+        _tool_choice: str | None = None,
+        **_kwargs: Any,
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
         return self
@@ -66,7 +66,8 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
         mock_settings_obj.get_project_skills_dir.return_value = None
 
         # Mock methods that get called during agent execution to return real Path objects
-        # This prevents MagicMock objects from being stored in state (which would fail serialization)
+        # This prevents MagicMock objects from being stored in state
+        # (which would fail serialization)
         def get_user_agent_md_path(agent_id: str) -> Path:
             return tmp_path / "agents" / agent_id / "agent.md"
 
@@ -114,7 +115,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model
-            agent, backend = create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
@@ -137,6 +138,46 @@ class TestDeepAgentsCLIEndToEnd:
             # Verify the final AI message contains our expected content
             final_ai_message = ai_messages[-1]
             assert "Task completed successfully!" in final_ai_message.content
+
+    def test_cli_agent_summarizes(self, tmp_path: Path) -> None:
+        """Test summarization."""
+        with mock_settings(tmp_path):
+            model = FixedGenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(content="summary goes here"),
+                        AIMessage(content="response"),
+                    ]
+                )
+            )
+            model.profile = {"max_input_tokens": 200_000}
+
+            # Create a CLI agent with the fake model
+            agent, backend = create_cli_agent(
+                model=model,
+                assistant_id="test-agent",
+                tools=[],
+            )
+
+            # Invoke the agent
+            thread_id = str(uuid.uuid4())
+            text_10_000_tokens = "x" * 10_000 * 4
+            text_50_000_tokens = "x" * 50_000 * 4
+            input_messages = [
+                HumanMessage(content=text_10_000_tokens),
+                AIMessage(content=text_50_000_tokens),  # 60,000 tokens
+                HumanMessage(content=text_10_000_tokens),
+                AIMessage(content=text_50_000_tokens),  # 120,000 tokens
+                HumanMessage(content=text_10_000_tokens),
+                AIMessage(content=text_50_000_tokens),  # 180,000 tokens (summarizes)
+                HumanMessage(content="query"),
+            ]
+            result = agent.invoke(
+                {"messages": input_messages},
+                {"configurable": {"thread_id": thread_id}},
+            )
+            assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+            assert backend.ls_info("/conversation_history/")
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.
@@ -168,7 +209,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model and sample_tool
-            agent, backend = create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
@@ -224,7 +265,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model
-            agent, backend = create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
@@ -284,7 +325,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model and sample_tool
-            agent, backend = create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
@@ -325,7 +366,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent
-            agent, backend = create_cli_agent(
+            _, backend = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],

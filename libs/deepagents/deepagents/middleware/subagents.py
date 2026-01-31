@@ -25,6 +25,29 @@ class SubAgent(TypedDict):
     will be applied first, followed by any `middleware` specified in this spec.
     To use only custom middleware without the defaults, pass `default_middleware=[]`
     to `SubAgentMiddleware`.
+
+    Required fields:
+        name: Unique identifier for the subagent.
+
+            The main agent uses this name when calling the `task()` tool.
+        description: What this subagent does.
+
+            Be specific and action-oriented. The main agent uses this to decide when to delegate.
+        system_prompt: Instructions for the subagent.
+
+            Include tool usage guidance and output format requirements.
+
+    Optional fields:
+        tools: Tools the subagent can use.
+
+            If not specified, inherits tools from the main agent via `default_tools`.
+        model: Override the main agent's model.
+
+            Use the format `'provider:model-name'` (e.g., `'openai:gpt-4o'`).
+        middleware: Additional middleware for custom behavior, logging, or rate limiting.
+        interrupt_on: Configure human-in-the-loop for specific tools.
+
+            Requires a checkpointer.
     """
 
     name: str
@@ -38,8 +61,8 @@ class SubAgent(TypedDict):
     If neither are provided, `DEFAULT_SUBAGENT_PROMPT` will be used.
     """
 
-    tools: Sequence[BaseTool | Callable | dict[str, Any]]
-    """The tools to use for the agent."""
+    tools: NotRequired[Sequence[BaseTool | Callable | dict[str, Any]]]
+    """Tools the subagent can use. If not specified, inherits from main agent."""
 
     model: NotRequired[str | BaseChatModel]
     """The model for the agent. Defaults to `default_model`."""
@@ -505,7 +528,20 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
-        self.system_prompt = system_prompt
+
+        # Build list of available agents for system prompt
+        subagent_descriptions = []
+        if general_purpose_agent:
+            subagent_descriptions.append(f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
+        subagent_descriptions.extend(f"- {agent_['name']}: {agent_['description']}" for agent_ in subagents or [])
+
+        # Append available agents to system prompt if we have any
+        if system_prompt is not None and subagent_descriptions:
+            agents_section = "\n\nAvailable subagent types:\n" + "\n".join(subagent_descriptions)
+            self.system_prompt = system_prompt + agents_section
+        else:
+            self.system_prompt = system_prompt
+
         task_tool = _create_task_tool(
             default_model=default_model,
             default_tools=default_tools or [],

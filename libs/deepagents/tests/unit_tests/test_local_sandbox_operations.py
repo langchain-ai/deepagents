@@ -1,4 +1,5 @@
-"""Integration tests for BaseSandbox file operations.
+# ruff: noqa: S108, RUF001
+"""Unit tests for BaseSandbox file operations using local subprocess.
 
 This module tests the core file operations implemented in BaseSandbox:
 - write(): Create new files
@@ -8,35 +9,108 @@ This module tests the core file operations implemented in BaseSandbox:
 - grep_raw(): Search for patterns
 - glob_info(): Pattern matching for files
 
-All tests run on a single sandbox instance (class-scoped fixture)
-to avoid the overhead of spinning up multiple containers.
+These tests use a LocalSubprocessSandbox that implements BaseSandbox
+and executes commands on the local machine using subprocess.
+
+These tests only run when RUN_SANDBOX_TESTS=true environment variable is set.
+
+Linting exceptions:
+- ruff: noqa: S108 - /tmp paths are fine for these unit tests. These tests are only meant to run on CI.
 """
 
+import os
+import subprocess
 from collections.abc import Iterator
 
 import pytest
-from deepagents.backends.protocol import SandboxBackendProtocol
 
-from deepagents_cli.integrations.sandbox_factory import create_sandbox
+from deepagents.backends.protocol import ExecuteResponse
+from deepagents.backends.sandbox import BaseSandbox
+
+# Skip all tests in this module unless RUN_SANDBOX_TESTS=true
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RUN_SANDBOX_TESTS", "").lower() != "true",
+    reason="Sandbox tests only run when RUN_SANDBOX_TESTS=true",
+)
 
 
-class TestSandboxOperations:
-    """Test core sandbox file operations using a single sandbox instance."""
+class LocalSubprocessSandbox(BaseSandbox):
+    """Local sandbox implementation using subprocess for command execution."""
+
+    def __init__(self) -> None:
+        """Initialize the local subprocess sandbox."""
+        self._id = "local-subprocess-sandbox"
+
+    def execute(self, command: str) -> ExecuteResponse:
+        """Execute a command using subprocess on the local machine.
+
+        Args:
+            command: Full shell command string to execute.
+
+        Returns:
+            ExecuteResponse with combined output, exit code, and truncation flag.
+        """
+        try:
+            # shell=True mimics real sandbox behavior; only runs in CI, poses no risk
+            result = subprocess.run(  # noqa: S602
+                command,
+                check=False,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            # Combine stdout and stderr
+            output = result.stdout + result.stderr
+            return ExecuteResponse(
+                output=output,
+                exit_code=result.returncode,
+                truncated=False,
+            )
+        except subprocess.TimeoutExpired:
+            return ExecuteResponse(
+                output="Error: Command timed out after 30 seconds",
+                exit_code=124,
+                truncated=True,
+            )
+        # Catching all exceptions is appropriate for sandbox error handling
+        except Exception as e:  # noqa: BLE001
+            return ExecuteResponse(
+                output=f"Error executing command: {e}",
+                exit_code=1,
+                truncated=False,
+            )
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend."""
+        return self._id
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list:
+        """Upload files (not needed for local filesystem sandbox)."""
+        return []
+
+    def download_files(self, paths: list[str]) -> list:
+        """Download files (not needed for local filesystem sandbox)."""
+        return []
+
+
+class TestLocalSandboxOperations:
+    """Test core sandbox file operations using a local subprocess sandbox."""
 
     @pytest.fixture(scope="class")
-    def sandbox(self) -> Iterator[SandboxBackendProtocol]:
-        """Provide a single Daytona sandbox instance for all tests."""
-        with create_sandbox("daytona") as sandbox:
-            yield sandbox
+    def sandbox(self) -> Iterator[LocalSubprocessSandbox]:
+        """Provide a single local subprocess sandbox instance for all tests."""
+        return LocalSubprocessSandbox()
 
     @pytest.fixture(autouse=True)
-    def setup_test_dir(self, sandbox: SandboxBackendProtocol) -> None:
+    def setup_test_dir(self, sandbox: LocalSubprocessSandbox) -> None:
         """Set up a clean test directory before each test."""
         sandbox.execute("rm -rf /tmp/test_sandbox_ops && mkdir -p /tmp/test_sandbox_ops")
 
     # ==================== write() tests ====================
 
-    def test_write_new_file(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_new_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing a new file with basic content."""
         test_path = "/tmp/test_sandbox_ops/new_file.txt"
         content = "Hello, sandbox!\nLine 2\nLine 3"
@@ -49,7 +123,7 @@ class TestSandboxOperations:
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == content
 
-    def test_write_creates_parent_dirs(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_creates_parent_dirs(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that write creates parent directories automatically."""
         test_path = "/tmp/test_sandbox_ops/deep/nested/dir/file.txt"
         content = "Nested file content"
@@ -61,7 +135,7 @@ class TestSandboxOperations:
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == content
 
-    def test_write_existing_file_fails(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_existing_file_fails(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that writing to an existing file returns an error."""
         test_path = "/tmp/test_sandbox_ops/existing.txt"
         # Create file first
@@ -76,7 +150,7 @@ class TestSandboxOperations:
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == "First content"
 
-    def test_write_special_characters(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_special_characters(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing content with special characters and escape sequences."""
         test_path = "/tmp/test_sandbox_ops/special.txt"
         content = "Special chars: $VAR, `command`, $(subshell), 'quotes', \"quotes\"\nTab\there\nBackslash: \\"
@@ -88,7 +162,7 @@ class TestSandboxOperations:
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == content
 
-    def test_write_empty_file(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_empty_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing an empty file."""
         test_path = "/tmp/test_sandbox_ops/empty.txt"
         content = ""
@@ -100,7 +174,7 @@ class TestSandboxOperations:
         exec_result = sandbox.execute(f"[ -f {test_path} ] && echo 'exists' || echo 'missing'")
         assert "exists" in exec_result.output
 
-    def test_write_path_with_spaces(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_path_with_spaces(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing a file with spaces in the path."""
         test_path = "/tmp/test_sandbox_ops/dir with spaces/file name.txt"
         content = "Content in file with spaces"
@@ -112,7 +186,7 @@ class TestSandboxOperations:
         exec_result = sandbox.execute(f"cat '{test_path}'")
         assert exec_result.output.strip() == content
 
-    def test_write_unicode_content(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_unicode_content(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing content with unicode characters and emojis."""
         test_path = "/tmp/test_sandbox_ops/unicode.txt"
         content = "Hello 👋 世界 مرحبا Привет 🌍\nLine with émojis 🎉"
@@ -124,7 +198,7 @@ class TestSandboxOperations:
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == content
 
-    def test_write_consecutive_slashes_in_path(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_consecutive_slashes_in_path(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that paths with consecutive slashes are handled correctly."""
         test_path = "/tmp//test_sandbox_ops///file.txt"
         content = "Content"
@@ -136,7 +210,7 @@ class TestSandboxOperations:
         exec_result = sandbox.execute("cat /tmp/test_sandbox_ops/file.txt")
         assert exec_result.output.strip() == content
 
-    def test_write_very_long_content(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_very_long_content(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing a file with moderately long content (1000 lines)."""
         test_path = "/tmp/test_sandbox_ops/very_long.txt"
         content = "\n".join([f"Line {i} with some content here" for i in range(1000)])
@@ -149,7 +223,7 @@ class TestSandboxOperations:
         # wc -l counts newlines, so 1000 lines = 999 newlines if last line has no newline
         assert "999" in exec_result.output or "1000" in exec_result.output
 
-    def test_write_content_with_only_newlines(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_content_with_only_newlines(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing content that consists only of newlines."""
         test_path = "/tmp/test_sandbox_ops/only_newlines.txt"
         content = "\n\n\n\n\n"
@@ -162,7 +236,7 @@ class TestSandboxOperations:
 
     # ==================== read() tests ====================
 
-    def test_read_basic_file(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_basic_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a file with basic content."""
         test_path = "/tmp/test_sandbox_ops/read_test.txt"
         content = "Line 1\nLine 2\nLine 3"
@@ -177,7 +251,7 @@ class TestSandboxOperations:
         assert "Line 2" in result
         assert "Line 3" in result
 
-    def test_read_nonexistent_file(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_nonexistent_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a file that doesn't exist."""
         test_path = "/tmp/test_sandbox_ops/nonexistent.txt"
 
@@ -186,7 +260,7 @@ class TestSandboxOperations:
         assert "Error:" in result
         assert "not found" in result.lower()
 
-    def test_read_empty_file(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_empty_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading an empty file."""
         test_path = "/tmp/test_sandbox_ops/empty_read.txt"
         sandbox.write(test_path, "")
@@ -196,7 +270,7 @@ class TestSandboxOperations:
         # Empty files should return a system reminder
         assert "empty" in result.lower() or result.strip() == ""
 
-    def test_read_with_offset(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_with_offset(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a file with offset parameter."""
         test_path = "/tmp/test_sandbox_ops/offset_test.txt"
         content = "\n".join([f"Row_{i}_content" for i in range(1, 11)])
@@ -208,7 +282,7 @@ class TestSandboxOperations:
         assert "Row_6_content" in result
         assert "Row_1_content" not in result
 
-    def test_read_with_limit(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_with_limit(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a file with limit parameter."""
         test_path = "/tmp/test_sandbox_ops/limit_test.txt"
         content = "\n".join([f"Row_{i}_content" for i in range(1, 101)])
@@ -221,7 +295,7 @@ class TestSandboxOperations:
         assert "Row_5_content" in result
         assert "Row_6_content" not in result
 
-    def test_read_with_offset_and_limit(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_with_offset_and_limit(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a file with both offset and limit."""
         test_path = "/tmp/test_sandbox_ops/offset_limit_test.txt"
         content = "\n".join([f"Row_{i}_content" for i in range(1, 21)])
@@ -235,7 +309,7 @@ class TestSandboxOperations:
         assert "Row_10_content" not in result
         assert "Row_16_content" not in result
 
-    def test_read_unicode_content(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_unicode_content(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a file with unicode content."""
         test_path = "/tmp/test_sandbox_ops/unicode_read.txt"
         content = "Hello 👋 世界\nПривет мир\nمرحبا العالم"
@@ -248,7 +322,7 @@ class TestSandboxOperations:
         assert "世界" in result
         assert "Привет" in result
 
-    def test_read_file_with_very_long_lines(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_file_with_very_long_lines(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a file with lines longer than 2000 characters."""
         test_path = "/tmp/test_sandbox_ops/long_lines.txt"
         # Create a line with 3000 characters
@@ -262,7 +336,7 @@ class TestSandboxOperations:
         assert "Error:" not in result
         assert "Short line" in result
 
-    def test_read_with_zero_limit(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_with_zero_limit(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading with limit=0 returns nothing."""
         test_path = "/tmp/test_sandbox_ops/zero_limit.txt"
         content = "Line 1\nLine 2\nLine 3"
@@ -273,7 +347,7 @@ class TestSandboxOperations:
         # Should return empty or no content lines
         assert "Line 1" not in result or result.strip() == ""
 
-    def test_read_offset_beyond_file_length(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_offset_beyond_file_length(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading with offset beyond the file length."""
         test_path = "/tmp/test_sandbox_ops/offset_beyond.txt"
         content = "Line 1\nLine 2\nLine 3"
@@ -287,7 +361,7 @@ class TestSandboxOperations:
         assert "Line 2" not in result
         assert "Line 3" not in result
 
-    def test_read_offset_at_exact_file_length(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_offset_at_exact_file_length(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading with offset exactly at file length."""
         test_path = "/tmp/test_sandbox_ops/offset_exact.txt"
         content = "\n".join([f"Line {i}" for i in range(1, 6)])  # 5 lines
@@ -299,7 +373,7 @@ class TestSandboxOperations:
         assert "Line 1" not in result
         assert "Line 5" not in result
 
-    def test_read_very_large_file_in_chunks(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_read_very_large_file_in_chunks(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading a large file in chunks using offset and limit."""
         test_path = "/tmp/test_sandbox_ops/large_chunked.txt"
         # Create 1000 line file
@@ -325,7 +399,7 @@ class TestSandboxOperations:
 
     # ==================== edit() tests ====================
 
-    def test_edit_single_occurrence(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_single_occurrence(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing a file with a single occurrence of the search string."""
         test_path = "/tmp/test_sandbox_ops/edit_single.txt"
         content = "Hello world\nGoodbye world\nHello again"
@@ -340,9 +414,7 @@ class TestSandboxOperations:
         assert "Farewell world" in file_content
         assert "Goodbye" not in file_content
 
-    def test_edit_multiple_occurrences_without_replace_all(
-        self, sandbox: SandboxBackendProtocol
-    ) -> None:
+    def test_edit_multiple_occurrences_without_replace_all(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing fails when multiple occurrences exist without replace_all."""
         test_path = "/tmp/test_sandbox_ops/edit_multi.txt"
         content = "apple\nbanana\napple\norange\napple"
@@ -357,9 +429,7 @@ class TestSandboxOperations:
         assert "apple" in file_content
         assert "pear" not in file_content
 
-    def test_edit_multiple_occurrences_with_replace_all(
-        self, sandbox: SandboxBackendProtocol
-    ) -> None:
+    def test_edit_multiple_occurrences_with_replace_all(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing all occurrences with replace_all=True."""
         test_path = "/tmp/test_sandbox_ops/edit_replace_all.txt"
         content = "apple\nbanana\napple\norange\napple"
@@ -374,7 +444,7 @@ class TestSandboxOperations:
         assert "apple" not in file_content
         assert file_content.count("pear") == 3
 
-    def test_edit_string_not_found(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_string_not_found(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing when search string is not found."""
         test_path = "/tmp/test_sandbox_ops/edit_not_found.txt"
         content = "Hello world"
@@ -385,7 +455,7 @@ class TestSandboxOperations:
         assert result.error is not None
         assert "not found" in result.error.lower()
 
-    def test_edit_nonexistent_file(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_nonexistent_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing a file that doesn't exist."""
         test_path = "/tmp/test_sandbox_ops/nonexistent_edit.txt"
 
@@ -394,7 +464,7 @@ class TestSandboxOperations:
         assert result.error is not None
         assert "not found" in result.error.lower()
 
-    def test_edit_special_characters(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_special_characters(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing with special characters and regex metacharacters."""
         test_path = "/tmp/test_sandbox_ops/edit_special.txt"
         content = "Price: $100.00\nPattern: [a-z]*\nPath: /usr/bin"
@@ -413,7 +483,7 @@ class TestSandboxOperations:
         assert "$200.00" in file_content
         assert "[0-9]+" in file_content
 
-    def test_edit_multiline_support(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_multiline_support(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that edit handles multiline strings correctly."""
         test_path = "/tmp/test_sandbox_ops/edit_multiline.txt"
         content = "Line 1\nLine 2\nLine 3"
@@ -430,7 +500,7 @@ class TestSandboxOperations:
         assert "Line 3" in file_content
         assert "Line 1" not in file_content
 
-    def test_edit_with_empty_new_string(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_with_empty_new_string(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing to delete content (replace with empty string)."""
         test_path = "/tmp/test_sandbox_ops/edit_delete.txt"
         content = "Keep this\nDelete this part\nKeep this too"
@@ -445,7 +515,7 @@ class TestSandboxOperations:
         assert "Keep this too" in file_content
         assert "Delete this part" not in file_content
 
-    def test_edit_identical_strings(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_identical_strings(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing where old_string equals new_string."""
         test_path = "/tmp/test_sandbox_ops/edit_identical.txt"
         content = "Same text"
@@ -459,7 +529,7 @@ class TestSandboxOperations:
         file_content = sandbox.read(test_path)
         assert "Same text" in file_content
 
-    def test_edit_unicode_content(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_unicode_content(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing with unicode characters and emojis."""
         test_path = "/tmp/test_sandbox_ops/edit_unicode.txt"
         content = "Hello 👋 world\n世界 is beautiful"
@@ -473,7 +543,7 @@ class TestSandboxOperations:
         assert "🌍" in file_content
         assert "👋" not in file_content
 
-    def test_edit_whitespace_only_strings(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_whitespace_only_strings(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing with whitespace-only strings."""
         test_path = "/tmp/test_sandbox_ops/edit_whitespace.txt"
         content = "Line1    Line2"  # 4 spaces
@@ -486,7 +556,7 @@ class TestSandboxOperations:
         file_content = sandbox.read(test_path)
         assert "Line1 Line2" in file_content
 
-    def test_edit_with_very_long_strings(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_with_very_long_strings(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing with very long old and new strings."""
         test_path = "/tmp/test_sandbox_ops/edit_long.txt"
         old_string = "x" * 1000
@@ -502,7 +572,7 @@ class TestSandboxOperations:
         assert "y" * 100 in file_content  # Check partial presence
         assert "x" * 100 not in file_content
 
-    def test_edit_line_ending_preservation(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_line_ending_preservation(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that edit preserves line endings correctly."""
         test_path = "/tmp/test_sandbox_ops/edit_line_endings.txt"
         content = "Line 1\nLine 2\nLine 3\n"
@@ -516,7 +586,7 @@ class TestSandboxOperations:
         assert "Modified Line 2" in file_content
         assert "Line 3" in file_content
 
-    def test_edit_partial_line_match(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_edit_partial_line_match(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing a substring within a line."""
         test_path = "/tmp/test_sandbox_ops/edit_partial.txt"
         content = "The quick brown fox jumps over the lazy dog"
@@ -532,7 +602,7 @@ class TestSandboxOperations:
 
     # ==================== ls_info() tests ====================
 
-    def test_ls_info_path_is_absolute(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_path_is_absolute(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that files returned from ls_info have absolute paths."""
         base_dir = "/tmp/test_sandbox_ops/ls_absolute"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -541,7 +611,7 @@ class TestSandboxOperations:
         assert len(result) == 1
         assert result[0]["path"] == "/tmp/test_sandbox_ops/ls_absolute/file.txt"
 
-    def test_ls_info_basic_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_basic_directory(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test listing a directory with files and subdirectories."""
         base_dir = "/tmp/test_sandbox_ops/ls_test"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -563,7 +633,7 @@ class TestSandboxOperations:
             else:
                 assert info["is_dir"] is False
 
-    def test_ls_info_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_empty_directory(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test listing an empty directory."""
         empty_dir = "/tmp/test_sandbox_ops/empty_dir"
         sandbox.execute(f"mkdir -p {empty_dir}")
@@ -572,7 +642,7 @@ class TestSandboxOperations:
 
         assert result == []
 
-    def test_ls_info_nonexistent_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_nonexistent_directory(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test listing a directory that doesn't exist."""
         nonexistent_dir = "/tmp/test_sandbox_ops/does_not_exist"
 
@@ -580,7 +650,7 @@ class TestSandboxOperations:
 
         assert result == []
 
-    def test_ls_info_hidden_files(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_hidden_files(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that ls_info includes hidden files (starting with .)."""
         base_dir = "/tmp/test_sandbox_ops/hidden_test"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -593,7 +663,7 @@ class TestSandboxOperations:
         assert f"{base_dir}/.hidden" in paths
         assert f"{base_dir}/visible.txt" in paths
 
-    def test_ls_info_directory_with_spaces(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_directory_with_spaces(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test listing a directory that has spaces in file/dir names."""
         base_dir = "/tmp/test_sandbox_ops/ls_spaces"
         sandbox.execute(f"mkdir -p '{base_dir}'")
@@ -606,7 +676,7 @@ class TestSandboxOperations:
         assert f"{base_dir}/file with spaces.txt" in paths
         assert f"{base_dir}/dir with spaces" in paths
 
-    def test_ls_info_unicode_filenames(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_unicode_filenames(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test listing directory with unicode filenames."""
         base_dir = "/tmp/test_sandbox_ops/ls_unicode"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -619,16 +689,12 @@ class TestSandboxOperations:
         # Should contain the unicode filenames
         assert len(paths) == 2
 
-    def test_ls_info_large_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_large_directory(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test listing a directory with many files."""
         base_dir = "/tmp/test_sandbox_ops/ls_large"
         # Create 50 files in a single command (much faster than loop)
         # Note: Using $(seq 0 49) instead of {0..49} for better shell compatibility
-        sandbox.execute(
-            f"mkdir -p {base_dir} && "
-            f"cd {base_dir} && "
-            f"for i in $(seq 0 49); do echo 'content' > file_$(printf '%03d' $i).txt; done"
-        )
+        sandbox.execute(f"mkdir -p {base_dir} && cd {base_dir} && for i in $(seq 0 49); do echo 'content' > file_$(printf '%03d' $i).txt; done")
 
         result = sandbox.ls_info(base_dir)
 
@@ -637,7 +703,7 @@ class TestSandboxOperations:
         assert f"{base_dir}/file_000.txt" in paths
         assert f"{base_dir}/file_049.txt" in paths
 
-    def test_ls_info_path_with_trailing_slash(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_path_with_trailing_slash(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that trailing slash in path is handled correctly."""
         base_dir = "/tmp/test_sandbox_ops/ls_trailing"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -649,7 +715,7 @@ class TestSandboxOperations:
         # Should work the same as without trailing slash
         assert len(result) >= 1 or result == []  # Implementation dependent
 
-    def test_ls_info_special_characters_in_filenames(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_ls_info_special_characters_in_filenames(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test listing files with special characters in names."""
         base_dir = "/tmp/test_sandbox_ops/ls_special"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -667,7 +733,7 @@ class TestSandboxOperations:
 
     # ==================== grep_raw() tests ====================
 
-    def test_grep_basic_search(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_basic_search(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test basic grep search for a literal pattern (not regex)."""
         base_dir = "/tmp/test_sandbox_ops/grep_test"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -687,7 +753,7 @@ class TestSandboxOperations:
             assert match["line"] == 1
             assert "Hello" in match["text"]
 
-    def test_grep_with_glob_pattern(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_with_glob_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test grep with glob pattern to filter files."""
         base_dir = "/tmp/test_sandbox_ops/grep_glob"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -701,7 +767,7 @@ class TestSandboxOperations:
         assert len(result) == 1
         assert "test.py" in result[0]["path"]
 
-    def test_grep_no_matches(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_no_matches(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test grep when no matches are found."""
         base_dir = "/tmp/test_sandbox_ops/grep_empty"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -712,7 +778,7 @@ class TestSandboxOperations:
         assert isinstance(result, list)
         assert len(result) == 0
 
-    def test_grep_multiple_matches_per_file(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_multiple_matches_per_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test grep with multiple matches in a single file."""
         base_dir = "/tmp/test_sandbox_ops/grep_multi"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -727,7 +793,7 @@ class TestSandboxOperations:
         line_numbers = [match["line"] for match in result]
         assert line_numbers == [1, 3, 5]
 
-    def test_grep_literal_string_matching(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_literal_string_matching(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test grep with literal string matching (not regex)."""
         base_dir = "/tmp/test_sandbox_ops/grep_literal"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -740,7 +806,7 @@ class TestSandboxOperations:
         assert len(result) == 1
         assert "test123" in result[0]["text"]
 
-    def test_grep_unicode_pattern(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_unicode_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test grep with unicode pattern and content."""
         base_dir = "/tmp/test_sandbox_ops/grep_unicode"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -752,7 +818,7 @@ class TestSandboxOperations:
         assert len(result) == 1
         assert "世界" in result[0]["text"]
 
-    def test_grep_case_sensitivity(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_case_sensitivity(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that grep is case-sensitive by default."""
         base_dir = "/tmp/test_sandbox_ops/grep_case"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -765,7 +831,7 @@ class TestSandboxOperations:
         assert len(result) == 1
         assert "Hello" in result[0]["text"]
 
-    def test_grep_with_special_characters(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_with_special_characters(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test grep with patterns containing special characters (treated as literals)."""
         base_dir = "/tmp/test_sandbox_ops/grep_special"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -783,7 +849,7 @@ class TestSandboxOperations:
         assert len(result) == 1
         assert "[a-z]*" in result[0]["text"]
 
-    def test_grep_empty_directory(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_empty_directory(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test grep in a directory with no files."""
         base_dir = "/tmp/test_sandbox_ops/grep_empty_dir"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -793,7 +859,7 @@ class TestSandboxOperations:
         assert isinstance(result, list)
         assert len(result) == 0
 
-    def test_grep_across_nested_directories(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_across_nested_directories(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test grep recursively searches nested directories."""
         base_dir = "/tmp/test_sandbox_ops/grep_nested"
         sandbox.execute(f"mkdir -p {base_dir}/sub1/sub2")
@@ -807,7 +873,7 @@ class TestSandboxOperations:
         assert len(result) == 3
         # Should find matches in all nested levels
 
-    def test_grep_with_multiline_matches(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_grep_with_multiline_matches(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that grep reports correct line numbers for matches."""
         base_dir = "/tmp/test_sandbox_ops/grep_multiline"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -822,7 +888,7 @@ class TestSandboxOperations:
 
     # ==================== glob_info() tests ====================
 
-    def test_glob_basic_pattern(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_basic_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with basic wildcard pattern."""
         base_dir = "/tmp/test_sandbox_ops/glob_test"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -838,7 +904,7 @@ class TestSandboxOperations:
         assert "file2.txt" in paths
         assert not any(".py" in p for p in paths)
 
-    def test_glob_recursive_pattern(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_recursive_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with recursive pattern (**)."""
         base_dir = "/tmp/test_sandbox_ops/glob_recursive"
         sandbox.execute(f"mkdir -p {base_dir}/subdir1 {base_dir}/subdir2")
@@ -853,7 +919,7 @@ class TestSandboxOperations:
         assert any("nested1.txt" in p for p in paths)
         assert any("nested2.txt" in p for p in paths)
 
-    def test_glob_no_matches(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_no_matches(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob when no files match the pattern."""
         base_dir = "/tmp/test_sandbox_ops/glob_empty"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -863,7 +929,7 @@ class TestSandboxOperations:
 
         assert result == []
 
-    def test_glob_with_directories(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_with_directories(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that glob includes directories in results."""
         base_dir = "/tmp/test_sandbox_ops/glob_dirs"
         sandbox.execute(f"mkdir -p {base_dir}/dir1 {base_dir}/dir2")
@@ -878,7 +944,7 @@ class TestSandboxOperations:
         assert dir_count == 2
         assert file_count == 1
 
-    def test_glob_specific_extension(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_specific_extension(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with specific file extension pattern."""
         base_dir = "/tmp/test_sandbox_ops/glob_ext"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -891,7 +957,7 @@ class TestSandboxOperations:
         assert len(result) == 1
         assert "test.py" in result[0]["path"]
 
-    def test_glob_hidden_files_explicitly(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_hidden_files_explicitly(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with pattern that explicitly matches hidden files."""
         base_dir = "/tmp/test_sandbox_ops/glob_hidden"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -907,7 +973,7 @@ class TestSandboxOperations:
         # Should not match visible.txt
         assert not any("visible" in p for p in paths)
 
-    def test_glob_with_character_class(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_with_character_class(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with character class patterns."""
         base_dir = "/tmp/test_sandbox_ops/glob_charclass"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -925,7 +991,7 @@ class TestSandboxOperations:
         assert "file3.txt" not in paths
         assert "fileA.txt" not in paths
 
-    def test_glob_with_question_mark(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_with_question_mark(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with single character wildcard (?)."""
         base_dir = "/tmp/test_sandbox_ops/glob_question"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -940,7 +1006,7 @@ class TestSandboxOperations:
         paths = [info["path"] for info in result]
         assert "file10.txt" not in paths
 
-    def test_glob_multiple_extensions(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_multiple_extensions(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob matching multiple extensions."""
         base_dir = "/tmp/test_sandbox_ops/glob_multi_ext"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -956,7 +1022,7 @@ class TestSandboxOperations:
         assert len(result_txt) == 1
         assert len(result_py) == 1
 
-    def test_glob_deeply_nested_pattern(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_deeply_nested_pattern(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with deeply nested directory structure."""
         base_dir = "/tmp/test_sandbox_ops/glob_deep"
         sandbox.execute(f"mkdir -p {base_dir}/a/b/c/d")
@@ -968,7 +1034,7 @@ class TestSandboxOperations:
         assert len(result) >= 1
         # Should find the deeply nested file
 
-    def test_glob_with_no_path_argument(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_glob_with_no_path_argument(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test glob with default path behavior."""
         base_dir = "/tmp/test_sandbox_ops/glob_default"
         sandbox.execute(f"mkdir -p {base_dir}")
@@ -982,7 +1048,7 @@ class TestSandboxOperations:
 
     # ==================== Integration tests ====================
 
-    def test_write_read_edit_workflow(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_write_read_edit_workflow(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test a complete workflow: write, read, edit, read again."""
         test_path = "/tmp/test_sandbox_ops/workflow.txt"
 
@@ -1003,7 +1069,7 @@ class TestSandboxOperations:
         assert "Modified content" in updated_content
         assert "Original" not in updated_content
 
-    def test_complex_directory_operations(self, sandbox: SandboxBackendProtocol) -> None:
+    def test_complex_directory_operations(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test complex scenario with multiple operations."""
         base_dir = "/tmp/test_sandbox_ops/complex"
 

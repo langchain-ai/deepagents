@@ -226,12 +226,17 @@ def create_deep_agent(
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = BASE_AGENT_PROMPT
     elif isinstance(system_prompt, SystemMessage):
-        # SystemMessage: append BASE_AGENT_PROMPT to content_blocks
-        new_content = [
-            *system_prompt.content_blocks,
-            {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
-        ]
-        final_system_prompt = SystemMessage(content=new_content)
+        # Preserve string format for OpenAI API compatibility
+        if isinstance(system_prompt.content, str):
+            new_content = f"{system_prompt.content}\n\n{BASE_AGENT_PROMPT}"
+            final_system_prompt = SystemMessage(content=new_content)
+        else:
+            # Handle list format (for multimodal content)
+            new_content_list = [
+                *system_prompt.content_blocks,
+                {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
+            ]
+            final_system_prompt = SystemMessage(content=new_content_list)
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT

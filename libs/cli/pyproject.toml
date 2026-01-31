@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.15"
+version = "0.0.16"
 description = "Deepagents CLI"
 readme = "README.md"
 license = { text = "MIT" }

@@ -752,7 +752,6 @@ provides-extras = ["vertexai"]
 [package.metadata.requires-dev]
 test = [
     { name = "build", specifier = ">=1.0.0,<2.0.0" },
-    { name = "mypy", specifier = ">=1.19.1,<1.20.0" },
     { name = "pytest", specifier = ">=8.3.4,<9.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.25.3,<1.0.0" },
     { name = "pytest-cov", specifier = ">=6.0.0,<7.0.0" },
@@ -764,8 +763,7 @@ test = [
     { name = "responses", specifier = ">=0.25.0,<1.0.0" },
     { name = "ruff", specifier = ">=0.14.11,<0.15.0" },
     { name = "twine", specifier = ">=6.0.0,<7.0.0" },
-    { name = "types-pyyaml", specifier = ">=6.0.12.2,<7.0.0.0" },
-    { name = "types-requests", specifier = ">=2.28.11.5,<3.0.0.0" },
+    { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]
 
 [[package]]

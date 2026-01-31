@@ -584,3 +584,175 @@ class TestACPDeepAgentEndToEnd:
             assert "edit_file" not in new_interrupt_on
             assert "write_file" not in new_interrupt_on
             assert "write_todos" in new_interrupt_on  # Only todos in auto mode
+
+
+class TestACPDeepAgentPlanApproval:
+    """Test ACPDeepAgent plan auto-approval behavior."""
+
+    @pytest.mark.asyncio
+    async def test_initial_plan_requires_approval(self):
+        """Test that initial plan requires user approval and is stored after approval."""
+        with patch("deepagents_acp.agent.create_deep_agent"):
+            agent = ACPDeepAgent(
+                root_dir="/test",
+                mode="ask_before_edits",
+                checkpointer=MemorySaver(),
+            )
+
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.outcome.outcome = "selected"
+            mock_response.outcome.option_id = "approve"
+            mock_client.request_permission = AsyncMock(return_value=mock_response)
+            mock_client.session_update = AsyncMock()
+            agent.on_connect(mock_client)
+
+            session_id = "test-session"
+            todos = [{"content": "Task 1", "status": "pending"}]
+
+            # Setup interrupt
+            mock_interrupt = MagicMock()
+            mock_interrupt.id = "call_todos"
+            mock_interrupt.value = {
+                "action_requests": [{"name": "write_todos", "args": {"todos": todos}}]
+            }
+            mock_state = MagicMock()
+            mock_state.next = ("some_node",)
+            mock_state.interrupts = [mock_interrupt]
+
+            # Process interrupt
+            decisions = await agent._handle_interrupts(
+                current_state=mock_state,
+                session_id=session_id,
+                active_tool_calls={},
+            )
+
+            # Verify user approval was requested
+            mock_client.request_permission.assert_called_once()
+            assert decisions[0]["type"] == "approve"
+
+            # Verify plan was stored after approval
+            assert session_id in agent._session_plans
+            assert agent._session_plans[session_id] == todos
+
+    @pytest.mark.asyncio
+    async def test_plan_updates_auto_approved_when_in_progress(self):
+        """Test that plan updates are auto-approved when plan is still in progress."""
+        with patch("deepagents_acp.agent.create_deep_agent"):
+            agent = ACPDeepAgent(
+                root_dir="/test",
+                mode="ask_before_edits",
+                checkpointer=MemorySaver(),
+            )
+
+            mock_client = MagicMock()
+            mock_client.request_permission = AsyncMock()
+            mock_client.session_update = AsyncMock()
+            agent.on_connect(mock_client)
+
+            session_id = "test-session"
+
+            # Set existing in-progress plan
+            agent._session_plans[session_id] = [
+                {"content": "Task 1", "status": "completed"},
+                {"content": "Task 2", "status": "in_progress"},
+            ]
+
+            # Setup interrupt with updated plan
+            updated_todos = [
+                {"content": "Task 1", "status": "completed"},
+                {"content": "Task 2 - updated", "status": "completed"},
+            ]
+            mock_interrupt = MagicMock()
+            mock_interrupt.id = "call_todos"
+            mock_interrupt.value = {
+                "action_requests": [{"name": "write_todos", "args": {"todos": updated_todos}}]
+            }
+            mock_state = MagicMock()
+            mock_state.next = ("some_node",)
+            mock_state.interrupts = [mock_interrupt]
+
+            # Process interrupt
+            decisions = await agent._handle_interrupts(
+                current_state=mock_state,
+                session_id=session_id,
+                active_tool_calls={},
+            )
+
+            # Verify auto-approval (no permission request)
+            mock_client.request_permission.assert_not_called()
+            assert decisions[0]["type"] == "approve"
+
+            # Verify plan was updated
+            assert agent._session_plans[session_id] == updated_todos
+
+    @pytest.mark.asyncio
+    async def test_new_plan_requires_approval_after_completion(self):
+        """Test that new plans require approval after all tasks are completed."""
+        with patch("deepagents_acp.agent.create_deep_agent"):
+            agent = ACPDeepAgent(
+                root_dir="/test",
+                mode="ask_before_edits",
+                checkpointer=MemorySaver(),
+            )
+
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.outcome.outcome = "selected"
+            mock_response.outcome.option_id = "approve"
+            mock_client.request_permission = AsyncMock(return_value=mock_response)
+            mock_client.session_update = AsyncMock()
+            agent.on_connect(mock_client)
+
+            session_id = "test-session"
+
+            # Set existing completed plan
+            agent._session_plans[session_id] = [
+                {"content": "Task 1", "status": "completed"},
+                {"content": "Task 2", "status": "completed"},
+            ]
+
+            # Setup interrupt with new plan
+            new_todos = [{"content": "New Task", "status": "pending"}]
+            mock_interrupt = MagicMock()
+            mock_interrupt.id = "call_todos"
+            mock_interrupt.value = {
+                "action_requests": [{"name": "write_todos", "args": {"todos": new_todos}}]
+            }
+            mock_state = MagicMock()
+            mock_state.next = ("some_node",)
+            mock_state.interrupts = [mock_interrupt]
+
+            # Process interrupt
+            decisions = await agent._handle_interrupts(
+                current_state=mock_state,
+                session_id=session_id,
+                active_tool_calls={},
+            )
+
+            # Verify user approval was requested (not auto-approved)
+            mock_client.request_permission.assert_called_once()
+            assert decisions[0]["type"] == "approve"
+
+            # Verify new plan was stored
+            assert agent._session_plans[session_id] == new_todos
+
+    @pytest.mark.asyncio
+    async def test_clear_plan_removes_from_session_plans(self):
+        """Test that clearing a plan removes it from session_plans."""
+        with patch("deepagents_acp.agent.create_deep_agent"):
+            agent = ACPDeepAgent(
+                root_dir="/test",
+                mode="ask_before_edits",
+                checkpointer=MemorySaver(),
+            )
+
+            mock_client = MockClient()
+            agent.on_connect(mock_client)
+
+            session_id = "test-session"
+            agent._session_plans[session_id] = [{"content": "Task 1", "status": "pending"}]
+
+            await agent._clear_plan(session_id)
+
+            assert agent._session_plans[session_id] == []

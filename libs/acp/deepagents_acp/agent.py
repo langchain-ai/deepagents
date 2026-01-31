@@ -102,6 +102,7 @@ class ACPDeepAgent(ACPAgent):
         self._mode = mode
         self._deepagent = self._create_deepagent(mode)
         self._cancelled = False
+        self._session_plans: dict[str, list[dict[str, Any]]] = {}  # Track current plan per session
         super().__init__()
 
     def on_connect(self, conn: Client) -> None:
@@ -172,6 +173,20 @@ class ACPDeepAgent(ACPAgent):
         update = update_agent_message(text_block(text))
         await self._conn.session_update(session_id=session_id, update=update, source="DeepAgent")
 
+    def _all_tasks_completed(self, plan: list[dict[str, Any]]) -> bool:
+        """Check if all tasks in a plan are completed.
+
+        Args:
+            plan: List of todo dictionaries
+
+        Returns:
+            True if all tasks have status 'completed', False otherwise
+        """
+        if not plan:
+            return True
+
+        return all(todo.get("status") == "completed" for todo in plan)
+
     async def _clear_plan(self, session_id: str) -> None:
         """Clear the plan by sending an empty plan update.
 
@@ -187,6 +202,8 @@ class ACPDeepAgent(ACPAgent):
             update=update,
             source="DeepAgent",
         )
+        # Clear the stored plan for this session
+        self._session_plans[session_id] = []
 
     async def _handle_todo_update(
         self,
@@ -512,6 +529,22 @@ class ACPDeepAgent(ACPAgent):
                     tool_name = action.get("name", "tool")
                     tool_args = action.get("args", {})
 
+                    # Check if this is write_todos - auto-approve updates to existing plan
+                    if tool_name == "write_todos" and isinstance(tool_args, dict):
+                        new_todos = tool_args.get("todos", [])
+
+                        # Auto-approve if there's an existing plan that's not fully completed
+                        if session_id in self._session_plans:
+                            existing_plan = self._session_plans[session_id]
+                            all_completed = self._all_tasks_completed(existing_plan)
+
+                            if not all_completed:
+                                # Plan is in progress, auto-approve updates
+                                # Store the updated plan (status and content may have changed)
+                                self._session_plans[session_id] = new_todos
+                                user_decisions.append({"type": "approve"})
+                                continue
+
                     # Create a title for the permission request
                     if tool_name == "write_todos":
                         title = "Review Plan"
@@ -559,12 +592,16 @@ class ACPDeepAgent(ACPAgent):
                                 {
                                     "type": decision_type,
                                     "feedback": (
-                                        "The plan was rejected. Please ask the user for feedback "
+                                        "The user rejected the plan. Please ask them for feedback "
                                         "on how the plan can be improved, then create a new "
-                                        "and improved plan using write_todos."
+                                        "and improved plan using this same write_todos tool."
                                     ),
                                 }
                             )
+                        elif tool_name == "write_todos" and decision_type == "approve":
+                            # Store the approved plan for future comparisons
+                            self._session_plans[session_id] = tool_args.get("todos", [])
+                            user_decisions.append({"type": decision_type})
                         else:
                             user_decisions.append({"type": decision_type})
                     else:

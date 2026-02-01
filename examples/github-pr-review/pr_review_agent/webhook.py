@@ -233,6 +233,8 @@ COMMANDS = {
     "style": "Code style review (reads style guides first)",
     "feedback": "Incorporate reviewer feedback into a new commit",
     "conflict": "Resolve merge conflicts for this PR",
+    "remember": "Save a convention or preference for this repository",
+    "memories": "List saved conventions for this repository",
 }
 
 # Special command for freeform requests (not in COMMANDS, handled separately)
@@ -261,6 +263,8 @@ COMMAND_DESCRIPTIONS = {
     "style": "Style review", 
     "feedback": "Applying feedback",
     "conflict": "Resolving conflicts",
+    "remember": "Saving memory",
+    "memories": "Listing memories",
 }
 
 # Commands that require approval before making changes
@@ -864,6 +868,26 @@ The plan has been approved. Now resolve the conflicts.
 
 Approved plan:
 {{approved_plan}}""",
+
+        "memories": f"""## Task: List and Explain Repository Memories
+{user_instructions}
+You have been asked to show what conventions and preferences you remember for this repository.
+
+The repository memories are shown in the "Repository Conventions" section of this prompt (if any exist).
+
+**Your task:**
+1. If there are memories/conventions listed above, present them clearly to the user:
+   - List each memory with context about when/why it was added if available
+   - Explain how these memories affect your reviews
+   
+2. If there are NO memories listed, explain:
+   - The repository doesn't have any saved conventions yet
+   - How to add memories using `/remember <convention>`
+   - Give examples of useful things to remember (coding style, testing requirements, etc.)
+
+3. Post your response using post_pr_comment
+
+Be helpful and conversational. If the user provided additional instructions, address those too.""",
     }
     return instructions.get(command, instructions["review"])
 
@@ -959,6 +983,40 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
         except Exception as e:
             print(f"[handle_pr_comment] Failed to post help: {e}")
             return {"status": "error", "message": f"Failed to post help: {e}"}
+
+    # Handle /remember - saves to repo-specific memory (no agent needed)
+    if parsed.command == "remember":
+        if not parsed.message or not parsed.message.strip():
+            await github_client.create_issue_comment(
+                owner, repo_name, pr_number,
+                "❌ Please provide something to remember. Example:\n\n"
+                "`@bot /remember We use 4-space indentation in Python files`"
+            )
+            return {"status": "error", "message": "No memory content provided"}
+        
+        try:
+            state_mgr = StateManager(owner, repo_name, pr_number)
+            state_mgr.repo_memory.add_user_memory(
+                memory=parsed.message.strip(),
+                added_by=sender_login,
+                pr_number=pr_number,
+            )
+            
+            # Confirm the memory was saved
+            await github_client.create_issue_comment(
+                owner, repo_name, pr_number,
+                f"✅ **Remembered for {owner}/{repo_name}:**\n\n"
+                f"> {parsed.message.strip()}\n\n"
+                f"I'll follow this convention in future reviews of this repository."
+            )
+            return {"status": "success", "command": "remember"}
+        except Exception as e:
+            print(f"[handle_pr_comment] Failed to save memory: {e}")
+            await github_client.create_issue_comment(
+                owner, repo_name, pr_number,
+                f"❌ Failed to save memory: {e}"
+            )
+            return {"status": "error", "message": f"Failed to save memory: {e}"}
 
     # For all other commands, we need the agent
     global _agent

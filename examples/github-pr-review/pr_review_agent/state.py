@@ -63,6 +63,7 @@ class RepoMemory:
             "style_preferences": {},
             "common_patterns": [],
             "team_conventions": {},
+            "user_memories": [],  # User-provided memories via /remember
             "review_history": [],
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -101,9 +102,42 @@ class RepoMemory:
         self._data["review_history"] = self._data["review_history"][-100:]
         self._save()
     
+    def add_user_memory(self, memory: str, added_by: str, pr_number: int | None = None) -> None:
+        """Add a user-provided memory via /remember command.
+        
+        Args:
+            memory: The memory/convention to remember
+            added_by: GitHub username who added it
+            pr_number: PR number where it was added (for context)
+        """
+        if "user_memories" not in self._data:
+            self._data["user_memories"] = []
+        
+        self._data["user_memories"].append({
+            "content": memory,
+            "added_by": added_by,
+            "pr_number": pr_number,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        self._save()
+    
+    def get_user_memories(self) -> list[dict]:
+        """Get all user-provided memories."""
+        return self._data.get("user_memories", [])
+    
     def get_context_for_prompt(self) -> str:
         """Generate context string for inclusion in prompts."""
         lines = []
+        
+        # User-provided memories (highest priority - explicit instructions)
+        user_memories = self._data.get("user_memories", [])
+        if user_memories:
+            lines.append("## Repository Conventions (from maintainers)")
+            lines.append("These are explicit instructions from the repository maintainers. Follow them carefully:")
+            lines.append("")
+            for mem in user_memories:
+                lines.append(f"- {mem['content']}")
+            lines.append("")
         
         if self._data["style_preferences"]:
             lines.append("## Repository Style Preferences (learned from past reviews)")

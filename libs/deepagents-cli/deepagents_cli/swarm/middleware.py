@@ -9,11 +9,19 @@ from langchain.tools import ToolRuntime
 from langchain_core.runnables import Runnable
 from langchain_core.tools import StructuredTool
 
+from deepagents_cli.swarm.enrichment import (
+    EnrichmentError,
+    create_enrichment_tasks,
+    merge_enrichment_results,
+    parse_csv_for_enrichment,
+    parse_enrichment_output,
+    write_enriched_csv,
+)
 from deepagents_cli.swarm.executor import SwarmExecutor, get_default_output_dir
 from deepagents_cli.swarm.graph import CycleError
 from deepagents_cli.swarm.parser import TaskFileError, parse_task_file
 from deepagents_cli.swarm.task_store import TaskStore
-from deepagents_cli.swarm.types import SwarmProgress, TaskStatus
+from deepagents_cli.swarm.types import SwarmProgress, SwarmResultStatus, TaskStatus
 
 
 class TaskBoardMiddleware(AgentMiddleware):
@@ -201,29 +209,37 @@ def _create_task_board_tools_with_runtime(task_store: TaskStore) -> list[Structu
 # Swarm Middleware
 # =============================================================================
 
-SWARM_SYSTEM_PROMPT = """## `swarm_execute` (batch task execution)
+SWARM_SYSTEM_PROMPT = """## Swarm Tools (batch task execution)
 
-You have access to a `swarm_execute` tool for running multiple tasks in parallel using subagents.
+You have access to swarm tools for running multiple tasks in parallel using subagents.
 
-When to use swarm_execute:
-- Processing many similar items (files, data records, etc.) in parallel
-- Running batch analysis or transformation tasks
-- Any scenario where you need to execute many independent (or dependency-ordered) tasks
+### `swarm_execute` - Run task definitions from a file
 
-How to use:
-1. Create a JSONL or CSV file with task definitions
-2. Call swarm_execute with the file path and desired concurrency
-3. Results are written to output files; summary is returned
-
-Task file format (JSONL):
+Use for batch processing with explicit task definitions:
 ```
 {"id": "1", "description": "Analyze file A"}
 {"id": "2", "description": "Analyze file B"}
 {"id": "3", "description": "Compare results", "blocked_by": ["1", "2"]}
 ```
 
-The tool handles dependencies automatically - tasks with `blocked_by` wait for their
-dependencies to complete first.
+### `swarm_enrich` - Fill in empty CSV columns
+
+Use to enrich a CSV by filling in empty columns with researched data:
+```csv
+ticker,company,ceo,cto,market_cap
+AAPL,Apple,,,
+MSFT,Microsoft,,,
+```
+
+The tool will:
+1. Read the CSV and identify empty columns per row
+2. Create tasks to research and fill in the missing values
+3. Write an enriched CSV with the results filled in
+
+This is ideal for:
+- Researching information about a list of entities (companies, people, products)
+- Filling in missing data fields
+- Bulk data enrichment tasks
 """
 
 
@@ -432,6 +448,130 @@ def _create_swarm_tools(
 
         return "\n".join(lines)
 
+    async def swarm_enrich(
+        source: Annotated[
+            str,
+            "Path to a CSV file with some empty columns to fill in. "
+            "Filled columns provide context; empty columns will be researched.",
+        ],
+        concurrency: Annotated[
+            int,
+            "Maximum number of parallel research tasks. Higher = faster but more load.",
+        ] = default_concurrency,
+        output_path: Annotated[
+            str | None,
+            "Path for enriched CSV. Defaults to <original>_enriched.csv",
+        ] = None,
+        id_column: Annotated[
+            str | None,
+            "Column to use as row identifier. Defaults to row number.",
+        ] = None,
+        runtime: ToolRuntime = None,
+    ) -> str:
+        """Enrich a CSV by filling in empty columns using parallel research.
+
+        For each row, empty columns are identified and a subagent researches
+        the missing values using the filled columns as context.
+
+        Args:
+            source: Path to CSV file with empty columns to fill
+            concurrency: Max parallel workers (default: 10)
+            output_path: Path for enriched output CSV
+            id_column: Column to use as task ID (optional)
+
+        Returns:
+            Summary of enrichment with path to enriched CSV.
+        """
+        import json as json_module
+
+        source_path = Path(source)
+
+        # Parse CSV for enrichment
+        try:
+            headers, rows = parse_csv_for_enrichment(source_path)
+        except FileNotFoundError as e:
+            return f"Error: {e}"
+        except EnrichmentError as e:
+            return f"Error parsing CSV: {e}"
+
+        # Create enrichment tasks
+        tasks = create_enrichment_tasks(headers, rows, id_column=id_column)
+
+        if not tasks:
+            return "No rows need enrichment (all columns are filled)"
+
+        # Determine output path
+        if output_path:
+            enriched_path = Path(output_path)
+        else:
+            enriched_path = source_path.with_stem(f"{source_path.stem}_enriched")
+
+        # Create temp output dir for task results
+        out_path = get_default_output_dir()
+
+        # Validate concurrency
+        actual_concurrency = min(max(1, concurrency), max_concurrency)
+
+        # Get subagent graphs
+        subagent_graphs = subagent_graphs_getter()
+
+        # Create executor
+        executor = SwarmExecutor(
+            subagent_graphs=subagent_graphs,
+            timeout_seconds=timeout_seconds,
+        )
+
+        # Execute enrichment tasks
+        try:
+            summary = await executor.execute(
+                tasks=tasks,
+                concurrency=actual_concurrency,
+                output_dir=out_path,
+                progress_callback=progress_callback,
+            )
+        except CycleError as e:
+            return f"Error: {e}"
+
+        # Parse results and merge back into CSV
+        results_path = out_path / "results.jsonl"
+        parsed_results: dict[str, dict[str, str]] = {}
+
+        if results_path.exists():
+            for line in results_path.read_text().strip().split("\n"):
+                if not line:
+                    continue
+                result = json_module.loads(line)
+                if result.get("status") == SwarmResultStatus.SUCCESS.value:
+                    task_id = result["task_id"]
+                    output = result.get("output", "")
+                    parsed_results[task_id] = parse_enrichment_output(output)
+
+        # Merge results back into rows
+        enriched_rows = merge_enrichment_results(headers, rows, parsed_results)
+
+        # Write enriched CSV
+        write_enriched_csv(enriched_path, headers, enriched_rows)
+
+        # Count how many cells were filled
+        filled_count = 0
+        for idx, (orig, enriched) in enumerate(zip(rows, enriched_rows)):
+            for col in headers:
+                if not orig.get(col, "").strip() and enriched.get(col, "").strip():
+                    filled_count += 1
+
+        # Format response
+        lines = [
+            f"Enrichment complete: {len(rows)} rows processed",
+            f"  Tasks executed: {summary['total']}",
+            f"  Succeeded: {summary['succeeded']}",
+            f"  Failed: {summary['failed']}",
+            f"  Cells filled: {filled_count}",
+            "",
+            f"Enriched CSV written to: {enriched_path}",
+        ]
+
+        return "\n".join(lines)
+
     return [
         StructuredTool.from_function(
             name="swarm_execute",
@@ -439,6 +579,14 @@ def _create_swarm_tools(
             description=(
                 "Execute a batch of tasks in parallel using subagents. "
                 "Tasks are defined in a JSONL/CSV file with optional dependency ordering."
+            ),
+        ),
+        StructuredTool.from_function(
+            name="swarm_enrich",
+            coroutine=swarm_enrich,
+            description=(
+                "Enrich a CSV by filling in empty columns using parallel research. "
+                "Each row becomes a task where filled columns provide context."
             ),
         ),
     ]

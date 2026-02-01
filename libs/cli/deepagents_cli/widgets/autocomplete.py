@@ -81,6 +81,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
     ("/clear", "Clear chat and start new session"),
     ("/remember", "Update memory and skills from conversation"),
+    ("/swarm", "Execute batch tasks from JSONL/CSV file"),
     ("/quit", "Exit app"),
     ("/exit", "Exit app"),
     ("/tokens", "Token usage"),

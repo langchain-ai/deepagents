@@ -294,28 +294,14 @@ def get_help_text() -> str:
     emoji = get_bot_emoji()
     lines = [
         f"## {emoji} {BOT_USERNAME}\n",
-        "Hi! I'm an AI-powered PR review bot built with [LangChain](https://github.com/langchain-ai/langchain). Mention me to get started:\n",
+        f"Powered by [deepagents](https://github.com/langchain-ai/deepagents)\n",
         "| Command | Description |",
         "|---------|-------------|",
-        f"| `@{BOT_USERNAME}` | Security review (default) |",
-        f"| `@{BOT_USERNAME} <question>` | Ask me anything about this PR |",
+        f"| `@{BOT_USERNAME}` | Security review |",
+        f"| `@{BOT_USERNAME} /quality` | Code quality review |",
+        f"| `@{BOT_USERNAME} /feedback` | Apply reviewer feedback |",
+        f"| `@{BOT_USERNAME} <question>` | Ask anything |",
     ]
-    for cmd, desc in COMMANDS.items():
-        if cmd not in ("help", "review"):  # Skip these, shown separately
-            lines.append(f"| `@{BOT_USERNAME} /{cmd}` | {desc} |")
-    lines.append(f"| `@{BOT_USERNAME} /help` | Show this help |")
-    
-    lines.extend([
-        "",
-        "### Examples",
-        "```",
-        f"@{BOT_USERNAME}                        # Security review",
-        f"@{BOT_USERNAME} what does this PR do?  # Ask a question",
-        f"@{BOT_USERNAME} /quality               # Code quality review",
-        f"@{BOT_USERNAME} /review focus on auth  # Security review with focus",
-        f"@{BOT_USERNAME} /feedback              # Apply reviewer feedback",
-        "```",
-    ])
     return "\n".join(lines)
 
 

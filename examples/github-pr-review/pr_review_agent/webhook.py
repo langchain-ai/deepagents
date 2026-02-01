@@ -1123,7 +1123,10 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     # This applies to both explicit /review and empty @mentions (which default to review)
     REVIEW_COMMANDS = {"review", "security", "style"}
     if parsed.command in REVIEW_COMMANDS and not parsed.message:
-        if not state_mgr.pr_state.has_new_commits_since_review(ctx.head_sha, parsed.command):
+        has_new = state_mgr.pr_state.has_new_commits_since_review(ctx.head_sha, parsed.command)
+        last_review = state_mgr.pr_state.get_last_review(parsed.command)
+        print(f"[handle_pr_comment] Duplicate check: command={parsed.command}, head_sha={ctx.head_sha[:7]}, has_new={has_new}, last_review={last_review}")
+        if not has_new:
             emoji = get_bot_emoji()
             await status.finish(True, "No new commits since last review")
             

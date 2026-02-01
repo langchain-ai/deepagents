@@ -505,9 +505,9 @@ class StatusComment:
             header = f"## 💬 {self.bot_emoji} {desc} - Changes Requested{revision_text}\n"
             footer = [
                 "---",
-                f"@{feedback_from} Please reply with how you'd like me to modify the plan.",
+                f"@{feedback_from} Reply with `@{BOT_USERNAME} <your feedback>` to revise the plan.",
                 "",
-                "_I'll revise the plan based on your feedback and ask for approval again._",
+                "_I'll update the plan based on your feedback and ask for approval again._",
             ]
         elif state == "timed_out":
             header = f"## ⏸️ {self.bot_emoji} {desc} - Timed Out{revision_text}\n"
@@ -620,7 +620,7 @@ class StatusComment:
                         # Remember when we asked for feedback to find replies
                         last_comment_check_id = self.comment_id
 
-                # If waiting for feedback, look for reply comments
+                # If waiting for feedback, look for reply comments that mention the bot
                 if waiting_for_feedback and feedback_requester:
                     comments = await self.github_client.get_issue_comments(
                         self.owner, self.repo, self.pr_number
@@ -632,39 +632,49 @@ class StatusComment:
                             continue
                         
                         commenter = c.get("user", {}).get("login", "")
-                        # Accept feedback from the person who thumbs-downed or anyone with write access
-                        if commenter.lower() == feedback_requester.lower():
-                            feedback_text = c.get("body", "").strip()
-                            if not feedback_text:
-                                continue
-                            
-                            # Generate revised plan
-                            revision += 1
-                            if replan_callback:
-                                try:
-                                    current_plan = await replan_callback(feedback_text)
-                                except Exception:
-                                    # Fallback: append feedback as note
-                                    current_plan = list(plan_items) + [
-                                        f"_(Revised based on feedback from @{feedback_requester})_"
-                                    ]
-                            else:
-                                # No callback - just note the feedback
+                        comment_body = c.get("body", "").strip()
+                        
+                        # Accept feedback from the person who thumbs-downed
+                        # AND the comment must mention the bot
+                        if commenter.lower() != feedback_requester.lower():
+                            continue
+                        if not BOT_MENTION_PATTERN.search(comment_body):
+                            continue
+                        if not comment_body:
+                            continue
+                        
+                        # Extract feedback (remove the @bot mention)
+                        feedback_text = BOT_MENTION_PATTERN.sub("", comment_body).strip()
+                        if not feedback_text:
+                            continue
+                        
+                        # Generate revised plan
+                        revision += 1
+                        if replan_callback:
+                            try:
+                                current_plan = await replan_callback(feedback_text)
+                            except Exception:
+                                # Fallback: append feedback as note
                                 current_plan = list(plan_items) + [
-                                    f"_(Feedback from @{feedback_requester}: {feedback_text[:100]}...)_"
+                                    f"_(Revised based on feedback from @{feedback_requester})_"
                                 ]
-                            
-                            # Reset state and post revised plan
-                            waiting_for_feedback = False
-                            feedback_requester = None
-                            body = self._build_plan_body(current_plan, "waiting", revision)
-                            await self.github_client.update_issue_comment(
-                                self.owner, self.repo, self.comment_id, body
-                            )
-                            last_comment_check_id = comment_id
-                            # Reset timeout for new plan
-                            start_time = time.time()
-                            break
+                        else:
+                            # No callback - just note the feedback
+                            current_plan = list(plan_items) + [
+                                f"_(Feedback from @{feedback_requester}: {feedback_text[:100]}...)_"
+                            ]
+                        
+                        # Reset state and post revised plan
+                        waiting_for_feedback = False
+                        feedback_requester = None
+                        body = self._build_plan_body(current_plan, "waiting", revision)
+                        await self.github_client.update_issue_comment(
+                            self.owner, self.repo, self.comment_id, body
+                        )
+                        last_comment_check_id = comment_id
+                        # Reset timeout for new plan
+                        start_time = time.time()
+                        break
 
             except Exception:
                 pass  # Ignore polling errors

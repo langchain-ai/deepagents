@@ -170,7 +170,22 @@ class SwarmExecutor:
                 output = ""
                 if "messages" in result and result["messages"]:
                     final_msg = result["messages"][-1]
-                    output = final_msg.content if hasattr(final_msg, "content") else str(final_msg)
+                    if hasattr(final_msg, "content"):
+                        content = final_msg.content
+                        # Handle multimodal content (list of content blocks)
+                        if isinstance(content, list):
+                            # Extract text from content blocks
+                            text_parts = []
+                            for block in content:
+                                if isinstance(block, str):
+                                    text_parts.append(block)
+                                elif isinstance(block, dict) and block.get("type") == "text":
+                                    text_parts.append(block.get("text", ""))
+                            output = "\n".join(text_parts)
+                        else:
+                            output = content
+                    else:
+                        output = str(final_msg)
 
                 return SwarmResult(
                     task_id=task["id"],

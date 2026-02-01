@@ -1052,6 +1052,12 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     # Set global client for tools to use
     set_github_client(github_client)
 
+    # Check if user has write access - only writers/admins can invoke the bot
+    user_permission = await get_user_permission(github_client, owner, repo_name, sender_login)
+    if user_permission not in (Permission.WRITE, Permission.ADMIN):
+        print(f"[handle_pr_comment] User {sender_login} has {user_permission.value} permission, ignoring")
+        return {"status": "ignored", "reason": "insufficient_permissions"}
+
     # Check if this is the first interaction - show help first
     first_time = await is_first_interaction(github_client, owner, repo_name, pr_number)
     print(f"[handle_pr_comment] first_time={first_time}")

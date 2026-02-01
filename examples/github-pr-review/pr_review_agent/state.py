@@ -8,7 +8,7 @@ Each repository gets its own directory for:
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -64,13 +64,13 @@ class RepoMemory:
             "common_patterns": [],
             "team_conventions": {},
             "review_history": [],
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     
     def _save(self) -> None:
         """Save memory to disk."""
-        self._data["updated_at"] = datetime.utcnow().isoformat()
+        self._data["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.memory_file.write_text(json.dumps(self._data, indent=2))
     
     def get(self, key: str, default: Any = None) -> Any:
@@ -94,7 +94,7 @@ class RepoMemory:
         """Record a summary of a completed review."""
         self._data["review_history"].append({
             "pr_number": pr_number,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             **summary,
         })
         # Keep only last 100 reviews
@@ -149,13 +149,13 @@ class PRState:
             "reviews": [],
             "feedback_addressed": [],
             "commits_made": [],
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     
     def _save(self) -> None:
         """Save state to disk."""
-        self._data["updated_at"] = datetime.utcnow().isoformat()
+        self._data["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.state_file.write_text(json.dumps(self._data, indent=2))
     
     def record_review(self, command: str, summary: str) -> None:
@@ -163,7 +163,7 @@ class PRState:
         self._data["reviews"].append({
             "command": command,
             "summary": summary,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         self._save()
     
@@ -172,7 +172,7 @@ class PRState:
         self._data["feedback_addressed"].append({
             "feedback": feedback,
             "commit_sha": commit_sha,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         self._save()
     
@@ -182,7 +182,7 @@ class PRState:
             "sha": sha,
             "message": message,
             "files": files,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         self._save()
     

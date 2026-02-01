@@ -97,7 +97,7 @@ def create_pr_review_agent(model_name: str = "anthropic:claude-sonnet-4-5"):
         ),
         "system_prompt": CODE_REVIEW_PROMPT,
         "tools": CODE_REVIEW_TOOLS,
-        "model": "anthropic:claude-sonnet-4-5",
+        "model": model_name,
     }
 
     security_review_subagent = {
@@ -109,7 +109,7 @@ def create_pr_review_agent(model_name: str = "anthropic:claude-sonnet-4-5"):
         ),
         "system_prompt": SECURITY_REVIEW_PROMPT,
         "tools": SECURITY_REVIEW_TOOLS,
-        "model": "anthropic:claude-sonnet-4-5",
+        "model": model_name,
     }
 
     return create_deep_agent(

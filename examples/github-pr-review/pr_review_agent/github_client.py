@@ -62,7 +62,7 @@ def get_installation_client(installation_id: int) -> Github:
 
 async def run_sync(func, *args, **kwargs) -> Any:
     """Run a synchronous function in a thread pool."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, partial(func, *args, **kwargs))
 
 
@@ -96,24 +96,15 @@ class GitHubClient:
 
     async def get_pr_diff(self, owner: str, repo: str, pr_number: int) -> str:
         """Get the diff for a pull request."""
-        pr = await self.get_pull_request(owner, repo, pr_number)
+        import urllib.request
 
-        def _get_diff():
-            # PyGithub doesn't have a direct diff method, use the raw request
-            headers, data = pr._requester.requestJsonAndCheck(
-                "GET", pr.url, headers={"Accept": "application/vnd.github.v3.diff"}
-            )
-            return data
-
-        # Actually need to use raw requests for diff format
-        client = self._get_client()
+        token = self._get_token()
 
         def _fetch_diff():
-            import urllib.request
             req = urllib.request.Request(
                 f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
                 headers={
-                    "Authorization": f"token {client._Github__requester._Requester__auth.token}",
+                    "Authorization": f"token {token}",
                     "Accept": "application/vnd.github.v3.diff",
                 }
             )
@@ -351,88 +342,51 @@ class GitHubClient:
         except Exception:
             return []
 
-    # --- Raw HTTP methods for webhook-specific operations ---
-    # These are needed for features PyGithub doesn't expose well (reactions, comment updates, etc.)
+    # --- Webhook-specific operations using PyGithub ---
 
     def _get_token(self) -> str:
-        """Get the current installation token."""
+        """Get the current installation token (for raw diff requests only)."""
         client = self._get_client()
         return client._Github__requester._Requester__auth.token
-
-    def _headers(self) -> dict[str, str]:
-        """Get headers for raw API requests."""
-        return {
-            "Authorization": f"Bearer {self._get_token()}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-
-    async def raw_get(self, endpoint: str) -> dict | list:
-        """Make a raw GET request to the GitHub API."""
-        import httpx
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"https://api.github.com{endpoint}",
-                headers=self._headers(),
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            return response.json()
-
-    async def raw_post(self, endpoint: str, data: dict) -> dict:
-        """Make a raw POST request to the GitHub API."""
-        import httpx
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"https://api.github.com{endpoint}",
-                headers=self._headers(),
-                json=data,
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            return response.json()
-
-    async def raw_patch(self, endpoint: str, data: dict) -> dict:
-        """Make a raw PATCH request to the GitHub API."""
-        import httpx
-        async with httpx.AsyncClient() as client:
-            response = await client.patch(
-                f"https://api.github.com{endpoint}",
-                headers=self._headers(),
-                json=data,
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            return response.json()
 
     async def get_user_permission(self, owner: str, repo: str, username: str) -> str:
         """Get a user's permission level on a repository."""
         try:
-            result = await self.raw_get(
-                f"/repos/{owner}/{repo}/collaborators/{username}/permission"
-            )
-            return result.get("permission", "none")
+            repo_obj = await self.get_repo(owner, repo)
+            return await run_sync(repo_obj.get_collaborator_permission, username)
         except Exception:
             return "read"
 
     async def get_issue_comments(self, owner: str, repo: str, issue_number: int) -> list[dict]:
         """Get comments on an issue/PR."""
-        return await self.raw_get(f"/repos/{owner}/{repo}/issues/{issue_number}/comments")
+        repo_obj = await self.get_repo(owner, repo)
+        issue = await run_sync(repo_obj.get_issue, issue_number)
+        comments = await run_sync(lambda: list(issue.get_comments()))
+        return [
+            {"id": c.id, "user": {"login": c.user.login, "type": c.user.type}, "body": c.body}
+            for c in comments
+        ]
 
     async def get_comment_reactions(self, owner: str, repo: str, comment_id: int) -> list[dict]:
         """Get reactions on a comment."""
-        return await self.raw_get(f"/repos/{owner}/{repo}/issues/comments/{comment_id}/reactions")
+        repo_obj = await self.get_repo(owner, repo)
+        comment = await run_sync(repo_obj.get_issue_comment, comment_id)
+        reactions = await run_sync(lambda: list(comment.get_reactions()))
+        return [
+            {"id": r.id, "content": r.content, "user": {"login": r.user.login}}
+            for r in reactions
+        ]
 
     async def create_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> dict:
         """Create a comment on an issue/PR."""
-        return await self.raw_post(
-            f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
-            {"body": body},
-        )
+        repo_obj = await self.get_repo(owner, repo)
+        issue = await run_sync(repo_obj.get_issue, issue_number)
+        comment = await run_sync(issue.create_comment, body)
+        return {"id": comment.id, "body": comment.body}
 
     async def update_issue_comment(self, owner: str, repo: str, comment_id: int, body: str) -> dict:
         """Update an existing comment."""
-        return await self.raw_patch(
-            f"/repos/{owner}/{repo}/issues/comments/{comment_id}",
-            {"body": body},
-        )
+        repo_obj = await self.get_repo(owner, repo)
+        comment = await run_sync(repo_obj.get_issue_comment, comment_id)
+        await run_sync(comment.edit, body)
+        return {"id": comment.id, "body": body}

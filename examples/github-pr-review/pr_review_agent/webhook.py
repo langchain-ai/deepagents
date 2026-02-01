@@ -87,11 +87,10 @@ async def get_pr_context(
     """
     permission = await get_user_permission(github_client, owner, repo, requester)
 
-    pr = await github_client.get_pr_details(owner, repo, pr_number)
-    pr_obj = await github_client.get_pull_request(owner, repo, pr_number)
+    pr = await github_client.get_pull_request(owner, repo, pr_number)
 
-    head_repo = pr_obj.head.repo
-    base_repo = pr_obj.base.repo
+    head_repo = pr.head.repo
+    base_repo = pr.base.repo
 
     head_repo_dict = {"full_name": head_repo.full_name if head_repo else None,
                       "owner": {"login": head_repo.owner.login if head_repo else owner},
@@ -105,11 +104,11 @@ async def get_pr_context(
         pr_number=pr_number,
         requester=requester,
         permission=permission,
-        head_branch=pr["head"],
-        head_sha=pr_obj.head.sha,
+        head_branch=pr.head.ref,
+        head_sha=pr.head.sha,
         head_repo_owner=head_repo_dict.get("owner", {}).get("login", owner),
         head_repo_name=head_repo_dict.get("name", repo),
-        base_branch=pr["base"],
+        base_branch=pr.base.ref,
         is_fork=is_fork,
     )
 
@@ -238,8 +237,6 @@ COMMANDS = {
 
 # Special command for freeform requests (not in COMMANDS, handled separately)
 FREEFORM_COMMAND = "chat"
-
-DEFAULT_MODEL = os.environ.get("MODEL", "anthropic:claude-sonnet-4-5")
 
 # Status emojis (Dependabot-style)
 STATUS_EMOJIS = {

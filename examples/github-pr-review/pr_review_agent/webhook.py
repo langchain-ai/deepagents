@@ -340,14 +340,14 @@ class StatusComment:
         self.command = command
         self.comment_id: int | None = None
         self.steps: list[tuple[str, str]] = []  # (status, message)
+        self.bot_emoji = get_bot_emoji()  # Pick once, keep consistent
 
     def _build_body(self, current_status: str, current_message: str) -> str:
         """Build the comment body with status history."""
         desc = COMMAND_DESCRIPTIONS.get(self.command, "Working")
         status_emoji = STATUS_EMOJIS.get(current_status, "🔄")
-        bot_emoji = get_bot_emoji()
         
-        lines = [f"## {status_emoji} {bot_emoji} {desc}\n"]
+        lines = [f"## {status_emoji} {self.bot_emoji} {desc}\n"]
         
         # Show completed steps
         for status, message in self.steps:

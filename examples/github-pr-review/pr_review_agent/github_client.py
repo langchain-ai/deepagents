@@ -369,8 +369,11 @@ class GitHubClient:
 
     async def get_comment_reactions(self, owner: str, repo: str, comment_id: int) -> list[dict]:
         """Get reactions on a comment."""
+        from github import IssueComment
         repo_obj = await self.get_repo(owner, repo)
-        comment = await run_sync(repo_obj.get_issue_comment, comment_id)
+        # Construct IssueComment directly with URL (PyGithub pattern for getting by ID)
+        url = f"{repo_obj.url}/issues/comments/{comment_id}"
+        comment = IssueComment.IssueComment(repo_obj._requester, url=url)
         reactions = await run_sync(lambda: list(comment.get_reactions()))
         return [
             {"id": r.id, "content": r.content, "user": {"login": r.user.login}}
@@ -386,7 +389,10 @@ class GitHubClient:
 
     async def update_issue_comment(self, owner: str, repo: str, comment_id: int, body: str) -> dict:
         """Update an existing comment."""
+        from github import IssueComment
         repo_obj = await self.get_repo(owner, repo)
-        comment = await run_sync(repo_obj.get_issue_comment, comment_id)
+        # Construct IssueComment directly with URL (PyGithub pattern for getting by ID)
+        url = f"{repo_obj.url}/issues/comments/{comment_id}"
+        comment = IssueComment.IssueComment(repo_obj._requester, url=url)
         await run_sync(comment.edit, body)
         return {"id": comment.id, "body": body}

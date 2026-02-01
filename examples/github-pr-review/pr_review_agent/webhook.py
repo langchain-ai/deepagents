@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from .agent import create_pr_review_agent
 from .github_client import GitHubClient
+from .state import StateManager
 from .tools import set_github_client
 
 # Bot username to listen for mentions
@@ -997,12 +998,12 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
 
 {commit_instructions}"""
 
-    config = {
-        "configurable": {
-            "thread_id": f"{owner}/{repo_name}/pr/{pr_number}",
-            "github_client": github_client,
-        }
-    }
+    # Initialize state manager for this repo/PR
+    state_mgr = StateManager(owner, repo_name, pr_number)
+    config = state_mgr.get_agent_config()
+
+    # Add repository memory context if available
+    memory_context = state_mgr.get_memory_context()
 
     # Commands that require approval use a two-phase flow
     if parsed.command in COMMANDS_REQUIRING_APPROVAL:
@@ -1017,11 +1018,12 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
             repo_name=repo_name,
             pr_number=pr_number,
             sender_login=sender_login,
+            state_mgr=state_mgr,
         )
 
     # Standard flow for review/security/style commands
     task_instructions = get_task_instructions(parsed.command, ctx, parsed.message)
-    
+
     await status.update("analyzing", "Reading repository docs and configuration")
 
     prompt = f"""PR #{pr_number} in {owner}/{repo_name}
@@ -1030,6 +1032,8 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
 {task_instructions}
 
 {context_block}
+
+{memory_context}
 
 ## Important
 - Do NOT post status updates - the system handles that
@@ -1047,6 +1051,12 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
             pass
 
         await status.finish(True, "Complete!")
+
+        # Record the review in PR state
+        state_mgr.pr_state.record_review(
+            command=parsed.command,
+            summary=f"Completed /{parsed.command} review",
+        )
 
         return {
             "status": "success",
@@ -1071,9 +1081,10 @@ async def _handle_approval_flow(
     repo_name: str,
     pr_number: int,
     sender_login: str,
+    state_mgr: "StateManager",
 ) -> dict:
     """Handle two-phase approval flow for /feedback and /conflict commands.
-    
+
     Phase 1: Agent creates a plan using submit_plan tool
     Phase 2: Wait for approval, then execute the plan
     """
@@ -1081,7 +1092,7 @@ async def _handle_approval_flow(
 
     # Phase 1: Planning
     await status.update("planning", "Analyzing and creating plan")
-    
+
     plan_instructions = get_task_instructions(f"{parsed.command}_plan", ctx, parsed.message)
     plan_prompt = f"""PR #{pr_number} in {owner}/{repo_name}
 
@@ -1192,6 +1203,12 @@ Please revise the plan based on this feedback.
             pass
 
         await status.finish(True, "Changes applied!")
+
+        # Record the successful execution in PR state
+        state_mgr.pr_state.record_review(
+            command=parsed.command,
+            summary=f"Executed approved plan with {len(final_plan)} changes",
+        )
 
         return {
             "status": "success",

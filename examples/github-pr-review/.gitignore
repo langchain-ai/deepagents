@@ -5,3 +5,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .pytest_cache/
+.venv/
+*.egg-info/
+
+# State and data directories
+data/

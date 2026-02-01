@@ -4,6 +4,11 @@ Each repository gets its own directory for:
 - Conversation checkpoints (for resumable agent sessions)
 - Repository memories (learned patterns, preferences, codebase knowledge)
 - PR-specific state (review history, feedback tracking)
+
+Storage backends:
+- Local filesystem (default)
+- Google Cloud Storage (set GCLOUD_STORAGE_BUCKET)
+- AWS S3 (set AWS_S3_BUCKET)
 """
 
 import json
@@ -14,26 +19,7 @@ from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 
-
-# Base directory for all state - configurable via environment
-STATE_BASE_DIR = Path(os.environ.get("STATE_DIR", "./data"))
-
-
-def get_repo_dir(owner: str, repo: str) -> Path:
-    """Get the directory for a specific repository's state.
-    
-    Creates the directory if it doesn't exist.
-    """
-    repo_dir = STATE_BASE_DIR / owner / repo
-    repo_dir.mkdir(parents=True, exist_ok=True)
-    return repo_dir
-
-
-def get_pr_dir(owner: str, repo: str, pr_number: int) -> Path:
-    """Get the directory for a specific PR's state."""
-    pr_dir = get_repo_dir(owner, repo) / "prs" / str(pr_number)
-    pr_dir.mkdir(parents=True, exist_ok=True)
-    return pr_dir
+from .storage import get_storage, get_repo_path, get_pr_path
 
 
 class RepoMemory:
@@ -49,16 +35,15 @@ class RepoMemory:
     def __init__(self, owner: str, repo: str):
         self.owner = owner
         self.repo = repo
-        self.memory_file = get_repo_dir(owner, repo) / "memory.json"
+        self.storage = get_storage()
+        self.storage_path = get_repo_path(owner, repo, "memory.json")
         self._data: dict[str, Any] = self._load()
     
     def _load(self) -> dict[str, Any]:
-        """Load memory from disk."""
-        if self.memory_file.exists():
-            try:
-                return json.loads(self.memory_file.read_text())
-            except (json.JSONDecodeError, IOError):
-                pass
+        """Load memory from storage."""
+        data = self.storage.read_json(self.storage_path)
+        if data:
+            return data
         return {
             "style_preferences": {},
             "common_patterns": [],
@@ -70,9 +55,9 @@ class RepoMemory:
         }
     
     def _save(self) -> None:
-        """Save memory to disk."""
+        """Save memory to storage."""
         self._data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        self.memory_file.write_text(json.dumps(self._data, indent=2))
+        self.storage.write_json(self.storage_path, self._data)
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get a value from memory."""
@@ -190,16 +175,15 @@ class PRState:
         self.owner = owner
         self.repo = repo
         self.pr_number = pr_number
-        self.state_file = get_pr_dir(owner, repo, pr_number) / "state.json"
+        self.storage = get_storage()
+        self.storage_path = get_pr_path(owner, repo, pr_number, "state.json")
         self._data: dict[str, Any] = self._load()
     
     def _load(self) -> dict[str, Any]:
-        """Load state from disk."""
-        if self.state_file.exists():
-            try:
-                return json.loads(self.state_file.read_text())
-            except (json.JSONDecodeError, IOError):
-                pass
+        """Load state from storage."""
+        data = self.storage.read_json(self.storage_path)
+        if data:
+            return data
         return {
             "reviews": [],
             "feedback_addressed": [],
@@ -209,9 +193,9 @@ class PRState:
         }
     
     def _save(self) -> None:
-        """Save state to disk."""
+        """Save state to storage."""
         self._data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        self.state_file.write_text(json.dumps(self._data, indent=2))
+        self.storage.write_json(self.storage_path, self._data)
     
     def record_review(self, command: str, head_sha: str, summary: str = "") -> None:
         """Record that a review was performed.

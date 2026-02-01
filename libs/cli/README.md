@@ -1,55 +1,37 @@
+# 🧠🤖 Deep Agents CLI
+
+[![PyPI - Version](https://img.shields.io/pypi/v/deepagents-cli?label=%20)](https://pypi.org/project/deepagents-cli/#history)
+[![PyPI - License](https://img.shields.io/pypi/l/deepagents-cli)](https://opensource.org/licenses/MIT)
+[![PyPI - Downloads](https://img.shields.io/pepy/dt/deepagents-cli)](https://pypistats.org/packages/deepagents-cli)
+[![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain)
+
+Looking for the JS/TS version? Check out [Deep Agents CLI.js](https://github.com/langchain-ai/deepagentsjs).
+
+To help you ship LangChain apps to production faster, check out [LangSmith](https://smith.langchain.com).
+LangSmith is a unified developer platform for building, testing, and monitoring LLM applications.
+
 <p align="center">
-  <img src="images/cli.png" alt="Deep Agents CLI" width="600"/>
+  <img src="./images/cli.png" alt="Deep Agents CLI" width="600"/>
 </p>
 
-<h1 align="center">Deep Agents CLI</h1>
-
-<p align="center">
-  The Deep Agents harness in your terminal.
-</p>
-
-## Quickstart
+## Quick Install
 
 ```bash
 uv tool install deepagents-cli
 deepagents
 ```
 
-This gives you a fully-featured coding agent with file operations, shell commands, web search, planning, and sub-agent delegation in your terminal.
+## 🤔 What is this?
 
-## Usage
+Using an LLM to call tools in a loop is the simplest form of an agent. This architecture, however, can yield agents that are "shallow" and fail to plan and act over longer, more complex tasks.
 
-```bash
-# Use a specific model
-deepagents --model claude-sonnet-4-5-20250929
-deepagents --model gpt-4o
+Applications like "Deep Research", "Manus", and "Claude Code" have gotten around this limitation by implementing a combination of four things: a **planning tool**, **sub agents**, access to a **file system**, and a **detailed prompt**.
 
-# Auto-approve tool usage (skip confirmation prompts)
-deepagents --auto-approve
+`deepagents` is a Python package that implements these in a general purpose way so that you can easily create a Deep Agent for your application. For a full overview and quickstart of Deep Agents, the best resource is our [docs](https://docs.langchain.com/oss/python/deepagents/overview).
 
-# Execute code in a remote sandbox
-deepagents --sandbox modal
-```
-
-## Model Configuration
-
-The CLI auto-detects your provider based on available API keys:
-
-| Priority | API Key | Default Model |
-|----------|---------|---------------|
-| 1st | `OPENAI_API_KEY` | `gpt-5.2` |
-| 2nd | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929` |
-| 3rd | `GOOGLE_API_KEY` | `gemini-3-pro-preview` |
-
-## Customization
-
-The CLI supports persistent memory, project-specific configurations, and custom skills. See the [documentation](https://docs.langchain.com/oss/python/deepagents/cli) for details on:
-
-- **AGENTS.md** — Persistent memory for preferences and coding style
-- **Skills** — Reusable workflows and domain knowledge
-- **Project configs** — Per-project settings in `.deepagents/`
+**Acknowledgements: This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.**
 
 ## Resources
 
-- **[Documentation](https://docs.langchain.com/oss/python/deepagents/cli)** — Full CLI reference
+- **[Documentation](https://docs.langchain.com/oss/python/deepagents/cli)** — Full documentation
 - **[Deep Agents](https://github.com/langchain-ai/deepagents)** — The underlying agent harness

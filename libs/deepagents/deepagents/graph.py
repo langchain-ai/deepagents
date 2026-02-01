@@ -148,10 +148,10 @@ def create_deep_agent(
         and isinstance(model.profile["max_input_tokens"], int)
     ):
         trigger = ("fraction", 0.85)
-        keep = ("fraction", 0.10)
+        keep = ("fraction", 0.15)
         truncate_args_settings = {
             "trigger": ("fraction", 0.85),
-            "keep": ("fraction", 0.10),
+            "keep": ("fraction", 0.15),
         }
     else:
         trigger = ("tokens", 170000)

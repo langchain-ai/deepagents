@@ -1,14 +1,16 @@
 """PR Review Agents - Specialized agents for different review types.
 
 Creates separate agents for:
-- Security review
-- Code quality review  
-- General chat/questions
-- Feedback execution (with approval flow)
+- Security review (simple react agent)
+- Code quality review (simple react agent)
+- General chat/questions (deep agent for complex reasoning)
+- Feedback execution (simple react agent with approval flow)
 """
 
 from langchain.chat_models import init_chat_model
 from langgraph.prebuilt import create_react_agent
+
+from deepagents import create_deep_agent
 
 from .prompts import CODE_REVIEW_PROMPT, SECURITY_REVIEW_PROMPT, CHAT_PROMPT
 from .tools import (
@@ -106,12 +108,15 @@ def create_quality_review_agent(model_name: str = "anthropic:claude-sonnet-4-5")
 
 
 def create_chat_agent(model_name: str = "anthropic:claude-sonnet-4-5"):
-    """Create an agent for general PR questions and chat."""
+    """Create a deep agent for general PR questions and chat.
+    
+    Uses deepagents for complex reasoning and multi-step tasks.
+    """
     model = init_chat_model(model=model_name, temperature=0.0)
-    return create_react_agent(
+    return create_deep_agent(
         model=model,
         tools=CHAT_TOOLS,
-        prompt=CHAT_PROMPT,
+        system_prompt=CHAT_PROMPT,
     )
 
 

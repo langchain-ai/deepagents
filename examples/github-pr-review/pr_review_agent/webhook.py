@@ -1077,6 +1077,7 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     # For review commands without instructions, check for duplicates BEFORE doing any work
     # This applies to both explicit /review and empty @mentions (which default to review)
     REVIEW_COMMANDS = {"review", "security", "style"}
+    print(f"[handle_pr_comment] command={parsed.command}, message={parsed.message!r}, in_review_commands={parsed.command in REVIEW_COMMANDS}")
     if parsed.command in REVIEW_COMMANDS and not parsed.message:
         # Get head SHA to check against previous reviews
         try:

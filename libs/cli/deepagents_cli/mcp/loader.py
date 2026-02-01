@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,12 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from deepagents_cli.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Default timeout settings for MCP HTTP connections
+# These are more generous than the langchain-mcp-adapters defaults
+# to handle slow network or heavy tool operations
+DEFAULT_HTTP_TIMEOUT = timedelta(seconds=60)  # 60s for initial HTTP connection
+DEFAULT_SSE_READ_TIMEOUT = timedelta(seconds=60 * 10)  # 10 minutes for SSE events
 
 
 def load_mcp_config() -> dict[str, Any]:
@@ -103,20 +110,49 @@ async def load_mcp_tools_from_config() -> list[BaseTool]:
         # Ensure it's a dict we can modify and filter out "type" key
         # (langchain-mcp-adapters doesn't expect "type", only "transport")
         config_to_use = dict(server_config)
-        config_to_use.pop("type", None) 
+        config_to_use.pop("type", None)
         
+        # Add timeout settings for HTTP-based transports if not already set
+        transport = config_to_use.get("transport")
+        if transport in ("streamable_http", "http", "streamable-http"):
+            if "timeout" not in config_to_use:
+                config_to_use["timeout"] = DEFAULT_HTTP_TIMEOUT
+            if "sse_read_timeout" not in config_to_use:
+                config_to_use["sse_read_timeout"] = DEFAULT_SSE_READ_TIMEOUT
+            logger.debug(
+                f"[MCP] Configured {name} with timeout={config_to_use['timeout']}, "
+                f"sse_read_timeout={config_to_use['sse_read_timeout']}"
+            )
+        elif transport == "sse":
+            # SSE uses float seconds instead of timedelta
+            if "timeout" not in config_to_use:
+                config_to_use["timeout"] = DEFAULT_HTTP_TIMEOUT.total_seconds()
+            if "sse_read_timeout" not in config_to_use:
+                config_to_use["sse_read_timeout"] = DEFAULT_SSE_READ_TIMEOUT.total_seconds()
+            logger.debug(
+                f"[MCP] Configured {name} (SSE) with timeout={config_to_use['timeout']}s, "
+                f"sse_read_timeout={config_to_use['sse_read_timeout']}s"
+            )
+        
+        logger.debug(f"[MCP] Server '{name}': transport={transport}, url={config_to_use.get('url', 'N/A')}")
         normalized_connections[name] = config_to_use
 
     try:
+        logger.info(f"[MCP] Connecting to {len(normalized_connections)} MCP server(s)...")
         client = MultiServerMCPClient(connections=normalized_connections)
         # We need to keep the client alive or managing sessions?
         # get_tools() creates new sessions.
         
         # Note: MultiServerMCPClient manager context was removed in 0.1.0 (as seen in the file view)
         # "new session will be created for each tool call"
+        logger.debug("[MCP] Loading tools from MCP servers...")
         tools = await client.get_tools()
+        logger.info(f"[MCP] Successfully loaded {len(tools)} tool(s) from MCP servers")
+        for tool in tools:
+            logger.debug(f"[MCP] - Tool: {tool.name}")
         return tools
     except Exception:
         import traceback
         logger.error(f"Error loading MCP tools:\n{traceback.format_exc()}")
         return []
+

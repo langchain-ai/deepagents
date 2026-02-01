@@ -756,8 +756,6 @@ Focus on finding real, exploitable security vulnerabilities.
 1. **Gather context** (do these IN PARALLEL):
    - Get the PR diff and list of changed files
    - Read SECURITY.md, .github/SECURITY.md if they exist
-   - Check .github/workflows/ for security scanning (CodeQL, Snyk, etc.)
-   - Fetch Dependabot/CodeQL alerts if available
 
 2. **Analyze**:
    - Delegate to `security-review` subagent ONLY with the diff and security context

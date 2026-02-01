@@ -14,7 +14,6 @@ from .tools import (
     create_or_update_file,
     create_pr_from_branch,
     create_pr_review,
-    get_code_scanning_alerts,
     get_file_content,
     get_pr_checks,
     get_pr_comments,
@@ -23,7 +22,6 @@ from .tools import (
     get_pr_diff,
     get_pr_files,
     get_repo_code_style,
-    get_security_alerts,
     list_workflow_files,
     post_pr_comment,
     search_repo_issues,
@@ -41,8 +39,6 @@ ORCHESTRATOR_TOOLS = [
     get_pr_checks,
     # Repository information
     get_repo_code_style,
-    get_security_alerts,
-    get_code_scanning_alerts,
     search_repo_issues,
     get_file_content,
     list_workflow_files,
@@ -70,8 +66,6 @@ SECURITY_REVIEW_TOOLS = [
     get_pr_diff,
     get_pr_files,
     get_file_content,
-    get_security_alerts,
-    get_code_scanning_alerts,
     list_workflow_files,
 ]
 

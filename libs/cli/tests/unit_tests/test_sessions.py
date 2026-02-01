@@ -81,7 +81,8 @@ class TestThreadFunctions:
         for tid, agent, updated in threads:
             metadata = json.dumps({"agent_name": agent, "updated_at": updated})
             conn.execute(
-                "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, metadata) VALUES (?, '', ?, ?)",
+                "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, metadata) "
+                "VALUES (?, '', ?, ?)",
                 (tid, f"cp_{tid}", metadata),
             )
 
@@ -203,7 +204,7 @@ class TestGetCheckpointer:
     def test_returns_async_sqlite_saver(self, tmp_path):
         """Get checkpointer returns AsyncSqliteSaver."""
 
-        async def _test():
+        async def _test() -> None:
             db_path = tmp_path / "test.db"
             with patch.object(sessions, "get_db_path", return_value=db_path):
                 async with sessions.get_checkpointer() as cp:

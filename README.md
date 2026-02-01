@@ -1,16 +1,23 @@
-<p align="center">
-  <img src=".github/images/deepagents-banner.png" alt="Deep Agents" width="600"/>
-</p>
+<div align="center">
+  <a href="https://docs.langchain.com/oss/python/deepagents/overview#deep-agents-overview">
+    <picture>
+      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-dark.svg">
+      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-light.svg">
+      <img alt="Deep Agents Logo" src=".github/images/logo-dark.svg" width="80%">
+    </picture>
+  </a>
+</div>
 
-<p align="center">
-  <img src=".github/images/deepagents_logo.svg" alt="Deep Agents" height="40"/>
-</p>
+<div align="center">
+  <h3>The batteries-included agent harness.</h3>
+</div>
 
-<p align="center">
-  The batteries-included agent harness.
-</p>
-
-## What is Deep Agents?
+<div align="center">
+  <a href="https://opensource.org/licenses/MIT" target="_blank"><img src="https://img.shields.io/pypi/l/deepagents" alt="PyPI - License"></a>
+  <a href="https://pypistats.org/packages/deepagents" target="_blank"><img src="https://img.shields.io/pepy/dt/deepagents" alt="PyPI - Downloads"></a>
+  <a href="https://pypi.org/project/deepagents/#history" target="_blank"><img src="https://img.shields.io/pypi/v/deepagents?label=%20" alt="Version"></a>
+  <a href="https://x.com/langchain" target="_blank"><img src="https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain" alt="Twitter / X"></a>
+</div>
 
 Deep Agents is an agent harness.  An opinionated, ready-to-run agent out of the box. Instead of wiring up prompts, tools, and context management yourself, you get a working agent immediately and customize what you need.
 
@@ -22,6 +29,9 @@ Deep Agents is an agent harness.  An opinionated, ready-to-run agent out of the 
 - **Sub-agents** — `task` for delegating work with isolated context windows
 - **Smart defaults** — Prompts that teach the model how to use these tools effectively
 - **Context management** — Auto-summarization when conversations get long, large outputs saved to files
+
+> [!NOTE]
+> Looking for the JS/TS library? Check out [deepagents.js](https://github.com/langchain-ai/deepagentsjs).
 
 ## Quickstart
 
@@ -65,7 +75,7 @@ uv tool install deepagents-cli
 deepagents
 ```
 
-The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.  Using the Deep Agents requires setting an API Key before running (ex: ANTHROPIC_API_KEY).
+The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, Daytona), persistent memory, custom skills, and human-in-the-loop approval. See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli) for more.  Using the Deep Agents CLI requires setting an API Key before running (ex: `ANTHROPIC_API_KEY`).
 
 ## LangGraph Native
 
@@ -82,11 +92,22 @@ The CLI adds conversation resume, web search, remote sandboxes (Modal, Runloop, 
 - **Get started in seconds** — `pip install deepagents` or `uv add deepagents` and you have a working agent
 - **Customize in minutes** — Add tools, swap models, tune prompts when you need to
 
-## Resources
+---
 
-- **[Documentation](https://docs.langchain.com/oss/python/deepagents/overview)** — Full API reference and guides
+## Documentation
+
+- [docs.langchain.com](https://docs.langchain.com/oss/python/deepagents/overview) – Comprehensive documentation, including conceptual overviews and guides
+- [reference.langchain.com/python](https://reference.langchain.com/python/deepagents/) – API reference docs for Deep Agents packages
+- [Chat LangChain](https://chat.langchain.com/) – Chat with the LangChain documentation and get answers to your questions
+
+**Discussions**: Visit the [LangChain Forum](https://forum.langchain.com) to connect with the community and share all of your technical questions, ideas, and feedback.
+
+## Additional resources
+
 - **[Examples](examples/)** — Working agents and patterns
-- **[CLI](https://docs.langchain.com/oss/python/deepagents/cli)** — Interactive terminal interface
+- [API Reference](https://reference.langchain.com/python/deepagents/) – Detailed reference on navigating base packages and integrations for LangChain.
+- [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) – Learn how to contribute to LangChain projects and find good first issues.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) – Our community guidelines and standards for participation.
 
 ## Security
 

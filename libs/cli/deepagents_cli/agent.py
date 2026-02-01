@@ -322,7 +322,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     }
 
 
-def create_cli_agent(  # noqa: PLR0915
+def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
     *,

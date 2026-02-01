@@ -749,6 +749,8 @@ You have access to PR information, file contents, and can post comments.
 {user_instructions}
 ## Task: Security Review (Default)
 
+**IMPORTANT: Only use the `security-review` subagent. Do NOT use the `code-review` subagent.**
+
 Focus on finding real, exploitable security vulnerabilities.
 
 1. **Gather context** (do these IN PARALLEL):
@@ -758,7 +760,7 @@ Focus on finding real, exploitable security vulnerabilities.
    - Fetch Dependabot/CodeQL alerts if available
 
 2. **Analyze**:
-   - Delegate to security-review subagent with the diff and security context
+   - Delegate to `security-review` subagent ONLY with the diff and security context
    - Focus on: injection, auth bypass, data exposure, real vulnerabilities
    - Skip theoretical issues, test code, and example files
 
@@ -771,6 +773,8 @@ Focus on finding real, exploitable security vulnerabilities.
 {user_instructions}
 ## Task: Code Quality Review
 
+**IMPORTANT: Only use the `code-review` subagent. Do NOT use the `security-review` subagent.**
+
 Focus on code quality, style, and maintainability.
 
 1. **Gather context** (do these IN PARALLEL):
@@ -780,7 +784,7 @@ Focus on code quality, style, and maintainability.
    - Check PR CI status for lint/test failures
 
 2. **Analyze**:
-   - Delegate to code-review subagent with style configs
+   - Delegate to `code-review` subagent ONLY with style configs
    - Focus on: bugs, maintainability, consistency with existing patterns
    - Skip minor nitpicks - focus on meaningful issues
 

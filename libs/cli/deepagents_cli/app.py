@@ -288,6 +288,33 @@ List what you captured and where you stored it:
 - Memory entries added (with location)
 """  # noqa: E501
 
+# Prompt template for /swarm command
+SWARM_PROMPT_TEMPLATE = """Execute a batch of tasks using swarm_execute.
+
+**Task file:** `{file_path}`
+**Concurrency:** {concurrency}
+{output_dir_line}
+
+Call the `swarm_execute` tool with these parameters to run the tasks in parallel.
+After execution, summarize the results for me.
+"""
+
+# Prompt template for /swarm --enrich command
+SWARM_ENRICH_TEMPLATE = """Enrich a CSV by filling in empty columns using swarm_enrich.
+
+**CSV file:** `{file_path}`
+**Concurrency:** {concurrency}
+{output_path_line}
+{id_column_line}
+
+Call the `swarm_enrich` tool with these parameters. This will:
+1. Read the CSV and identify empty columns in each row
+2. Research the missing values using filled columns as context
+3. Write an enriched CSV with the results
+
+After enrichment, tell me how many cells were filled and where the output was saved.
+"""
+
 
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
@@ -708,7 +735,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = (
-                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+                "Commands: /quit, /clear, /remember, /swarm, /tokens, /threads, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -781,6 +808,79 @@ class DeepAgentsApp(App):
             # Send as a user message to the agent
             await self._handle_user_message(final_prompt)
             return  # _handle_user_message already mounts the message
+        elif cmd == "/swarm" or cmd.startswith("/swarm "):
+            # Parse /swarm [--enrich] <file> [--concurrency N] [--output-dir DIR] [--id-column COL]
+            args = command.strip()[len("/swarm") :].strip().split()
+
+            if not args:
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(
+                    SystemMessage(
+                        "Usage:\n"
+                        "  /swarm <file.jsonl|file.csv> [--concurrency N] [--output-dir DIR]\n"
+                        "  /swarm --enrich <file.csv> [--concurrency N] [--output PATH] [--id-column COL]"
+                    )
+                )
+                return
+
+            # Check for --enrich mode
+            enrich_mode = "--enrich" in args
+            if enrich_mode:
+                args.remove("--enrich")
+
+            if not args:
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(SystemMessage("Error: No file path provided"))
+                return
+
+            file_path = args[0]
+            concurrency = 10
+            output_dir = None
+            output_path = None
+            id_column = None
+
+            # Parse optional flags
+            i = 1
+            while i < len(args):
+                if args[i] == "--concurrency" and i + 1 < len(args):
+                    try:
+                        concurrency = int(args[i + 1])
+                    except ValueError:
+                        pass
+                    i += 2
+                elif args[i] == "--output-dir" and i + 1 < len(args):
+                    output_dir = args[i + 1]
+                    i += 2
+                elif args[i] == "--output" and i + 1 < len(args):
+                    output_path = args[i + 1]
+                    i += 2
+                elif args[i] == "--id-column" and i + 1 < len(args):
+                    id_column = args[i + 1]
+                    i += 2
+                else:
+                    i += 1
+
+            if enrich_mode:
+                # Build enrichment prompt
+                output_path_line = f"**Output path:** `{output_path}`" if output_path else ""
+                id_column_line = f"**ID column:** `{id_column}`" if id_column else ""
+                final_prompt = SWARM_ENRICH_TEMPLATE.format(
+                    file_path=file_path,
+                    concurrency=concurrency,
+                    output_path_line=output_path_line,
+                    id_column_line=id_column_line,
+                )
+            else:
+                # Build execution prompt
+                output_dir_line = f"**Output directory:** `{output_dir}`" if output_dir else ""
+                final_prompt = SWARM_PROMPT_TEMPLATE.format(
+                    file_path=file_path,
+                    concurrency=concurrency,
+                    output_dir_line=output_dir_line,
+                )
+
+            await self._handle_user_message(final_prompt)
+            return
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))

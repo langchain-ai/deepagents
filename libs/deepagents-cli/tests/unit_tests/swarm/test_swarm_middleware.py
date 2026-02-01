@@ -24,10 +24,11 @@ def middleware(subagent_graphs):
 
 
 class TestSwarmMiddleware:
-    def test_has_one_tool(self, middleware):
-        """Middleware should provide swarm_execute tool."""
-        assert len(middleware.tools) == 1
-        assert middleware.tools[0].name == "swarm_execute"
+    def test_has_two_tools(self, middleware):
+        """Middleware should provide swarm_execute and swarm_enrich tools."""
+        assert len(middleware.tools) == 2
+        tool_names = {t.name for t in middleware.tools}
+        assert tool_names == {"swarm_execute", "swarm_enrich"}
 
     def test_tool_is_structured_tool(self, middleware):
         """Tool should be a StructuredTool instance."""

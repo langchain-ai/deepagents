@@ -338,6 +338,9 @@ class StatusComment:
         self.comment_id: int | None = None
         self.steps: list[tuple[str, str]] = []  # (status, message)
         self.bot_emoji = get_bot_emoji()  # Pick once, keep consistent
+        self._approved_plan: list[str] | None = None  # Plan to preserve after approval
+        self._plan_revision: int = 1
+        self._plan_step_status: dict[int, str] = {}  # step index -> status (pending/running/success/error)
 
     def _build_body(self, current_status: str, current_message: str) -> str:
         """Build the comment body with status history."""
@@ -398,35 +401,109 @@ class StatusComment:
                 self.owner, self.repo, self.pr_number, body
             )
 
+    def set_approved_plan(self, plan: list[str], revision: int = 1) -> None:
+        """Set the approved plan to be shown in status updates."""
+        self._approved_plan = plan
+        self._plan_revision = revision
+        self._plan_step_status = {i: "pending" for i in range(len(plan))}
+
+    async def update_plan_step(self, step_index: int, status: str) -> None:
+        """Update a plan step's status and refresh the comment.
+        
+        Args:
+            step_index: 0-based index of the step
+            status: "pending", "running", "success", or "error"
+        """
+        if not self._approved_plan or not self.comment_id:
+            return
+        
+        self._plan_step_status[step_index] = status
+        
+        # Determine overall state
+        statuses = list(self._plan_step_status.values())
+        if all(s == "success" for s in statuses):
+            state = "completed"
+        elif any(s == "error" for s in statuses):
+            state = "failed"
+        elif any(s == "running" for s in statuses):
+            state = "executing"
+        else:
+            state = "executing"
+        
+        body = self._build_plan_body(
+            self._approved_plan, 
+            state, 
+            self._plan_revision,
+            step_status=self._plan_step_status,
+        )
+        await self.github_client.update_issue_comment(
+            self.owner, self.repo, self.comment_id, body
+        )
+
+    async def finish_plan(self, success: bool, message: str | None = None) -> None:
+        """Mark the plan execution as complete.
+        
+        Args:
+            success: Whether execution succeeded
+            message: Optional message to append
+        """
+        if not self._approved_plan or not self.comment_id:
+            return
+        
+        state = "completed" if success else "failed"
+        body = self._build_plan_body(
+            self._approved_plan,
+            state,
+            self._plan_revision,
+            step_status=self._plan_step_status,
+        )
+        if message:
+            body += f"\n\n_{message}_"
+        
+        await self.github_client.update_issue_comment(
+            self.owner, self.repo, self.comment_id, body
+        )
+
     def _build_plan_body(
         self, 
         plan_items: list[str], 
         state: str = "waiting",
         revision: int = 1,
         feedback_from: str | None = None,
+        step_status: dict[int, str] | None = None,
     ) -> str:
         """Build the plan comment body.
         
         Args:
             plan_items: List of planned changes
-            state: "waiting", "approved", "feedback_requested", "timed_out"
+            state: "waiting", "approved", "executing", "completed", "failed", "feedback_requested", "timed_out"
             revision: Plan revision number
             feedback_from: Username who requested changes (for feedback_requested state)
+            step_status: Dict mapping step index (0-based) to status (pending/running/success/error)
         """
         desc = COMMAND_DESCRIPTIONS.get(self.command, "Working")
         revision_text = f" (Revision {revision})" if revision > 1 else ""
         
         if state == "waiting":
-            header = f"## 📋 {desc} - Plan{revision_text}\n"
+            header = f"## 📋 {self.bot_emoji} {desc} - Plan{revision_text}\n"
             footer = [
                 "---",
                 "**React with 👍 to approve, or 👎 to request changes.**",
             ]
         elif state == "approved":
-            header = f"## ✅ {desc} - Plan Approved{revision_text}\n"
-            footer = ["---", "_Executing approved plan..._"]
+            header = f"## ✅ {self.bot_emoji} {desc} - Plan Approved{revision_text}\n"
+            footer = ["---", "_Starting execution..._"]
+        elif state == "executing":
+            header = f"## 🔄 {self.bot_emoji} {desc} - Executing{revision_text}\n"
+            footer = []
+        elif state == "completed":
+            header = f"## ✅ {self.bot_emoji} {desc} - Complete{revision_text}\n"
+            footer = []
+        elif state == "failed":
+            header = f"## ❌ {self.bot_emoji} {desc} - Failed{revision_text}\n"
+            footer = []
         elif state == "feedback_requested":
-            header = f"## 💬 {desc} - Changes Requested{revision_text}\n"
+            header = f"## 💬 {self.bot_emoji} {desc} - Changes Requested{revision_text}\n"
             footer = [
                 "---",
                 f"@{feedback_from} Please reply with how you'd like me to modify the plan.",
@@ -434,15 +511,28 @@ class StatusComment:
                 "_I'll revise the plan based on your feedback and ask for approval again._",
             ]
         elif state == "timed_out":
-            header = f"## ⏸️ {desc} - Timed Out{revision_text}\n"
+            header = f"## ⏸️ {self.bot_emoji} {desc} - Timed Out{revision_text}\n"
             footer = ["---", f"_Mention @{BOT_USERNAME} again to retry._"]
         else:
-            header = f"## 📋 {desc}\n"
+            header = f"## 📋 {self.bot_emoji} {desc}\n"
             footer = []
 
-        lines = [header, "**Planned changes:**\n"]
-        for i, item in enumerate(plan_items, 1):
-            lines.append(f"{i}. {item}")
+        # Step status emojis
+        step_emojis = {
+            "pending": "⬜",
+            "running": "🔄",
+            "success": "✅",
+            "error": "❌",
+        }
+
+        lines = [header, "**Plan:**\n"]
+        for i, item in enumerate(plan_items):
+            status = (step_status or {}).get(i, "pending") if state in ("executing", "completed", "failed") else None
+            if status:
+                emoji = step_emojis.get(status, "⬜")
+                lines.append(f"{emoji} {i+1}. {item}")
+            else:
+                lines.append(f"{i+1}. {item}")
         lines.append("")
         lines.extend(footer)
         
@@ -455,7 +545,7 @@ class StatusComment:
         replan_callback=None,
         timeout: int = APPROVAL_TIMEOUT,
         poll_interval: int = 10,
-    ) -> tuple[bool, list[str]]:
+    ) -> tuple[bool, list[str], int]:
         """Post a plan and wait for approval. On rejection, ask for feedback and revise.
 
         Args:
@@ -466,7 +556,7 @@ class StatusComment:
             poll_interval: How often to check for reactions (seconds)
 
         Returns:
-            Tuple of (approved: bool, final_plan: list[str])
+            Tuple of (approved: bool, final_plan: list[str], revision: int)
         """
         import asyncio
         import time
@@ -515,7 +605,7 @@ class StatusComment:
                             self.owner, self.repo, self.comment_id, body
                         )
                         self.steps.append(("success", f"Plan approved by @{reactor}"))
-                        return True, current_plan
+                        return True, current_plan, revision
 
                     elif content == "-1" and not waiting_for_feedback:  # 👎 Request changes
                         processed_reaction_ids.add(reaction_id)
@@ -587,7 +677,7 @@ class StatusComment:
         await self.github_client.update_issue_comment(
             self.owner, self.repo, self.comment_id, body
         )
-        return False, current_plan
+        return False, current_plan, revision
 
 
 async def is_first_interaction(
@@ -1292,7 +1382,7 @@ Please revise the plan based on this feedback.
         
         return get_submitted_plan() or plan  # Fallback to original if replan fails
 
-    approved, final_plan = await status.post_plan_and_wait_for_approval(
+    approved, final_plan, revision = await status.post_plan_and_wait_for_approval(
         plan_items=plan,
         requester=sender_login,
         replan_callback=replan_with_feedback,
@@ -1306,14 +1396,13 @@ Please revise the plan based on this feedback.
         }
 
     # Phase 3: Execute approved plan
-    await status.update("committing", "Executing approved changes")
+    # Set up the plan for step-by-step status tracking
+    status.set_approved_plan(final_plan, revision)
     
     exec_instructions = get_task_instructions(f"{parsed.command}_execute", ctx)
-    # Insert the approved plan into the execute instructions
-    exec_instructions = exec_instructions.replace(
-        "{approved_plan}",
-        "\n".join(f"- {item}" for item in final_plan)
-    )
+    # Insert the approved plan into the execute instructions with step numbers
+    plan_with_numbers = "\n".join(f"- Step {i+1}: {item}" for i, item in enumerate(final_plan))
+    exec_instructions = exec_instructions.replace("{approved_plan}", plan_with_numbers)
     
     exec_prompt = f"""PR #{pr_number} in {owner}/{repo_name}
 
@@ -1324,10 +1413,15 @@ Please revise the plan based on this feedback.
 
 ## Important
 - The plan has been approved - execute ONLY the approved changes
+- Execute steps IN ORDER (Step 1, then Step 2, etc.)
 - Post a summary comment when done
 """
 
     try:
+        # Mark all steps as running initially
+        for i in range(len(final_plan)):
+            await status.update_plan_step(i, "running")
+        
         async for _ in agent.astream(
             {"messages": [("user", exec_prompt)]},
             config=config,
@@ -1335,7 +1429,11 @@ Please revise the plan based on this feedback.
         ):
             pass
 
-        await status.finish(True, "Changes applied!")
+        # Mark all steps as successful
+        for i in range(len(final_plan)):
+            await status.update_plan_step(i, "success")
+        
+        await status.finish_plan(True, "All changes applied successfully!")
 
         # Record the successful execution in PR state
         state_mgr.pr_state.record_review(
@@ -1353,7 +1451,7 @@ Please revise the plan based on this feedback.
         }
 
     except Exception as e:
-        await status.finish(False, f"Execution failed: {e}")
+        await status.finish_plan(False, f"Execution failed: {e}")
         return {"status": "error", "message": f"Execution failed: {e}"}
 
 

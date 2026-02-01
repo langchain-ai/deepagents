@@ -599,15 +599,28 @@ async def is_first_interaction(
     repo: str,
     pr_number: int,
 ) -> bool:
-    """Check if this is the first time the bot has been invoked on this PR."""
+    """Check if this is the first time the bot has been invoked on this PR.
+    
+    GitHub Apps post comments as '{app-name}[bot]', so we check for both
+    exact match and the [bot] suffix pattern.
+    """
     comments = await github_client.get_issue_comments(owner, repo, pr_number)
+    bot_name_lower = BOT_USERNAME.lower()
     
     for comment in comments:
         user = comment.get("user", {})
-        if user.get("login", "").lower() == BOT_USERNAME.lower():
+        login = user.get("login", "").lower()
+        
+        # Check for exact match (e.g., "deepagents-bot")
+        if login == bot_name_lower:
             return False
-        # Also check if comment body contains our bot name (in case of app comments)
-        if user.get("type") == "Bot" and BOT_USERNAME.lower() in comment.get("body", "").lower():
+        
+        # Check for GitHub App format (e.g., "deepagents-bot[bot]" or "langster-bot[bot]")
+        if login == f"{bot_name_lower}[bot]":
+            return False
+        
+        # Check if it's any bot that matches our name pattern
+        if user.get("type") == "Bot" and bot_name_lower in login:
             return False
     
     return True

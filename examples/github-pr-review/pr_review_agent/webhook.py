@@ -1204,11 +1204,13 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
         await status.finish(True, "Complete!")
 
         # Record the review in PR state
+        print(f"[handle_pr_comment] Recording review: command={parsed.command}, head_sha={ctx.head_sha}")
         state_mgr.pr_state.record_review(
             command=parsed.command,
             head_sha=ctx.head_sha,
             summary=f"Completed /{parsed.command} review",
         )
+        print(f"[handle_pr_comment] Review recorded successfully")
 
         return {
             "status": "success",
@@ -1218,6 +1220,7 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
         }
 
     except Exception as e:
+        print(f"[handle_pr_comment] Error during review: {e}")
         await status.finish(False, f"Error: {e}")
         return {"status": "error", "message": str(e)}
 

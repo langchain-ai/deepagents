@@ -1074,6 +1074,42 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     if not _agent:
         return {"status": "error", "message": "Agent not initialized"}
 
+    # For review commands without instructions, check for duplicates BEFORE doing any work
+    # This applies to both explicit /review and empty @mentions (which default to review)
+    REVIEW_COMMANDS = {"review", "security", "style"}
+    if parsed.command in REVIEW_COMMANDS and not parsed.message:
+        # Get head SHA to check against previous reviews
+        try:
+            pr = await github_client.get_pull_request(owner, repo_name, pr_number)
+            head_sha = pr.head.sha
+        except Exception as e:
+            print(f"[handle_pr_comment] Failed to get PR for duplicate check: {e}")
+            head_sha = None
+        
+        if head_sha:
+            state_mgr = StateManager(owner, repo_name, pr_number)
+            has_new = state_mgr.pr_state.has_new_commits_since_review(head_sha, parsed.command)
+            last_review = state_mgr.pr_state.get_last_review(parsed.command)
+            print(f"[handle_pr_comment] Duplicate check: command={parsed.command}, head_sha={head_sha[:7]}, has_new={has_new}, last_review={last_review}")
+            
+            if not has_new:
+                emoji = get_bot_emoji()
+                
+                # Suggest how to force a re-review
+                if parsed.command == "review":
+                    force_example = f"`@{BOT_USERNAME} review this again` or `@{BOT_USERNAME} /review focus on tests`"
+                else:
+                    force_example = f"`@{BOT_USERNAME} /{parsed.command} please check again`"
+                
+                await github_client.create_issue_comment(
+                    owner, repo_name, pr_number,
+                    f"😴 {emoji} **Already reviewed!**\n\n"
+                    f"I already ran `/{parsed.command}` on this PR at commit `{head_sha[:7]}`. "
+                    f"No new commits since then, so I'm being lazy and skipping the duplicate work.\n\n"
+                    f"Push new commits, or ask me with specific instructions:\n{force_example}"
+                )
+                return {"status": "skipped", "reason": "no_new_commits", "command": parsed.command}
+
     # Create status comment to show progress
     status = StatusComment(github_client, owner, repo_name, pr_number, parsed.command)
     await status.create("Starting")
@@ -1112,38 +1148,12 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
 
 {commit_instructions}"""
 
-    # Initialize state manager for this repo/PR
+    # Initialize state manager for this repo/PR (may already exist from duplicate check)
     state_mgr = StateManager(owner, repo_name, pr_number)
     config = state_mgr.get_agent_config()
 
     # Add repository memory context if available
     memory_context = state_mgr.get_memory_context()
-
-    # Check if we've already reviewed at this commit (for review commands without instructions)
-    # This applies to both explicit /review and empty @mentions (which default to review)
-    REVIEW_COMMANDS = {"review", "security", "style"}
-    if parsed.command in REVIEW_COMMANDS and not parsed.message:
-        has_new = state_mgr.pr_state.has_new_commits_since_review(ctx.head_sha, parsed.command)
-        last_review = state_mgr.pr_state.get_last_review(parsed.command)
-        print(f"[handle_pr_comment] Duplicate check: command={parsed.command}, head_sha={ctx.head_sha[:7]}, has_new={has_new}, last_review={last_review}")
-        if not has_new:
-            emoji = get_bot_emoji()
-            await status.finish(True, "No new commits since last review")
-            
-            # Suggest how to force a re-review
-            if parsed.command == "review":
-                force_example = f"`@{BOT_USERNAME} review this again` or `@{BOT_USERNAME} /review focus on tests`"
-            else:
-                force_example = f"`@{BOT_USERNAME} /{parsed.command} please check again`"
-            
-            await github_client.create_issue_comment(
-                owner, repo_name, pr_number,
-                f"😴 {emoji} **Already reviewed!**\n\n"
-                f"I already ran `/{parsed.command}` on this PR at commit `{ctx.head_sha[:7]}`. "
-                f"No new commits since then, so I'm being lazy and skipping the duplicate work.\n\n"
-                f"Push new commits, or ask me with specific instructions:\n{force_example}"
-            )
-            return {"status": "skipped", "reason": "no_new_commits", "command": parsed.command}
 
     # Commands that require approval use a two-phase flow
     if parsed.command in COMMANDS_REQUIRING_APPROVAL:

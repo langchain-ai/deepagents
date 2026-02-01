@@ -882,8 +882,8 @@ You are in PLANNING MODE. Do NOT make any changes yet.
 
 1. **Gather feedback**:
    - Get all review comments and PR comments
-   - Filter for actionable feedback from HUMAN reviewers (ignore bot comments)
-   - List each piece of feedback and which file it affects
+   - Include feedback from ALL reviewers (both humans AND this bot's previous reviews)
+   - List each piece of actionable feedback and which file it affects
 
 2. **Understand the codebase**:
    - Read build configs to understand the project structure

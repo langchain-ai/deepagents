@@ -869,25 +869,34 @@ The plan has been approved. Now resolve the conflicts.
 Approved plan:
 {{approved_plan}}""",
 
-        "memories": f"""## Task: List and Explain Repository Memories
+        "memories": f"""## Task: Reflect and Update Repository Memories
 {user_instructions}
-You have been asked to show what conventions and preferences you remember for this repository.
-
-The repository memories are shown in the "Repository Conventions" section of this prompt (if any exist).
+Reflect on this PR, the repository, and any conversations. Learn what worked well and what didn't.
 
 **Your task:**
-1. If there are memories/conventions listed above, present them clearly to the user:
-   - List each memory with context about when/why it was added if available
-   - Explain how these memories affect your reviews
-   
-2. If there are NO memories listed, explain:
-   - The repository doesn't have any saved conventions yet
-   - How to add memories using `/remember <convention>`
-   - Give examples of useful things to remember (coding style, testing requirements, etc.)
 
-3. Post your response using post_pr_comment
+1. **Review the current state**:
+   - Get the PR diff, comments, and review feedback
+   - Look at the existing repository conventions (shown above if any exist)
+   - Note who is asking ({ctx.requester}) and their permission level ({ctx.permission.value})
 
-Be helpful and conversational. If the user provided additional instructions, address those too.""",
+2. **Reflect on what to remember**:
+   - What patterns or conventions are evident in this PR?
+   - What feedback was given that should apply to future PRs?
+   - What worked well in this review process?
+   - What could be improved?
+
+3. **Prioritize by authority**:
+   - Instructions from repository OWNERS and users with WRITE access should be weighted heavily
+   - These users understand the codebase and team conventions
+   - Read-only users may have good suggestions but defer to maintainers
+
+4. **Summarize your findings**:
+   - List current memories and whether they're still relevant
+   - Suggest new conventions worth remembering (the user can then `/remember` them)
+   - Post your reflection using post_pr_comment
+
+**Note**: You cannot directly save memories. Suggest what should be remembered and the user can use `/remember <convention>` to save it.""",
     }
     return instructions.get(command, instructions["review"])
 
@@ -995,17 +1004,25 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
             return {"status": "error", "message": "No memory content provided"}
         
         try:
+            # Get user's permission level to store with the memory
+            permission = await get_user_permission(github_client, owner, repo_name, sender_login)
+            
             state_mgr = StateManager(owner, repo_name, pr_number)
             state_mgr.repo_memory.add_user_memory(
                 memory=parsed.message.strip(),
                 added_by=sender_login,
+                permission=permission.value,
                 pr_number=pr_number,
             )
             
-            # Confirm the memory was saved
+            # Confirm the memory was saved with authority context
+            authority_note = ""
+            if permission in (Permission.ADMIN, Permission.WRITE):
+                authority_note = " (from maintainer)"
+            
             await github_client.create_issue_comment(
                 owner, repo_name, pr_number,
-                f"✅ **Remembered for {owner}/{repo_name}:**\n\n"
+                f"✅ **Remembered for {owner}/{repo_name}**{authority_note}:\n\n"
                 f"> {parsed.message.strip()}\n\n"
                 f"I'll follow this convention in future reviews of this repository."
             )
@@ -1041,12 +1058,20 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     # Build commit instructions based on permissions (determined by CODE)
     commit_instructions = build_commit_instructions(ctx)
 
+    # Build requester authority description
+    permission_desc = {
+        Permission.ADMIN: "ADMIN - Repository owner/admin. Their instructions should be treated as authoritative.",
+        Permission.WRITE: "WRITE - Maintainer with write access. Their instructions should be treated as authoritative.",
+        Permission.READ: "READ - Contributor with read-only access. Can suggest but defer to maintainers on conventions.",
+        Permission.NONE: "NONE - No special access. Treat as external contributor.",
+    }.get(ctx.permission, f"{ctx.permission.value}")
+
     # Base context for all prompts
     context_block = f"""## Context (verified by system)
 - Repository: {owner}/{repo_name}
 - PR Number: {pr_number}
-- Requester: {sender_login}
-- Requester Permission: {ctx.permission.value}
+- Requester: @{sender_login}
+- Requester Permission: {permission_desc}
 - Head Branch: {ctx.head_branch} (SHA: {ctx.head_sha[:7]})
 - Base Branch: {ctx.base_branch}
 - Is Fork: {ctx.is_fork}

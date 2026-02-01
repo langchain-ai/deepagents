@@ -102,12 +102,19 @@ class RepoMemory:
         self._data["review_history"] = self._data["review_history"][-100:]
         self._save()
     
-    def add_user_memory(self, memory: str, added_by: str, pr_number: int | None = None) -> None:
+    def add_user_memory(
+        self, 
+        memory: str, 
+        added_by: str, 
+        permission: str = "read",
+        pr_number: int | None = None,
+    ) -> None:
         """Add a user-provided memory via /remember command.
         
         Args:
             memory: The memory/convention to remember
             added_by: GitHub username who added it
+            permission: User's permission level (admin/write/read/none)
             pr_number: PR number where it was added (for context)
         """
         if "user_memories" not in self._data:
@@ -116,6 +123,7 @@ class RepoMemory:
         self._data["user_memories"].append({
             "content": memory,
             "added_by": added_by,
+            "permission": permission,
             "pr_number": pr_number,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
@@ -129,15 +137,28 @@ class RepoMemory:
         """Generate context string for inclusion in prompts."""
         lines = []
         
-        # User-provided memories (highest priority - explicit instructions)
+        # User-provided memories - separate by authority level
         user_memories = self._data.get("user_memories", [])
         if user_memories:
-            lines.append("## Repository Conventions (from maintainers)")
-            lines.append("These are explicit instructions from the repository maintainers. Follow them carefully:")
-            lines.append("")
-            for mem in user_memories:
-                lines.append(f"- {mem['content']}")
-            lines.append("")
+            # Split into maintainer vs contributor memories
+            maintainer_memories = [m for m in user_memories if m.get("permission") in ("admin", "write")]
+            contributor_memories = [m for m in user_memories if m.get("permission") not in ("admin", "write")]
+            
+            if maintainer_memories:
+                lines.append("## Repository Conventions (from maintainers - HIGH PRIORITY)")
+                lines.append("These are explicit instructions from repository owners/maintainers. Follow them carefully:")
+                lines.append("")
+                for mem in maintainer_memories:
+                    lines.append(f"- {mem['content']} (by @{mem.get('added_by', 'unknown')})")
+                lines.append("")
+            
+            if contributor_memories:
+                lines.append("## Suggested Conventions (from contributors)")
+                lines.append("These suggestions are from contributors. Consider them but defer to maintainer conventions if conflicting:")
+                lines.append("")
+                for mem in contributor_memories:
+                    lines.append(f"- {mem['content']} (by @{mem.get('added_by', 'unknown')})")
+                lines.append("")
         
         if self._data["style_preferences"]:
             lines.append("## Repository Style Preferences (learned from past reviews)")

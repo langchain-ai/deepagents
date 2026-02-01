@@ -213,10 +213,17 @@ class PRState:
         self._data["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.state_file.write_text(json.dumps(self._data, indent=2))
     
-    def record_review(self, command: str, summary: str) -> None:
-        """Record that a review was performed."""
+    def record_review(self, command: str, head_sha: str, summary: str = "") -> None:
+        """Record that a review was performed.
+        
+        Args:
+            command: The command that triggered the review (e.g., 'review', 'security')
+            head_sha: The HEAD commit SHA at time of review
+            summary: Optional summary of the review
+        """
         self._data["reviews"].append({
             "command": command,
+            "head_sha": head_sha,
             "summary": summary,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
@@ -245,11 +252,38 @@ class PRState:
         """Get number of reviews performed on this PR."""
         return len(self._data["reviews"])
     
-    def get_last_review(self) -> dict | None:
-        """Get the most recent review."""
-        if self._data["reviews"]:
-            return self._data["reviews"][-1]
+    def get_last_review(self, command: str | None = None) -> dict | None:
+        """Get the most recent review, optionally filtered by command.
+        
+        Args:
+            command: If provided, get the last review of this type (e.g., 'review', 'security')
+        """
+        reviews = self._data["reviews"]
+        if command:
+            reviews = [r for r in reviews if r.get("command") == command]
+        if reviews:
+            return reviews[-1]
         return None
+    
+    def has_new_commits_since_review(self, current_head_sha: str, command: str) -> bool:
+        """Check if there are new commits since the last review of this type.
+        
+        Args:
+            current_head_sha: The current HEAD SHA of the PR
+            command: The review command type to check (e.g., 'review', 'security')
+            
+        Returns:
+            True if there are new commits (or no previous review), False if unchanged
+        """
+        last_review = self.get_last_review(command)
+        if not last_review:
+            return True  # No previous review, so "new" commits exist
+        
+        last_sha = last_review.get("head_sha")
+        if not last_sha:
+            return True  # Old review format without SHA, treat as new
+            
+        return current_head_sha != last_sha
 
 
 # Global checkpointer cache - one per repository

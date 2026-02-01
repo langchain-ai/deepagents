@@ -1119,6 +1119,23 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     # Add repository memory context if available
     memory_context = state_mgr.get_memory_context()
 
+    # Check if we've already reviewed at this commit (for review commands without instructions)
+    REVIEW_COMMANDS = {"review", "security", "style"}
+    if parsed.command in REVIEW_COMMANDS and not parsed.message:
+        if not state_mgr.pr_state.has_new_commits_since_review(ctx.head_sha, parsed.command):
+            emoji = get_bot_emoji()
+            last_review = state_mgr.pr_state.get_last_review(parsed.command)
+            await status.finish(True, "No new commits since last review")
+            await github_client.create_issue_comment(
+                owner, repo_name, pr_number,
+                f"😴 {emoji} **Already reviewed!**\n\n"
+                f"I already ran `/{parsed.command}` on this PR at commit `{ctx.head_sha[:7]}`. "
+                f"No new commits since then, so I'm going to be lazy and skip the duplicate work.\n\n"
+                f"If you want me to review again anyway, just add some instructions:\n"
+                f"`@{BOT_USERNAME} /{parsed.command} please review again`"
+            )
+            return {"status": "skipped", "reason": "no_new_commits", "command": parsed.command}
+
     # Commands that require approval use a two-phase flow
     if parsed.command in COMMANDS_REQUIRING_APPROVAL:
         return await _handle_approval_flow(
@@ -1169,6 +1186,7 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
         # Record the review in PR state
         state_mgr.pr_state.record_review(
             command=parsed.command,
+            head_sha=ctx.head_sha,
             summary=f"Completed /{parsed.command} review",
         )
 
@@ -1321,6 +1339,7 @@ Please revise the plan based on this feedback.
         # Record the successful execution in PR state
         state_mgr.pr_state.record_review(
             command=parsed.command,
+            head_sha=ctx.head_sha,
             summary=f"Executed approved plan with {len(final_plan)} changes",
         )
 

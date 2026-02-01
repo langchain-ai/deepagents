@@ -1,14 +1,15 @@
-"""PR Review Agents - Specialized agents for different review types.
+"""PR Review Agents - Specialized deep agents for different review types.
 
-Creates separate agents for:
-- Security review (simple react agent)
-- Code quality review (simple react agent)
-- General chat/questions (deep agent for complex reasoning)
-- Feedback execution (simple react agent with approval flow)
+Creates separate deep agents for:
+- Security review
+- Code quality review
+- General chat/questions
+- Feedback execution (with approval flow)
+
+Each agent is specialized and does NOT invoke other agents.
 """
 
 from langchain.chat_models import init_chat_model
-from langgraph.prebuilt import create_react_agent
 
 from deepagents import create_deep_agent
 
@@ -88,22 +89,22 @@ FEEDBACK_TOOLS = [
 
 
 def create_security_review_agent(model_name: str = "anthropic:claude-sonnet-4-5"):
-    """Create an agent for security-focused PR reviews."""
+    """Create a deep agent for security-focused PR reviews."""
     model = init_chat_model(model=model_name, temperature=0.0)
-    return create_react_agent(
+    return create_deep_agent(
         model=model,
         tools=SECURITY_REVIEW_TOOLS,
-        prompt=SECURITY_REVIEW_PROMPT,
+        system_prompt=SECURITY_REVIEW_PROMPT,
     )
 
 
 def create_quality_review_agent(model_name: str = "anthropic:claude-sonnet-4-5"):
-    """Create an agent for code quality PR reviews."""
+    """Create a deep agent for code quality PR reviews."""
     model = init_chat_model(model=model_name, temperature=0.0)
-    return create_react_agent(
+    return create_deep_agent(
         model=model,
         tools=CODE_REVIEW_TOOLS,
-        prompt=CODE_REVIEW_PROMPT,
+        system_prompt=CODE_REVIEW_PROMPT,
     )
 
 
@@ -121,10 +122,10 @@ def create_chat_agent(model_name: str = "anthropic:claude-sonnet-4-5"):
 
 
 def create_feedback_agent(model_name: str = "anthropic:claude-sonnet-4-5"):
-    """Create an agent for applying feedback and resolving conflicts."""
+    """Create a deep agent for applying feedback and resolving conflicts."""
     model = init_chat_model(model=model_name, temperature=0.0)
-    return create_react_agent(
+    return create_deep_agent(
         model=model,
         tools=FEEDBACK_TOOLS,
-        prompt=None,  # Prompt provided dynamically based on task
+        system_prompt=None,  # Prompt provided dynamically based on task
     )

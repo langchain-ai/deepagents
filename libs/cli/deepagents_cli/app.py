@@ -582,7 +582,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                SystemMessage("Commands: /quit, /clear, /remember, /tokens, /threads, /help")
+                SystemMessage("Commands: /quit, /clear, /remember, /tokens, /threads, /mcp, /help")
             )
 
         elif cmd == "/version":
@@ -623,6 +623,9 @@ class DeepAgentsApp(App):
                 await self._mount_message(SystemMessage(f"Current context: {formatted} tokens"))
             else:
                 await self._mount_message(SystemMessage("No token usage yet"))
+        elif cmd == "/mcp":
+            await self._mount_message(UserMessage(command))
+            await self._show_mcp_status()
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Extract any additional context after /remember
             additional_context = ""
@@ -849,6 +852,78 @@ class DeepAgentsApp(App):
         except NoMatches:
             # Widget not found - can happen during shutdown
             pass
+
+    async def _show_mcp_status(self) -> None:
+        """Show MCP server status and loaded tools.
+        
+        Displays:
+        - Configured MCP servers (from user and project configs)
+        - Loaded tools from each server
+        """
+        from deepagents_cli.config import settings
+        from deepagents_cli.mcp.commands import _load_config
+        
+        lines = []
+        
+        # Collect servers from both scopes
+        all_servers: dict[str, tuple[str, dict]] = {}
+        
+        # User config
+        user_path = settings.get_user_mcp_config_path()
+        if user_path.exists():
+            user_config = _load_config(user_path)
+            for name, server in user_config.get("mcpServers", {}).items():
+                all_servers[name] = ("user", server)
+        
+        # Project config (overrides user)
+        project_path = settings.get_project_mcp_config_path()
+        if project_path and project_path.exists():
+            project_config = _load_config(project_path)
+            for name, server in project_config.get("mcpServers", {}).items():
+                all_servers[name] = ("project", server)
+        
+        if not all_servers:
+            await self._mount_message(SystemMessage(
+                "**MCP Status**\n\n"
+                "No MCP servers configured.\n\n"
+                "Add a server with:\n"
+                "```\n"
+                "deepagents mcp add --transport http <name> <url>\n"
+                "```"
+            ))
+            return
+        
+        # Build status message
+        lines.append("**MCP Servers**\n")
+        lines.append("| Server | Transport | Target | Scope |")
+        lines.append("|--------|-----------|--------|-------|")
+        
+        for name, (scope, server) in sorted(all_servers.items()):
+            transport = server.get("transport", server.get("type", "unknown"))
+            
+            # Determine target based on transport
+            if transport == "stdio":
+                cmd = server.get("command", "")
+                args = server.get("args", [])
+                target = f"`{cmd} {' '.join(args)}`".strip()
+            else:
+                target = f"`{server.get('url', '')}`"
+            
+            # Truncate long targets
+            if len(target) > 40:
+                target = target[:37] + "...`"
+            
+            lines.append(f"| {name} | {transport} | {target} | {scope} |")
+        
+        lines.append(f"\n**Total:** {len(all_servers)} server(s)")
+        
+        # Show configuration paths
+        lines.append("\n**Config Paths:**")
+        lines.append(f"- User: `{user_path}`")
+        if project_path:
+            lines.append(f"- Project: `{project_path}`")
+        
+        await self._mount_message(SystemMessage("\n".join(lines)))
 
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.

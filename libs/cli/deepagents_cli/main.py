@@ -43,7 +43,7 @@ from deepagents_cli.sessions import (
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
-from deepagents_cli.mcp import load_mcp_tools_from_config
+from deepagents_cli.mcp import load_mcp_tools_from_config, setup_mcp_parser, execute_mcp_command
 from deepagents_cli.ui import show_help
 
 
@@ -113,6 +113,9 @@ def parse_args() -> argparse.Namespace:
 
     # Skills command - setup delegated to skills module
     setup_skills_parser(subparsers)
+
+    # MCP command - setup delegated to mcp module
+    setup_mcp_parser(subparsers)
 
     # Threads command
     threads_parser = subparsers.add_parser("threads", help="Manage conversation threads")
@@ -304,6 +307,8 @@ def cli_main() -> None:
             reset_agent(args.agent, args.source_agent)
         elif args.command == "skills":
             execute_skills_command(args)
+        elif args.command == "mcp":
+            execute_mcp_command(args)
         elif args.command == "threads":
             if args.threads_command == "list":
                 asyncio.run(

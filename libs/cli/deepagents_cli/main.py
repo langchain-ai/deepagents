@@ -43,6 +43,7 @@ from deepagents_cli.sessions import (
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
+from deepagents_cli.mcp import load_mcp_tools_from_config
 from deepagents_cli.ui import show_help
 
 
@@ -220,6 +221,15 @@ async def run_textual_cli_async(
         tools = [http_request, fetch_url]
         if settings.has_tavily:
             tools.append(web_search)
+
+        # Load MCP tools
+        try:
+            mcp_tools = await load_mcp_tools_from_config()
+            if mcp_tools:
+                tools.extend(mcp_tools)
+                console.print(f"[green]Loaded {len(mcp_tools)} MCP tools[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Failed to load MCP tools: {e}[/yellow]")
 
         # Handle sandbox mode
         sandbox_backend = None

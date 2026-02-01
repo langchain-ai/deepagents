@@ -340,8 +340,11 @@ class DeepAgentsApp(App):
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
 
+        # If agent is not provided, attempt to bootstrap it (useful for textual run --dev)
+        if not self._agent:
+            self.run_worker(self._bootstrap_agent())
         # Load thread history if resuming a session
-        if self._lc_thread_id and self._agent:
+        elif self._lc_thread_id:
             self.call_after_refresh(lambda: asyncio.create_task(self._load_thread_history()))
         # Auto-submit initial prompt if provided (but not when resuming - let user see history first)
         elif self._initial_prompt and self._initial_prompt.strip():
@@ -671,8 +674,13 @@ class DeepAgentsApp(App):
                 exclusive=False,
             )
         else:
+            if not self._agent:
+                status = "Initializing agent..."
+            else:
+                status = "Agent not fully configured."
+                
             await self._mount_message(
-                SystemMessage("Agent not configured. Run with --agent flag or use standalone mode.")
+                SystemMessage(f"{status} Please wait a moment or check the console for errors. Run with --agent flag for full CLI features.")
             )
 
     async def _run_agent_task(self, message: str) -> None:
@@ -971,6 +979,69 @@ class DeepAgentsApp(App):
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
+    async def _bootstrap_agent(self) -> None:
+        """Initialize a default agent when running in standalone/dev mode.
+
+        This mimics the setup logic in main.py but runs within the Textual app component.
+        """
+        try:
+            from deepagents_cli.agent import create_cli_agent
+            from deepagents_cli.main import create_model, load_mcp_tools_from_config, settings
+            from deepagents_cli.tools import fetch_url, http_request, web_search
+
+            await self._mount_message(SystemMessage("Starting internal agent initialization..."))
+
+            # Setup model
+            model = create_model()
+
+            # Note: We don't use the async context manager of checkpointer here to keep it simple
+            # for dev mode. In production, main.py handles the context.
+            from langgraph.checkpoint.memory import InMemorySaver
+            checkpointer = InMemorySaver()
+
+            # Load tools
+            tools = [http_request, fetch_url]
+            if settings.has_tavily:
+                tools.append(web_search)
+
+            mcp_tools = await load_mcp_tools_from_config()
+            if mcp_tools:
+                tools.extend(mcp_tools)
+                await self._mount_message(SystemMessage(f"Loaded {len(mcp_tools)} MCP tools"))
+
+            # Create agent
+            agent, composite_backend = create_cli_agent(
+                model=model,
+                assistant_id=self._assistant_id or "agent",
+                tools=tools,
+                checkpointer=checkpointer,
+            )
+
+            self._agent = agent
+            self._backend = composite_backend
+
+            # Initialize UI Adapter
+            self._ui_adapter = TextualUIAdapter(
+                mount_message=self._mount_message,
+                update_status=self._update_status,
+                request_approval=self._request_approval,
+                on_auto_approve_enabled=self._on_auto_approve_enabled,
+                scroll_to_bottom=self._scroll_chat_to_bottom,
+                show_thinking=self._show_thinking,
+                hide_thinking=self._hide_thinking,
+            )
+            self._ui_adapter.set_token_tracker(self._token_tracker)
+
+            await self._mount_message(SystemMessage("Agent ready. (Standalone Mode)"))
+
+            # Load history if we have a thread
+            if self._lc_thread_id:
+                await self._load_thread_history()
+
+        except Exception as e:
+            import traceback
+            await self._mount_message(ErrorMessage(f"Bootstrap failed: {e}\n{traceback.format_exc()}"))
+
 
 async def run_textual_app(
     *,
@@ -1003,6 +1074,22 @@ async def run_textual_app(
         initial_prompt=initial_prompt,
     )
     await app.run_async()
+
+
+
+def create_app() -> DeepAgentsApp:
+    """Factory function for 'textual run --dev'.
+
+    This allows running the app with hot-reloading and textual console connection.
+    It returns an app instance that will attempt to initialize its own agent
+    if one wasn't provided (as is the case with 'textual run').
+    """
+    from deepagents_cli.main import generate_thread_id
+    return DeepAgentsApp(
+        agent=None,
+        assistant_id="agent",
+        thread_id=generate_thread_id(),
+    )
 
 
 if __name__ == "__main__":

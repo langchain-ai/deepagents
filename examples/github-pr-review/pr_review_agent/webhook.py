@@ -21,7 +21,12 @@ from enum import Enum
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from .agent import create_pr_review_agent
+from .agent import (
+    create_security_review_agent,
+    create_quality_review_agent,
+    create_chat_agent,
+    create_feedback_agent,
+)
 from .github_client import GitHubClient
 from .state import StateManager
 from .tools import set_github_client
@@ -30,8 +35,11 @@ from .tools import set_github_client
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "deepagents-bot")
 BOT_MENTION_PATTERN = re.compile(rf"@{BOT_USERNAME}\b", re.IGNORECASE)
 
-# Global agent instance (created on startup)
-_agent = None
+# Global agent instances (created on startup)
+_security_agent = None
+_quality_agent = None
+_chat_agent = None
+_feedback_agent = None
 
 
 class Permission(Enum):
@@ -166,10 +174,15 @@ Only make changes when explicitly asked.
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the agent on startup."""
-    global _agent
+    """Initialize agents on startup."""
+    global _security_agent, _quality_agent, _chat_agent, _feedback_agent
     model = os.environ.get("MODEL", "anthropic:claude-sonnet-4-5")
-    _agent = create_pr_review_agent(model_name=model)
+    print(f"[startup] Initializing agents with model: {model}")
+    _security_agent = create_security_review_agent(model_name=model)
+    _quality_agent = create_quality_review_agent(model_name=model)
+    _chat_agent = create_chat_agent(model_name=model)
+    _feedback_agent = create_feedback_agent(model_name=model)
+    print("[startup] All agents initialized")
     yield
 
 
@@ -823,18 +836,15 @@ You have access to PR information, file contents, and can post comments.
 
         "review": f"""{BUILD_AND_CI_DOCS}
 {user_instructions}
-## Task: Security Review (Default)
-
-**IMPORTANT: Only use the `security-review` subagent. Do NOT use the `code-review` subagent.**
+## Task: Security Review
 
 Focus on finding real, exploitable security vulnerabilities.
 
-1. **Gather context** (do these IN PARALLEL):
+1. **Gather context**:
    - Get the PR diff and list of changed files
-   - Read SECURITY.md, .github/SECURITY.md if they exist
+   - Read SECURITY.md if it exists
 
 2. **Analyze**:
-   - Delegate to `security-review` subagent ONLY with the diff and security context
    - Focus on: injection, auth bypass, data exposure, real vulnerabilities
    - Skip theoretical issues, test code, and example files
 
@@ -847,18 +857,15 @@ Focus on finding real, exploitable security vulnerabilities.
 {user_instructions}
 ## Task: Code Quality Review
 
-**IMPORTANT: Only use the `code-review` subagent. Do NOT use the `security-review` subagent.**
-
 Focus on code quality, style, and maintainability.
 
-1. **Gather context** (do these IN PARALLEL):
+1. **Gather context**:
    - Get the PR diff and list of changed files
    - Read style configs (pyproject.toml, .eslintrc, .prettierrc, etc.)
    - Read CONTRIBUTING.md and any style guides
    - Check PR CI status for lint/test failures
 
 2. **Analyze**:
-   - Delegate to `code-review` subagent ONLY with style configs
    - Focus on: bugs, maintainability, consistency with existing patterns
    - Skip minor nitpicks - focus on meaningful issues
 
@@ -1129,9 +1136,19 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
             )
             return {"status": "error", "message": f"Failed to save memory: {e}"}
 
-    # For all other commands, we need the agent
-    global _agent
-    if not _agent:
+    # Select the appropriate agent based on command
+    global _security_agent, _quality_agent, _chat_agent, _feedback_agent
+    
+    if parsed.command == "review":
+        agent = _security_agent
+    elif parsed.command == "quality":
+        agent = _quality_agent
+    elif parsed.command in ("feedback", "conflict"):
+        agent = _feedback_agent
+    else:  # chat or any other freeform request
+        agent = _chat_agent
+    
+    if not agent:
         return {"status": "error", "message": "Agent not initialized"}
 
     # For review commands without instructions, check for duplicates BEFORE doing any work
@@ -1219,7 +1236,7 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     # Commands that require approval use a two-phase flow
     if parsed.command in COMMANDS_REQUIRING_APPROVAL:
         return await _handle_approval_flow(
-            agent=_agent,
+            agent=agent,
             config=config,
             status=status,
             ctx=ctx,
@@ -1254,7 +1271,7 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     try:
         await status.update("reviewing", "Analyzing code")
 
-        async for _ in _agent.astream(
+        async for _ in agent.astream(
             {"messages": [("user", prompt)]},
             config=config,
             stream_mode="values",
@@ -1503,4 +1520,5 @@ async def webhook_handler(
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "agent_ready": _agent is not None}
+    agents_ready = all([_security_agent, _quality_agent, _chat_agent, _feedback_agent])
+    return {"status": "healthy", "agents_ready": agents_ready}

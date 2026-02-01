@@ -309,7 +309,11 @@ class GitHubClient:
         ]
 
     async def get_dependabot_alerts(self, owner: str, repo: str) -> list[dict]:
-        """Get open Dependabot alerts."""
+        """Get open Dependabot alerts.
+        
+        Note: Requires 'Dependabot alerts: Read' permission on the GitHub App.
+        Returns empty list if permission is not granted.
+        """
         repo_obj = await self.get_repo(owner, repo)
         try:
             alerts = await run_sync(lambda: list(repo_obj.get_dependabot_alerts(state="open"))[:20])
@@ -321,11 +325,16 @@ class GitHubClient:
                 }
                 for a in alerts
             ]
-        except Exception as e:
+        except Exception:
+            # 403 means the app doesn't have Dependabot alerts permission - that's ok
             return []
 
     async def get_code_scanning_alerts(self, owner: str, repo: str) -> list[dict]:
-        """Get open code scanning alerts."""
+        """Get open code scanning alerts.
+        
+        Note: Requires 'Code scanning alerts: Read' permission on the GitHub App.
+        Returns empty list if permission is not granted.
+        """
         repo_obj = await self.get_repo(owner, repo)
         try:
             alerts = await run_sync(lambda: list(repo_obj.get_codescan_alerts())[:20])
@@ -340,6 +349,7 @@ class GitHubClient:
                 if a.state == "open"
             ]
         except Exception:
+            # 403 means the app doesn't have code scanning permission - that's ok
             return []
 
     # --- Webhook-specific operations using PyGithub ---

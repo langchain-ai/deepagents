@@ -384,23 +384,19 @@ async def get_security_alerts(
     Returns:
         Formatted list of security alerts
     """
-    try:
-        alerts = await get_github_client().get_dependabot_alerts(owner, repo)
+    alerts = await get_github_client().get_dependabot_alerts(owner, repo)
 
-        if not alerts:
-            return "No open Dependabot security alerts."
+    if not alerts:
+        return "No open Dependabot alerts (or bot lacks 'Dependabot alerts: Read' permission)."
 
-        result = ["# Security Alerts\n"]
-        for alert in alerts:
-            severity = alert.get("severity", "unknown")
-            summary = alert.get("summary", "No summary")
-            package = alert.get("package", "unknown")
-            result.append(f"- **{severity.upper()}** [{package}]: {summary}")
+    result = ["# Dependabot Security Alerts\n"]
+    for alert in alerts:
+        severity = alert.get("severity", "unknown")
+        summary = alert.get("summary", "No summary")
+        package = alert.get("package", "unknown")
+        result.append(f"- **{severity.upper()}** [{package}]: {summary}")
 
-        return "\n".join(result)
-
-    except Exception as e:
-        return f"Unable to fetch security alerts: {e}"
+    return "\n".join(result)
 
 
 @tool
@@ -417,24 +413,20 @@ async def get_code_scanning_alerts(
     Returns:
         Formatted list of code scanning alerts
     """
-    try:
-        alerts = await get_github_client().get_code_scanning_alerts(owner, repo)
+    alerts = await get_github_client().get_code_scanning_alerts(owner, repo)
 
-        if not alerts:
-            return "No open code scanning alerts."
+    if not alerts:
+        return "No open code scanning alerts (or bot lacks 'Code scanning alerts: Read' permission)."
 
-        result = ["# Code Scanning Alerts\n"]
-        for alert in alerts:
-            severity = alert.get("severity", "unknown")
-            desc = alert.get("description", "No description")
-            path = alert.get("path", "unknown")
-            line = alert.get("line", "?")
-            result.append(f"- **{severity.upper()}** `{path}:{line}`: {desc}")
+    result = ["# Code Scanning Alerts\n"]
+    for alert in alerts:
+        severity = alert.get("severity", "unknown")
+        desc = alert.get("description", "No description")
+        path = alert.get("path", "unknown")
+        line = alert.get("line", "?")
+        result.append(f"- **{severity.upper()}** `{path}:{line}`: {desc}")
 
-        return "\n".join(result)
-
-    except Exception as e:
-        return f"Unable to fetch code scanning alerts: {e}"
+    return "\n".join(result)
 
 
 @tool

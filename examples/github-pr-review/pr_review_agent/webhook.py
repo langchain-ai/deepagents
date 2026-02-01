@@ -240,6 +240,21 @@ COMMANDS = {
 # Special command for freeform requests (not in COMMANDS, handled separately)
 FREEFORM_COMMAND = "chat"
 
+# Bot branding emojis - LangChain/DeepAgents themed
+BOT_EMOJIS = [
+    "🦜🔗",  # LangChain parrot + chain
+    "🤖🚀",  # Robot rocket
+    "🦜⛓️",   # Parrot chain variant
+    "🧠🔗",  # Brain chain (deep thinking)
+    "🦾🤖",  # Robot arm
+    "⚡🦜",  # Fast parrot
+]
+
+def get_bot_emoji() -> str:
+    """Get a random bot branding emoji combo."""
+    import random
+    return random.choice(BOT_EMOJIS)
+
 # Status emojis (Dependabot-style)
 STATUS_EMOJIS = {
     "pending": "🔄",
@@ -253,6 +268,8 @@ STATUS_EMOJIS = {
     "success": "✅",
     "error": "❌",
     "cancelled": "🚫",
+    "remembering": "🧠",
+    "reflecting": "💭",
 }
 
 # Command descriptions for status messages
@@ -276,9 +293,10 @@ APPROVAL_TIMEOUT = 3600  # 1 hour
 
 def get_help_text() -> str:
     """Generate help text for available commands."""
+    emoji = get_bot_emoji()
     lines = [
-        f"## 🤖 {BOT_USERNAME}\n",
-        "Hi! I'm a PR review bot. Mention me to get started:\n",
+        f"## {emoji} {BOT_USERNAME}\n",
+        "Hi! I'm an AI-powered PR review bot built with [LangChain](https://github.com/langchain-ai/langchain). Mention me to get started:\n",
         "| Command | Description |",
         "|---------|-------------|",
         f"| `@{BOT_USERNAME}` | Full code review |",
@@ -326,9 +344,10 @@ class StatusComment:
     def _build_body(self, current_status: str, current_message: str) -> str:
         """Build the comment body with status history."""
         desc = COMMAND_DESCRIPTIONS.get(self.command, "Working")
-        emoji = STATUS_EMOJIS.get(current_status, "🔄")
+        status_emoji = STATUS_EMOJIS.get(current_status, "🔄")
+        bot_emoji = get_bot_emoji()
         
-        lines = [f"## {emoji} {desc}\n"]
+        lines = [f"## {status_emoji} {bot_emoji} {desc}\n"]
         
         # Show completed steps
         for status, message in self.steps:
@@ -337,9 +356,9 @@ class StatusComment:
         
         # Show current step if not final
         if current_status not in ("success", "error"):
-            lines.append(f"{emoji} {current_message}...")
+            lines.append(f"{status_emoji} {current_message}...")
         else:
-            lines.append(f"{emoji} {current_message}")
+            lines.append(f"{status_emoji} {current_message}")
         
         return "\n".join(lines)
 
@@ -996,10 +1015,11 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
     # Handle /remember - saves to repo-specific memory (no agent needed)
     if parsed.command == "remember":
         if not parsed.message or not parsed.message.strip():
+            emoji = get_bot_emoji()
             await github_client.create_issue_comment(
                 owner, repo_name, pr_number,
-                "❌ Please provide something to remember. Example:\n\n"
-                "`@bot /remember We use 4-space indentation in Python files`"
+                f"❌ {emoji} Please provide something to remember. Example:\n\n"
+                f"`@{BOT_USERNAME} /remember We use 4-space indentation in Python files`"
             )
             return {"status": "error", "message": "No memory content provided"}
         
@@ -1018,11 +1038,12 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
             # Confirm the memory was saved with authority context
             authority_note = ""
             if permission in (Permission.ADMIN, Permission.WRITE):
-                authority_note = " (from maintainer)"
+                authority_note = " ⭐ (maintainer)"
             
+            emoji = get_bot_emoji()
             await github_client.create_issue_comment(
                 owner, repo_name, pr_number,
-                f"✅ **Remembered for {owner}/{repo_name}**{authority_note}:\n\n"
+                f"🧠 **{emoji} Remembered for {owner}/{repo_name}**{authority_note}:\n\n"
                 f"> {parsed.message.strip()}\n\n"
                 f"I'll follow this convention in future reviews of this repository."
             )

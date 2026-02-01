@@ -228,9 +228,8 @@ class ParsedCommand:
 # Available slash commands
 COMMANDS = {
     "help": "Show available commands",
-    "review": "Full code review",
-    "security": "Security-focused review (reads security docs first)",
-    "style": "Code style review (reads style guides first)",
+    "review": "Security-focused review (default)",
+    "quality": "Code quality and style review",
     "feedback": "Incorporate reviewer feedback into a new commit",
     "conflict": "Resolve merge conflicts for this PR",
     "remember": "Save a convention or preference for this repository",
@@ -275,9 +274,8 @@ STATUS_EMOJIS = {
 # Command descriptions for status messages
 COMMAND_DESCRIPTIONS = {
     "chat": "Responding",
-    "review": "Reviewing PR",
-    "security": "Security review",
-    "style": "Style review", 
+    "review": "Security review",
+    "quality": "Quality review",
     "feedback": "Applying feedback",
     "conflict": "Resolving conflicts",
     "remember": "Saving memory",
@@ -299,7 +297,7 @@ def get_help_text() -> str:
         "Hi! I'm an AI-powered PR review bot built with [LangChain](https://github.com/langchain-ai/langchain). Mention me to get started:\n",
         "| Command | Description |",
         "|---------|-------------|",
-        f"| `@{BOT_USERNAME}` | Full code review |",
+        f"| `@{BOT_USERNAME}` | Security review (default) |",
         f"| `@{BOT_USERNAME} <question>` | Ask me anything about this PR |",
     ]
     for cmd, desc in COMMANDS.items():
@@ -311,11 +309,10 @@ def get_help_text() -> str:
         "",
         "### Examples",
         "```",
-        f"@{BOT_USERNAME}                        # Full code review",
+        f"@{BOT_USERNAME}                        # Security review",
         f"@{BOT_USERNAME} what does this PR do?  # Ask a question",
-        f"@{BOT_USERNAME} explain the changes    # Get an explanation",
-        f"@{BOT_USERNAME} /review Focus on error handling",
-        f"@{BOT_USERNAME} /security Check for SQL injection",
+        f"@{BOT_USERNAME} /quality               # Code quality review",
+        f"@{BOT_USERNAME} /review focus on auth  # Security review with focus",
         f"@{BOT_USERNAME} /feedback              # Apply reviewer feedback",
         "```",
     ])
@@ -750,68 +747,47 @@ You have access to PR information, file contents, and can post comments.
 
         "review": f"""{BUILD_AND_CI_DOCS}
 {user_instructions}
-## Task: Comprehensive Code Review
+## Task: Security Review (Default)
+
+Focus on finding real, exploitable security vulnerabilities.
 
 1. **Gather context** (do these IN PARALLEL):
    - Get the PR diff and list of changed files
-   - Read relevant workflow files from .github/workflows/
-   - Read build configs (pyproject.toml, package.json, etc.) for changed file types
-   - Check PR CI status for any build/test failures
-   - Read CONTRIBUTING.md and any style guides
+   - Read SECURITY.md, .github/SECURITY.md if they exist
+   - Check .github/workflows/ for security scanning (CodeQL, Snyk, etc.)
+   - Fetch Dependabot/CodeQL alerts if available
 
 2. **Analyze**:
-   - Delegate to code-review and security-review subagents IN PARALLEL
-   - Pass them the context you gathered (style guides, build info)
+   - Delegate to security-review subagent with the diff and security context
+   - Focus on: injection, auth bypass, data exposure, real vulnerabilities
+   - Skip theoretical issues, test code, and example files
 
-3. **Synthesize and post**:
-   - Combine feedback from both subagents
-   - If CI is failing, prioritize feedback related to the failures
-   - Post using create_pr_review (COMMENT for suggestions, REQUEST_CHANGES for blocking issues)""",
+3. **Post findings**:
+   - Only report issues with realistic attack paths
+   - Use create_pr_review (COMMENT for suggestions, REQUEST_CHANGES for real vulnerabilities)
+   - If no real issues found, say so briefly - don't manufacture problems""",
 
-        "security": f"""{BUILD_AND_CI_DOCS}
+        "quality": f"""{BUILD_AND_CI_DOCS}
 {user_instructions}
-## Task: Security-Focused Review
+## Task: Code Quality Review
 
-1. **Read security documentation FIRST**:
-   - SECURITY.md, .github/SECURITY.md
-   - Security policies in CONTRIBUTING.md
-   - .github/workflows/ - look for security scanning workflows (CodeQL, Snyk, etc.)
-   - Any security-related configs (.snyk, .trivyignore, etc.)
+Focus on code quality, style, and maintainability.
 
-2. **Get security context**:
-   - Fetch Dependabot alerts for known vulnerable dependencies
-   - Fetch CodeQL/code-scanning alerts
-   - Check PR CI status for security scan results
+1. **Gather context** (do these IN PARALLEL):
+   - Get the PR diff and list of changed files
+   - Read style configs (pyproject.toml, .eslintrc, .prettierrc, etc.)
+   - Read CONTRIBUTING.md and any style guides
+   - Check PR CI status for lint/test failures
 
-3. **Analyze the PR**:
-   - Get the diff and changed files
-   - Delegate to security-review subagent with all the security context
-   - Focus on: injection, auth issues, data exposure, crypto, dependencies
-
-4. **Post findings** as a review comment with severity levels""",
-
-        "style": f"""{BUILD_AND_CI_DOCS}
-{user_instructions}
-## Task: Code Style Review
-
-1. **Read ALL style configuration FIRST**:
-   - pyproject.toml - look for [tool.ruff], [tool.black], [tool.isort], [tool.mypy]
-   - .editorconfig, .prettierrc, .prettierrc.json, .eslintrc, .eslintrc.json
-   - tslint.json, .stylelintrc
-   - CONTRIBUTING.md, STYLE.md, CODE_STYLE.md, docs/style-guide.md
-   - .github/workflows/ - look for lint/format workflows to see what tools are used
-
-2. **Understand the lint/format commands**:
-   - Check Makefile, package.json scripts, or CI workflows for lint commands
-   - Note any auto-formatting tools (black, prettier, gofmt)
-
-3. **Analyze the PR**:
-   - Get the diff and changed files
-   - Check if CI lint checks are passing or failing
+2. **Analyze**:
    - Delegate to code-review subagent with style configs
-   - Focus ONLY on style issues - skip security and logic
+   - Focus on: bugs, maintainability, consistency with existing patterns
+   - Skip minor nitpicks - focus on meaningful issues
 
-4. **Post findings** - if auto-formatters exist, suggest running them""",
+3. **Post findings**:
+   - If CI is failing, prioritize feedback related to failures
+   - Use create_pr_review (COMMENT for suggestions, REQUEST_CHANGES for real bugs)
+   - If code looks good, say "LGTM" - don't manufacture issues""",
 
         "feedback_plan": f"""{BUILD_AND_CI_DOCS}
 {user_instructions}
@@ -1076,7 +1052,7 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
 
     # For review commands without instructions, check for duplicates BEFORE doing any work
     # This applies to both explicit /review and empty @mentions (which default to review)
-    REVIEW_COMMANDS = {"review", "security", "style"}
+    REVIEW_COMMANDS = {"review", "quality"}
     print(f"[handle_pr_comment] command={parsed.command}, message={parsed.message!r}, in_review_commands={parsed.command in REVIEW_COMMANDS}")
     if parsed.command in REVIEW_COMMANDS and not parsed.message:
         # Get head SHA to check against previous reviews

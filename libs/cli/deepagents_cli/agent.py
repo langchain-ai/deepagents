@@ -28,6 +28,7 @@ from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.shell import ShellMiddleware
 from deepagents_cli.subagents import list_subagents
 from deepagents_cli.swarm import TaskBoardMiddleware
+from deepagents_cli.swarm.middleware import SwarmMiddleware
 
 
 def list_agents() -> None:
@@ -436,6 +437,47 @@ def create_cli_agent(
 
     # Add task board middleware (always enabled for main agent)
     agent_middleware.append(TaskBoardMiddleware())
+
+    # Add swarm middleware for batch task execution
+    # The subagent factory is called lazily when swarm_execute is first invoked
+    def _create_swarm_subagent_factory():
+        """Factory that creates subagent graphs for swarm execution.
+
+        This is called lazily when swarm_execute is first used, avoiding
+        overhead if swarm execution is never needed.
+        """
+        from langchain.agents import create_agent
+        from langchain.agents.middleware import TodoListMiddleware
+        from langchain.chat_models import init_chat_model
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+        from deepagents.backends import StateBackend
+
+        def build_subagent_graphs():
+            # Use the same model as the main agent
+            swarm_model = init_chat_model(model) if isinstance(model, str) else model
+
+            # Build minimal middleware stack for swarm subagents
+            swarm_middleware = [
+                TodoListMiddleware(),
+                FilesystemMiddleware(backend=lambda rt: StateBackend(rt)),
+            ]
+
+            # Create general-purpose subagent
+            general_purpose = create_agent(
+                swarm_model,
+                system_prompt="You are a helpful assistant completing a specific task. Focus on the task description and return a concise result.",
+                tools=tools or [],
+                middleware=swarm_middleware,
+                name="general-purpose",
+            )
+
+            return {"general-purpose": general_purpose}
+
+        return build_subagent_graphs
+
+    agent_middleware.append(
+        SwarmMiddleware(subagent_factory=_create_swarm_subagent_factory())
+    )
 
     # Add memory middleware
     if enable_memory:

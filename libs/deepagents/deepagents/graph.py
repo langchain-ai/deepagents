@@ -26,6 +26,7 @@ from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.tool_safety import ToolSafetyMiddleware
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
@@ -188,6 +189,7 @@ def create_deep_agent(
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware] = [
+        ToolSafetyMiddleware(),  # Notify agent when response contains only tool calls without text content
         TodoListMiddleware(),
     ]
     if memory is not None:

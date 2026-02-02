@@ -161,15 +161,13 @@ def create_deep_agent(
             "keep": ("messages", 20),
         }
 
-    # Build middleware stack for subagents (includes skills if provided)
+    # Build middleware stack for ALL subagents (custom subagents inherit these)
     subagent_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
     ]
 
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
-    if skills is not None:
-        subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     subagent_middleware.extend(
         [
             FilesystemMiddleware(backend=backend),
@@ -185,6 +183,11 @@ def create_deep_agent(
             PatchToolCallsMiddleware(),
         ]
     )
+
+    # Build middleware stack ONLY for the general-purpose subagent (custom subagents do NOT inherit these)
+    general_purpose_subagent_middleware: list[AgentMiddleware] = []
+    if skills is not None:
+        general_purpose_subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware] = [
@@ -202,6 +205,7 @@ def create_deep_agent(
                 default_tools=tools,
                 subagents=subagents if subagents is not None else [],
                 default_middleware=subagent_middleware,
+                general_purpose_middleware=general_purpose_subagent_middleware,
                 default_interrupt_on=interrupt_on,
                 general_purpose_agent=True,
             ),

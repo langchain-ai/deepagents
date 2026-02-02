@@ -500,7 +500,10 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Synchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(path)
+            try:
+                validated_path = _validate_path(path)
+            except ValueError as e:
+                return f"Error: {e}"
             infos = resolved_backend.ls_info(validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
@@ -512,7 +515,10 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Asynchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(path)
+            try:
+                validated_path = _validate_path(path)
+            except ValueError as e:
+                return f"Error: {e}"
             infos = await resolved_backend.als_info(validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
@@ -538,7 +544,10 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             result = resolved_backend.read(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)
@@ -564,7 +573,10 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)
@@ -600,7 +612,10 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> Command | str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
                 return res.error
@@ -626,7 +641,10 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> Command | str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
                 return res.error
@@ -666,7 +684,10 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> Command | str:
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
@@ -694,7 +715,10 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> Command | str:
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error

@@ -34,23 +34,8 @@ Screen {
 /* Bottom app container - holds ChatInput (now inside scroll) */
 #bottom-app-container {
     height: auto;
-    dock: bottom;
-    margin-bottom: 2;
     margin-top: 1;
     padding: 0 1;
-}
-
-#agent-status-display {
-    height: 1;
-    margin-left: 1;
-    margin-bottom: 0;
-    color: $text-muted;
-    display: none;
-}
-
-#agent-status-display.thinking {
-    color: $warning;
-    text-style: bold;
 }
 
 /* Input area */

@@ -297,7 +297,6 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
             yield Container(id="messages")
             with Container(id="bottom-app-container"):
-                yield Static("", id="agent-status-display")
                 yield ChatInput(cwd=self._cwd, id="input-area")
             yield Static(id="chat-spacer")  # Fills remaining space below input
 
@@ -361,21 +360,9 @@ class DeepAgentsApp(App):
             pass  # Spacer already removed, no action needed
 
     def _update_status(self, message: str) -> None:
-        """Update the status display with a message."""
-        try:
-            status_display = self.query_one("#agent-status-display", Static)
-            if message:
-                status_display.update(message)
-                status_display.styles.display = "block"
-                if "thinking" in message.lower() or "waiting" in message.lower():
-                    status_display.add_class("thinking")
-                else:
-                    status_display.remove_class("thinking")
-            else:
-                status_display.update("")
-                status_display.styles.display = "none"
-        except NoMatches:
-            pass
+        """Update the status bar with a message."""
+        if self._status_bar:
+            self._status_bar.set_status_message(message)
 
     def _update_tokens(self, count: int) -> None:
         """Update the token count in status bar."""

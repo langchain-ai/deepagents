@@ -27,11 +27,11 @@ on:
           - deepagents-acp
           - deepagents-harbor
         default: deepagents
-      dangerous-nonmaster-release:
+      dangerous-nonmain-release:
         required: false
         type: boolean
         default: false
-        description: "Release from a non-master branch (danger!) - Only use for hotfixes"
+        description: "Release from a non-main branch (danger!) - Only use for hotfixes"
 
 env:
   PYTHON_VERSION: "3.11"
@@ -79,7 +79,7 @@ jobs:
   # Runs in isolated environment with minimal permissions for security
   build:
     needs: setup
-    if: github.ref == 'refs/heads/master' || inputs.dangerous-nonmaster-release
+    if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
     permissions:
       contents: read

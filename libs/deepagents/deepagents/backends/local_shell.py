@@ -107,7 +107,6 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         root_dir: str | Path | None = None,
         *,
         virtual_mode: bool = False,
-        max_file_size_mb: int = 10,
         timeout: float = 120.0,
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
@@ -120,35 +119,27 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
                 - If not provided, defaults to the current working directory.
                 - Shell commands execute with this as their working directory.
-                - When `virtual_mode=False` (default): Only affects relative path
-                    resolution for filesystem ops. Provides **no security** - agents can
-                    access any file using absolute paths or `..` sequences, and shell
-                    commands can access the entire filesystem.
-                - When `virtual_mode=True`: Filesystem paths are restricted to this
-                    directory with traversal protection. **Note:** This does NOT restrict
-                    shell commands - they can still access any path.
+                - When `virtual_mode=False` (default): Paths are used as-is. Agents can
+                    access any file using absolute paths or `..` sequences.
+                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+                    Useful with `CompositeBackend` to support routing file operations across
+                    different backend implementations. **Note:** This does NOT restrict shell
+                    commands.
 
-            virtual_mode: Enable path rewriting for filesystem operations only.
+            virtual_mode: Enable virtual path mode for filesystem operations.
 
-                When `True`, filesystem operations (read/write/edit) rewrite all paths as
-                absolute paths relative to `root_dir` (e.g., `/file.txt` becomes
+                When `True`, treats `root_dir` as a virtual root filesystem. All paths
+                are interpreted relative to `root_dir` (e.g., `/file.txt` maps to
                 `{root_dir}/file.txt`). Path traversal (`..`, `~`) is blocked.
+
+                **Primary use case:** Working with `CompositeBackend`, which routes
+                different path prefixes to different backends. Virtual mode allows the
+                CompositeBackend to strip route prefixes and pass normalized paths to
+                each backend, enabling file operations to work correctly across multiple
+                backend implementations.
 
                 **Important:** This only affects filesystem operations. Shell commands
                 executed via `execute()` are NOT restricted and can access any path.
-
-                When `False` (default), **no security is provided**:
-
-                - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
-                - Relative paths with `..` can escape `root_dir`
-                - Shell commands have unrestricted access
-
-                **Security note:** `virtual_mode=True` provides path-based access control
-                for filesystem operations, not process isolation. It restricts which files
-                can be accessed via filesystem tools, but does NOT sandbox shell execution.
-
-            max_file_size_mb: Maximum file size in megabytes for operations like grep.
-                Files exceeding this limit are skipped during search. Defaults to 10 MB.
 
             timeout: Maximum time in seconds to wait for shell command execution.
                 Commands exceeding this timeout will be terminated. Defaults to 120 seconds.
@@ -171,7 +162,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         super().__init__(
             root_dir=root_dir,
             virtual_mode=virtual_mode,
-            max_file_size_mb=max_file_size_mb,
+            max_file_size_mb=10,
         )
 
         # Store execution parameters

@@ -46,9 +46,11 @@ dev = [
 
 
 [project.urls]
-Homepage = "https://github.com/langchain-ai/deepagents"
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
+Twitter = "https://x.com/LangChain"
 
 [project.scripts]
 deepacp = "deepagents_acp.server:cli_main"

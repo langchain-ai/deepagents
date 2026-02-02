@@ -3,7 +3,20 @@ name = "deepagents-harbor"
 version = "0.0.1"
 description = "Harbor integration with LangChain DeepAgents and LangSmith tracing"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.12"
+keywords = ["agents", "ai", "harbor", "llm", "langgraph", "langchain", "langsmith", "tracing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     # Harbor runtime
     "harbor>=0.1.12",
@@ -28,6 +41,13 @@ test = [
     "pytest-cov>=7.0.0",
 ]
 
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Twitter = "https://x.com/LangChain"
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
@@ -43,11 +63,11 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-deepagents-cli = { path = "../deepagents-cli" }
+deepagents-cli = { path = "../cli" }
 deepagents = { path = "../deepagents", editable = true }
 
 [tool.ty.environment]
-extra-paths = ["../deepagents", "../deepagents-cli"]
+extra-paths = ["../deepagents", "../cli"]
 
 [tool.ruff]
 line-length = 100

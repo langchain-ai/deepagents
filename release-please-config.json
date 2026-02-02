@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "skip-github-release": true,
+  "pull-request-title-pattern": "release(${component}): ${version}",
+  "pull-request-header": "",
+  "packages": {
+    "libs/cli": {
+      "release-type": "python",
+      "package-name": "deepagents-cli",
+      "component": "cli",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": ["pyproject.toml"],
+      "changelog-path": "CHANGELOG.md"
+    }
+  },
+  "tag-separator": "==",
+  "include-component-in-tag": true,
+  "include-v-in-tag": false
+}

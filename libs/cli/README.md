@@ -1,21 +1,24 @@
-# 🧠🤖 Deep Agents
+# 🧠🤖 Deep Agents CLI
 
-[![PyPI - Version](https://img.shields.io/pypi/v/deepagents?label=%20)](https://pypi.org/project/deepagents/#history)
-[![PyPI - License](https://img.shields.io/pypi/l/deepagents)](https://opensource.org/licenses/MIT)
-[![PyPI - Downloads](https://img.shields.io/pepy/dt/deepagents)](https://pypistats.org/packages/deepagents)
+[![PyPI - Version](https://img.shields.io/pypi/v/deepagents-cli?label=%20)](https://pypi.org/project/deepagents-cli/#history)
+[![PyPI - License](https://img.shields.io/pypi/l/deepagents-cli)](https://opensource.org/licenses/MIT)
+[![PyPI - Downloads](https://img.shields.io/pepy/dt/deepagents-cli)](https://pypistats.org/packages/deepagents-cli)
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain)
 
-Looking for the JS/TS version? Check out [Deep Agents.js](https://github.com/langchain-ai/deepagentsjs).
+Looking for the JS/TS version? Check out [Deep Agents CLI.js](https://github.com/langchain-ai/deepagentsjs).
 
 To help you ship LangChain apps to production faster, check out [LangSmith](https://smith.langchain.com).
 LangSmith is a unified developer platform for building, testing, and monitoring LLM applications.
 
+<p align="center">
+  <img src="./images/cli.png" alt="Deep Agents CLI" width="600"/>
+</p>
+
 ## Quick Install
 
 ```bash
-pip install deepagents
-# or
-uv add deepagents
+uv tool install deepagents-cli
+deepagents
 ```
 
 ## 🤔 What is this?
@@ -30,8 +33,8 @@ Applications like "Deep Research", "Manus", and "Claude Code" have gotten around
 
 ## 📖 Resources
 
-- **[Documentation](https://docs.langchain.com/oss/python/deepagents)** — Full documentation
-- **[API Reference](https://reference.langchain.com/python/deepagents/)** — Full SDK reference documentation
+- **[Documentation](https://docs.langchain.com/oss/python/deepagents/cli)** — Full documentation
+- **[Deep Agents](https://github.com/langchain-ai/deepagents)** — The underlying agent harness
 - **[Chat LangChain](https://chat.langchain.com)** - Chat interactively with the docs
 
 ## 📕 Releases & Versioning

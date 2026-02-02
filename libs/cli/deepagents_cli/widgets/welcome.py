@@ -36,8 +36,14 @@ class WelcomeBanner(Static):
     }
     """
 
-    def __init__(self, **kwargs: Any) -> None:
-        """Initialize the welcome banner."""
+    def __init__(self, thread_id: str | None = None, **kwargs: Any) -> None:
+        """Initialize the welcome banner.
+
+        Args:
+            thread_id: Optional thread ID to display in the banner.
+            **kwargs: Additional arguments passed to parent.
+        """
+        self._thread_id: str | None = thread_id
         self._project_name: str | None = None
 
         langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY")
@@ -87,6 +93,9 @@ class WelcomeBanner(Static):
             else:
                 banner.append(f"'{self._project_name}'", style="cyan")
             banner.append("\n")
+
+        if self._thread_id:
+            banner.append(f"Thread: {self._thread_id}\n", style="dim")
 
         banner.append("Ready to code! What would you like to build?\n", style="#10b981")
         banner.append("Enter send • Ctrl+J newline • @ files • / commands", style="dim")

@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -40,8 +40,8 @@ Instructions go here.
 """
 
 
-class TestSubAgentInvocation:
-    """Tests for basic subagent invocation and response handling."""
+class TestSubAgents:
+    """Tests for sub-agent middleware functionality."""
 
     def test_subagent_returns_final_message_as_tool_result(self) -> None:
         """Test that a subagent's final message is returned as a ToolMessage.
@@ -245,10 +245,6 @@ class TestSubAgentInvocation:
             f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
         )
 
-
-class TestStructuredOutput:
-    """Tests for agents with structured output using ToolStrategy."""
-
     def test_agent_with_structured_output_tool_strategy(self) -> None:
         """Test that an agent with ToolStrategy properly generates structured output.
 
@@ -314,10 +310,6 @@ class TestStructuredOutput:
         # Verify the structured response has the correct values
         expected_response = WeatherReport(location="San Francisco", temperature=18.5, condition="sunny")
         assert structured_response == expected_response, f"Expected {expected_response}, got {structured_response}"
-
-
-class TestSubAgentTodoList:
-    """Tests for subagents that manage their own todo lists."""
 
     def test_parallel_subagents_with_todo_lists(self) -> None:
         """Test that multiple subagents can manage their own isolated todo lists.
@@ -528,10 +520,6 @@ class TestSubAgentTodoList:
             f"Expected JavaScript research result in message, got: {javascript_tool_message.content}"
         )
 
-
-class TestSubAgentsWithStructuredOutput:
-    """Tests for subagents that return structured responses."""
-
     def test_parallel_subagents_with_different_structured_outputs(self) -> None:
         """Test that multiple subagents with different structured outputs work correctly.
 
@@ -710,10 +698,6 @@ class TestSubAgentsWithStructuredOutput:
             f"Expected population ToolMessage content:\n{expected_population_content}\nGot:\n{population_tool_message.content}"
         )
 
-
-class TestSubAgentStreamingMetadata:
-    """Tests for metadata propagation during subagent streaming."""
-
     def test_lc_agent_name_and_tags_in_streaming_metadata(self) -> None:
         """Test that lc_agent_name and tags are correctly set in streaming metadata.
 
@@ -891,10 +875,6 @@ class TestSubAgentStreamingMetadata:
         assert len(received_contexts) > 0, "Subagent tool should have been invoked"
         assert received_contexts[0] == test_context, f"Expected {test_context}, got {received_contexts[0]}"
 
-
-class TestCompiledSubAgentValidation:
-    """Tests for CompiledSubAgent validation and error handling."""
-
     def test_compiled_subagent_without_messages_raises_error(self) -> None:
         """Test that a CompiledSubAgent without 'messages' in state raises a clear error.
 
@@ -959,10 +939,6 @@ class TestCompiledSubAgentValidation:
                 {"messages": [HumanMessage(content="Process this")]},
                 config={"configurable": {"thread_id": "test_thread_no_messages"}},
             )
-
-
-class TestSkillsMiddlewareIsolation:
-    """Tests for verifying skills middleware is only applied to general-purpose subagent."""
 
     def test_custom_subagent_does_not_inherit_skills(self, tmp_path: Path) -> None:
         """Test that custom subagents do NOT inherit skills middleware from create_deep_agent.
@@ -1033,9 +1009,6 @@ class TestSkillsMiddlewareIsolation:
             )
         )
 
-        # Import SubAgent for defining custom subagent
-        from deepagents.middleware.subagents import SubAgent
-
         leader = create_deep_agent(
             model=leader_model,
             checkpointer=InMemorySaver(),
@@ -1065,15 +1038,6 @@ class TestSkillsMiddlewareIsolation:
             assert "skills_metadata" not in state, (
                 "Custom subagent should NOT have skills_metadata in runtime.state - skills middleware should only apply to general-purpose subagent"
             )
-
-
-class TestSubAgentPrivateStateIsolation:
-    """Tests for verifying PrivateStateAttr correctly filters middleware state from subagent output.
-
-    These tests validate that LangGraph's PrivateStateAttr annotation properly excludes
-    fields from the invoke() output, preventing middleware-internal state from leaking
-    between parent and child agents.
-    """
 
     def test_skills_metadata_not_bubbled_to_parent(self, tmp_path: Path) -> None:
         """Test that skills_metadata from subagent middleware doesn't bubble up to parent.

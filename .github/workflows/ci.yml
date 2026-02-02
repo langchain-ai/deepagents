@@ -35,7 +35,7 @@ jobs:
           - working-directory: "libs/deepagents"
             python-version: "3.11"
           # CLI package
-          - working-directory: "libs/deepagents-cli"
+          - working-directory: "libs/cli"
             python-version: "3.11"
           # benchmarking
           - working-directory: "libs/harbor"
@@ -59,9 +59,9 @@ jobs:
           - working-directory: "libs/deepagents"
             python-version: "3.13"
           # CLI package: test on min and max Python versions
-          - working-directory: "libs/deepagents-cli"
+          - working-directory: "libs/cli"
             python-version: "3.11"
-          - working-directory: "libs/deepagents-cli"
+          - working-directory: "libs/cli"
             python-version: "3.13"
           # benchmarking
           - working-directory: "libs/harbor"

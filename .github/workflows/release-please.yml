@@ -1,0 +1,46 @@
+# Creates release PRs based on conventional commits.
+#
+# When commits land on master, release-please analyzes them and either:
+# - Creates/updates a release PR with changelog and version bump
+# - When a release PR is merged, triggers the release workflow
+#
+# GitHub releases are created by release.yml after all checks pass,
+# not by release-please directly (skip-github-release: true in config).
+
+name: Release Please
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      deepagents-cli--release_created: ${{ steps.release.outputs['libs/cli--release_created'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Trigger release workflow when CLI package is released
+  # GitHub release is created by release.yml AFTER all checks pass
+
+  release-deepagents-cli:
+    needs: release-please
+    if: needs.release-please.outputs.deepagents-cli--release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: deepagents-cli
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: read

@@ -44,6 +44,16 @@ body:
         - label: deepagents (SDK)
         - label: cli
   - type: textarea
+    id: related
+    validations:
+      required: false
+    attributes:
+      label: Related Issues / PRs
+      description: |
+        If this bug is related to any existing issues or pull requests, please link them here.
+      placeholder: |
+        * e.g. #123, #456
+  - type: textarea
     id: reproduction
     validations:
       required: true

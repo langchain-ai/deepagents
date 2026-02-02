@@ -29,10 +29,10 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
 
     def bind_tools(
         self,
-        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        _tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
         *,
-        tool_choice: str | None = None,
-        **kwargs: Any,
+        _tool_choice: str | None = None,
+        **_kwargs: Any,
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
         return self
@@ -66,7 +66,8 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
         mock_settings_obj.get_project_skills_dir.return_value = None
 
         # Mock methods that get called during agent execution to return real Path objects
-        # This prevents MagicMock objects from being stored in state (which would fail serialization)
+        # This prevents MagicMock objects from being stored in state
+        # (which would fail serialization)
         def get_user_agent_md_path(agent_id: str) -> Path:
             return tmp_path / "agents" / agent_id / "agent.md"
 
@@ -114,7 +115,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model
-            agent, backend = create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
@@ -208,7 +209,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model and sample_tool
-            agent, backend = create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
@@ -264,7 +265,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model
-            agent, backend = create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],
@@ -324,7 +325,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent with the fake model and sample_tool
-            agent, backend = create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
@@ -365,7 +366,7 @@ class TestDeepAgentsCLIEndToEnd:
             )
 
             # Create a CLI agent
-            agent, backend = create_cli_agent(
+            _, backend = create_cli_agent(
                 model=model,
                 assistant_id="test-agent",
                 tools=[],

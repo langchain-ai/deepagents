@@ -14,8 +14,7 @@ class ToolSafetyMiddleware(AgentMiddleware):
     """
 
     _WARNING_MESSAGE = (
-        "SYSTEM WARNING: Your last response had only tool calls with no text. "
-        "Always include text explaining your reasoning before making tool calls."
+        "SYSTEM WARNING: Your last response had only tool calls with no text. Always include text explaining your reasoning before making tool calls."
     )
 
     __slots__ = ("_empty_response_detected",)

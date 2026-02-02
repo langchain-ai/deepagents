@@ -11,7 +11,7 @@ from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import ToolMessage
 from langchain_core.tools.base import ToolException
 
-_DEFAULT_SHELL_TIMEOUT = 120.0
+_DEFAULT_SHELL_TIMEOUT = 120
 
 
 class ShellMiddleware(AgentMiddleware[AgentState, Any]):
@@ -25,7 +25,7 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
         self,
         *,
         workspace_root: str,
-        timeout: float = _DEFAULT_SHELL_TIMEOUT,
+        timeout: int = _DEFAULT_SHELL_TIMEOUT,
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
     ) -> None:
@@ -64,7 +64,7 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
         def shell_tool(
             command: str,
             runtime: ToolRuntime[None, AgentState],
-            timeout: float | None = None,
+            timeout: int | None = None,
         ) -> ToolMessage | str:
             """Execute a shell command.
 
@@ -86,7 +86,7 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
         command: str,
         *,
         tool_call_id: str | None,
-        timeout: float | None = None,
+        timeout: int | None = None,
     ) -> ToolMessage:
         """Execute a shell command and return the result.
 
@@ -145,7 +145,7 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
 
         except subprocess.TimeoutExpired:
             output = (
-                f"Error: Command timed out after {effective_timeout:.1f} seconds. "
+                f"Error: Command timed out after {effective_timeout} seconds. "
                 f"For long-running commands, use the timeout parameter."
             )
             status = "error"

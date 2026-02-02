@@ -16,8 +16,8 @@ class TestShellMiddlewareInit:
 
     def test_custom_timeout(self, tmp_path: str) -> None:
         """Test that custom `timeout` is accepted."""
-        mw = ShellMiddleware(workspace_root=str(tmp_path), timeout=300.0)
-        assert mw._default_timeout == 300.0
+        mw = ShellMiddleware(workspace_root=str(tmp_path), timeout=300)
+        assert mw._default_timeout == 300
 
     def test_rejects_invalid_timeout(self, tmp_path: str) -> None:
         """Test that zero/negative `timeout` raises `ValueError`."""
@@ -63,24 +63,24 @@ class TestRunShellCommand:
 
     def test_per_command_timeout_override(self, tmp_path: str) -> None:
         """Test that per-command timeout overrides default."""
-        mw = ShellMiddleware(workspace_root=str(tmp_path), timeout=1.0)
+        mw = ShellMiddleware(workspace_root=str(tmp_path), timeout=1)
         # Command should succeed with longer timeout
-        result = mw._run_shell_command("sleep 0.1 && echo done", tool_call_id="test", timeout=5.0)
+        result = mw._run_shell_command("sleep 0.1 && echo done", tool_call_id="test", timeout=5)
         assert "done" in result.content
         assert result.status == "success"
 
     def test_timeout_triggers(self, tmp_path: str) -> None:
         """Test that timeout triggers for long-running commands."""
         mw = ShellMiddleware(workspace_root=str(tmp_path))
-        result = mw._run_shell_command("sleep 10", tool_call_id="test", timeout=0.5)
+        result = mw._run_shell_command("sleep 10", tool_call_id="test", timeout=1)
         assert "timed out" in result.content
-        assert "0.5" in result.content
+        assert "1 seconds" in result.content
         assert result.status == "error"
 
     def test_timeout_error_message_suggests_parameter(self, tmp_path: str) -> None:
         """Test that timeout error suggests using timeout parameter."""
         mw = ShellMiddleware(workspace_root=str(tmp_path))
-        result = mw._run_shell_command("sleep 10", tool_call_id="test", timeout=0.5)
+        result = mw._run_shell_command("sleep 10", tool_call_id="test", timeout=1)
         assert "timeout parameter" in result.content
 
     def test_zero_per_command_timeout_raises(self, tmp_path: str) -> None:
@@ -122,26 +122,24 @@ class TestTimeoutRetryWorkflow:
         3. Model retries with a longer `timeout`
         4. Command succeeds
         """
-        mw = ShellMiddleware(workspace_root=str(tmp_path), timeout=0.5)
+        mw = ShellMiddleware(workspace_root=str(tmp_path), timeout=1)
 
         # First attempt: times out with short default
-        result1 = mw._run_shell_command("sleep 1 && echo done", tool_call_id="attempt1")
+        result1 = mw._run_shell_command("sleep 2 && echo done", tool_call_id="attempt1")
         assert result1.status == "error"
         assert "timed out" in result1.content
 
         # Second attempt: model increases timeout, command succeeds
-        result2 = mw._run_shell_command(
-            "sleep 1 && echo done", tool_call_id="attempt2", timeout=5.0
-        )
+        result2 = mw._run_shell_command("sleep 2 && echo done", tool_call_id="attempt2", timeout=5)
         assert result2.status == "success"
         assert "done" in result2.content
 
     def test_timeout_error_message_guides_model_to_solution(self, tmp_path: str) -> None:
         """Test that timeout error message tells model how to fix the issue."""
         mw = ShellMiddleware(workspace_root=str(tmp_path))
-        result = mw._run_shell_command("sleep 10", tool_call_id="test", timeout=0.5)
+        result = mw._run_shell_command("sleep 10", tool_call_id="test", timeout=1)
 
         # Error message should guide model to use timeout parameter
         assert "timeout parameter" in result.content
         # Error message should show actual timeout used (for model to know to increase)
-        assert "0.5 seconds" in result.content
+        assert "1 seconds" in result.content

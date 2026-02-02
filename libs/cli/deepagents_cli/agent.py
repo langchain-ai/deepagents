@@ -438,7 +438,12 @@ def create_cli_agent(
         backend = FilesystemBackend()
 
         # Local context middleware (git info, directory tree, etc.)
-        agent_middleware.append(LocalContextMiddleware())
+        # Added to both main agent and subagents. The middleware checks for existing
+        # local_context in state and skips re-computation, so subagents will inherit
+        # the context gathered by the main agent.
+        local_context_middleware = LocalContextMiddleware()
+        agent_middleware.append(local_context_middleware)
+        subagent_mw.append(local_context_middleware)
 
         # Add shell middleware (only in local mode)
         if enable_shell:

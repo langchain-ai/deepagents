@@ -38,23 +38,33 @@ jobs:
           # Find all directories containing uv.lock
           lockfile_dirs=$(find . -name "uv.lock" -type f -exec dirname {} \; | sort)
 
-          failed=0
+          failed_dirs=""
           for dir in $lockfile_dirs; do
             echo "::group::Checking $dir"
             if ! uv lock --check --directory "$dir" 2>&1; then
               echo "::error file=$dir/uv.lock::Lockfile is out of sync. Run 'uv lock' in $dir"
-              failed=1
+              failed_dirs="$failed_dirs $dir"
             else
               echo "✅ $dir/uv.lock is up-to-date"
             fi
             echo "::endgroup::"
           done
 
-          if [ $failed -eq 1 ]; then
+          if [ -n "$failed_dirs" ]; then
             echo ""
-            echo "❌ One or more lockfiles are out of sync!"
+            echo "❌ The following lockfiles are out of sync with their pyproject.toml:"
             echo ""
-            echo "To fix, run 'uv lock' in the affected directories, then commit the updated lockfile(s)."
+            for dir in $failed_dirs; do
+              echo "  - $dir/uv.lock"
+            done
+            echo ""
+            echo "To fix, run these commands:"
+            echo ""
+            for dir in $failed_dirs; do
+              echo "  uv lock --directory $dir"
+            done
+            echo ""
+            echo "Then commit the updated lockfile(s)."
             exit 1
           fi
 

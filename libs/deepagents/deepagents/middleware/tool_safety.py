@@ -13,11 +13,15 @@ class ToolSafetyMiddleware(AgentMiddleware):
     allowing them to course-correct before entering a loop.
     """
 
-    _WARNING_MESSAGE = "SYSTEM WARNING: Your last response had only tool calls with no text. Always include text explaining your reasoning before making tool calls."
+    _WARNING_MESSAGE = (
+        "SYSTEM WARNING: Your last response had only tool calls with no text. "
+        "Always include text explaining your reasoning before making tool calls."
+    )
 
     __slots__ = ("_empty_response_detected",)
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize the middleware."""
         super().__init__()
         self._empty_response_detected = False
 
@@ -33,8 +37,10 @@ class ToolSafetyMiddleware(AgentMiddleware):
         self._empty_response_detected = False
         return handler(
             request.override(
-                messages=request.messages
-                + [ToolMessage(content=self._WARNING_MESSAGE, tool_call_id="tool_safety_warning")]
+                messages=[
+                    *request.messages,
+                    ToolMessage(content=self._WARNING_MESSAGE, tool_call_id="tool_safety_warning"),
+                ]
             )
         )
 
@@ -60,8 +66,10 @@ class ToolSafetyMiddleware(AgentMiddleware):
         self._empty_response_detected = False
         return await handler(
             request.override(
-                messages=request.messages
-                + [ToolMessage(content=self._WARNING_MESSAGE, tool_call_id="tool_safety_warning")]
+                messages=[
+                    *request.messages,
+                    ToolMessage(content=self._WARNING_MESSAGE, tool_call_id="tool_safety_warning"),
+                ]
             )
         )
 

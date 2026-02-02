@@ -30,11 +30,11 @@ class TestToolSafetyMiddleware:
             ]
         )
 
-        def handler(req):
+        def handler(_request: ModelRequest) -> ModelResponse:
             return empty_response
 
         # Process response through middleware
-        result = middleware.on_model_response(request, handler)
+        middleware.on_model_response(request, handler)
 
         # Check if warning flag was set
         assert middleware._empty_response_detected is True
@@ -56,7 +56,7 @@ class TestToolSafetyMiddleware:
             ],
         )
 
-        def handler(req):
+        def handler(req: ModelRequest) -> ModelResponse:
             return ModelResponse(result=req.messages)
 
         # Process request through middleware
@@ -98,7 +98,7 @@ class TestToolSafetyMiddleware:
 
         for response in test_cases:
             middleware._empty_response_detected = False
-            middleware.on_model_response(request, lambda req: response)
+            middleware.on_model_response(request, lambda _request, r=response: r)
             assert middleware._empty_response_detected is False
 
     def test_warning_message_content(self) -> None:
@@ -143,7 +143,7 @@ class TestToolSafetyMiddleware:
 
         for response in edge_cases:
             middleware._empty_response_detected = False
-            middleware.on_model_response(request, lambda req: response)
+            middleware.on_model_response(request, lambda _request, r=response: r)
             assert middleware._empty_response_detected is False, f"False positive for {response}"
 
     def test_whitespace_and_multimodal_detection(self) -> None:
@@ -168,7 +168,7 @@ class TestToolSafetyMiddleware:
         for ai_msg in should_detect:
             middleware._empty_response_detected = False
             response = ModelResponse(result=[HumanMessage(content="Test"), ai_msg])
-            middleware.on_model_response(request, lambda req: response)
+            middleware.on_model_response(request, lambda _request, r=response: r)
             assert middleware._empty_response_detected is True, f"Failed to detect: {ai_msg.content}"
 
         # Cases that should NOT trigger detection
@@ -183,7 +183,7 @@ class TestToolSafetyMiddleware:
         for ai_msg in should_not_detect:
             middleware._empty_response_detected = False
             response = ModelResponse(result=[HumanMessage(content="Test"), ai_msg])
-            middleware.on_model_response(request, lambda req: response)
+            middleware.on_model_response(request, lambda _request, r=response: r)
             assert middleware._empty_response_detected is False, f"False positive for: {ai_msg.content}"
 
     def test_consecutive_empty_responses(self) -> None:
@@ -199,7 +199,7 @@ class TestToolSafetyMiddleware:
         )
 
         # First empty response
-        middleware.on_model_response(request, lambda req: empty_response)
+        middleware.on_model_response(request, lambda _request: empty_response)
         assert middleware._empty_response_detected is True
 
         # Warning injection should reset flag
@@ -207,7 +207,7 @@ class TestToolSafetyMiddleware:
         assert middleware._empty_response_detected is False
 
         # Second empty response should trigger again
-        middleware.on_model_response(request, lambda req: empty_response)
+        middleware.on_model_response(request, lambda _request: empty_response)
         assert middleware._empty_response_detected is True
 
     async def test_async_behavior(self) -> None:
@@ -223,14 +223,14 @@ class TestToolSafetyMiddleware:
         )
 
         # Test async detection
-        async def detection_handler(req):
+        async def detection_handler(_request: ModelRequest) -> ModelResponse:
             return empty_response
 
         await middleware.on_model_response_async(request, detection_handler)
         assert middleware._empty_response_detected is True
 
         # Test async injection
-        async def injection_handler(req):
+        async def injection_handler(req: ModelRequest) -> ModelResponse:
             return ModelResponse(result=req.messages)
 
         result = await middleware.on_model_request_async(request, injection_handler)

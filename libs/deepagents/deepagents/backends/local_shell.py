@@ -256,7 +256,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             # Combine stdout and stderr
             # Prefix each stderr line with [stderr] for clear attribution.
-            # Example: "hello\n[stderr] error: file not found"
+            # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
             output_parts = []
             if result.stdout:
                 output_parts.append(result.stdout)

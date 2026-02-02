@@ -1,5 +1,5 @@
 """Main entry point and CLI loop for deepagents."""
-# ruff: noqa: E402, BLE001
+# ruff: noqa: E402, BLE001, PLR0912, PLR0915
 
 # Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
 # ruff: noqa: E402
@@ -32,6 +32,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
+from deepagents_cli.mcp import execute_mcp_command, load_mcp_tools_from_config, setup_mcp_parser
 from deepagents_cli.sessions import (
     delete_thread_command,
     generate_thread_id,
@@ -112,6 +113,9 @@ def parse_args() -> argparse.Namespace:
 
     # Skills command - setup delegated to skills module
     setup_skills_parser(subparsers)
+
+    # MCP command - setup delegated to mcp module
+    setup_mcp_parser(subparsers)
 
     # Threads command
     threads_parser = subparsers.add_parser("threads", help="Manage conversation threads")
@@ -221,6 +225,15 @@ async def run_textual_cli_async(
         if settings.has_tavily:
             tools.append(web_search)
 
+        # Load MCP tools
+        try:
+            mcp_tools = await load_mcp_tools_from_config()
+            if mcp_tools:
+                tools.extend(mcp_tools)
+                console.print(f"[green]Loaded {len(mcp_tools)} MCP tools[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Failed to load MCP tools: {e}[/yellow]")
+
         # Handle sandbox mode
         sandbox_backend = None
         sandbox_cm = None
@@ -294,6 +307,8 @@ def cli_main() -> None:
             reset_agent(args.agent, args.source_agent)
         elif args.command == "skills":
             execute_skills_command(args)
+        elif args.command == "mcp":
+            execute_mcp_command(args)
         elif args.command == "threads":
             if args.threads_command == "list":
                 asyncio.run(

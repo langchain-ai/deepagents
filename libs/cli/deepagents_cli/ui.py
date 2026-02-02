@@ -178,7 +178,7 @@ def format_tool_message_content(content: Any) -> str:
                 parts.append(item)
             else:
                 try:
-                    parts.append(json.dumps(item))
+                    parts.append(json.dumps(item, ensure_ascii=False))
                 except Exception:
                     parts.append(str(item))
         return "\n".join(parts)

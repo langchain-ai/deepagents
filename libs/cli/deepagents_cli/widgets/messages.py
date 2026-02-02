@@ -412,6 +412,16 @@ class ToolCallMessage(Vertical):
         event.stop()  # Prevent click from bubbling up and scrolling
         self.toggle_output()
 
+    def _ensure_decoded(self, text: str) -> str:
+        """Attempt to decode unicode escapes in the string."""
+        if "\\u" in text:
+            try:
+                # Decode unicode escapes (e.g. \u79cd -> 种)
+                return text.encode("utf-8").decode("unicode_escape")
+            except Exception:
+                return text
+        return text
+
     def _format_output(self, output: str, *, is_preview: bool = False) -> str:
         """Format tool output based on tool type for nicer display.
 
@@ -422,6 +432,9 @@ class ToolCallMessage(Vertical):
         Returns:
             Formatted output string with Rich markup
         """
+        # Clean up unicode escapes if present (fixes likely encoding issues from tools)
+        output = self._ensure_decoded(output)
+
         output = output.strip()
         if not output:
             return ""

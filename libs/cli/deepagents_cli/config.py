@@ -405,6 +405,28 @@ class Settings:
             return None
         return self.project_root / ".deepagents" / "agents"
 
+    def get_user_mcp_config_path(self) -> Path:
+        """Get user-level mcp.json path.
+
+        Returns:
+            Path to ~/.deepagents/mcp.json
+        """
+        return Path.home() / ".deepagents" / "mcp.json"
+
+    def get_project_mcp_config_path(self) -> Path | None:
+        """Get project-level mcp.json path.
+
+        Returns:
+            Path to {project_root}/mcp.json or {project_root}/.deepagents/mcp.json
+            Returns None if not in a project.
+        """
+        if not self.project_root:
+            return None
+
+        # Check for legacy/root location first then .deepagents
+        # But for new features prefer .deepagents
+        return self.project_root / ".deepagents" / "mcp.json"
+
 
 # Global settings instance (initialized once)
 settings = Settings.from_environment()

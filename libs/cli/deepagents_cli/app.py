@@ -1,5 +1,5 @@
 """Textual UI application for deepagents-cli."""
-# ruff: noqa: BLE001, PLR2004, S110
+# ruff: noqa: BLE001, PLR0912, PLR2004, S110
 
 from __future__ import annotations
 
@@ -294,7 +294,7 @@ class DeepAgentsApp(App):
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
-            yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
+            yield WelcomeBanner(id="welcome-banner")
             yield Container(id="messages")
             with Container(id="bottom-app-container"):
                 yield ChatInput(cwd=self._cwd, id="input-area")
@@ -340,8 +340,11 @@ class DeepAgentsApp(App):
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
 
+        # If agent is not provided, attempt to bootstrap it (useful for textual run --dev)
+        if not self._agent:
+            self.run_worker(self._bootstrap_agent())
         # Load thread history if resuming a session
-        if self._lc_thread_id and self._agent:
+        elif self._lc_thread_id:
             self.call_after_refresh(lambda: asyncio.create_task(self._load_thread_history()))
         # Auto-submit initial prompt if provided (but not when resuming - let user see history first)
         elif self._initial_prompt and self._initial_prompt.strip():
@@ -579,7 +582,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                SystemMessage("Commands: /quit, /clear, /remember, /tokens, /threads, /help")
+                SystemMessage("Commands: /quit, /clear, /remember, /tokens, /threads, /mcp, /help")
             )
 
         elif cmd == "/version":
@@ -620,6 +623,9 @@ class DeepAgentsApp(App):
                 await self._mount_message(SystemMessage(f"Current context: {formatted} tokens"))
             else:
                 await self._mount_message(SystemMessage("No token usage yet"))
+        elif cmd == "/mcp":
+            await self._mount_message(UserMessage(command))
+            await self._show_mcp_status()
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Extract any additional context after /remember
             additional_context = ""
@@ -671,8 +677,15 @@ class DeepAgentsApp(App):
                 exclusive=False,
             )
         else:
+            if not self._agent:
+                status = "Initializing agent..."
+            else:
+                status = "Agent not fully configured."
+
             await self._mount_message(
-                SystemMessage("Agent not configured. Run with --agent flag or use standalone mode.")
+                SystemMessage(
+                    f"{status} Please wait a moment or check the console for errors. Run with --agent flag for full CLI features."
+                )
             )
 
     async def _run_agent_task(self, message: str) -> None:
@@ -842,6 +855,80 @@ class DeepAgentsApp(App):
             # Widget not found - can happen during shutdown
             pass
 
+    async def _show_mcp_status(self) -> None:
+        """Show MCP server status and loaded tools.
+
+        Displays:
+        - Configured MCP servers (from user and project configs)
+        - Loaded tools from each server
+        """
+        from deepagents_cli.config import settings
+        from deepagents_cli.mcp.commands import _load_config
+
+        lines = []
+
+        # Collect servers from both scopes
+        all_servers: dict[str, tuple[str, dict]] = {}
+
+        # User config
+        user_path = settings.get_user_mcp_config_path()
+        if user_path.exists():
+            user_config = _load_config(user_path)
+            for name, server in user_config.get("mcpServers", {}).items():
+                all_servers[name] = ("user", server)
+
+        # Project config (overrides user)
+        project_path = settings.get_project_mcp_config_path()
+        if project_path and project_path.exists():
+            project_config = _load_config(project_path)
+            for name, server in project_config.get("mcpServers", {}).items():
+                all_servers[name] = ("project", server)
+
+        if not all_servers:
+            await self._mount_message(
+                SystemMessage(
+                    "**MCP Status**\n\n"
+                    "No MCP servers configured.\n\n"
+                    "Add a server with:\n"
+                    "```\n"
+                    "deepagents mcp add --transport http <name> <url>\n"
+                    "```"
+                )
+            )
+            return
+
+        # Build status message
+        lines.append("**MCP Servers**\n")
+        lines.append("| Server | Transport | Target | Scope |")
+        lines.append("|--------|-----------|--------|-------|")
+
+        for name, (scope, server) in sorted(all_servers.items()):
+            transport = server.get("transport", server.get("type", "unknown"))
+
+            # Determine target based on transport
+            if transport == "stdio":
+                cmd = server.get("command", "")
+                args = server.get("args", [])
+                target = f"`{cmd} {' '.join(args)}`".strip()
+            else:
+                target = f"`{server.get('url', '')}`"
+
+            # Truncate long targets
+            if len(target) > 40:
+                target = target[:37] + "...`"
+
+            lines.append(f"| {name} | {transport} | {target} | {scope} |")
+
+        lines.append(f"\n**Total:** {len(all_servers)} server(s)")
+
+        # Show configuration paths
+        lines.append("\n**Config Paths:**")
+        lines.append(f"- User: `{user_path}`")
+        if project_path:
+            lines.append(f"- Project: `{project_path}`")
+
+        await self._mount_message(SystemMessage("\n".join(lines)))
+
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
 
@@ -971,6 +1058,73 @@ class DeepAgentsApp(App):
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
+    async def _bootstrap_agent(self) -> None:
+        """Initialize a default agent when running in standalone/dev mode.
+
+        This mimics the setup logic in main.py but runs within the Textual app component.
+        """
+        try:
+            from deepagents_cli.agent import create_cli_agent
+            from deepagents_cli.main import create_model, load_mcp_tools_from_config, settings
+            from deepagents_cli.tools import fetch_url, http_request, web_search
+
+            await self._mount_message(SystemMessage("Starting internal agent initialization..."))
+
+            # Setup model
+            model = create_model()
+
+            # Note: We don't use the async context manager of checkpointer here to keep it simple
+            # for dev mode. In production, main.py handles the context.
+            from langgraph.checkpoint.memory import InMemorySaver
+
+            checkpointer = InMemorySaver()
+
+            # Load tools
+            tools = [http_request, fetch_url]
+            if settings.has_tavily:
+                tools.append(web_search)
+
+            mcp_tools = await load_mcp_tools_from_config()
+            if mcp_tools:
+                tools.extend(mcp_tools)
+                await self._mount_message(SystemMessage(f"Loaded {len(mcp_tools)} MCP tools"))
+
+            # Create agent
+            agent, composite_backend = create_cli_agent(
+                model=model,
+                assistant_id=self._assistant_id or "agent",
+                tools=tools,
+                checkpointer=checkpointer,
+            )
+
+            self._agent = agent
+            self._backend = composite_backend
+
+            # Initialize UI Adapter
+            self._ui_adapter = TextualUIAdapter(
+                mount_message=self._mount_message,
+                update_status=self._update_status,
+                request_approval=self._request_approval,
+                on_auto_approve_enabled=self._on_auto_approve_enabled,
+                scroll_to_bottom=self._scroll_chat_to_bottom,
+                show_thinking=self._show_thinking,
+                hide_thinking=self._hide_thinking,
+            )
+            self._ui_adapter.set_token_tracker(self._token_tracker)
+
+            await self._mount_message(SystemMessage("Agent ready. (Standalone Mode)"))
+
+            # Load history if we have a thread
+            if self._lc_thread_id:
+                await self._load_thread_history()
+
+        except Exception as e:
+            import traceback
+
+            await self._mount_message(
+                ErrorMessage(f"Bootstrap failed: {e}\n{traceback.format_exc()}")
+            )
+
 
 async def run_textual_app(
     *,
@@ -1003,6 +1157,22 @@ async def run_textual_app(
         initial_prompt=initial_prompt,
     )
     await app.run_async()
+
+
+def create_app() -> DeepAgentsApp:
+    """Factory function for 'textual run --dev'.
+
+    This allows running the app with hot-reloading and textual console connection.
+    It returns an app instance that will attempt to initialize its own agent
+    if one wasn't provided (as is the case with 'textual run').
+    """
+    from deepagents_cli.main import generate_thread_id
+
+    return DeepAgentsApp(
+        agent=None,
+        assistant_id="agent",
+        thread_id=generate_thread_id(),
+    )
 
 
 if __name__ == "__main__":

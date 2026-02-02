@@ -54,7 +54,10 @@ class ApprovalMenu(Container):
             self.decision = decision
 
     # Tools that don't need detailed info display (already shown in tool call)
-    _MINIMAL_TOOLS: ClassVar[set[str]] = {"bash", "shell"}
+    _MINIMAL_TOOLS: ClassVar[set[str]] = {"bash", "shell", "execute"}
+
+    # Display name mapping for tools
+    _TOOL_DISPLAY_NAMES: ClassVar[dict[str, str]] = {"execute": "shell"}
 
     def __init__(
         self,
@@ -70,8 +73,11 @@ class ApprovalMenu(Container):
         else:
             self._action_requests = action_requests
 
-        # For display purposes, get tool names
-        self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
+        # For display purposes, get tool names and apply display name mapping
+        self._tool_names = [
+            self._TOOL_DISPLAY_NAMES.get(r.get("name", "unknown"), r.get("name", "unknown"))
+            for r in self._action_requests
+        ]
         self._selected = 0
         self._future: asyncio.Future[dict[str, str]] | None = None
         self._option_widgets: list[Static] = []

@@ -381,22 +381,17 @@ def create_cli_agent(
         project_skills_dir = settings.get_project_skills_dir()
 
     # Load custom subagents from filesystem
+    # We'll add common middleware to each subagent after we know what mode we're in
     custom_subagents: list[dict] = []
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = settings.get_project_agents_dir()
 
-    for subagent_meta in list_subagents(
-        user_agents_dir=user_agents_dir,
-        project_agents_dir=project_agents_dir,
-    ):
-        subagent: dict = {
-            "name": subagent_meta["name"],
-            "description": subagent_meta["description"],
-            "system_prompt": subagent_meta["system_prompt"],
-        }
-        if subagent_meta["model"]:
-            subagent["model"] = subagent_meta["model"]
-        custom_subagents.append(subagent)
+    subagent_metadata = list(
+        list_subagents(
+            user_agents_dir=user_agents_dir,
+            project_agents_dir=project_agents_dir,
+        )
+    )
 
     # Build middleware stack based on enabled features
     agent_middleware = []
@@ -429,8 +424,8 @@ def create_cli_agent(
         )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
-    # Track subagent middleware to pass to create_deep_agent
-    subagent_mw: list = []
+    # Track subagent middleware to add to each custom subagent
+    shared_subagent_middleware: list = []
 
     if sandbox is None:
         # ========== LOCAL MODE ==========
@@ -456,12 +451,26 @@ def create_cli_agent(
         # the context gathered by the main agent.
         local_context_middleware = LocalContextMiddleware()
         agent_middleware.append(local_context_middleware)
-        subagent_mw.append(local_context_middleware)
+        shared_subagent_middleware.append(local_context_middleware)
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
+
+    # Build custom subagents with appropriate middleware
+    for subagent_meta in subagent_metadata:
+        subagent: dict = {
+            "name": subagent_meta["name"],
+            "description": subagent_meta["description"],
+            "system_prompt": subagent_meta["system_prompt"],
+        }
+        if subagent_meta["model"]:
+            subagent["model"] = subagent_meta["model"]
+        # Add common subagent middleware (e.g., LocalContextMiddleware in local mode)
+        if shared_subagent_middleware:
+            subagent["middleware"] = shared_subagent_middleware
+        custom_subagents.append(subagent)
 
     # Get or use custom system prompt
     if system_prompt is None:
@@ -511,7 +520,6 @@ def create_cli_agent(
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,
-        subagent_middleware=subagent_mw if subagent_mw else None,
         interrupt_on=interrupt_on,
         checkpointer=final_checkpointer,
         subagents=custom_subagents if custom_subagents else None,

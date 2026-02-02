@@ -354,7 +354,7 @@ def create_cli_agent(
                      confirmation. Useful for automated workflows.
         enable_memory: Enable MemoryMiddleware for persistent memory
         enable_skills: Enable SkillsMiddleware for custom agent skills
-        enable_shell: Enable shell execution in local mode (uses LocalShellBackend)
+        enable_shell: Enable shell command execution (only applies in local mode)
         checkpointer: Optional checkpointer for session persistence. If None, uses
                      InMemorySaver (no persistence across CLI invocations).
 

@@ -82,19 +82,22 @@ class ModalBackend(BaseSandbox):
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order.
 
-        TODO: Implement proper error handling with standardized FileOperationError codes.
-        Need to determine what exceptions Modal's sandbox.open() actually raises.
-        Currently only implements happy path.
+        TODO: Implement proper error handling with standardized
+        FileOperationError codes. Need to determine what exceptions
+        Modal's sandbox.open() actually raises. Currently only implements
+        happy path.
         """
         # This implementation relies on the Modal sandbox file API.
         # https://modal.com/doc/guide/sandbox-files
-        # The API is currently in alpha and is not recommended for production use.
-        # We're OK using it here as it's targeting the CLI application.
+        # The API is currently in alpha and is not recommended for production
+        # use. We're OK using it here as it's targeting the CLI application.
         responses = []
         for path in paths:
             with self._sandbox.open(path, "rb") as f:
                 content = f.read()
-            responses.append(FileDownloadResponse(path=path, content=content, error=None))
+            responses.append(
+                FileDownloadResponse(path=path, content=content, error=None)
+            )
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -110,14 +113,15 @@ class ModalBackend(BaseSandbox):
             List of FileUploadResponse objects, one per input file.
             Response order matches input order.
 
-        TODO: Implement proper error handling with standardized FileOperationError codes.
-        Need to determine what exceptions Modal's sandbox.open() actually raises.
-        Currently only implements happy path.
+        TODO: Implement proper error handling with standardized
+        FileOperationError codes. Need to determine what exceptions
+        Modal's sandbox.open() actually raises. Currently only implements
+        happy path.
         """
         # This implementation relies on the Modal sandbox file API.
         # https://modal.com/doc/guide/sandbox-files
-        # The API is currently in alpha and is not recommended for production use.
-        # We're OK using it here as it's targeting the CLI application.
+        # The API is currently in alpha and is not recommended for production
+        # use. We're OK using it here as it's targeting the CLI application.
         responses = []
         for path, content in files:
             with self._sandbox.open(path, "wb") as f:

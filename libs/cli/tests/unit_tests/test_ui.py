@@ -77,7 +77,9 @@ class TestFormatToolDisplayShell:
 
     def test_shell_with_none_timeout(self) -> None:
         """Test shell display excludes timeout when `None`."""
-        result = format_tool_display("shell", {"command": "echo hello", "timeout": None})
+        result = format_tool_display(
+            "shell", {"command": "echo hello", "timeout": None}
+        )
         assert result == 'shell("echo hello")'
 
     def test_shell_with_default_timeout_hidden(self) -> None:

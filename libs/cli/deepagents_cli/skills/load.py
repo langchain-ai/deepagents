@@ -1,18 +1,26 @@
 """Skill loader for CLI commands.
 
-This module provides filesystem-based skill loading for CLI operations (list, create, info).
-It wraps the prebuilt middleware functionality from deepagents.middleware.skills and adapts
-it for direct filesystem access needed by CLI commands.
+This module provides filesystem-based skill loading for CLI operations
+(list, create, info). It wraps the prebuilt middleware functionality from
+deepagents.middleware.skills and adapts it for direct filesystem access
+needed by CLI commands.
 
-For middleware usage within agents, use deepagents.middleware.skills.SkillsMiddleware directly.
+For middleware usage within agents, use
+deepagents.middleware.skills.SkillsMiddleware directly.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.skills import SkillMetadata, _list_skills as list_skills_from_backend
+
+if TYPE_CHECKING:
+    from pathlib import Path
+from deepagents.middleware.skills import (
+    SkillMetadata,
+    _list_skills as list_skills_from_backend,
+)
 
 
 class ExtendedSkillMetadata(SkillMetadata):
@@ -58,7 +66,9 @@ def list_skills(
     # Load project skills second (override/augment)
     if project_skills_dir and project_skills_dir.exists():
         project_backend = FilesystemBackend(root_dir=str(project_skills_dir))
-        project_skills = list_skills_from_backend(backend=project_backend, source_path=".")
+        project_skills = list_skills_from_backend(
+            backend=project_backend, source_path="."
+        )
         for skill in project_skills:
             # Add source field for CLI display
             extended_skill: ExtendedSkillMetadata = {**skill, "source": "project"}

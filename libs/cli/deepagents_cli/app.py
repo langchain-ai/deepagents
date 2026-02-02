@@ -1,11 +1,13 @@
 """Textual UI application for deepagents-cli."""
-# ruff: noqa: BLE001, PLR2004, S110
 
 from __future__ import annotations
 
 import asyncio
-import subprocess
+
+# S404: subprocess is required for user-initiated shell commands via ! prefix
+import subprocess  # noqa: S404
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -14,7 +16,6 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import Click, MouseUp, Resize
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
@@ -35,13 +36,16 @@ from deepagents_cli.widgets.welcome import WelcomeBanner
 if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
+    from textual.events import Click, MouseUp, Resize
     from textual.worker import Worker
 
 
 class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 
-    def __init__(self, update_callback: callable, hide_callback: callable | None = None) -> None:
+    def __init__(
+        self, update_callback: callable, hide_callback: callable | None = None
+    ) -> None:
         """Initialize with callbacks to update the display."""
         self._update_callback = update_callback
         self._hide_callback = hide_callback
@@ -88,15 +92,20 @@ class TextualSessionState:
             thread_id: Optional thread ID (generates 8-char hex if not provided)
         """
         self.auto_approve = auto_approve
-        self.thread_id = thread_id if thread_id else uuid.uuid4().hex[:8]
+        self.thread_id = thread_id or uuid.uuid4().hex[:8]
 
     def reset_thread(self) -> str:
-        """Reset to a new thread. Returns the new thread_id."""
+        """Reset to a new thread.
+
+        Returns:
+            The new thread_id.
+        """
         self.thread_id = uuid.uuid4().hex[:8]
         return self.thread_id
 
 
-# Prompt for /remember command - triggers agent to review conversation and update memory/skills
+# Prompt for /remember command - triggers agent to review conversation and update
+# memory/skills
 REMEMBER_PROMPT = """Review our conversation and capture valuable knowledge. Focus especially on **best practices** we discussed or discovered—these are the most important things to preserve.
 
 ## Step 1: Identify Best Practices and Key Learnings
@@ -208,7 +217,7 @@ Use `edit_file` to update existing files or `write_file` to create new ones.
 List what you captured and where you stored it:
 - Skills created (with key best practices encoded)
 - Memory entries added (with location)
-"""
+"""  # noqa: E501
 
 
 class DeepAgentsApp(App):
@@ -227,7 +236,11 @@ class DeepAgentsApp(App):
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         Binding(
-            "shift+tab", "toggle_auto_approve", "Toggle Auto-Approve", show=False, priority=True
+            "shift+tab",
+            "toggle_auto_approve",
+            "Toggle Auto-Approve",
+            show=False,
+            priority=True,
         ),
         Binding("ctrl+o", "toggle_tool_output", "Toggle Tool Output", show=False),
         # Approval menu keys (handled at App level for reliability)
@@ -249,7 +262,7 @@ class DeepAgentsApp(App):
         *,
         agent: Pregel | None = None,
         assistant_id: str | None = None,
-        backend: Any = None,  # noqa: ANN401  # CompositeBackend
+        backend: Any = None,  # CompositeBackend
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
@@ -290,7 +303,11 @@ class DeepAgentsApp(App):
         self._token_tracker: TextualTokenTracker | None = None
 
     def compose(self) -> ComposeResult:
-        """Compose the application layout."""
+        """Compose the application layout.
+
+        Yields:
+            UI components for the main chat area and status bar.
+        """
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
@@ -319,7 +336,9 @@ class DeepAgentsApp(App):
         )
 
         # Create token tracker that updates status bar
-        self._token_tracker = TextualTokenTracker(self._update_tokens, self._hide_tokens)
+        self._token_tracker = TextualTokenTracker(
+            self._update_tokens, self._hide_tokens
+        )
 
         # Create UI adapter if agent is provided
         if self._agent:
@@ -342,12 +361,17 @@ class DeepAgentsApp(App):
 
         # Load thread history if resuming a session
         if self._lc_thread_id and self._agent:
-            self.call_after_refresh(lambda: asyncio.create_task(self._load_thread_history()))
-        # Auto-submit initial prompt if provided (but not when resuming - let user see history first)
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._load_thread_history())
+            )
+        # Auto-submit initial prompt if provided
+        # (but not when resuming - let user see history first)
         elif self._initial_prompt and self._initial_prompt.strip():
             # Use call_after_refresh to ensure UI is fully mounted before submitting
             self.call_after_refresh(
-                lambda: asyncio.create_task(self._handle_user_message(self._initial_prompt))
+                lambda: asyncio.create_task(
+                    self._handle_user_message(self._initial_prompt)
+                )
             )
 
     def on_resize(self, _event: Resize) -> None:
@@ -434,23 +458,25 @@ class DeepAgentsApp(App):
 
     async def _request_approval(
         self,
-        action_request: Any,  # noqa: ANN401
+        action_request: Any,
         assistant_id: str | None,
     ) -> asyncio.Future:
         """Request user approval inline in the messages area.
 
-        Returns a Future that resolves to the user's decision.
         Mounts ApprovalMenu in the messages area (inline with chat).
         ChatInput stays visible - user can still see it.
 
         If another approval is already pending, queue this one.
+
+        Returns:
+            A Future that resolves to the user's decision.
         """
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
         # If there's already a pending approval, wait for it to complete first
         if self._pending_approval_widget is not None:
-            while self._pending_approval_widget is not None:  # noqa: ASYNC110
+            while self._pending_approval_widget is not None:
                 await asyncio.sleep(0.1)
 
         # Create menu with unique ID to avoid conflicts
@@ -510,7 +536,7 @@ class DeepAgentsApp(App):
 
     async def on_approval_menu_decided(
         self,
-        event: Any,  # noqa: ANN401, ARG002
+        event: Any,
     ) -> None:
         """Handle approval menu decision - remove from messages and refocus input."""
         # Remove ApprovalMenu using stored reference
@@ -531,7 +557,8 @@ class DeepAgentsApp(App):
         # Mount user message showing the bash command
         await self._mount_message(UserMessage(f"!{command}"))
 
-        # Execute the bash command (shell=True is intentional for user-requested bash)
+        # Execute bash command (user explicitly requested via ! prefix)
+        # S604: shell=True is intentional - user requested shell execution via ! prefix
         try:
             result = await asyncio.to_thread(  # noqa: S604
                 subprocess.run,
@@ -552,10 +579,14 @@ class DeepAgentsApp(App):
                 await self._mount_message(msg)
                 await msg.write_initial_content()
             else:
-                await self._mount_message(SystemMessage("Command completed (no output)"))
+                await self._mount_message(
+                    SystemMessage("Command completed (no output)")
+                )
 
             if result.returncode != 0:
-                await self._mount_message(ErrorMessage(f"Exit code: {result.returncode}"))
+                await self._mount_message(
+                    ErrorMessage(f"Exit code: {result.returncode}")
+                )
 
             # Scroll to show the output (user-initiated command, so scroll is expected)
             chat = self.query_one("#chat", VerticalScroll)
@@ -574,12 +605,14 @@ class DeepAgentsApp(App):
         """
         cmd = command.lower().strip()
 
-        if cmd in ("/quit", "/exit", "/q"):
+        if cmd in {"/quit", "/exit", "/q"}:
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                SystemMessage("Commands: /quit, /clear, /remember, /tokens, /threads, /help")
+                SystemMessage(
+                    "Commands: /quit, /clear, /remember, /tokens, /threads, /help"
+                )
             )
 
         elif cmd == "/version":
@@ -588,7 +621,9 @@ class DeepAgentsApp(App):
             try:
                 from deepagents_cli._version import __version__
 
-                await self._mount_message(SystemMessage(f"deepagents version: {__version__}"))
+                await self._mount_message(
+                    SystemMessage(f"deepagents version: {__version__}")
+                )
             except Exception:
                 await self._mount_message(SystemMessage("deepagents version: unknown"))
         elif cmd == "/clear":
@@ -600,7 +635,9 @@ class DeepAgentsApp(App):
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
-                await self._mount_message(SystemMessage(f"Started new session: {new_thread_id}"))
+                await self._mount_message(
+                    SystemMessage(f"Started new session: {new_thread_id}")
+                )
         elif cmd == "/threads":
             await self._mount_message(UserMessage(command))
             if self._session_state:
@@ -617,7 +654,9 @@ class DeepAgentsApp(App):
                     formatted = f"{count / 1000:.1f}K"
                 else:
                     formatted = str(count)
-                await self._mount_message(SystemMessage(f"Current context: {formatted} tokens"))
+                await self._mount_message(
+                    SystemMessage(f"Current context: {formatted} tokens")
+                )
             else:
                 await self._mount_message(SystemMessage("No token usage yet"))
         elif cmd == "/remember" or cmd.startswith("/remember "):
@@ -629,7 +668,8 @@ class DeepAgentsApp(App):
             # Build the final prompt
             if additional_context:
                 final_prompt = (
-                    f"{REMEMBER_PROMPT}\n\n**Additional context from user:** {additional_context}"
+                    f"{REMEMBER_PROMPT}\n\n"
+                    f"**Additional context from user:** {additional_context}"
                 )
             else:
                 final_prompt = REMEMBER_PROMPT
@@ -672,7 +712,10 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                SystemMessage("Agent not configured. Run with --agent flag or use standalone mode.")
+                SystemMessage(
+                    "Agent not configured. "
+                    "Run with --agent flag or use standalone mode."
+                )
             )
 
     async def _run_agent_task(self, message: str) -> None:
@@ -739,7 +782,11 @@ class DeepAgentsApp(App):
             for msg in messages:
                 if isinstance(msg, HumanMessage):
                     # Skip system messages that were auto-injected
-                    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    content = (
+                        msg.content
+                        if isinstance(msg.content, str)
+                        else str(msg.content)
+                    )
                     if content.startswith("[SYSTEM]"):
                         continue
                     await self._mount_message(UserMessage(content))
@@ -792,7 +839,9 @@ class DeepAgentsApp(App):
                         if widget:
                             status = getattr(msg, "status", "success")
                             content = (
-                                msg.content if isinstance(msg.content, str) else str(msg.content)
+                                msg.content
+                                if isinstance(msg.content, str)
+                                else str(msg.content)
                             )
                             if status == "success":
                                 widget.set_success(content)
@@ -806,7 +855,9 @@ class DeepAgentsApp(App):
                     widget.set_rejected()  # Shows as interrupted/rejected in UI
 
             # Show system message indicating this is a resumed session
-            await self._mount_message(SystemMessage(f"Resumed session: {self._lc_thread_id}"))
+            await self._mount_message(
+                SystemMessage(f"Resumed session: {self._lc_thread_id}")
+            )
 
             # Scroll to bottom after UI fully renders
             # Use set_timer to ensure layout is complete (Markdown rendering is async)
@@ -899,21 +950,22 @@ class DeepAgentsApp(App):
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output."""
         # Find all tool messages with output, get the most recent one
-        try:
+        # NoMatches is raised if no ToolCallMessage widgets exist
+        with suppress(NoMatches):
             tool_messages = list(self.query(ToolCallMessage))
             # Find ones with output, toggle the most recent
             for tool_msg in reversed(tool_messages):
                 if tool_msg.has_output:
                     tool_msg.toggle_output()
                     return
-        except Exception:
-            pass
 
     # Approval menu action handlers (delegated from App-level bindings)
-    # NOTE: These only activate when approval widget is pending AND input is not focused
+    # NOTE: These only activate when approval widget is pending
+    # AND input is not focused
     def action_approval_up(self) -> None:
         """Handle up arrow in approval menu."""
-        # Only handle if approval is active (input handles its own up for history/completion)
+        # Only handle if approval is active
+        # (input handles its own up for history/completion)
         if self._pending_approval_widget and not self._is_input_focused():
             self._pending_approval_widget.action_move_up()
 
@@ -929,7 +981,11 @@ class DeepAgentsApp(App):
             self._pending_approval_widget.action_select()
 
     def _is_input_focused(self) -> bool:
-        """Check if the chat input (or its text area) has focus."""
+        """Check if the chat input (or its text area) has focus.
+
+        Returns:
+            True if the input widget has focus, False otherwise.
+        """
         if not self._chat_input:
             return False
         focused = self.focused
@@ -967,7 +1023,7 @@ class DeepAgentsApp(App):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
-    def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002
+    def on_mouse_up(self, event: MouseUp) -> None:
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
@@ -976,7 +1032,7 @@ async def run_textual_app(
     *,
     agent: Pregel | None = None,
     assistant_id: str | None = None,
-    backend: Any = None,  # noqa: ANN401  # CompositeBackend
+    backend: Any = None,  # CompositeBackend
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,

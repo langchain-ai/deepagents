@@ -12,42 +12,68 @@ from rich.table import Table
 
 from deepagents_cli.config import COLORS, console
 
-# Patch aiosqlite.Connection to add is_alive() method required by langgraph-checkpoint>=2.1.0
+# Patch aiosqlite.Connection to add is_alive() method required by
+# langgraph-checkpoint>=2.1.0
 # See: https://github.com/langchain-ai/langgraph/issues/6583
 if not hasattr(aiosqlite.Connection, "is_alive"):
 
     def _is_alive(self: aiosqlite.Connection) -> bool:
-        """Check if the connection is still alive."""
+        """Check if the connection is still alive.
+
+        Returns:
+            True if connection is alive, False otherwise.
+        """
         return self._connection is not None
 
     aiosqlite.Connection.is_alive = _is_alive
 
 
 def _format_timestamp(iso_timestamp: str | None) -> str:
-    """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm')."""
+    """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
+
+    Returns:
+        Formatted timestamp string or empty string if invalid.
+    """
     if not iso_timestamp:
         return ""
     try:
         dt = datetime.fromisoformat(iso_timestamp).astimezone()
-        return dt.strftime("%b %d, %-I:%M%p").lower().replace("am", "am").replace("pm", "pm")
+        return (
+            dt.strftime("%b %d, %-I:%M%p")
+            .lower()
+            .replace("am", "am")
+            .replace("pm", "pm")
+        )
     except (ValueError, TypeError):
         return ""
 
 
 def get_db_path() -> Path:
-    """Get path to global database."""
+    """Get path to global database.
+
+    Returns:
+        Path to the SQLite database file.
+    """
     db_dir = Path.home() / ".deepagents"
     db_dir.mkdir(parents=True, exist_ok=True)
     return db_dir / "sessions.db"
 
 
 def generate_thread_id() -> str:
-    """Generate a new 8-char hex thread ID."""
+    """Generate a new 8-char hex thread ID.
+
+    Returns:
+        8-character hexadecimal string.
+    """
     return uuid.uuid4().hex[:8]
 
 
 async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
-    """Check if a table exists in the database."""
+    """Check if a table exists in the database.
+
+    Returns:
+        True if table exists, False otherwise.
+    """
     query = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?"
     async with conn.execute(query, (table,)) as cursor:
         return await cursor.fetchone() is not None
@@ -57,7 +83,11 @@ async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
 ) -> list[dict]:
-    """List threads from checkpoints table."""
+    """List threads from checkpoints table.
+
+    Returns:
+        List of thread dicts with thread_id, agent_name, and updated_at.
+    """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         # Return empty if table doesn't exist yet (fresh install)
@@ -90,11 +120,18 @@ async def list_threads(
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
-            return [{"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]} for r in rows]
+            return [
+                {"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]}
+                for r in rows
+            ]
 
 
 async def get_most_recent(agent_name: str | None = None) -> str | None:
-    """Get most recent thread_id, optionally filtered by agent."""
+    """Get most recent thread_id, optionally filtered by agent.
+
+    Returns:
+        Most recent thread_id or None if no threads exist.
+    """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         if not await _table_exists(conn, "checkpoints"):
@@ -109,7 +146,9 @@ async def get_most_recent(agent_name: str | None = None) -> str | None:
             """
             params: tuple = (agent_name,)
         else:
-            query = "SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 1"
+            query = (
+                "SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 1"
+            )
             params = ()
 
         async with conn.execute(query, params) as cursor:
@@ -118,7 +157,11 @@ async def get_most_recent(agent_name: str | None = None) -> str | None:
 
 
 async def get_thread_agent(thread_id: str) -> str | None:
-    """Get agent_name for a thread."""
+    """Get agent_name for a thread.
+
+    Returns:
+        Agent name associated with the thread, or None if not found.
+    """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         if not await _table_exists(conn, "checkpoints"):
@@ -136,7 +179,11 @@ async def get_thread_agent(thread_id: str) -> str | None:
 
 
 async def thread_exists(thread_id: str) -> bool:
-    """Check if a thread exists in checkpoints."""
+    """Check if a thread exists in checkpoints.
+
+    Returns:
+        True if thread exists, False otherwise.
+    """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         if not await _table_exists(conn, "checkpoints"):
@@ -149,13 +196,19 @@ async def thread_exists(thread_id: str) -> bool:
 
 
 async def delete_thread(thread_id: str) -> bool:
-    """Delete thread checkpoints. Returns True if deleted."""
+    """Delete thread checkpoints.
+
+    Returns:
+        True if thread was deleted, False if not found.
+    """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         if not await _table_exists(conn, "checkpoints"):
             return False
 
-        cursor = await conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
+        cursor = await conn.execute(
+            "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
+        )
         deleted = cursor.rowcount > 0
         if await _table_exists(conn, "writes"):
             await conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread_id,))
@@ -165,7 +218,11 @@ async def delete_thread(thread_id: str) -> bool:
 
 @asynccontextmanager
 async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
-    """Get AsyncSqliteSaver for the global database."""
+    """Get AsyncSqliteSaver for the global database.
+
+    Yields:
+        AsyncSqliteSaver instance for checkpoint persistence.
+    """
     async with AsyncSqliteSaver.from_conn_string(str(get_db_path())) as checkpointer:
         yield checkpointer
 
@@ -179,7 +236,9 @@ async def list_threads_command(
 
     if not threads:
         if agent_name:
-            console.print(f"[yellow]No threads found for agent '{agent_name}'.[/yellow]")
+            console.print(
+                f"[yellow]No threads found for agent '{agent_name}'.[/yellow]"
+            )
         else:
             console.print("[yellow]No threads found.[/yellow]")
         console.print("[dim]Start a conversation with: deepagents[/dim]")
@@ -187,7 +246,9 @@ async def list_threads_command(
 
     title = f"Threads for '{agent_name}'" if agent_name else "All Threads"
 
-    table = Table(title=title, show_header=True, header_style=f"bold {COLORS['primary']}")
+    table = Table(
+        title=title, show_header=True, header_style=f"bold {COLORS['primary']}"
+    )
     table.add_column("Thread ID", style="bold")
     table.add_column("Agent")
     table.add_column("Last Used", style="dim")

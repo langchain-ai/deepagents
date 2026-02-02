@@ -203,7 +203,10 @@ def test_format_task_description():
     assert "Subagent Type: general-purpose" in description
     assert "Task Instructions:" in description
     assert "Analyze code structure and identify the main components." in description
-    assert "⚠️  Subagent will have access to file operations and shell commands" in description
+    assert (
+        "⚠️  Subagent will have access to file operations and shell commands"
+        in description
+    )
 
 
 def test_format_task_description_truncates_long_description():

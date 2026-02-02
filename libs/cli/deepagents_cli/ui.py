@@ -1,6 +1,7 @@
 """UI rendering and display utilities for the CLI."""
 
 import json
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -9,10 +10,14 @@ from deepagents_cli.shell import _DEFAULT_SHELL_TIMEOUT
 
 
 def _format_timeout(seconds: int) -> str:
-    """Format timeout in human-readable units (e.g., 300 -> '5m', 3600 -> '1h')."""
-    if seconds < 60:  # noqa: PLR2004
+    """Format timeout in human-readable units (e.g., 300 -> '5m', 3600 -> '1h').
+
+    Returns:
+        Human-readable timeout string (e.g., '5m', '1h', '300s').
+    """
+    if seconds < 60:
         return f"{seconds}s"
-    if seconds < 3600 and seconds % 60 == 0:  # noqa: PLR2004
+    if seconds < 3600 and seconds % 60 == 0:
         return f"{seconds // 60}m"
     if seconds % 3600 == 0:
         return f"{seconds // 3600}h"
@@ -21,7 +26,11 @@ def _format_timeout(seconds: int) -> str:
 
 
 def truncate_value(value: str, max_length: int = MAX_ARG_LENGTH) -> str:
-    """Truncate a string value if it exceeds max_length."""
+    """Truncate a string value if it exceeds max_length.
+
+    Returns:
+        Truncated string with '...' suffix if exceeded max_length, otherwise original.
+    """
     if len(value) > max_length:
         return value[:max_length] + "..."
     return value
@@ -46,7 +55,11 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     """
 
     def abbreviate_path(path_str: str, max_length: int = 60) -> str:
-        """Abbreviate a file path intelligently - show basename or relative path."""
+        """Abbreviate a file path intelligently - show basename or relative path.
+
+        Returns:
+            Shortened path string suitable for display.
+        """
         try:
             path = Path(path_str)
 
@@ -55,27 +68,28 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
                 return path_str
 
             # Try to get relative path from current working directory
-            try:
+            with suppress(
+                ValueError,  # ValueError: path is not relative to cwd
+                OSError,  # OSError: filesystem errors when resolving paths
+            ):
                 rel_path = path.relative_to(Path.cwd())
                 rel_str = str(rel_path)
                 # Use relative if it's shorter and not too long
                 if len(rel_str) < len(path_str) and len(rel_str) <= max_length:
                     return rel_str
-            except (ValueError, Exception):
-                pass
 
             # If absolute path is reasonable length, use it
             if len(path_str) <= max_length:
                 return path_str
-
-            # Otherwise, just show basename (filename only)
-            return path.name
         except Exception:
             # Fallback to original string if any error
             return truncate_value(path_str, max_length)
+        else:
+            # Otherwise, just show basename (filename only)
+            return path.name
 
     # Tool-specific formatting - show the most important argument(s)
-    if tool_name in ("read_file", "write_file", "edit_file"):
+    if tool_name in {"read_file", "write_file", "edit_file"}:
         # File operations: show the primary file path argument (file_path or path)
         path_value = tool_args.get("file_path")
         if path_value is None:
@@ -163,12 +177,18 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
 
     # Fallback: generic formatting for unknown tools
     # Show all arguments in key=value format
-    args_str = ", ".join(f"{k}={truncate_value(str(v), 50)}" for k, v in tool_args.items())
+    args_str = ", ".join(
+        f"{k}={truncate_value(str(v), 50)}" for k, v in tool_args.items()
+    )
     return f"{tool_name}({args_str})"
 
 
 def format_tool_message_content(content: Any) -> str:
-    """Convert ToolMessage content into a printable string."""
+    """Convert ToolMessage content into a printable string.
+
+    Returns:
+        Formatted string representation of the tool message content.
+    """
     if content is None:
         return ""
     if isinstance(content, list):
@@ -192,41 +212,56 @@ def show_help() -> None:
     console.print()
 
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
-    console.print("  deepagents [OPTIONS]                           Start interactive session")
-    console.print("  deepagents list                                List all available agents")
-    console.print("  deepagents reset --agent AGENT                 Reset agent to default prompt")
     console.print(
-        "  deepagents reset --agent AGENT --target SOURCE Reset agent to copy of another agent"
+        "  deepagents [OPTIONS]                           Start interactive session"
     )
-    console.print("  deepagents help                                Show this help message")
-    console.print("  deepagents --version                           Show deepagents version")
+    console.print(
+        "  deepagents list                                List all available agents"
+    )
+    console.print(
+        "  deepagents reset --agent AGENT                 Reset agent to default prompt"
+    )
+    console.print(
+        "  deepagents reset --agent AGENT --target SOURCE Reset agent to copy of another agent"  # noqa: E501
+    )
+    console.print(
+        "  deepagents help                                Show this help message"
+    )
+    console.print(
+        "  deepagents --version                           Show deepagents version"
+    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
     console.print("  --agent NAME                  Agent identifier (default: agent)")
     console.print(
-        "  --model MODEL                 Model to use (e.g., claude-sonnet-4-5-20250929, gpt-4o)"
+        "  --model MODEL                 Model to use (e.g., claude-sonnet-4-5-20250929, gpt-4o)"  # noqa: E501
     )
-    console.print("  --auto-approve                Auto-approve tool usage without prompting")
     console.print(
-        "  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)"
+        "  --auto-approve                Auto-approve tool usage without prompting"
     )
-    console.print("  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)")
     console.print(
-        "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"
+        "  --sandbox TYPE                Remote sandbox for execution (modal, runloop, daytona)"  # noqa: E501
+    )
+    console.print(
+        "  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)"  # noqa: E501
+    )
+    console.print(
+        "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"  # noqa: E501
     )
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
     console.print(
-        "  deepagents                              # Start with default agent", style=COLORS["dim"]
+        "  deepagents                              # Start with default agent",
+        style=COLORS["dim"],
     )
     console.print(
         "  deepagents --agent mybot                # Start with agent named 'mybot'",
         style=COLORS["dim"],
     )
     console.print(
-        "  deepagents --model gpt-4o               # Use specific model (auto-detects provider)",
+        "  deepagents --model gpt-4o               # Use specific model (auto-detects provider)",  # noqa: E501
         style=COLORS["dim"],
     )
     console.print(
@@ -249,10 +284,12 @@ def show_help() -> None:
 
     console.print("[bold]Thread Management:[/bold]", style=COLORS["primary"])
     console.print(
-        "  deepagents threads list                 # List all sessions", style=COLORS["dim"]
+        "  deepagents threads list                 # List all sessions",
+        style=COLORS["dim"],
     )
     console.print(
-        "  deepagents threads delete <ID>          # Delete a session", style=COLORS["dim"]
+        "  deepagents threads delete <ID>          # Delete a session",
+        style=COLORS["dim"],
     )
     console.print()
 
@@ -260,7 +297,11 @@ def show_help() -> None:
     console.print("  Enter           Submit your message", style=COLORS["dim"])
     console.print("  Ctrl+J          Insert newline", style=COLORS["dim"])
     console.print("  Shift+Tab       Toggle auto-approve mode", style=COLORS["dim"])
-    console.print("  @filename       Auto-complete files and inject content", style=COLORS["dim"])
-    console.print("  /command        Slash commands (/help, /clear, /quit)", style=COLORS["dim"])
+    console.print(
+        "  @filename       Auto-complete files and inject content", style=COLORS["dim"]
+    )
+    console.print(
+        "  /command        Slash commands (/help, /clear, /quit)", style=COLORS["dim"]
+    )
     console.print("  !command        Run bash commands directly", style=COLORS["dim"])
     console.print()

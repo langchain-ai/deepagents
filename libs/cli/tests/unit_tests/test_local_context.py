@@ -106,7 +106,10 @@ class TestLocalContextMiddleware:
 
     @patch("deepagents_cli.local_context.subprocess.run")
     def test_before_agent_with_git_repo(
-        self, mock_run: Mock, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_run: Mock,
+        tmp_path: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test before_agent returns git context when in git repo."""
         monkeypatch.chdir(tmp_path)
@@ -148,9 +151,12 @@ class TestLocalContextMiddleware:
 
     @patch("deepagents_cli.local_context.subprocess.run")
     def test_before_agent_not_in_git_repo(
-        self, mock_run: Mock, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_run: Mock,
+        tmp_path: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test before_agent returns local context without git info when not in git repo."""
+        """Test before_agent returns local context without git info."""
         monkeypatch.chdir(tmp_path)
 
         # Create a file so the directory isn't empty
@@ -182,7 +188,10 @@ class TestLocalContextMiddleware:
         request = Mock()
         request.system_prompt = "Base system prompt"
         request.state = {
-            "local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"  # noqa: E501
+            "local_context": (
+                "## Local Context\n\n"
+                "Current branch: `main`\nMain branch available: `main`"
+            )
         }
 
         # Mock the override method to return a new request
@@ -237,7 +246,10 @@ class TestLocalContextMiddleware:
         request = Mock()
         request.system_prompt = "Base system prompt"
         request.state = {
-            "local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"  # noqa: E501
+            "local_context": (
+                "## Local Context\n\n"
+                "Current branch: `main`\nMain branch available: `main`"
+            )
         }
 
         # Mock the override method to return a new request

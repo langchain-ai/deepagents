@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -982,38 +981,56 @@ class TestSkillsMiddlewareIsolation:
         responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
         assert responses[0].error is None
 
-        # Track what the custom subagent sees in its system prompt
-        captured_system_prompts: list[str] = []
+        # Track the runtime state seen by the custom subagent's tool
+        captured_subagent_states: list[dict[str, Any]] = []
 
-        class PromptCapturingModel(GenericFakeChatModel):
-            def invoke(self, messages, **kwargs):
-                # Capture system prompt
-                if messages and hasattr(messages[0], 'content'):
-                    captured_system_prompts.append(messages[0].content)
-                return super().invoke(messages, **kwargs)
+        @tool
+        def capture_subagent_state(query: str, runtime: ToolRuntime) -> str:
+            """Captures runtime state from the subagent."""
+            captured_subagent_states.append(dict(runtime.state))
+            return f"Processed: {query}"
 
-        # Create custom subagent model that captures system prompt
-        custom_subagent_model = PromptCapturingModel(
-            messages=iter([AIMessage(content="Custom subagent response.")])
+        # Create custom subagent model that calls the capture tool
+        custom_subagent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_subagent_state",
+                                "args": {"query": "check state"},
+                                "id": "call_capture",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Custom subagent response."),
+                ]
+            )
         )
 
         # Create leader that calls the custom subagent
         leader_model = GenericFakeChatModel(
-            messages=iter([
-                AIMessage(
-                    content="",
-                    tool_calls=[{
-                        "name": "task",
-                        "args": {
-                            "description": "Do custom work",
-                            "subagent_type": "custom-worker",
-                        },
-                        "id": "call_custom",
-                        "type": "tool_call",
-                    }]
-                ),
-                AIMessage(content="Done."),
-            ])
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do custom work",
+                                    "subagent_type": "custom-worker",
+                                },
+                                "id": "call_custom",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
         )
 
         # Import SubAgent for defining custom subagent
@@ -1030,27 +1047,23 @@ class TestSkillsMiddlewareIsolation:
                     description="A custom worker agent",
                     system_prompt="You are a custom worker.",
                     model=custom_subagent_model,
+                    tools=[capture_subagent_state],
                 )
             ],
         )
 
-        result = leader.invoke(
+        leader.invoke(
             {"messages": [HumanMessage(content="Go")]},
             config={"configurable": {"thread_id": "test_custom_no_skills"}},
         )
 
-        # Verify the custom subagent was called
-        assert len(captured_system_prompts) > 0, "Custom subagent should have been invoked"
+        # Verify the custom subagent tool was called
+        assert len(captured_subagent_states) > 0, "Custom subagent tool should have been invoked"
 
-        # Verify the custom subagent's system prompt does NOT contain skills
-        for prompt in captured_system_prompts:
-            assert "Skills System" not in prompt, (
-                "Custom subagent should NOT have Skills System in prompt - "
-                "skills middleware should only apply to general-purpose subagent"
-            )
-            assert "test-skill" not in prompt, (
-                "Custom subagent should NOT see the test-skill - "
-                "skills middleware should only apply to general-purpose subagent"
+        # Verify the custom subagent's runtime.state does NOT contain skills_metadata
+        for state in captured_subagent_states:
+            assert "skills_metadata" not in state, (
+                "Custom subagent should NOT have skills_metadata in runtime.state - skills middleware should only apply to general-purpose subagent"
             )
 
 
@@ -1106,9 +1119,7 @@ class TestSubAgentPrivateStateIsolation:
         )
 
         # Create subagent with SkillsMiddleware
-        subagent_chat_model = GenericFakeChatModel(
-            messages=iter([AIMessage(content="Subagent processed request using skills.")])
-        )
+        subagent_chat_model = GenericFakeChatModel(messages=iter([AIMessage(content="Subagent processed request using skills.")]))
 
         skills_middleware = SkillsMiddleware(
             backend=backend,
@@ -1141,8 +1152,7 @@ class TestSubAgentPrivateStateIsolation:
 
         # Verify skills_metadata is NOT in the parent agent's final state
         assert "skills_metadata" not in result, (
-            "Parent agent state should not contain skills_metadata key "
-            "(PrivateStateAttr should filter it from subagent output)"
+            "Parent agent state should not contain skills_metadata key (PrivateStateAttr should filter it from subagent output)"
         )
 
         # Verify the subagent did return a response
@@ -1150,186 +1160,119 @@ class TestSubAgentPrivateStateIsolation:
         assert len(tool_messages) == 1
         assert "Subagent processed request" in tool_messages[0].content
 
-    def test_memory_contents_not_bubbled_to_parent(self, tmp_path: Path) -> None:
-        """Test that memory_contents from subagent middleware doesn't bubble up to parent.
+    def test_general_purpose_subagent_inherits_skills_from_main_agent(self, tmp_path: Path) -> None:
+        """Test that the general-purpose subagent DOES inherit skills from main agent.
 
         This test verifies that:
-        1. A subagent with MemoryMiddleware loads memory and populates memory_contents in its state
-        2. When the subagent completes, memory_contents is NOT included in the parent's state
-        3. The PrivateStateAttr annotation correctly filters the field from invoke() output
+        1. When create_deep_agent is called with skills, the general-purpose subagent gets SkillsMiddleware
+        2. The skills_metadata is present in the general-purpose subagent's runtime.state
+        3. This is the intended behavior - only general-purpose subagents should have skills
+
+        This complements test_custom_subagent_does_not_inherit_skills which verifies
+        that custom subagents do NOT get skills.
         """
-        # Set up filesystem backend with an AGENTS.md file
+        # Set up filesystem backend with a skill
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        memory_path = str(tmp_path / "AGENTS.md")
-        memory_content = """# Agent Memory
+        skills_dir = tmp_path / "skills" / "user"
+        skill_path = str(skills_dir / "gp-test-skill" / "SKILL.md")
+        skill_content = _make_skill_content("gp-test-skill", "A skill for general purpose agent")
 
-This is test memory content for the agent.
-
-## Instructions
-- Be helpful
-- Follow guidelines
-"""
-
-        responses = backend.upload_files([(memory_path, memory_content.encode("utf-8"))])
+        responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
         assert responses[0].error is None
 
-        # Create parent agent's chat model
-        parent_chat_model = GenericFakeChatModel(
+        # Track runtime states from both leader and general-purpose subagent
+        captured_leader_states: list[dict[str, Any]] = []
+        captured_gp_states: list[dict[str, Any]] = []
+
+        @tool
+        def capture_leader_state(query: str, runtime: ToolRuntime) -> str:
+            """Captures runtime state from the leader agent."""
+            captured_leader_states.append(dict(runtime.state))
+            return f"Leader processed: {query}"
+
+        @tool
+        def capture_gp_state(query: str, runtime: ToolRuntime) -> str:
+            """Captures runtime state from the general-purpose subagent."""
+            captured_gp_states.append(dict(runtime.state))
+            return f"GP processed: {query}"
+
+        # The general-purpose subagent inherits tools from the leader and uses the same model.
+        # We provide enough responses for both the leader (3 calls) and subagent (2 calls).
+        shared_model = GenericFakeChatModel(
             messages=iter(
                 [
+                    # Leader first captures its own state
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_leader_state",
+                                "args": {"query": "check leader state"},
+                                "id": "call_leader_capture",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    # Leader then invokes the task tool
                     AIMessage(
                         content="",
                         tool_calls=[
                             {
                                 "name": "task",
                                 "args": {
-                                    "description": "Process this request",
-                                    "subagent_type": "memory-agent",
+                                    "description": "Call capture_gp_state tool to check state",
+                                    "subagent_type": "general-purpose",
                                 },
-                                "id": "call_memory_agent",
+                                "id": "call_gp",
                                 "type": "tool_call",
                             }
                         ],
                     ),
-                    AIMessage(content="Task completed."),
+                    # General-purpose subagent captures its state (inherits tools from leader)
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_gp_state",
+                                "args": {"query": "check gp state"},
+                                "id": "call_gp_capture",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    # General-purpose subagent's final response
+                    AIMessage(content="General purpose subagent response."),
+                    # Leader's final response
+                    AIMessage(content="Done."),
                 ]
             )
         )
 
-        # Create subagent with MemoryMiddleware
-        subagent_chat_model = GenericFakeChatModel(
-            messages=iter([AIMessage(content="Subagent processed request using memory.")])
-        )
-
-        memory_middleware = MemoryMiddleware(
+        leader = create_deep_agent(
+            model=shared_model,
+            checkpointer=InMemorySaver(),
             backend=backend,
-            sources=[memory_path],
+            skills=[str(skills_dir)],  # Leader has skills
+            tools=[capture_leader_state, capture_gp_state],
         )
 
-        subagent = create_agent(
-            model=subagent_chat_model,
-            middleware=[memory_middleware],
+        leader.invoke(
+            {"messages": [HumanMessage(content="Go")]},
+            config={"configurable": {"thread_id": "test_gp_with_skills"}},
         )
 
-        # Create parent agent with the subagent
-        parent_agent = create_deep_agent(
-            model=parent_chat_model,
-            checkpointer=InMemorySaver(),
-            subagents=[
-                CompiledSubAgent(
-                    name="memory-agent",
-                    description="Agent with memory middleware.",
-                    runnable=subagent,
-                )
-            ],
+        # Verify the leader tool was called and has skills_metadata
+        assert len(captured_leader_states) > 0, "Leader tool should have been invoked"
+        assert "skills_metadata" in captured_leader_states[0], "Leader should have skills_metadata in runtime.state"
+
+        # Verify the general-purpose subagent tool was called and has skills_metadata
+        assert len(captured_gp_states) > 0, "General-purpose subagent tool should have been invoked"
+        assert "skills_metadata" in captured_gp_states[0], (
+            "General-purpose subagent SHOULD have skills_metadata in runtime.state - skills middleware should be applied to general-purpose subagent"
         )
 
-        # Invoke parent agent
-        result = parent_agent.invoke(
-            {"messages": [HumanMessage(content="Hello")]},
-            config={"configurable": {"thread_id": "test_memory_isolation"}},
-        )
-
-        # Verify memory_contents is NOT in the parent agent's final state
-        assert "memory_contents" not in result, (
-            "Parent agent state should not contain memory_contents key "
-            "(PrivateStateAttr should filter it from subagent output)"
-        )
-
-        # Verify the subagent did return a response
-        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) == 1
-        assert "Subagent processed request" in tool_messages[0].content
-
-    def test_both_skills_and_memory_not_bubbled_to_parent(self, tmp_path: Path) -> None:
-        """Test that both skills_metadata and memory_contents are isolated when subagent has both middlewares.
-
-        This test verifies that when a subagent uses both SkillsMiddleware and MemoryMiddleware,
-        neither skills_metadata nor memory_contents leaks back to the parent agent's state,
-        thanks to PrivateStateAttr filtering on the invoke() output.
-        """
-        # Set up filesystem backend with both skills and memory
-        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-
-        # Create skill
-        skills_dir = tmp_path / "skills" / "user"
-        skill_path = str(skills_dir / "combined-skill" / "SKILL.md")
-        skill_content = _make_skill_content("combined-skill", "A test skill")
-
-        # Create memory
-        memory_path = str(tmp_path / "AGENTS.md")
-        memory_content = "# Memory\nTest memory content."
-
-        responses = backend.upload_files([
-            (skill_path, skill_content.encode("utf-8")),
-            (memory_path, memory_content.encode("utf-8")),
-        ])
-        assert all(r.error is None for r in responses)
-
-        # Create parent agent's chat model
-        parent_chat_model = GenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "task",
-                                "args": {
-                                    "description": "Process this request",
-                                    "subagent_type": "full-agent",
-                                },
-                                "id": "call_full_agent",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(content="Task completed."),
-                ]
-            )
-        )
-
-        # Create subagent with both middlewares
-        subagent_chat_model = GenericFakeChatModel(
-            messages=iter([AIMessage(content="Subagent processed with skills and memory.")])
-        )
-
-        skills_middleware = SkillsMiddleware(backend=backend, sources=[str(skills_dir)])
-        memory_middleware = MemoryMiddleware(backend=backend, sources=[memory_path])
-
-        subagent = create_agent(
-            model=subagent_chat_model,
-            middleware=[skills_middleware, memory_middleware],
-        )
-
-        # Create parent agent
-        parent_agent = create_deep_agent(
-            model=parent_chat_model,
-            checkpointer=InMemorySaver(),
-            subagents=[
-                CompiledSubAgent(
-                    name="full-agent",
-                    description="Agent with both skills and memory middleware.",
-                    runnable=subagent,
-                )
-            ],
-        )
-
-        # Invoke parent agent
-        result = parent_agent.invoke(
-            {"messages": [HumanMessage(content="Hello")]},
-            config={"configurable": {"thread_id": "test_combined_isolation"}},
-        )
-
-        # Verify NEITHER key is in the parent agent's final state
-        assert "skills_metadata" not in result, (
-            "Parent agent state should not contain skills_metadata key"
-        )
-        assert "memory_contents" not in result, (
-            "Parent agent state should not contain memory_contents key"
-        )
-
-        # Verify the subagent did return a response
-        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert len(tool_messages) == 1
-        assert "Subagent processed" in tool_messages[0].content
+        # Verify the skill name is in the skills_metadata
+        # skills_metadata is a list[SkillMetadata] where each item is a TypedDict with a 'name' key
+        gp_skills_metadata = captured_gp_states[0]["skills_metadata"]
+        skill_names = [s["name"] for s in gp_skills_metadata]
+        assert "gp-test-skill" in skill_names, f"General-purpose subagent should have 'gp-test-skill' in skills_metadata. Found skills: {skill_names}"

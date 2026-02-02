@@ -106,13 +106,16 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 
 # State keys that are excluded when passing state to subagents and when returning
 # updates from subagents.
+#
 # When returning updates:
 # 1. The messages key is handled explicitly to ensure only the final message is included
 # 2. The todos and structured_response keys are excluded as they do not have a defined reducer
 #    and no clear meaning for returning them from a subagent to the main agent.
-# 3. The skills_metadata and memory_contents keys are private middleware state that should
-#    not propagate between parent and child agents (each agent loads its own via middleware).
-_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata", "memory_contents"}
+# 3. The skills_metadata key is automatically excluded from subagent output via PrivateStateAttr
+#    annotations on the state schema. However, it must ALSO be explicitly filtered from
+#    runtime.state when invoking a subagent to prevent parent skills from leaking to child agents
+#    (the general-purpose subagent loads its own skills via SkillsMiddleware).
+_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata"}
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 

@@ -12,6 +12,10 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools.base import ToolException
 
 _DEFAULT_SHELL_TIMEOUT = 120
+"""Default shell timeout in seconds.
+
+Operations longer than this will be terminated.
+"""
 
 
 class ShellMiddleware(AgentMiddleware[AgentState, Any]):
@@ -53,11 +57,12 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
 
         # Build description with working directory information
         description = (
-            f"Execute a shell command directly on the host. Commands will run in "
+            "Execute a shell command directly on the host. Commands will run in "
             f"the working directory: {workspace_root}. Each command runs in a fresh shell "
-            f"environment with the current process's environment variables. Commands may "
-            f"be truncated if they exceed the configured timeout ({self._default_timeout}s) "
-            f"or output limits. Use the optional timeout parameter for long-running commands."
+            "environment with the current process's environment variables. Commands may "
+            f"be truncated if they exceed the configured timeout ({self._default_timeout} seconds) "
+            "or output limits. Use the optional timeout parameter (in seconds) for long-running "
+            "commands."
         )
 
         @tool(self._tool_name, description=description)
@@ -71,8 +76,9 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
             Args:
                 command: The shell command to execute.
                 runtime: The tool runtime context.
-                timeout: Optional timeout in seconds for this command. Use for
-                    long-running commands that may exceed the default timeout.
+                timeout: Optional timeout in seconds for this command. Use for long-running
+                    commands that may exceed the default timeout.
+                    Example: timeout=300 for 5 minutes.
             """
             return self._run_shell_command(
                 command, tool_call_id=runtime.tool_call_id, timeout=timeout

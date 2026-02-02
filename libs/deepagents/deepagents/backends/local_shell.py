@@ -80,10 +80,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         from deepagents.backends import LocalShellBackend
 
         # Create backend with explicit environment
-        backend = LocalShellBackend(
-            root_dir="/home/user/project",
-            env={"PATH": "/usr/bin:/bin"}
-        )
+        backend = LocalShellBackend(root_dir="/home/user/project", env={"PATH": "/usr/bin:/bin"})
 
         # Execute shell commands (runs directly on host)
         result = backend.execute("ls -la")
@@ -95,10 +92,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         backend.write("/output.txt", "Hello world")
 
         # Inherit all environment variables
-        backend = LocalShellBackend(
-            root_dir="/home/user/project",
-            inherit_env=True
-        )
+        backend = LocalShellBackend(root_dir="/home/user/project", inherit_env=True)
         ```
     """
 

@@ -1,0 +1,196 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepagents-cli"
+version = "0.0.15"
+description = "Terminal interface for DeepAgents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11,<4.0"
+keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Terminals",
+]
+dependencies = [
+  # Framework
+  "deepagents==0.3.9",
+  "langchain>=1.2.7,<2.0.0",
+  "langchain-openai>=1.1.7,<2.0.0",
+  "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
+
+  # UI/Terminal
+  "textual>=6.0.0,<8.0.0",
+  "textual-autocomplete>=3.0.0,<5.0.0",
+  "prompt-toolkit>=3.0.52,<4.0.0",
+  "rich>=14.0.0,<15.0.0",
+  "markdownify>=0.13.0,<2.0.0",
+
+  # Sandbox integrations
+  "daytona>=0.113.0,<1.0.0",
+  "modal>=0.65.0,<2.0.0",
+  "runloop-api-client>=0.69.0",
+
+  # Tools
+  "tavily-python>=0.7.21,<1.0.0",
+
+  # Clipboard
+  "pyperclip>=1.11.0,<2.0.0",
+
+  # Utilities
+  "python-dotenv>=1.0.0,<2.0.0",
+  "requests>=2.0.0,<3.0.0",
+  "pillow>=10.0.0,<13.0.0",
+  "pyyaml>=6.0.0",
+  "aiosqlite>=0.19.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
+
+[project.scripts]
+deepagents = "deepagents_cli:cli_main"
+deepagents-cli = "deepagents_cli:cli_main"
+
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Changelog = "https://github.com/langchain-ai/deepagents/blob/master/libs/cli/CHANGELOG.md"
+Twitter = "https://x.com/LangChain"
+
+[dependency-groups]
+test = [
+    "build>=1.0.0,<2.0.0",
+    "ruff>=0.14.11,<0.15.0",
+    "ty>=0.0.1,<1.0.0",
+    "pytest>=8.3.4,<9.0.0",
+    "pytest-asyncio>=0.25.3,<1.0.0",
+    "pytest-cov>=6.0.0,<7.0.0",
+    "pytest-mock>=3.14.0,<4.0.0",
+    "pytest-socket>=0.7.0,<1.0.0",
+    "pytest-timeout>=2.3.1,<3.0.0",
+    "pytest-watcher>=0.3.4,<1.0.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
+    "responses>=0.25.0,<1.0.0",
+    "twine>=6.0.0,<7.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents_cli"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"deepagents_cli/default_agent_prompt.md" = "deepagents_cli/default_agent_prompt.md"
+"deepagents_cli/*.tcss" = "deepagents_cli/"
+
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
+
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+docstring-code-format = true  # Formats code blocks in docstrings
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "C90",     # McCabe complexity
+    "COM812",  # Messes with the formatter
+    "CPY",     # No copyright
+    "ISC001",  # Messes with the formatter
+    "PERF203", # Rarely useful
+    "PLR09",   # Too many something (arg, statements, etc)
+    "SLF001",  # Private member access
+    "PLC0415", # Imports should be at the top. Not always desirable
+    "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
+]
+unfixable = ["B028"]
+
+flake8-annotations.allow-star-arg-any = true
+flake8-annotations.mypy-init-return = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_cli"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN001", "ANN201", "D1", "PLR2004", "S", "SLF"]
+"scripts/**" = ["BLE001", "INP", "S", "T201"]
+"deepagents_cli/agent.py" = ["E501", "PLR0912", "PLR2004", "SIM108"]
+"deepagents_cli/app.py" = ["E501", "PLR0915", "SIM108", "TC001", "TC002", "TC003"]
+"deepagents_cli/cli.py" = ["E501", "EM101", "EM102", "PLR0912", "PLR0915", "T201", "TC002", "TC003", "TRY003"]
+"deepagents_cli/clipboard.py" = ["BLE001", "PTH123", "S112", "TRY300"]
+"deepagents_cli/config.py" = ["D107", "E402", "E501", "ERA001", "FBT001", "FBT002", "PLR0912", "PLR0915", "RET503"]
+"deepagents_cli/file_ops.py" = ["ANN401", "BLE001", "D102", "PLR0912", "PLR0915"]
+"deepagents_cli/image_utils.py" = ["BLE001", "PERF401", "PLR0911", "PTH108", "PTH110", "PTH123", "PTH202", "S110", "S603", "S607", "SIM105"]
+"deepagents_cli/input.py" = ["ANN001", "ANN201", "BLE001", "D107", "FBT001", "FBT002", "PLR0912", "PLR0915", "TC002"]
+"deepagents_cli/integrations/daytona.py" = ["FIX002", "TD002", "TD003"]
+"deepagents_cli/integrations/modal_integration.py" = ["BLE001", "EM101", "EM102", "PLR0912", "S602", "S603", "S604", "S607", "TC002", "TC003", "TRY003"]
+"deepagents_cli/integrations/runloop.py" = ["B904", "F401"]
+"deepagents_cli/integrations/sandbox_factory.py" = ["BLE001", "EM101", "EM102", "S110", "TC003", "TRY003"]
+"deepagents_cli/core/agents_api.py" = ["EM101", "EM102", "TC003", "TRY003"]
+"deepagents_cli/core/api_credentials.py" = ["EM101", "EM102", "S603", "S607", "TC002", "TC003", "TRY003"]
+"deepagents_cli/core/env_manager.py" = ["EM101", "EM102", "TC002", "TC003", "TRY003"]
+"deepagents_cli/core/sessions.py" = ["ANN401", "BLE001", "EM101", "EM102", "FBT001", "PLR0913", "TC002", "TC003", "TRY003", "UP006"]
+"deepagents_cli/core/ui_display_types.py" = ["A003", "FBT001"]
+"deepagents_cli/local_context.py" = ["ARG002", "BLE001", "E501", "EM101", "EM102", "PERF401", "PLR0911", "PLR0912", "PLR0915", "S603", "S607", "TC002", "TC003", "TRY300"]
+"deepagents_cli/project_utils.py" = ["ERA001"]
+"deepagents_cli/shell.py" = ["PERF401", "S602"]
+"deepagents_cli/skills/commands.py" = ["ANN401", "E501", "FBT001", "FBT002", "TRY300"]
+"deepagents_cli/skills/load.py" = ["TC003"]
+"deepagents_cli/textual_adapter.py" = ["E501"]
+"deepagents_cli/tools.py" = ["ANN201", "BLE001", "E501", "E722", "FBT001", "FBT002", "PLR2004", "S113"]
+"deepagents_cli/ui.py" = ["ANN401", "ARG002", "BLE001", "D102", "EM102", "FBT001", "PLR0911", "PLR0912", "PLR0915", "S110", "TC002", "TC003", "TRY003", "TRY300"]
+"deepagents_cli/textual_app/components/messages.py" = ["TC002"]
+"deepagents_cli/widgets/approval.py" = ["ARG002", "B007", "D107", "RUF001", "TC002", "TC003"]
+"deepagents_cli/widgets/diff.py" = ["PLR0912"]
+"deepagents_cli/widgets/messages.py" = ["TC002"]
+"deepagents_cli/widgets/status.py" = ["PLR2004"]
+"deepagents_cli/widgets/tool_renderers.py" = ["D102", "PLR2004"]
+"deepagents_cli/main.py" = ["T201"]
+"deepagents_cli/skills.py" = ["ANN401", "D102", "D107", "EM101", "EM102", "F821", "PLR0913", "S102", "TC003", "TRY003"]
+"deepagents_cli/textual_app/app.py" = ["A001", "A002", "ANN202", "ARG002", "BLE001", "D102", "E501", "EM101", "EM102", "ERA001", "FBT001", "PLR0912", "PLR0913", "PLR0915", "S311", "SIM102", "T201", "TC002", "TC003", "TRY003"]
+"deepagents_cli/textual_app/conversation_service.py" = ["ANN401", "EM101", "EM102", "PLR0913", "RUF012", "TC003", "TRY003"]
+"deepagents_cli/textual_app/history_tab.py" = ["A002", "ANN202", "BLE001", "EM101", "EM102", "PLR0912", "RUF012", "TC002", "TC003", "TRY003"]
+"deepagents_cli/textual_app/input_box.py" = ["ANN202", "BLE001", "EM102", "PLR0912", "PLR0915", "TC003", "TRY003"]
+"deepagents_cli/textual_app/markdown_with_code_actions.py" = ["ANN202", "BLE001", "D102", "E501", "EM102", "SLF001", "TC002", "TC003", "TRY003"]
+"deepagents_cli/textual_app/running_shell_widget.py" = ["ANN202", "D102", "TC003"]
+"deepagents_cli/utils.py" = ["ANN401", "EM101", "EM102", "PLR0912", "S604", "S607", "TC002", "TC003", "TRY003"]
+"examples/skills/arxiv-search/arxiv_search.py" = ["BLE001", "D103", "TRY300"]
+"examples/skills/skill-creator/scripts/init_skill.py" = ["ANN001", "ANN201", "BLE001", "D103", "D415", "PLR2004", "T201"]
+"examples/skills/skill-creator/scripts/quick_validate.py" = ["ANN001", "ANN201", "D415", "E501", "N806", "PLR0911", "PLR0912", "PLR2004", "T201"]
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.pytest.ini_options]
+timeout = 30  # Default timeout for all tests (can be overridden per-test)
+
+addopts = "--strict-markers --strict-config --durations=5"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

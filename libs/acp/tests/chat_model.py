@@ -2,9 +2,7 @@
 
 import re
 from collections.abc import Callable, Iterator, Sequence
-from typing import Any, Literal, cast
-
-from typing_extensions import override
+from typing import Any, cast
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import LanguageModelInput
@@ -13,6 +11,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
+from typing_extensions import override
 
 
 class GenericFakeChatModel(BaseChatModel):
@@ -89,23 +88,15 @@ class GenericFakeChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        chat_result = self._generate(
-            messages, stop=stop, run_manager=run_manager, **kwargs
-        )
+        chat_result = self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
         if not isinstance(chat_result, ChatResult):
-            msg = (
-                f"Expected generate to return a ChatResult, "
-                f"but got {type(chat_result)} instead."
-            )
+            msg = f"Expected generate to return a ChatResult, but got {type(chat_result)} instead."
             raise ValueError(msg)  # noqa: TRY004
 
         message = chat_result.generations[0].message
 
         if not isinstance(message, AIMessage):
-            msg = (
-                f"Expected invoke to return an AIMessage, "
-                f"but got {type(message)} instead."
-            )
+            msg = f"Expected invoke to return an AIMessage, but got {type(message)} instead."
             raise ValueError(msg)  # noqa: TRY004
 
         content = message.content
@@ -123,9 +114,7 @@ class GenericFakeChatModel(BaseChatModel):
             else:
                 # Split content using the delimiter
                 # Use re.split to support both string and regex patterns
-                content_chunks = cast(
-                    "list[str]", re.split(self.stream_delimiter, content)
-                )
+                content_chunks = cast("list[str]", re.split(self.stream_delimiter, content))
                 # Remove empty strings that can result from splitting
                 content_chunks = [chunk for chunk in content_chunks if chunk]
 
@@ -178,9 +167,7 @@ class GenericFakeChatModel(BaseChatModel):
                                     message=AIMessageChunk(
                                         id=message.id,
                                         content="",
-                                        additional_kwargs={
-                                            "function_call": {fkey: fvalue_chunk}
-                                        },
+                                        additional_kwargs={"function_call": {fkey: fvalue_chunk}},
                                     )
                                 )
                                 if run_manager:

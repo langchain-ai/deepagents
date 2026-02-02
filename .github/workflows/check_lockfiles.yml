@@ -1,0 +1,62 @@
+# Check that all uv.lock files are up-to-date
+#
+# Prevents PRs from being merged when lockfiles are out of sync with pyproject.toml
+
+name: "🔒 Check Lockfiles"
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-lockfiles:
+    name: "Verify uv.lock files"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.11"
+
+      - name: "🔍 Check all lockfiles"
+        run: |
+          set -e
+
+          # Find all directories containing uv.lock
+          lockfile_dirs=$(find . -name "uv.lock" -type f -exec dirname {} \; | sort)
+
+          failed=0
+          for dir in $lockfile_dirs; do
+            echo "::group::Checking $dir"
+            if ! uv lock --check --directory "$dir" 2>&1; then
+              echo "::error file=$dir/uv.lock::Lockfile is out of sync. Run 'uv lock' in $dir"
+              failed=1
+            else
+              echo "✅ $dir/uv.lock is up-to-date"
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ $failed -eq 1 ]; then
+            echo ""
+            echo "❌ One or more lockfiles are out of sync!"
+            echo ""
+            echo "To fix, run 'uv lock' in the affected directories, then commit the updated lockfile(s)."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All lockfiles are up-to-date!"

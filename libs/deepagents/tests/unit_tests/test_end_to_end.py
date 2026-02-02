@@ -1186,3 +1186,227 @@ class TestDeepAgentEndToEnd:
             f"Expected <= {max_reasonable_chars:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "
             f"A single-line file should not cause token overflow."
         )
+
+
+class TestSystemMessageFormatPreservation:
+    """Test suite for SystemMessage format preservation (Issue #974, PR #977).
+
+    These tests verify that:
+    1. SystemMessage with string content remains as a string (not converted to list)
+    2. SystemMessage with list content continues to work correctly
+    3. The fix works for both `_combine_system_prompt()` and `append_to_system_message()`
+
+    This addresses the vLLM/OpenAI API compatibility issue where string format was
+    incorrectly converted to list format, breaking OpenAI-compatible APIs.
+    """
+
+    def test_mre_system_message_string_should_remain_string(self) -> None:
+        """MRE: SystemMessage with string content MUST remain string format.
+
+        This test demonstrates the bug from Issue #974:
+        - BEFORE FIX: SystemMessage(content="You are a helpful assistant") was
+          converted to SystemMessage(content=[{"type": "text", "text": "..."}])
+        - AFTER FIX: String format is preserved.
+
+        This is critical for OpenAI-compatible APIs like vLLM that expect string content.
+        """
+        model = FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="Hello!")])
+        )
+        capturing_middleware = SystemMessageCapturingMiddleware()
+
+        # Create agent with a SystemMessage that has STRING content
+        system_msg = SystemMessage(content="You are a helpful assistant.")
+        agent = create_deep_agent(
+            model=model,
+            system_prompt=system_msg,
+            middleware=[capturing_middleware],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="Hi")]})
+
+        # CRITICAL ASSERTION: The content MUST remain a string, not be converted to list
+        captured = capturing_middleware.captured_system_messages[0]
+        assert isinstance(captured.content, str), (
+            f"BUG: SystemMessage string content was converted to {type(captured.content)}. "
+            "This breaks OpenAI-compatible APIs like vLLM. "
+            "Expected: str, Got: list"
+        )
+
+        # Verify content includes both original message and base prompt
+        assert "You are a helpful assistant." in captured.content
+        assert "you have access to a number of standard tools" in captured.content
+
+    def test_mre_system_message_list_format_still_works(self) -> None:
+        """MRE: SystemMessage with list content should continue to work.
+
+        Ensures backward compatibility - list format (used for multimodal content)
+        should still be properly handled.
+        """
+        model = FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="Hello!")])
+        )
+        capturing_middleware = SystemMessageCapturingMiddleware()
+
+        # Create agent with a SystemMessage that has LIST content (multimodal format)
+        system_msg = SystemMessage(
+            content=[
+                {"type": "text", "text": "You are a helpful assistant."},
+                {"type": "text", "text": "Always be polite."},
+            ]
+        )
+        agent = create_deep_agent(
+            model=model,
+            system_prompt=system_msg,
+            middleware=[capturing_middleware],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="Hi")]})
+
+        # For list format, it should remain as list
+        captured = capturing_middleware.captured_system_messages[0]
+        assert isinstance(captured.content, list), (
+            f"List content format should be preserved. Got: {type(captured.content)}"
+        )
+
+        content_str = str(captured.content)
+        assert "You are a helpful assistant." in content_str
+        assert "Always be polite." in content_str
+        assert "you have access to a number of standard tools" in content_str
+
+
+class TestAppendToSystemMessage:
+    """Unit tests for append_to_system_message() in _utils.py.
+
+    These tests verify the fix for Issue #974 at the utility function level.
+    """
+
+    def test_append_to_none_creates_string_system_message(self) -> None:
+        """Appending to None should create a SystemMessage with string content."""
+        from deepagents.middleware._utils import append_to_system_message
+
+        result = append_to_system_message(None, "New prompt text")
+
+        assert isinstance(result, SystemMessage)
+        assert isinstance(result.content, str)
+        assert result.content == "New prompt text"
+
+    def test_append_to_string_preserves_string_format(self) -> None:
+        """CRITICAL: Appending to string content MUST preserve string format.
+
+        This is the core fix for Issue #974 - string content should not be
+        converted to list format.
+        """
+        from deepagents.middleware._utils import append_to_system_message
+
+        original = SystemMessage(content="Original system prompt")
+        result = append_to_system_message(original, "Additional instructions")
+
+        # CRITICAL: Content must remain a string
+        assert isinstance(result.content, str), (
+            f"BUG: String content was converted to {type(result.content)}. "
+            "This breaks OpenAI-compatible APIs."
+        )
+        assert "Original system prompt" in result.content
+        assert "Additional instructions" in result.content
+        # Verify proper concatenation with separator
+        assert "\n\n" in result.content
+
+    def test_append_to_list_preserves_list_format(self) -> None:
+        """Appending to list content should preserve list format."""
+        from deepagents.middleware._utils import append_to_system_message
+
+        original = SystemMessage(
+            content=[
+                {"type": "text", "text": "First instruction"},
+                {"type": "text", "text": "Second instruction"},
+            ]
+        )
+        result = append_to_system_message(original, "Additional text")
+
+        # List format should be preserved
+        assert isinstance(result.content, list)
+        # Should have 3 items now (2 original + 1 appended)
+        assert len(result.content) == 3
+        # New item should be appended as dict format
+        assert result.content[-1]["type"] == "text"
+        assert "Additional text" in result.content[-1]["text"]
+
+    def test_append_multiple_times_preserves_string_format(self) -> None:
+        """Multiple appends to string content should preserve string format."""
+        from deepagents.middleware._utils import append_to_system_message
+
+        msg = SystemMessage(content="Base prompt")
+        msg = append_to_system_message(msg, "First addition")
+        msg = append_to_system_message(msg, "Second addition")
+        msg = append_to_system_message(msg, "Third addition")
+
+        # Content must still be a string after multiple appends
+        assert isinstance(msg.content, str)
+        assert "Base prompt" in msg.content
+        assert "First addition" in msg.content
+        assert "Second addition" in msg.content
+        assert "Third addition" in msg.content
+
+
+class TestCombineSystemPrompt:
+    """Unit tests for _combine_system_prompt() in graph.py.
+
+    These tests verify the fix for Issue #974 at the graph creation level.
+    """
+
+    def test_combine_none_returns_string(self) -> None:
+        """Combining with None should return the base prompt as string."""
+        from deepagents.graph import _combine_system_prompt, BASE_AGENT_PROMPT
+
+        result = _combine_system_prompt(None)
+
+        assert isinstance(result, str)
+        assert result == BASE_AGENT_PROMPT
+
+    def test_combine_string_returns_string(self) -> None:
+        """Combining with string input should return string."""
+        from deepagents.graph import _combine_system_prompt, BASE_AGENT_PROMPT
+
+        result = _combine_system_prompt("Custom prompt")
+
+        assert isinstance(result, str)
+        assert "Custom prompt" in result
+        assert BASE_AGENT_PROMPT in result
+
+    def test_combine_system_message_string_preserves_string_format(self) -> None:
+        """CRITICAL: SystemMessage with string content should preserve string format."""
+        from deepagents.graph import _combine_system_prompt, BASE_AGENT_PROMPT
+
+        system_msg = SystemMessage(content="You are a helpful assistant.")
+        result = _combine_system_prompt(system_msg)
+
+        # CRITICAL: Must return SystemMessage with string content
+        assert isinstance(result, SystemMessage)
+        assert isinstance(result.content, str), (
+            f"BUG: String content was converted to {type(result.content)}. "
+            "This breaks OpenAI-compatible APIs like vLLM."
+        )
+        assert "You are a helpful assistant." in result.content
+        assert BASE_AGENT_PROMPT in result.content
+
+    def test_combine_system_message_list_preserves_list_format(self) -> None:
+        """SystemMessage with list content should preserve list format."""
+        from deepagents.graph import _combine_system_prompt, BASE_AGENT_PROMPT
+
+        system_msg = SystemMessage(
+            content=[
+                {"type": "text", "text": "Instruction 1"},
+                {"type": "text", "text": "Instruction 2"},
+            ]
+        )
+        result = _combine_system_prompt(system_msg)
+
+        # List format should be preserved
+        assert isinstance(result, SystemMessage)
+        assert isinstance(result.content, list)
+
+        content_str = str(result.content)
+        assert "Instruction 1" in content_str
+        assert "Instruction 2" in content_str
+        assert BASE_AGENT_PROMPT in content_str

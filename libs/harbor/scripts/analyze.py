@@ -741,8 +741,10 @@ async def main():
     if args.output_dir:
         # Determine which trials to analyze based on status
         trials_to_analyze = [
-            t for t in trials
-            if t.status == TrialStatus.FAILED or (args.analyze_pending and t.status == TrialStatus.PENDING)
+            t
+            for t in trials
+            if t.status == TrialStatus.FAILED
+            or (args.analyze_pending and t.status == TrialStatus.PENDING)
         ]
 
         if not trials_to_analyze:
@@ -765,7 +767,9 @@ async def main():
             # Analyze each trial
             for i, trial in enumerate(trials_to_analyze, 1):
                 status_label = trial.status.value.upper()
-                print(f"[{i}/{len(trials_to_analyze)}] Analyzing {trial.trial_id} ({status_label})...")
+                print(
+                    f"[{i}/{len(trials_to_analyze)}] Analyzing {trial.trial_id} ({status_label})..."
+                )
 
                 if trial.trial_dir is None:
                     print(f"  Warning: No trial directory found for {trial.trial_id}")

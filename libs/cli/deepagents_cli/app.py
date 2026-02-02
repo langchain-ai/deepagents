@@ -681,9 +681,11 @@ class DeepAgentsApp(App):
                 status = "Initializing agent..."
             else:
                 status = "Agent not fully configured."
-                
+
             await self._mount_message(
-                SystemMessage(f"{status} Please wait a moment or check the console for errors. Run with --agent flag for full CLI features.")
+                SystemMessage(
+                    f"{status} Please wait a moment or check the console for errors. Run with --agent flag for full CLI features."
+                )
             )
 
     async def _run_agent_task(self, message: str) -> None:
@@ -855,52 +857,54 @@ class DeepAgentsApp(App):
 
     async def _show_mcp_status(self) -> None:
         """Show MCP server status and loaded tools.
-        
+
         Displays:
         - Configured MCP servers (from user and project configs)
         - Loaded tools from each server
         """
         from deepagents_cli.config import settings
         from deepagents_cli.mcp.commands import _load_config
-        
+
         lines = []
-        
+
         # Collect servers from both scopes
         all_servers: dict[str, tuple[str, dict]] = {}
-        
+
         # User config
         user_path = settings.get_user_mcp_config_path()
         if user_path.exists():
             user_config = _load_config(user_path)
             for name, server in user_config.get("mcpServers", {}).items():
                 all_servers[name] = ("user", server)
-        
+
         # Project config (overrides user)
         project_path = settings.get_project_mcp_config_path()
         if project_path and project_path.exists():
             project_config = _load_config(project_path)
             for name, server in project_config.get("mcpServers", {}).items():
                 all_servers[name] = ("project", server)
-        
+
         if not all_servers:
-            await self._mount_message(SystemMessage(
-                "**MCP Status**\n\n"
-                "No MCP servers configured.\n\n"
-                "Add a server with:\n"
-                "```\n"
-                "deepagents mcp add --transport http <name> <url>\n"
-                "```"
-            ))
+            await self._mount_message(
+                SystemMessage(
+                    "**MCP Status**\n\n"
+                    "No MCP servers configured.\n\n"
+                    "Add a server with:\n"
+                    "```\n"
+                    "deepagents mcp add --transport http <name> <url>\n"
+                    "```"
+                )
+            )
             return
-        
+
         # Build status message
         lines.append("**MCP Servers**\n")
         lines.append("| Server | Transport | Target | Scope |")
         lines.append("|--------|-----------|--------|-------|")
-        
+
         for name, (scope, server) in sorted(all_servers.items()):
             transport = server.get("transport", server.get("type", "unknown"))
-            
+
             # Determine target based on transport
             if transport == "stdio":
                 cmd = server.get("command", "")
@@ -908,21 +912,21 @@ class DeepAgentsApp(App):
                 target = f"`{cmd} {' '.join(args)}`".strip()
             else:
                 target = f"`{server.get('url', '')}`"
-            
+
             # Truncate long targets
             if len(target) > 40:
                 target = target[:37] + "...`"
-            
+
             lines.append(f"| {name} | {transport} | {target} | {scope} |")
-        
+
         lines.append(f"\n**Total:** {len(all_servers)} server(s)")
-        
+
         # Show configuration paths
         lines.append("\n**Config Paths:**")
         lines.append(f"- User: `{user_path}`")
         if project_path:
             lines.append(f"- Project: `{project_path}`")
-        
+
         await self._mount_message(SystemMessage("\n".join(lines)))
 
     def action_quit_or_interrupt(self) -> None:
@@ -1072,6 +1076,7 @@ class DeepAgentsApp(App):
             # Note: We don't use the async context manager of checkpointer here to keep it simple
             # for dev mode. In production, main.py handles the context.
             from langgraph.checkpoint.memory import InMemorySaver
+
             checkpointer = InMemorySaver()
 
             # Load tools
@@ -1115,7 +1120,10 @@ class DeepAgentsApp(App):
 
         except Exception as e:
             import traceback
-            await self._mount_message(ErrorMessage(f"Bootstrap failed: {e}\n{traceback.format_exc()}"))
+
+            await self._mount_message(
+                ErrorMessage(f"Bootstrap failed: {e}\n{traceback.format_exc()}")
+            )
 
 
 async def run_textual_app(
@@ -1151,7 +1159,6 @@ async def run_textual_app(
     await app.run_async()
 
 
-
 def create_app() -> DeepAgentsApp:
     """Factory function for 'textual run --dev'.
 
@@ -1160,6 +1167,7 @@ def create_app() -> DeepAgentsApp:
     if one wasn't provided (as is the case with 'textual run').
     """
     from deepagents_cli.main import generate_thread_id
+
     return DeepAgentsApp(
         agent=None,
         assistant_id="agent",

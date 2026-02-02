@@ -32,6 +32,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
+from deepagents_cli.mcp import execute_mcp_command, load_mcp_tools_from_config, setup_mcp_parser
 from deepagents_cli.sessions import (
     delete_thread_command,
     generate_thread_id,
@@ -43,7 +44,6 @@ from deepagents_cli.sessions import (
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
-from deepagents_cli.mcp import load_mcp_tools_from_config, setup_mcp_parser, execute_mcp_command
 from deepagents_cli.ui import show_help
 
 

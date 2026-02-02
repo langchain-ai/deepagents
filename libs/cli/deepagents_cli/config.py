@@ -422,7 +422,7 @@ class Settings:
         """
         if not self.project_root:
             return None
-        
+
         # Check for legacy/root location first then .deepagents
         # But for new features prefer .deepagents
         return self.project_root / ".deepagents" / "mcp.json"

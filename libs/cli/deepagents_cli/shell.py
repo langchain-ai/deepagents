@@ -146,7 +146,7 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
         except subprocess.TimeoutExpired:
             output = (
                 f"Error: Command timed out after {effective_timeout} seconds. "
-                f"For long-running commands, use the timeout parameter."
+                f"For long-running commands, re-run use the timeout parameter."
             )
             status = "error"
 

@@ -22,7 +22,7 @@ def test_local_shell_backend_initialization() -> None:
 def test_local_shell_backend_execute_simple_command() -> None:
     """Test executing a simple shell command."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir)
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
 
         result = backend.execute("echo 'Hello World'")
 
@@ -35,7 +35,7 @@ def test_local_shell_backend_execute_simple_command() -> None:
 def test_local_shell_backend_execute_with_error() -> None:
     """Test executing a command that fails."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir)
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
 
         result = backend.execute("cat nonexistent_file.txt")
 
@@ -51,7 +51,7 @@ def test_local_shell_backend_execute_in_working_directory() -> None:
         test_file = Path(tmpdir) / "test.txt"
         test_file.write_text("test content")
 
-        backend = LocalShellBackend(root_dir=tmpdir)
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
 
         # Execute command that relies on working directory
         result = backend.execute("cat test.txt")
@@ -74,7 +74,7 @@ def test_local_shell_backend_execute_empty_command() -> None:
 def test_local_shell_backend_execute_timeout() -> None:
     """Test that long-running commands timeout correctly."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir, timeout=1.0)
+        backend = LocalShellBackend(root_dir=tmpdir, timeout=1.0, inherit_env=True)
 
         # Sleep for longer than timeout
         result = backend.execute("sleep 5")
@@ -86,7 +86,7 @@ def test_local_shell_backend_execute_timeout() -> None:
 def test_local_shell_backend_execute_output_truncation() -> None:
     """Test that large output gets truncated."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir, max_output_bytes=100)
+        backend = LocalShellBackend(root_dir=tmpdir, max_output_bytes=100, inherit_env=True)
 
         # Generate lots of output
         result = backend.execute("seq 1 1000")
@@ -125,7 +125,7 @@ def test_local_shell_backend_filesystem_operations() -> None:
 def test_local_shell_backend_integration_shell_and_filesystem() -> None:
     """Test that shell commands and filesystem operations work together."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir, virtual_mode=True)
+        backend = LocalShellBackend(root_dir=tmpdir, virtual_mode=True, inherit_env=True)
 
         # Create file via filesystem
         backend.write("/script.sh", "#!/bin/bash\necho 'Script output'")
@@ -218,20 +218,44 @@ def test_local_shell_backend_virtual_mode_restrictions() -> None:
 def test_local_shell_backend_environment_variables() -> None:
     """Test that custom environment variables are passed to commands."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        custom_env = {"CUSTOM_VAR": "custom_value"}
+        custom_env = {"CUSTOM_VAR": "custom_value", "PATH": "/usr/bin:/bin"}
         backend = LocalShellBackend(root_dir=tmpdir, env=custom_env)
 
-        result = backend.execute("echo $CUSTOM_VAR")
+        result = backend.execute("sh -c 'echo $CUSTOM_VAR'")
 
         assert result.exit_code == 0
-        # Note: might not work if shell doesn't have the variable,
-        # but subprocess.run should pass it
+        assert "custom_value" in result.output
+
+
+def test_local_shell_backend_inherit_env() -> None:
+    """Test that inherit_env=True inherits parent environment."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        # PATH should be available from parent environment
+        result = backend.execute("echo $PATH")
+
+        assert result.exit_code == 0
+        assert len(result.output.strip()) > 0  # PATH should not be empty
+
+
+def test_local_shell_backend_empty_env_by_default() -> None:
+    """Test that environment is empty by default (secure default)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir)
+
+        # Without inherit_env, PATH should not be available
+        result = backend.execute("sh -c 'echo PATH is: $PATH'")
+
+        assert result.exit_code == 0
+        # PATH should be empty (the string "PATH is: " with no value after)
+        assert "PATH is:" in result.output
 
 
 def test_local_shell_backend_stderr_formatting() -> None:
     """Test that stderr is properly prefixed with [stderr]."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir)
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
 
         # Command that outputs to stderr
         result = backend.execute("echo 'error message' >&2")
@@ -244,7 +268,7 @@ def test_local_shell_backend_stderr_formatting() -> None:
 async def test_local_shell_backend_async_execute() -> None:
     """Test async execute method."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir)
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
 
         result = await backend.aexecute("echo 'async test'")
 

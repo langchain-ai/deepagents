@@ -79,8 +79,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         ```python
         from deepagents.backends import LocalShellBackend
 
-        # Create backend with working directory
-        backend = LocalShellBackend(root_dir="/home/user/project")
+        # Create backend with explicit environment
+        backend = LocalShellBackend(
+            root_dir="/home/user/project",
+            env={"PATH": "/usr/bin:/bin"}
+        )
 
         # Execute shell commands (runs directly on host)
         result = backend.execute("ls -la")
@@ -91,8 +94,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         content = backend.read("/README.md")
         backend.write("/output.txt", "Hello world")
 
-        # Commands run in the backend's working directory
-        result = backend.execute("python script.py")
+        # Inherit all environment variables
+        backend = LocalShellBackend(
+            root_dir="/home/user/project",
+            inherit_env=True
+        )
         ```
     """
 
@@ -105,6 +111,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         timeout: float = 120.0,
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
+        inherit_env: bool = False,
     ) -> None:
         """Initialize local shell backend with filesystem access.
 
@@ -149,8 +156,16 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             max_output_bytes: Maximum number of bytes to capture from command output.
                 Output exceeding this limit will be truncated. Defaults to 100,000 bytes.
 
-            env: Environment variables to pass to executed shell commands. If None,
-                uses the current process's environment. Defaults to None.
+            env: Environment variables for shell commands. If None, starts with an empty
+                environment (unless `inherit_env=True`).
+
+            inherit_env: Whether to inherit the parent process's environment variables.
+                When False (default), only variables in `env` dict are available.
+                When True, inherits all `os.environ` variables and applies `env` overrides.
+
+                **Security Warning:** Setting `inherit_env=True` passes ALL environment
+                variables to agent-controlled shell commands, including API keys, secrets,
+                and credentials. Only enable if you trust the agent.
         """
         # Initialize parent FilesystemBackend
         super().__init__(
@@ -162,7 +177,14 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         # Store execution parameters
         self._timeout = timeout
         self._max_output_bytes = max_output_bytes
-        self._env = env if env is not None else os.environ.copy()
+
+        # Build environment based on inherit_env setting
+        if inherit_env:
+            self._env = os.environ.copy()
+            if env is not None:
+                self._env.update(env)
+        else:
+            self._env = env if env is not None else {}
 
         # Generate unique sandbox ID
         self._sandbox_id = f"local-{uuid.uuid4().hex[:8]}"

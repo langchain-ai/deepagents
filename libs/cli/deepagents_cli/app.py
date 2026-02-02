@@ -294,16 +294,10 @@ class DeepAgentsApp(App):
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
-            yield WelcomeBanner(id="welcome-banner")
-            yield Container(id="messages")  # Container can have children mounted
-
-        # Bottom app container - holds either ChatInput OR ApprovalMenu (swapped)
-        # This is OUTSIDE VerticalScroll so arrow keys work in approval
-        with Container(id="bottom-app-container"):
-            yield Static("", id="agent-status-display")
-            yield ChatInput(cwd=self._cwd, id="input-area")
+            yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
             yield Container(id="messages")
             with Container(id="bottom-app-container"):
+                yield Static("", id="agent-status-display")
                 yield ChatInput(cwd=self._cwd, id="input-area")
             yield Static(id="chat-spacer")  # Fills remaining space below input
 

@@ -40,7 +40,7 @@ from acp.schema import (
     ToolCallUpdate,
 )
 from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from deepagents.graph import Checkpointer, CompiledStateGraph
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
@@ -85,9 +85,19 @@ class ACPDeepAgent(ACPAgent):
         """Create a DeepAgent with the appropriate configuration for the given mode"""
         interrupt_config = self._get_interrupt_config(mode)
 
+        def create_backend(tr):
+            ephemeral_backend = StateBackend(tr)
+            return CompositeBackend(
+                default=FilesystemBackend(root_dir=self._root_dir, virtual_mode=True),
+                routes={
+                    "/memories/": ephemeral_backend,
+                    "/conversation_history/": ephemeral_backend,
+                },
+            )
+
         return create_deep_agent(
             checkpointer=self._checkpointer,
-            backend=FilesystemBackend(root_dir=self._root_dir, virtual_mode=True),
+            backend=create_backend,
             interrupt_on=interrupt_config,
         )
 
@@ -209,12 +219,14 @@ class ACPDeepAgent(ACPAgent):
         self,
         session_id: str,
         todos: list[dict[str, Any]],
+        log_plan: bool = True,
     ) -> None:
         """Handle todo list updates from write_todos tool.
 
         Args:
             session_id: The session ID
             todos: List of todo dictionaries with 'content' and 'status' fields
+            log_plan: Whether to log the plan as a visible text message
         """
         # Convert todos to PlanEntry objects
         entries = []
@@ -246,13 +258,14 @@ class ACPDeepAgent(ACPAgent):
             source="DeepAgent",
         )
 
-        # Also send a visible text message showing the plan
-        plan_text = "## Plan\n\n"
-        for i, todo in enumerate(todos, 1):
-            content = todo.get("content", "")
-            plan_text += f"{i}. {content}\n"
+        # Optionally send a visible text message showing the plan
+        if log_plan:
+            plan_text = "## Plan\n\n"
+            for i, todo in enumerate(todos, 1):
+                content = todo.get("content", "")
+                plan_text += f"{i}. {content}\n"
 
-        await self._log_text(session_id=session_id, text=plan_text)
+            await self._log_text(session_id=session_id, text=plan_text)
 
     async def _process_tool_call_chunks(
         self,
@@ -318,7 +331,7 @@ class ACPDeepAgent(ACPAgent):
                         # If this is write_todos, send the plan update immediately
                         if tool_name == "write_todos" and isinstance(tool_args, dict):
                             todos = tool_args.get("todos", [])
-                            await self._handle_todo_update(session_id, todos)
+                            await self._handle_todo_update(session_id, todos, log_plan=False)
                     except json.JSONDecodeError:
                         pass
 
@@ -548,6 +561,13 @@ class ACPDeepAgent(ACPAgent):
                     # Create a title for the permission request
                     if tool_name == "write_todos":
                         title = "Review Plan"
+                        # Log the plan text when requesting approval
+                        todos = tool_args.get("todos", [])
+                        plan_text = "## Plan\n\n"
+                        for i, todo in enumerate(todos, 1):
+                            content = todo.get("content", "")
+                            plan_text += f"{i}. {content}\n"
+                        await self._log_text(session_id=session_id, text=plan_text)
                     elif tool_name == "edit_file" and isinstance(tool_args, dict):
                         file_path = tool_args.get("file_path", "file")
                         title = f"Edit `{file_path}`"

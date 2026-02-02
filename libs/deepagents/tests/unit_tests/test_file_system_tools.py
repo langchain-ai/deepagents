@@ -457,8 +457,7 @@ def test_path_traversal_returns_error_message() -> None:
 
     # The tool message should contain an error about path traversal
     error_message = tool_messages[0].content
-    assert "Error" in error_message, f"Expected error message, got: {error_message}"
-    assert "Path traversal not allowed" in error_message, f"Expected path traversal error, got: {error_message}"
+    assert error_message == "Error: Path traversal not allowed: ./question/.."
 
 
 def test_windows_absolute_path_returns_error_message() -> None:
@@ -498,8 +497,11 @@ def test_windows_absolute_path_returns_error_message() -> None:
     assert len(tool_messages) >= 1, "Expected at least one ToolMessage"
 
     error_message = tool_messages[0].content
-    assert "Error" in error_message, f"Expected error message, got: {error_message}"
-    assert "Windows absolute paths are not supported" in error_message, f"Expected Windows path error, got: {error_message}"
+    expected_error = (
+        "Error: Windows absolute paths are not supported: C:\\Users\\test\\file.txt. "
+        "Please use virtual paths starting with / (e.g., /workspace/file.txt)"
+    )
+    assert error_message == expected_error
 
 
 def test_tilde_path_returns_error_message() -> None:
@@ -540,8 +542,7 @@ def test_tilde_path_returns_error_message() -> None:
     assert len(tool_messages) >= 1, "Expected at least one ToolMessage"
 
     error_message = tool_messages[0].content
-    assert "Error" in error_message, f"Expected error message, got: {error_message}"
-    assert "Path traversal not allowed" in error_message, f"Expected path traversal error, got: {error_message}"
+    assert error_message == "Error: Path traversal not allowed: ~/secret.txt"
 
 
 def test_ls_with_invalid_path_returns_error_message() -> None:
@@ -581,5 +582,4 @@ def test_ls_with_invalid_path_returns_error_message() -> None:
     assert len(tool_messages) >= 1, "Expected at least one ToolMessage"
 
     error_message = tool_messages[0].content
-    assert "Error" in error_message, f"Expected error message, got: {error_message}"
-    assert "Path traversal not allowed" in error_message, f"Expected path traversal error, got: {error_message}"
+    assert error_message == "Error: Path traversal not allowed: ../../../etc"

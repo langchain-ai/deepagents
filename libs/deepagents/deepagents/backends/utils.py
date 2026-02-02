@@ -25,6 +25,67 @@ FileInfo = _FileInfo
 GrepMatch = _GrepMatch
 
 
+class NamespaceTemplate:
+    """Template for resolving namespaces with variable substitution from config.
+
+    Supports placeholders like {user_id} that are resolved from config["configurable"].
+
+    Example:
+        ns = NamespaceTemplate(("filesystem", "{user_id}"))
+        ns({"configurable": {"user_id": "alice"}})  # ("filesystem", "alice")
+    """
+
+    __slots__ = ("template", "vars")
+
+    def __init__(self, template: tuple[str, ...] | str) -> None:
+        """Initialize namespace template.
+
+        Args:
+            template: Namespace template as tuple or string. Use {var} for placeholders.
+        """
+        self.template = template if isinstance(template, tuple) else (template,)
+        self.vars = {
+            ix: self._extract_var(ns) for ix, ns in enumerate(self.template) if self._extract_var(ns) is not None
+        }
+
+    def __call__(self, config: dict[str, Any] | None = None) -> tuple[str, ...]:
+        """Resolve namespace by substituting variables from config.
+
+        Args:
+            config: Runtime config dict. If None, tries to get from LangGraph context.
+
+        Returns:
+            Resolved namespace tuple.
+
+        Raises:
+            ValueError: If required variable is missing from config.
+        """
+        if config is None:
+            try:
+                from langgraph.config import get_config
+
+                config = get_config()
+            except Exception:
+                config = {}
+
+        if not self.vars:
+            return self.template
+
+        configurable = config.get("configurable", {})
+        try:
+            return tuple(configurable[self.vars[ix]] if ix in self.vars else ns for ix, ns in enumerate(self.template))
+        except KeyError as e:
+            msg = f"Missing namespace variable '{e.args[0]}' in config. Available keys: {list(configurable.keys())}"
+            raise ValueError(msg) from e
+
+    @staticmethod
+    def _extract_var(s: str) -> str | None:
+        """Extract variable name from {var} format."""
+        if isinstance(s, str) and s.startswith("{") and s.endswith("}"):
+            return s[1:-1]
+        return None
+
+
 def sanitize_tool_call_id(tool_call_id: str) -> str:
     r"""Sanitize tool_call_id to prevent path traversal and separator issues.
 

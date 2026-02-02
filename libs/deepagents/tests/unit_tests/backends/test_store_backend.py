@@ -133,3 +133,134 @@ def test_store_backend_intercept_large_tool_result():
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
     assert stored_content.value["content"] == [large_content]
+
+
+def test_store_backend_namespace_template_user_scoped() -> None:
+    """Test namespace template with user_id variable."""
+    store = InMemoryStore()
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=store,
+        stream_writer=lambda _: None,
+        config={"configurable": {"user_id": "alice"}},
+    )
+    be = StoreBackend(rt, namespace_template=("filesystem", "{user_id}"))
+
+    # Write a file
+    be.write("/test.txt", "hello alice")
+
+    # Verify it's stored in the correct namespace
+    items = store.search(("filesystem", "alice"))
+    assert len(items) == 1
+    assert items[0].key == "/test.txt"
+
+    # Read it back
+    content = be.read("/test.txt")
+    assert "hello alice" in content
+
+
+def test_store_backend_namespace_template_multi_level() -> None:
+    """Test namespace template with multiple variables."""
+    store = InMemoryStore()
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=store,
+        stream_writer=lambda _: None,
+        config={"configurable": {"workspace_id": "ws-123", "user_id": "bob"}},
+    )
+    be = StoreBackend(rt, namespace_template=("workspace", "{workspace_id}", "user", "{user_id}"))
+
+    # Write a file
+    be.write("/doc.md", "workspace doc")
+
+    # Verify it's stored in the correct namespace
+    items = store.search(("workspace", "ws-123", "user", "bob"))
+    assert len(items) == 1
+    assert items[0].key == "/doc.md"
+
+
+def test_store_backend_namespace_template_isolation() -> None:
+    """Test that different users have isolated namespaces."""
+    store = InMemoryStore()
+
+    # User alice
+    rt_alice = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=store,
+        stream_writer=lambda _: None,
+        config={"configurable": {"user_id": "alice"}},
+    )
+    be_alice = StoreBackend(rt_alice, namespace_template=("filesystem", "{user_id}"))
+    be_alice.write("/notes.txt", "alice notes")
+
+    # User bob
+    rt_bob = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t2",
+        store=store,
+        stream_writer=lambda _: None,
+        config={"configurable": {"user_id": "bob"}},
+    )
+    be_bob = StoreBackend(rt_bob, namespace_template=("filesystem", "{user_id}"))
+    be_bob.write("/notes.txt", "bob notes")
+
+    # Verify isolation
+    alice_content = be_alice.read("/notes.txt")
+    assert "alice notes" in alice_content
+
+    bob_content = be_bob.read("/notes.txt")
+    assert "bob notes" in bob_content
+
+    # Verify they're in different namespaces
+    alice_items = store.search(("filesystem", "alice"))
+    assert len(alice_items) == 1
+    bob_items = store.search(("filesystem", "bob"))
+    assert len(bob_items) == 1
+
+
+def test_store_backend_namespace_template_missing_variable() -> None:
+    """Test error handling when required variable is missing from config."""
+    import pytest
+
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=InMemoryStore(),
+        stream_writer=lambda _: None,
+        config={"configurable": {}},  # No user_id provided
+    )
+    be = StoreBackend(rt, namespace_template=("filesystem", "{user_id}"))
+
+    # Should raise ValueError with helpful message
+    with pytest.raises(ValueError, match="Missing namespace variable 'user_id'"):
+        be.write("/test.txt", "content")
+
+
+def test_store_backend_namespace_template_legacy_mode() -> None:
+    """Test that legacy mode still works when no template is provided."""
+    store = InMemoryStore()
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=store,
+        stream_writer=lambda _: None,
+        config={"metadata": {"assistant_id": "asst-123"}},
+    )
+    be = StoreBackend(rt)  # No template - uses legacy mode
+
+    # Write a file
+    be.write("/legacy.txt", "legacy content")
+
+    # Should be in legacy namespace (assistant_id, filesystem)
+    items = store.search(("asst-123", "filesystem"))
+    assert len(items) == 1
+    assert items[0].key == "/legacy.txt"

@@ -15,6 +15,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    NamespaceTemplate,
     _glob_search_files,
     create_file_data,
     file_data_to_string,
@@ -34,13 +35,20 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime"):
+    def __init__(self, runtime: "ToolRuntime", namespace_template: tuple[str, ...] | str | None = None):
         """Initialize StoreBackend with runtime.
 
         Args:
             runtime: The ToolRuntime instance providing store access and configuration.
+            namespace_template: Optional namespace template with {variable} placeholders.
+                Examples:
+                - "filesystem" - Fixed namespace
+                - ("filesystem", "{user_id}") - User-scoped
+                - ("workspace", "{workspace_id}", "user", "{user_id}") - Multi-level
+                If None, uses legacy assistant_id detection from metadata.
         """
         self.runtime = runtime
+        self.namespacer = NamespaceTemplate(namespace_template) if namespace_template is not None else None
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
@@ -59,6 +67,18 @@ class StoreBackend(BackendProtocol):
 
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
+
+        If namespace_template was provided at init, resolves variables from config.
+        Otherwise, uses legacy assistant_id detection from metadata.
+        """
+        if self.namespacer is not None:
+            config = getattr(self.runtime, "config", None)
+            return self.namespacer(config)
+
+        return self._get_namespace_legacy()
+
+    def _get_namespace_legacy(self) -> tuple[str, ...]:
+        """Legacy namespace resolution: check metadata for assistant_id.
 
         Preference order:
         1) Use `self.runtime.config` if present (tests pass this explicitly).

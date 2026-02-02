@@ -22,13 +22,24 @@ def http_request(
 ) -> dict[str, Any]:
     """Make HTTP requests to APIs and web services.
 
+    **When to Use:**
+    - Calling REST APIs with specific endpoints
+    - POST/PUT/DELETE operations
+    - Requests requiring custom headers or authentication
+    - Interacting with known API endpoints
+
+    **When NOT to Use:**
+    - General web searches (use `web_search` instead)
+    - Fetching web page content to read (use `fetch_url` instead)
+    - When you don't know the exact API endpoint
+
     Args:
-        url: Target URL
+        url: Target URL (must be exact API endpoint)
         method: HTTP method (GET, POST, PUT, DELETE, etc.)
-        headers: HTTP headers to include
-        data: Request body data (string or dict)
+        headers: HTTP headers to include (for auth tokens, content-type, etc.)
+        data: Request body data (string or dict - dict will be sent as JSON)
         params: URL query parameters
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (default: 30)
 
     Returns:
         Dictionary with response data including status, headers, and content
@@ -93,32 +104,35 @@ def web_search(
     topic: Literal["general", "news", "finance"] = "general",
     include_raw_content: bool = False,
 ):
-    """Search the web using Tavily for current information and documentation.
+    """Search the web for current information, documentation, and answers.
 
-    This tool searches the web and returns relevant results. After receiving results,
-    you MUST synthesize the information into a natural, helpful response for the user.
+    **When to Use:**
+    - Finding documentation or tutorials
+    - Researching error messages or solutions
+    - Looking up current events or recent information
+    - Finding code examples or best practices
+    - Any general information search
+
+    **When NOT to Use:**
+    - Fetching a specific URL you already know (use `fetch_url` instead)
+    - Calling a specific API endpoint (use `http_request` instead)
+    - Searching local files (use `grep` instead)
 
     Args:
-        query: The search query (be specific and detailed)
+        query: The search query - be specific and detailed for better results
         max_results: Number of results to return (default: 5)
-        topic: Search topic type - "general" for most queries, "news" for current events
-        include_raw_content: Include full page content (warning: uses more tokens)
+        topic: Search type - "general" (default), "news" for current events, "finance" for financial data
+        include_raw_content: Include full page content (uses more tokens, usually not needed)
 
     Returns:
-        Dictionary containing:
-        - results: List of search results, each with:
-            - title: Page title
-            - url: Page URL
-            - content: Relevant excerpt from the page
-            - score: Relevance score (0-1)
-        - query: The original search query
+        Dictionary with results containing title, url, content excerpt, and relevance score
 
-    IMPORTANT: After using this tool:
+    **IMPORTANT - After receiving results:**
     1. Read through the 'content' field of each result
     2. Extract relevant information that answers the user's question
-    3. Synthesize this into a clear, natural language response
-    4. Cite sources by mentioning the page titles or URLs
-    5. NEVER show the raw JSON to the user - always provide a formatted response
+    3. Synthesize into a clear, natural language response
+    4. Cite sources by mentioning page titles or URLs
+    5. NEVER show raw JSON to the user - always provide a formatted response
     """
     if tavily_client is None:
         return {
@@ -138,11 +152,18 @@ def web_search(
 
 
 def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
-    """Fetch content from a URL and convert HTML to markdown format.
+    """Fetch content from a specific URL and convert HTML to markdown.
 
-    This tool fetches web page content and converts it to clean markdown text,
-    making it easy to read and process HTML content. After receiving the markdown,
-    you MUST synthesize the information into a natural, helpful response for the user.
+    **When to Use:**
+    - Reading documentation from a known URL
+    - Fetching content from a specific webpage
+    - Getting content from URLs found via web_search
+    - Reading GitHub READMEs, blog posts, or articles
+
+    **When NOT to Use:**
+    - General web searches (use `web_search` instead - it's faster and returns multiple results)
+    - Calling REST APIs (use `http_request` instead)
+    - When you don't have a specific URL
 
     Args:
         url: The URL to fetch (must be a valid HTTP/HTTPS URL)
@@ -150,17 +171,16 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
 
     Returns:
         Dictionary containing:
-        - success: Whether the request succeeded
         - url: The final URL after redirects
-        - markdown_content: The page content converted to markdown
+        - markdown_content: The page content converted to clean markdown
         - status_code: HTTP status code
-        - content_length: Length of the markdown content in characters
+        - content_length: Length of the markdown content
 
-    IMPORTANT: After using this tool:
+    **IMPORTANT - After receiving content:**
     1. Read through the markdown content
     2. Extract relevant information that answers the user's question
-    3. Synthesize this into a clear, natural language response
-    4. NEVER show the raw markdown to the user unless specifically requested
+    3. Synthesize into a clear, natural language response
+    4. NEVER show raw markdown to the user unless specifically requested
     """
     try:
         response = requests.get(

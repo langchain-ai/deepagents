@@ -170,62 +170,172 @@ class FilesystemState(AgentState):
     """Files in the filesystem."""
 
 
-LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
+LIST_FILES_TOOL_DESCRIPTION = """Lists all files and directories in a given directory.
 
-This is useful for exploring the filesystem and finding the right file to read or edit.
-You should almost ALWAYS use this tool before using the read_file or edit_file tools."""
+**When to Use:**
+- Exploring the filesystem structure
+- Finding files before reading or editing
+- Verifying a directory exists before creating files in it
+
+**When NOT to Use:**
+- Finding files by pattern (use `glob` instead)
+- Searching for files containing specific text (use `grep` instead)
+
+**Usage:**
+- Requires an absolute path starting with /
+- Returns file and directory names in the specified path
+- Use this before read_file or edit_file to verify file locations"""
 
 READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
 
-Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+**When to Use:**
+- Understanding code before making changes
+- Exploring unfamiliar codebases
+- Checking configuration files
+- Reading documentation
+- ALWAYS read a file before attempting to edit it
 
-Usage:
-- By default, it reads up to 100 lines starting from the beginning of the file
-- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
-  - First scan: read_file(path, limit=100) to see file structure
-  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
-  - Only omit limit (read full file) when necessary for editing
-- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
-- Results are returned using cat -n format, with line numbers starting at 1
-- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
-- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
-- You should ALWAYS make sure a file has been read before editing it."""
+**When NOT to Use:**
+- Finding files by name pattern (use `glob` instead)
+- Searching for text across multiple files (use `grep` instead)
+
+**CRITICAL: You MUST read a file before editing it. The edit tool will fail if you haven't read the file first.**
+
+**Pagination (IMPORTANT for large files):**
+- By default, reads up to 100 lines from the beginning
+- Use `offset` and `limit` parameters for pagination:
+  - First scan: `read_file(path, limit=100)` - See structure
+  - Continue: `read_file(path, offset=100, limit=200)` - Next section
+  - Full read: Only when necessary for immediate editing
+
+**When to paginate:**
+- Files >500 lines
+- Exploring unfamiliar codebases (start with limit=100)
+- Reading multiple files in sequence
+
+**Output format:**
+- Results use cat -n format with line numbers starting at 1
+- Lines >5,000 chars split into continuation lines (5.1, 5.2, etc.)
+- Empty files return a system reminder warning
+
+**Parallel reading:**
+- You can call multiple read_file tools in a single response
+- Read multiple potentially useful files in parallel to save time"""
 
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
-Usage:
-- You must read the file before editing. This tool will error if you attempt an edit without reading the file first.
-- When editing, preserve the exact indentation (tabs/spaces) from the read output. Never include line number prefixes in old_string or new_string.
-- ALWAYS prefer editing existing files over creating new ones.
-- Only use emojis if the user explicitly requests it."""
+**When to Use:**
+- Modifying existing code
+- Fixing bugs
+- Adding new code to existing files
+- Updating configuration
+
+**When NOT to Use:**
+- Creating new files (use `write_file` instead)
+- Complete file rewrites (use `write_file` instead)
+
+**CRITICAL: You MUST read the file first. This tool will ERROR if you haven't read the file in this conversation.**
+
+**Parameters:**
+- `file_path`: Absolute path to the file
+- `old_string`: Exact text to find and replace (must be unique unless replace_all=True)
+- `new_string`: Text to replace it with (must be different from old_string)
+- `replace_all`: If True, replace all occurrences; if False (default), old_string must be unique
+
+**Usage Guidelines:**
+- Preserve exact indentation (tabs/spaces) from the read output
+- Never include line number prefixes in old_string or new_string
+- ALWAYS prefer editing existing files over creating new ones
+- Make the smallest change necessary to accomplish the task
+- Only use emojis if the user explicitly requests it
+
+**If old_string is not unique:**
+- Provide more surrounding context to make it unique, OR
+- Use `replace_all=True` to replace all occurrences"""
 
 
-WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
+WRITE_FILE_TOOL_DESCRIPTION = """Creates a new file or overwrites an existing file.
 
-Usage:
-- The write_file tool will create the a new file.
-- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
-"""
+**When to Use:**
+- Creating new files that don't exist
+- Complete file rewrites where edit_file would be cumbersome
+- Writing generated content (configs, scripts, etc.)
+
+**When NOT to Use:**
+- Modifying existing files (use `edit_file` instead - it's safer)
+- Small changes to existing files (use `edit_file` instead)
+
+**IMPORTANT:** ALWAYS prefer `edit_file` over `write_file` for existing files. Edit is safer because it preserves file content you didn't intend to change.
+
+**Parameters:**
+- `file_path`: Absolute path where the file should be created
+- `content`: The text content to write to the file
+
+**Usage Guidelines:**
+- Will overwrite if file already exists - be careful!
+- Parent directories must exist (use ls to verify first)
+- Only use emojis if the user explicitly requests it
+- NEVER proactively create documentation or README files"""
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
-Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
-Returns a list of absolute file paths that match the pattern.
+**When to Use:**
+- Finding files by name or extension pattern
+- Discovering project structure
+- Locating configuration files
+- Finding all files of a certain type (*.py, *.js, etc.)
 
-Examples:
-- `**/*.py` - Find all Python files
-- `*.txt` - Find all text files in root
-- `/subdir/**/*.md` - Find all markdown files under /subdir"""
+**When NOT to Use:**
+- Searching for text content within files (use `grep` instead)
+- Listing a single directory (use `ls` instead)
+
+**Pattern Syntax:**
+- `*` - Matches any characters within a path segment
+- `**` - Matches any directories (recursive)
+- `?` - Matches a single character
+
+**Examples:**
+- `**/*.py` - Find all Python files recursively
+- `*.txt` - Find all text files in root only
+- `/src/**/*.ts` - Find all TypeScript files under /src
+- `**/test_*.py` - Find all test files
+- `**/*config*` - Find all config files
+
+**Parameters:**
+- `pattern`: The glob pattern to match
+- `path`: Base directory to search from (defaults to root /)
+
+**Returns:** List of absolute file paths matching the pattern"""
 
 GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
-Searches for literal text (not regex) and returns matching files or content based on output_mode.
+**When to Use:**
+- Finding where a function/class/variable is defined or used
+- Searching for error messages or log patterns
+- Finding TODOs, FIXMEs, or other markers
+- Locating imports or dependencies
+- Understanding how code is connected
 
-Examples:
-- Search all files: `grep(pattern="TODO")`
-- Search Python files only: `grep(pattern="import", glob="*.py")`
-- Show matching lines: `grep(pattern="error", output_mode="content")`"""
+**When NOT to Use:**
+- Finding files by name pattern (use `glob` instead)
+- Reading a specific file (use `read_file` instead)
+
+**Parameters:**
+- `pattern`: Text to search for (literal string, not regex)
+- `path`: Directory to search in (defaults to current working directory)
+- `glob`: Filter which files to search (e.g., "*.py" for Python files only)
+- `output_mode`:
+  - `"files_with_matches"` (default): Just return file paths
+  - `"content"`: Show matching lines with context
+  - `"count"`: Show match counts per file
+
+**Examples:**
+- Find all TODOs: `grep(pattern="TODO")`
+- Search Python files: `grep(pattern="import requests", glob="*.py")`
+- Show matching lines: `grep(pattern="def process", output_mode="content")`
+- Find in specific dir: `grep(pattern="error", path="/src/utils")`
+
+**Note:** Searches literal text, not regex patterns."""
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
@@ -269,17 +379,24 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
-FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+FILESYSTEM_SYSTEM_PROMPT = """## Filesystem Tools
 
-You have access to a filesystem which you can interact with using these tools.
-All file paths must start with a /.
+You have access to these filesystem tools. All file paths must be absolute (start with /).
 
-- ls: list files in a directory (requires absolute path)
-- read_file: read a file from the filesystem
-- write_file: write to a file in the filesystem
-- edit_file: edit a file in the filesystem
-- glob: find files matching a pattern (e.g., "**/*.py")
-- grep: search for text within files"""
+**Tool Overview:**
+- `ls`: List files in a directory
+- `read_file`: Read file contents (MUST read before editing)
+- `write_file`: Create new files (prefer edit_file for existing files)
+- `edit_file`: Modify existing files via string replacement
+- `glob`: Find files by pattern (e.g., "**/*.py")
+- `grep`: Search for text within files
+
+**Key Rules:**
+1. ALWAYS read a file before editing it
+2. Use `glob` to find files, not shell commands like `find`
+3. Use `grep` tool to search content, not shell `grep`
+4. Prefer `edit_file` over `write_file` for existing files
+5. Call multiple read operations in parallel when possible"""
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 

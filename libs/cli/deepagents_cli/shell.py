@@ -46,12 +46,47 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
         self._workspace_root = workspace_root
 
         # Build description with working directory information
-        description = (
-            f"Execute a shell command directly on the host. Commands will run in "
-            f"the working directory: {workspace_root}. Each command runs in a fresh shell "
-            f"environment with the current process's environment variables. Commands may "
-            f"be truncated if they exceed the configured timeout or output limits."
-        )
+        description = f"""Execute shell commands directly on the host machine.
+
+Working Directory: {workspace_root}
+
+**When to Use:**
+- Git operations (git status, git diff, git commit, git push)
+- Build commands (make, npm build, cargo build, go build)
+- Package management (pip install, npm install, cargo add)
+- Running tests (pytest, npm test, go test)
+- Process management (docker, systemctl)
+- Running scripts (python script.py, node script.js)
+
+**When NOT to Use:**
+- Reading files - use `read_file` instead
+- Editing files - use `edit_file` instead
+- Writing files - use `write_file` instead
+- Searching file contents - use `grep` tool instead
+- Finding files by pattern - use `glob` tool instead
+- Communicating with user - output text directly, never use echo
+
+**Usage Guidelines:**
+
+1. **Path Quoting**: ALWAYS quote paths containing spaces with double quotes
+   - Good: `cd "/Users/name/My Documents"`
+   - Bad: `cd /Users/name/My Documents`
+
+2. **Working Directory**: Use absolute paths, avoid `cd` commands
+   - Good: `pytest /foo/bar/tests`
+   - Bad: `cd /foo/bar && pytest tests`
+
+3. **Chaining Commands**:
+   - Use `&&` when commands depend on each other
+   - Use `;` when you don't care if earlier commands fail
+   - DO NOT use newlines to separate commands
+
+4. **Output Limits**: Output truncated at {self._max_output_bytes} bytes, timeout after {self._timeout}s
+
+**Important:**
+- Each command runs in a fresh shell (environment variables don't persist)
+- Shell state resets between calls
+- For long output, consider redirecting to temp files and reading with `read_file`"""
 
         @tool(self._tool_name, description=description)
         def shell_tool(

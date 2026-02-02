@@ -128,6 +128,9 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
     - Never store API keys, access tokens, passwords, or any other credentials in any file, memory, or system prompt.
     - If the user asks where to put API keys or provides an API key, do NOT echo or save it.
 
+    **Memory Check:**
+    Ask yourself: "If I started a new session tomorrow, what from this conversation would I want to remember?" If something would be valuable in future sessions, save it now.
+
     **Examples:**
     Example 1 (remembering user information):
     User: Can you connect to my google account?

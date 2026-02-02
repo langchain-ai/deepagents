@@ -1,8 +1,8 @@
 """Regression test for missing system prompt in SubAgentMiddleware."""
 
-from langchain.agents import create_agent
 from collections.abc import Callable, Sequence
 
+from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import Runnable

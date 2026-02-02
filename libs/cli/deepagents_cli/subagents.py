@@ -38,16 +38,19 @@ class SubagentMetadata(TypedDict):
     """Unique identifier for the subagent, used with the task tool."""
 
     description: str
-    """What this subagent does. Main agent uses this to decide when to delegate."""
+    """What this subagent does.
+
+    Main agent uses this to decide when to delegate.
+    """
 
     system_prompt: str
     """Instructions for the subagent (body of the markdown file)."""
 
     model: str | None
-    """Optional model override in 'provider:model-name' format."""
+    """Optional model override in `'provider:model-name'` format."""
 
     source: str
-    """Where this subagent was loaded from ('user' or 'project')."""
+    """Where this subagent was loaded from (`'user'` or `'project'`)."""
 
     path: str
     """Absolute path to the subagent definition file."""

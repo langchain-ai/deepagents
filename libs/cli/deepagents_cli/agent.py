@@ -25,7 +25,7 @@ from langgraph.runtime import Runtime
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
-from deepagents_cli.subagents import list_subagents
+from deepagents_cli.subagents import SubagentMetadata, list_subagents
 
 
 def list_agents() -> None:
@@ -341,22 +341,26 @@ def create_cli_agent(
     internally and from external code (e.g., benchmarking frameworks, Harbor).
 
     Args:
-        model: LLM model to use (e.g., "anthropic:claude-sonnet-4-5-20250929")
+        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-5-20250929'`)
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
-        sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
-                 If None, uses local filesystem + shell.
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
-                     Used for system prompt generation.
-        system_prompt: Override the default system prompt. If None, generates one
-                      based on sandbox_type and assistant_id.
-        auto_approve: If True, automatically approves all tool calls without human
-                     confirmation. Useful for automated workflows.
-        enable_memory: Enable MemoryMiddleware for persistent memory
-        enable_skills: Enable SkillsMiddleware for custom agent skills
+        sandbox: Optional sandbox backend for remote execution (e.g., `ModalBackend`).
+
+            If `None`, uses local filesystem + shell.
+        sandbox_type: Type of sandbox provider (`'modal'`, `'runloop'`, `'daytona'`).
+
+            Used for system prompt generation.
+        system_prompt: Override the default system prompt.
+
+            If `None`, generates one based on `sandbox_type` and `assistant_id`.
+        auto_approve: If `True`, automatically approves all tool calls without human confirmation.
+
+            Useful for automated workflows.
+        enable_memory: Enable `MemoryMiddleware` for persistent memory
+        enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell command execution (only applies in local mode)
-        checkpointer: Optional checkpointer for session persistence. If None, uses
-                     InMemorySaver (no persistence across CLI invocations).
+        checkpointer: Optional checkpointer for session persistence. If `None`, uses
+            `InMemorySaver` (no persistence across CLI invocations).
 
     Returns:
         2-tuple of (agent_graph, backend)
@@ -386,7 +390,7 @@ def create_cli_agent(
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = settings.get_project_agents_dir()
 
-    subagent_metadata = list(
+    subagent_metadata: list[SubagentMetadata] = list(
         list_subagents(
             user_agents_dir=user_agents_dir,
             project_agents_dir=project_agents_dir,
@@ -423,9 +427,10 @@ def create_cli_agent(
             )
         )
 
-    # CONDITIONAL SETUP: Local vs Remote Sandbox
     # Track subagent middleware to add to each custom subagent
     shared_subagent_middleware: list = []
+
+    # CONDITIONAL SETUP: Local vs Remote Sandbox
 
     if sandbox is None:
         # ========== LOCAL MODE ==========

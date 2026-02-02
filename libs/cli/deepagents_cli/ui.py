@@ -5,6 +5,19 @@ from pathlib import Path
 from typing import Any
 
 from deepagents_cli.config import COLORS, DEEP_AGENTS_ASCII, MAX_ARG_LENGTH, console
+from deepagents_cli.shell import _DEFAULT_SHELL_TIMEOUT
+
+
+def _format_timeout(seconds: int) -> str:
+    """Format timeout in human-readable units (e.g., 300 -> '5m', 3600 -> '1h')."""
+    if seconds < 60:  # noqa: PLR2004
+        return f"{seconds}s"
+    if seconds < 3600 and seconds % 60 == 0:  # noqa: PLR2004
+        return f"{seconds // 60}m"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    # For odd values, just show seconds
+    return f"{seconds}s"
 
 
 def truncate_value(value: str, max_length: int = MAX_ARG_LENGTH) -> str:
@@ -86,10 +99,13 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return f'{tool_name}("{pattern}")'
 
     elif tool_name == "shell":
-        # Shell: show the command being executed
+        # Shell: show the command, and timeout only if non-default
         if "command" in tool_args:
             command = str(tool_args["command"])
             command = truncate_value(command, 120)
+            timeout = tool_args.get("timeout")
+            if timeout is not None and timeout != _DEFAULT_SHELL_TIMEOUT:
+                return f'{tool_name}("{command}", timeout={_format_timeout(timeout)})'
             return f'{tool_name}("{command}")'
 
     elif tool_name == "execute":

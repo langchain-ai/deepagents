@@ -31,6 +31,9 @@ dependencies = [
   # Tools
   "tavily-python>=0.7.21,<1.0.0",
 
+  # Clipboard
+  "pyperclip>=1.11.0,<2.0.0",
+
   # Utilities
   "python-dotenv>=1.0.0,<2.0.0",
   "requests>=2.0.0,<3.0.0",

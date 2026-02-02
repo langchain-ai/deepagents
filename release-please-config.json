@@ -7,7 +7,7 @@
     "libs/cli": {
       "release-type": "python",
       "package-name": "deepagents-cli",
-      "component": "cli",
+      "component": "deepagents-cli",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": ["pyproject.toml"],

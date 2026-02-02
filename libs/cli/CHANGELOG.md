@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.0.16](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.15...deepagents-cli==0.0.16) (2026-02-02)
+## [0.0.16](https://github.com/langchain-ai/deepagents/compare/cli==0.0.15...cli==0.0.16) (2026-02-02)
 
 
 ### Features

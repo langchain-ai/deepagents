@@ -4,11 +4,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.15"
-description = "Deepagents CLI"
+version = "0.0.16"
+description = "Terminal interface for DeepAgents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
+keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Terminals",
+]
 dependencies = [
   # Framework
   "deepagents==0.3.9",
@@ -31,6 +46,9 @@ dependencies = [
   # Tools
   "tavily-python>=0.7.21,<1.0.0",
 
+  # Clipboard
+  "pyperclip>=1.11.0,<2.0.0",
+
   # Utilities
   "python-dotenv>=1.0.0,<2.0.0",
   "requests>=2.0.0,<3.0.0",
@@ -45,6 +63,14 @@ vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 [project.scripts]
 deepagents = "deepagents_cli:cli_main"
 deepagents-cli = "deepagents_cli:cli_main"
+
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Changelog = "https://github.com/langchain-ai/deepagents/blob/master/libs/cli/CHANGELOG.md"
+Twitter = "https://x.com/LangChain"
 
 [dependency-groups]
 test = [

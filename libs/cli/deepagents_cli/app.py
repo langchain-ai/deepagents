@@ -294,7 +294,7 @@ class DeepAgentsApp(App):
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
-            yield WelcomeBanner(id="welcome-banner")
+            yield WelcomeBanner(thread_id=self._lc_thread_id, id="welcome-banner")
             yield Container(id="messages")
             with Container(id="bottom-app-container"):
                 yield ChatInput(cwd=self._cwd, id="input-area")

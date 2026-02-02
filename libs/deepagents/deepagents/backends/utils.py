@@ -243,6 +243,34 @@ def _validate_path(path: str | None) -> str:
     return normalized
 
 
+def _filter_files_by_path(files: dict[str, Any], path: str) -> dict[str, Any]:
+    """Filter files dict by path, handling both exact file matches and directory prefixes.
+    
+    This function correctly handles the case where path might be an exact file path
+    (without trailing slash) or a directory path (with trailing slash).
+    
+    Args:
+        files: Dictionary mapping file paths to file data
+        path: Path to filter by (either exact file path or directory prefix)
+    
+    Returns:
+        Filtered dictionary of files matching the path
+        
+    Example:
+        files = {"/dir/file": {...}, "/dir/other": {...}}
+        _filter_files_by_path(files, "/dir/file")  # Returns {"/dir/file": {...}}
+        _filter_files_by_path(files, "/dir/")      # Returns both files
+    """
+    # Check if path matches an exact file (without trailing slash)
+    if path.rstrip("/") in files:
+        exact_path = path.rstrip("/")
+        return {exact_path: files[exact_path]}
+    
+    # Otherwise treat as directory prefix (with trailing slash)
+    normalized_path = path if path.endswith("/") else path + "/"
+    return {fp: fd for fp, fd in files.items() if fp.startswith(normalized_path)}
+
+
 def _glob_search_files(
     files: dict[str, Any],
     pattern: str,
@@ -271,7 +299,7 @@ def _glob_search_files(
     except ValueError:
         return "No files found"
 
-    filtered = {fp: fd for fp, fd in files.items() if fp.startswith(normalized_path)}
+    filtered = _filter_files_by_path(files, path)
 
     # Respect standard glob semantics:
     # - Patterns without path separators (e.g., "*.py") match only in the current
@@ -404,7 +432,7 @@ def grep_matches_from_files(
     except ValueError:
         return []
 
-    filtered = {fp: fd for fp, fd in files.items() if fp.startswith(normalized_path)}
+    filtered = _filter_files_by_path(files, path)
 
     if glob:
         filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}

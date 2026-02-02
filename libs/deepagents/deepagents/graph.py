@@ -20,11 +20,12 @@ from langgraph.types import Checkpointer
 
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware._subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
@@ -161,33 +162,24 @@ def create_deep_agent(
             "keep": ("messages", 20),
         }
 
-    # Build middleware stack for ALL subagents (custom subagents inherit these)
-    subagent_middleware: list[AgentMiddleware] = [
-        TodoListMiddleware(),
-    ]
-
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
-    subagent_middleware.extend(
-        [
-            FilesystemMiddleware(backend=backend),
-            SummarizationMiddleware(
-                model=model,
-                backend=backend,
-                trigger=trigger,
-                keep=keep,
-                trim_tokens_to_summarize=None,
-                truncate_args_settings=truncate_args_settings,
-            ),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-            PatchToolCallsMiddleware(),
-        ]
-    )
-
-    # Build middleware stack ONLY for the general-purpose subagent (custom subagents do NOT inherit these)
-    general_purpose_subagent_middleware: list[AgentMiddleware] = []
+    # Build general-purpose subagent
+    gp_middleware: list[AgentMiddleware] = []
     if skills is not None:
-        general_purpose_subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    if interrupt_on is not None:
+        gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    general_purpose_spec: SubAgent = {
+        **GENERAL_PURPOSE_SUBAGENT,
+        "model": model,
+        "tools": tools or [],
+        "middleware": gp_middleware,
+    }
+
+    # Combine GP with user-provided subagents
+    all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *(subagents or [])]
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware] = [
@@ -201,13 +193,8 @@ def create_deep_agent(
         [
             FilesystemMiddleware(backend=backend),
             SubAgentMiddleware(
-                default_model=model,
-                default_tools=tools,
-                subagents=subagents if subagents is not None else [],
-                default_middleware=subagent_middleware,
-                general_purpose_middleware=general_purpose_subagent_middleware,
-                default_interrupt_on=interrupt_on,
-                general_purpose_agent=True,
+                backend=backend,
+                subagents=all_subagents,
             ),
             SummarizationMiddleware(
                 model=model,

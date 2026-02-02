@@ -147,10 +147,6 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             inherit_env: Whether to inherit the parent process's environment variables.
                 When False (default), only variables in `env` dict are available.
                 When True, inherits all `os.environ` variables and applies `env` overrides.
-
-                **Security Warning:** Setting `inherit_env=True` passes ALL environment
-                variables to agent-controlled shell commands, including API keys, secrets,
-                and credentials. Only enable if you trust the agent.
         """
         # Initialize parent FilesystemBackend
         super().__init__(

@@ -30,29 +30,9 @@ uv pip install deepagents-cli
 # Download the script (or copy from examples/ralph_mode/ if you have the repo)
 curl -O https://raw.githubusercontent.com/langchain-ai/deepagents/master/examples/ralph_mode/ralph_mode.py
 
+```
 # Run Ralph
-python ralph_mode.py "Build a Python programming course for beginners. Use git."
-```
-
-## Usage
-
-```bash
-# Unlimited iterations (Ctrl+C to stop)
-python ralph_mode.py "Build a Python course"
-
-# With iteration limit
-python ralph_mode.py "Build a REST API" --iterations 5
-
-# With specific model
-python ralph_mode.py "Create a CLI tool" --model claude-haiku-4-5-20251001
-```
-
-## How It Works
-
-1. **You provide a task** — declarative, what you want (not how)
-2. **Agent runs** — creates files, makes progress
-3. **Loop repeats** — same prompt, but files persist
-4. **You stop it** — Ctrl+C when satisfied
+![](image_1.png)
 
 ## Credits
 

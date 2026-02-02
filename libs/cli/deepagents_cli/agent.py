@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
@@ -25,7 +25,6 @@ from langgraph.runtime import Runtime
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
-from deepagents_cli.shell import ShellMiddleware
 from deepagents_cli.subagents import list_subagents
 
 
@@ -355,7 +354,7 @@ def create_cli_agent(
                      confirmation. Useful for automated workflows.
         enable_memory: Enable MemoryMiddleware for persistent memory
         enable_skills: Enable SkillsMiddleware for custom agent skills
-        enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
+        enable_shell: Enable shell execution in local mode (uses LocalShellBackend)
         checkpointer: Optional checkpointer for session persistence. If None, uses
                      InMemorySaver (no persistence across CLI invocations).
 
@@ -435,7 +434,21 @@ def create_cli_agent(
 
     if sandbox is None:
         # ========== LOCAL MODE ==========
-        backend = FilesystemBackend()
+        # Use LocalShellBackend when shell is enabled, otherwise plain FilesystemBackend
+        if enable_shell:
+            # Create environment for shell commands
+            # Restore user's original LANGSMITH_PROJECT so their code traces separately
+            shell_env = os.environ.copy()
+            if settings.user_langchain_project:
+                shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+
+            backend = LocalShellBackend(
+                root_dir=str(Path.cwd()),
+                env=shell_env,
+                inherit_env=False,  # Use explicit env dict only
+            )
+        else:
+            backend = FilesystemBackend()
 
         # Local context middleware (git info, directory tree, etc.)
         # Added to both main agent and subagents. The middleware checks for existing
@@ -444,22 +457,6 @@ def create_cli_agent(
         local_context_middleware = LocalContextMiddleware()
         agent_middleware.append(local_context_middleware)
         subagent_mw.append(local_context_middleware)
-
-        # Add shell middleware (only in local mode)
-        if enable_shell:
-            # Create environment for shell commands
-            # Restore user's original LANGSMITH_PROJECT so their code traces separately
-            shell_env = os.environ.copy()
-            if settings.user_langchain_project:
-                shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
-
-            shell_middleware = ShellMiddleware(
-                workspace_root=str(Path.cwd()),
-                env=shell_env,
-            )
-            agent_middleware.append(shell_middleware)
-            # Also give subagents shell access
-            subagent_mw.append(shell_middleware)
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)

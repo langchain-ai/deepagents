@@ -42,13 +42,12 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-def create_deep_agent(  # noqa: PLR0912
+def create_deep_agent(
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
-    subagent_middleware: Sequence[AgentMiddleware] | None = None,
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
@@ -94,10 +93,6 @@ def create_deep_agent(  # noqa: PLR0912
             (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
             `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
             `PatchToolCallsMiddleware`).
-        subagent_middleware: Additional middleware to apply to subagents. This is appended
-            to the default subagent middleware stack (`TodoListMiddleware`, `SkillsMiddleware`,
-            `FilesystemMiddleware`, `SummarizationMiddleware`). Use this to give subagents
-            access to tools like shell execution that aren't included by default.
         subagents: The subagents to use.
 
             Each subagent should be a `dict` with the following keys:
@@ -167,15 +162,15 @@ def create_deep_agent(  # noqa: PLR0912
         }
 
     # Build middleware stack for subagents (includes skills if provided)
-    subagent_middleware_stack: list[AgentMiddleware] = [
+    subagent_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
     ]
 
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
     if skills is not None:
-        subagent_middleware_stack.append(SkillsMiddleware(backend=backend, sources=skills))
-    subagent_middleware_stack.extend(
+        subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    subagent_middleware.extend(
         [
             FilesystemMiddleware(backend=backend),
             SummarizationMiddleware(
@@ -190,10 +185,6 @@ def create_deep_agent(  # noqa: PLR0912
             PatchToolCallsMiddleware(),
         ]
     )
-
-    # Add custom subagent middleware if provided
-    if subagent_middleware:
-        subagent_middleware_stack.extend(subagent_middleware)
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware] = [
@@ -210,7 +201,7 @@ def create_deep_agent(  # noqa: PLR0912
                 default_model=model,
                 default_tools=tools,
                 subagents=subagents if subagents is not None else [],
-                default_middleware=subagent_middleware_stack,
+                default_middleware=subagent_middleware,
                 default_interrupt_on=interrupt_on,
                 general_purpose_agent=True,
             ),

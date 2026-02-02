@@ -137,7 +137,6 @@ ignore-var-parameters = true
 "deepagents_cli/core/ui_display_types.py" = ["A003", "FBT001"]
 "deepagents_cli/local_context.py" = ["ARG002", "BLE001", "E501", "EM101", "EM102", "PERF401", "PLR0911", "PLR0912", "PLR0915", "S603", "S607", "TC002", "TC003", "TRY300"]
 "deepagents_cli/project_utils.py" = ["ERA001"]
-"deepagents_cli/shell.py" = ["PERF401", "S602"]
 "deepagents_cli/skills/commands.py" = ["ANN401", "E501", "FBT001", "FBT002", "TRY300"]
 "deepagents_cli/skills/load.py" = ["TC003"]
 "deepagents_cli/textual_adapter.py" = ["E501"]

@@ -52,47 +52,6 @@ class TestTruncateValue:
         assert result == "hello"
 
 
-class TestFormatToolDisplayShell:
-    """Tests for `format_tool_display` with shell tool."""
-
-    def test_shell_command_only(self) -> None:
-        """Test shell display with command only."""
-        result = format_tool_display("shell", {"command": "echo hello"})
-        assert result == 'shell("echo hello")'
-
-    def test_shell_with_timeout_minutes(self) -> None:
-        """Test shell display formats timeout in minutes when appropriate."""
-        result = format_tool_display("shell", {"command": "make test", "timeout": 300})
-        assert result == 'shell("make test", timeout=5m)'
-
-    def test_shell_with_timeout_seconds(self) -> None:
-        """Test shell display formats timeout in seconds for small values."""
-        result = format_tool_display("shell", {"command": "make test", "timeout": 30})
-        assert result == 'shell("make test", timeout=30s)'
-
-    def test_shell_with_timeout_hours(self) -> None:
-        """Test shell display formats timeout in hours when appropriate."""
-        result = format_tool_display("shell", {"command": "make test", "timeout": 3600})
-        assert result == 'shell("make test", timeout=1h)'
-
-    def test_shell_with_none_timeout(self) -> None:
-        """Test shell display excludes timeout when `None`."""
-        result = format_tool_display("shell", {"command": "echo hello", "timeout": None})
-        assert result == 'shell("echo hello")'
-
-    def test_shell_with_default_timeout_hidden(self) -> None:
-        """Test shell display excludes timeout when it equals the default (120s)."""
-        result = format_tool_display("shell", {"command": "echo hello", "timeout": 120})
-        assert result == 'shell("echo hello")'
-
-    def test_shell_long_command_truncated(self) -> None:
-        """Test that long shell commands are truncated."""
-        long_cmd = "x" * 200
-        result = format_tool_display("shell", {"command": long_cmd})
-        assert "..." in result
-        assert len(result) < 200
-
-
 class TestFormatToolDisplayOther:
     """Tests for `format_tool_display` with other tools."""
 

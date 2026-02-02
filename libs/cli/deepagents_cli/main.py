@@ -278,7 +278,7 @@ def cli_main() -> None:
 
     # Note: LANGSMITH_PROJECT is already overridden in config.py (before LangChain imports)
     # This ensures agent traces → DEEPAGENTS_LANGSMITH_PROJECT
-    # Shell commands → user's original LANGSMITH_PROJECT (via ShellMiddleware env)
+    # Shell commands → user's original LANGSMITH_PROJECT (via LocalShellBackend env)
 
     # Check dependencies first
     check_cli_dependencies()

@@ -122,10 +122,7 @@ class CompositeBackend(BackendProtocol):
                 suffix = path[len(route_prefix) :]
                 search_path = f"/{suffix}" if suffix else "/"
                 infos = backend.ls_info(search_path)
-                prefixed: list[FileInfo] = []
-                for fi in infos:
-                    prefixed.append({**fi, "path": f"{route_prefix[:-1]}{fi['path']}"})
-                return prefixed
+                return [{**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos]
 
         # At root, aggregate default and all routed backends
         if path == "/":
@@ -157,10 +154,7 @@ class CompositeBackend(BackendProtocol):
                 suffix = path[len(route_prefix) :]
                 search_path = f"/{suffix}" if suffix else "/"
                 infos = await backend.als_info(search_path)
-                prefixed: list[FileInfo] = []
-                for fi in infos:
-                    prefixed.append({**fi, "path": f"{route_prefix[:-1]}{fi['path']}"})
-                return prefixed
+                return [{**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos]
 
         # At root, aggregate default and all routed backends
         if path == "/":

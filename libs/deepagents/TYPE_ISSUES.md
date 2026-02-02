@@ -4,8 +4,18 @@ This document tracks type safety issues discovered during ty type checking that 
 
 ## Summary
 
-- **4 errors** requiring langchain fixes
-- **13 suppressions** (`# ty: ignore`) in deepagents needing proper solutions
+- **4 errors** requiring langchain fixes (method override issues)
+- **15 suppressions** (`# ty: ignore`) in deepagents needing proper solutions
+
+## Recent Changes
+
+Middlewares have been updated to be properly generic on `ContextT` and `ResponseT` from `langchain.agents.middleware.types`:
+- `MemoryMiddleware[MemoryState, ContextT, ResponseT]`
+- `SkillsMiddleware[SkillsState, ContextT, ResponseT]`
+- `FilesystemMiddleware[FilesystemState, ContextT, ResponseT]`
+- `SubAgentMiddleware[Any, ContextT, ResponseT]`
+
+This improves type safety for `wrap_model_call`/`awrap_model_call` methods that now properly type `ModelRequest[ContextT]` and `ModelResponse[ResponseT]`.
 
 ---
 
@@ -13,7 +23,7 @@ This document tracks type safety issues discovered during ty type checking that 
 
 ### 1. `AgentMiddleware.before_agent` / `abefore_agent` Signature Mismatch
 
-**Files affected:** `memory.py:303,332`, `skills.py:591,626`
+**Files affected:** `memory.py:305,334`, `skills.py:593,628`
 
 **Issue:** The base class `AgentMiddleware` defines:
 ```python
@@ -21,12 +31,17 @@ def before_agent(self, state: StateT, runtime: Runtime[ContextT]) -> dict[str, A
 async def abefore_agent(self, state: StateT, runtime: Runtime[ContextT]) -> dict[str, Any] | None
 ```
 
-But subclasses need an additional `config: RunnableConfig` parameter:
+But subclasses need an additional `config: RunnableConfig` parameter to create `ToolRuntime` for backend factories:
 ```python
 def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None
 ```
 
-**Proposed fix in langchain:** Add `config: RunnableConfig` to the base class signature, or provide `config` via `runtime`.
+**Note:** The `Runtime` class intentionally does not include `config` (see `langgraph/runtime.py:34-38`). Config must be accessed via `get_config()` or injected as a parameter.
+
+**Proposed fix in langchain:** Either:
+1. Add `config: RunnableConfig` to the base class signature
+2. Provide `config` via `runtime` (e.g., `runtime.config`)
+3. Or use `get_config()` in the implementation (current workaround in `SummarizationMiddleware`)
 
 ---
 
@@ -35,8 +50,8 @@ def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableCon
 ### 2. `BackendFactory` Generic Type Variance
 
 **Files affected:**
-- `memory.py:211`
-- `skills.py:538`
+- `memory.py:213`
+- `skills.py:540`
 - `summarization.py:196`
 
 **Issue:** `self._backend` is typed as `BackendProtocol | BackendFactory` where `BackendFactory = Callable[[ToolRuntime], BackendProtocol]`. When calling the factory with a specific state type like `ToolRuntime[None, MemoryState]`, the type checker complains because the factory expects `ToolRuntime[None, dict[Unknown, Unknown]]`.
@@ -55,9 +70,9 @@ BackendFactory: TypeAlias = Callable[[ToolRuntime[Any, Any]], BackendProtocol]
 
 ### 3. `Runtime` vs `ToolRuntime` Type Mismatch
 
-**Files affected:** `filesystem.py:894,942`
+**Files affected:** `filesystem.py:896,944`
 
-**Issue:** `request.runtime` from `ModelRequest` is typed as `Runtime[Unknown]` but `_get_backend` expects `ToolRuntime[Any, Any]`.
+**Issue:** `request.runtime` from `ModelRequest` is typed as `Runtime[ContextT]` but `_get_backend` expects `ToolRuntime[Any, Any]`.
 
 **Proposed fix in langchain:** Either:
 - Type `ModelRequest.runtime` as `ToolRuntime` instead of `Runtime`
@@ -67,7 +82,7 @@ BackendFactory: TypeAlias = Callable[[ToolRuntime[Any, Any]], BackendProtocol]
 
 ### 4. `BackendProtocol` vs `SandboxBackendProtocol` Type Narrowing
 
-**Files affected:** `filesystem.py:817,850`
+**Files affected:** `filesystem.py:819,852`
 
 **Issue:** After a runtime check `_supports_execution(resolved_backend)`, the type checker doesn't narrow `resolved_backend` from `BackendProtocol` to `SandboxBackendProtocol`, so `execute()`/`aexecute()` methods are unresolved.
 
@@ -125,9 +140,9 @@ The following files have `# ty: ignore` comments that should be addressed:
 
 | File | Lines | Issue |
 |------|-------|-------|
-| `deepagents/middleware/memory.py` | 211 | BackendFactory variance |
-| `deepagents/middleware/skills.py` | 538 | BackendFactory variance |
+| `deepagents/middleware/memory.py` | 213 | BackendFactory variance |
+| `deepagents/middleware/skills.py` | 540 | BackendFactory variance |
 | `deepagents/middleware/summarization.py` | 196, 436 | BackendFactory variance, ToolCall type |
-| `deepagents/middleware/filesystem.py` | 817, 850, 894, 942 | execute/aexecute resolution, Runtime vs ToolRuntime |
+| `deepagents/middleware/filesystem.py` | 819, 852, 896, 944 | execute/aexecute resolution, Runtime vs ToolRuntime |
 | `deepagents/backends/composite.py` | 250, 267, 290, 307, 328, 350 | TypedDict spread |
 | `deepagents/graph.py` | 235 | SystemMessage overload |

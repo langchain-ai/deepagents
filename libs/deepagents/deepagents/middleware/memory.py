@@ -61,9 +61,11 @@ if TYPE_CHECKING:
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
+    ResponseT,
 )
 from langchain.tools import ToolRuntime
 from langgraph.runtime import Runtime
@@ -152,7 +154,7 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 """
 
 
-class MemoryMiddleware(AgentMiddleware):
+class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     """Middleware for loading agent memory from `AGENTS.md` files.
 
     Loads memory content from configured sources and injects into the system prompt.
@@ -358,7 +360,7 @@ class MemoryMiddleware(AgentMiddleware):
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    def modify_request(self, request: ModelRequest) -> ModelRequest:
+    def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject memory content into the system message.
 
         Args:
@@ -376,9 +378,9 @@ class MemoryMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Wrap model call to inject memory into system prompt.
 
         Args:
@@ -393,9 +395,9 @@ class MemoryMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """Async wrap model call to inject memory into system prompt.
 
         Args:

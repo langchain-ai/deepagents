@@ -2,7 +2,7 @@
 
 This backend extends FilesystemBackend to add shell command execution on the local
 host system. It provides NO sandboxing or isolation - all operations run directly
-on your machine with full system access.
+on the host machine with full system access.
 """
 
 from __future__ import annotations
@@ -58,17 +58,22 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         **Recommended safeguards:**
 
-        1. **Enable Human-in-the-Loop (HITL) middleware** to review ALL operations
-            before execution (especially critical for shell commands)
-        2. Use `virtual_mode=True` with `root_dir` to enable path-based access
-            restrictions for filesystem operations (blocks `..`, `~`, and absolute
-            paths outside root). Note: this does NOT restrict shell commands.
-        3. Exclude secrets from accessible filesystem paths (especially in CI/CD)
-        4. Run in dedicated development environments, not on shared or production systems
-        5. Never expose to untrusted users or allow execution of untrusted code
-        6. For production environments requiring code execution, implement a sandboxed
-            backend by extending `BaseSandbox` with proper isolation (e.g., Docker
-            containers, VMs, or other isolated execution environments)
+        Since shell access is unrestricted and can bypass filesystem restrictions:
+
+        1. **Enable Human-in-the-Loop (HITL) middleware** to review and approve ALL
+            operations before execution. This is STRONGLY RECOMMENDED as your primary
+            safeguard when using this backend.
+        2. Run in dedicated development environments only - never on shared or
+            production systems
+        3. Never expose to untrusted users or allow execution of untrusted code
+        4. For production environments requiring code execution, extend `BaseSandbox`
+            to create a properly isolated backend (Docker containers, VMs, or other
+            sandboxed execution environments)
+
+        !!! note
+
+            `virtual_mode=True` and path-based restrictions provide NO security
+            with shell access enabled, since commands can access any path on the system
 
     Examples:
         ```python
@@ -116,11 +121,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                     directory with traversal protection. **Note:** This does NOT restrict
                     shell commands - they can still access any path.
 
-            virtual_mode: Enable path-based access restrictions for filesystem operations only.
+            virtual_mode: Enable path rewriting for filesystem operations only.
 
-                When `True`, filesystem operations (read/write/edit) treat all paths as
-                virtual paths anchored to `root_dir`. Path traversal (`..`, `~`) is blocked
-                and all resolved paths are verified to remain within `root_dir`.
+                When `True`, filesystem operations (read/write/edit) rewrite all paths as
+                absolute paths relative to `root_dir` (e.g., `/file.txt` becomes
+                `{root_dir}/file.txt`). Path traversal (`..`, `~`) is blocked.
 
                 **Important:** This only affects filesystem operations. Shell commands
                 executed via `execute()` are NOT restricted and can access any path.
@@ -250,6 +255,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             )
 
             # Combine stdout and stderr
+            # Prefix each stderr line with [stderr] for clear attribution.
+            # Example: "hello\n[stderr] error: file not found"
             output_parts = []
             if result.stdout:
                 output_parts.append(result.stdout)

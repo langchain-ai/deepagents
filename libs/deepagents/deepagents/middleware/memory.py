@@ -208,7 +208,7 @@ class MemoryMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)
+            return self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
         return self._backend
 
     def _format_agent_memory(self, contents: dict[str, str]) -> str:

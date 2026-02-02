@@ -535,7 +535,7 @@ class SkillsMiddleware(AgentMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            backend = self._backend(tool_runtime)
+            backend = self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
             if backend is None:
                 raise AssertionError("SkillsMiddleware requires a valid backend instance")
             return backend

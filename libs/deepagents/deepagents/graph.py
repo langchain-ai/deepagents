@@ -25,7 +25,7 @@ from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware, TruncateArgsSettings
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
@@ -38,7 +38,7 @@ def get_default_model() -> ChatAnthropic:
     """
     return ChatAnthropic(
         model_name="claude-sonnet-4-5-20250929",
-        max_tokens=20000,  # type: ignore[call-arg]
+        max_tokens=20000,
     )
 
 
@@ -141,6 +141,7 @@ def create_deep_agent(
     elif isinstance(model, str):
         model = init_chat_model(model)
 
+    truncate_args_settings: TruncateArgsSettings
     if (
         model.profile is not None
         and isinstance(model.profile, dict)
@@ -231,7 +232,7 @@ def create_deep_agent(
             *system_prompt.content_blocks,
             {"type": "text", "text": f"\n\n{BASE_AGENT_PROMPT}"},
         ]
-        final_system_prompt = SystemMessage(content=new_content)
+        final_system_prompt = SystemMessage(content=new_content)  # ty: ignore[no-matching-overload]
     else:
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT

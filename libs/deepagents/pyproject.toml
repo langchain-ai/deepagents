@@ -134,3 +134,12 @@ ignore-var-parameters = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.rules]
+# Most rules are enabled by default. Enable rules that are disabled by default:
+division-by-zero = "error"
+# Add rules here to ignore, e.g.:
+# possibly-unresolved-reference = "ignore"

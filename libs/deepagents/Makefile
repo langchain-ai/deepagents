@@ -1,4 +1,4 @@
-.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage
+.PHONY: all format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage typecheck
 
 # Default target executed when no arguments are given to make.
 all: help
@@ -51,7 +51,9 @@ lint_tests: PYTHON_FILES=tests
 lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
-	# [ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ty check $(PYTHON_FILES)
+
+typecheck:
+	uv run --all-groups ty check deepagents
 
 format format_diff:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES)
@@ -69,6 +71,7 @@ help:
 	@echo 'coverage                     - run unit tests and generate coverage report'
 	@echo 'format                       - run code formatters'
 	@echo 'lint                         - run linters'
+	@echo 'typecheck                    - run type checker (ty)'
 	@echo 'check_imports                - check imports'
 	@echo 'lint_package                 - lint only the package'
 	@echo 'lint_tests                   - lint only tests'

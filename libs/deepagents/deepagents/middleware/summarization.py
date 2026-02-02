@@ -193,7 +193,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)
+            return self._backend(tool_runtime)  # ty: ignore[invalid-argument-type]
         return self._backend
 
     def _get_thread_id(self) -> str:
@@ -345,7 +345,7 @@ A condensed summary follows:
             # Keep the most recent N messages
             if len(messages) <= keep_value:
                 return len(messages)  # All messages are recent
-            return len(messages) - keep_value
+            return int(len(messages) - keep_value)
 
         if keep_type in {"tokens", "fraction"}:
             # Calculate target token count
@@ -433,7 +433,7 @@ A condensed summary follows:
 
                 for tool_call in msg.tool_calls:
                     if tool_call["name"] in {"write_file", "edit_file"}:
-                        truncated_call = self._truncate_tool_call(tool_call)
+                        truncated_call = self._truncate_tool_call(tool_call)  # ty: ignore[invalid-argument-type]
                         if truncated_call != tool_call:
                             msg_modified = True
                         truncated_tool_calls.append(truncated_call)

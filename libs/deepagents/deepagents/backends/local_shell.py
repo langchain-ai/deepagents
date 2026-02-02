@@ -10,10 +10,13 @@ from __future__ import annotations
 import os
 import subprocess
 import uuid
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -91,8 +94,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
     def __init__(
         self,
         root_dir: str | Path | None = None,
+        *,
         virtual_mode: bool = False,
-	*,
         max_file_size_mb: int = 10,
         timeout: float = 120.0,
         max_output_bytes: int = 100_000,
@@ -172,7 +175,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         self,
         command: str,
     ) -> ExecuteResponse:
-        """Execute a shell command directly on the host system.
+        r"""Execute a shell command directly on the host system.
 
         !!! danger "Unrestricted Execution"
             Commands are executed directly on your host system using `subprocess.run()`
@@ -235,10 +238,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             )
 
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # noqa: S602
                 command,
                 check=False,
-                shell=True,
+                shell=True,  # Intentional: designed for LLM-controlled shell execution
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,
@@ -252,8 +255,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 output_parts.append(result.stdout)
             if result.stderr:
                 stderr_lines = result.stderr.strip().split("\n")
-                for line in stderr_lines:
-                    output_parts.append(f"[stderr] {line}")
+                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
 
             output = "\n".join(output_parts) if output_parts else "<no output>"
 
@@ -280,7 +282,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 exit_code=124,  # Standard timeout exit code
                 truncated=False,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
+            # Broad exception catch is intentional: we want to catch all execution errors
+            # and return a consistent ExecuteResponse rather than propagating exceptions
             return ExecuteResponse(
                 output=f"Error executing command: {e}",
                 exit_code=1,

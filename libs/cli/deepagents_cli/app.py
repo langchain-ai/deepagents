@@ -556,7 +556,7 @@ class DeepAgentsApp(App):
 
     async def _request_approval(
         self,
-        action_request: Any,
+        action_requests: Any,  # noqa: ANN401
         assistant_id: str | None,
     ) -> asyncio.Future:
         """Request user approval inline in the messages area.
@@ -568,26 +568,46 @@ class DeepAgentsApp(App):
 
         Auto-approves shell commands that are in the configured allow-list.
 
+        Args:
+            action_requests: List of action request dicts to approve
+            assistant_id: The assistant ID for display purposes
+
         Returns:
             A Future that resolves to the user's decision.
         """
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
 
-        # Check if this is a shell command that should be auto-approved
-        if action_request.get("name") == "shell" and settings.shell_allow_list:
-            command = action_request.get("args", {}).get("command", "")
-            if is_shell_command_allowed(command, settings.shell_allow_list):
-                # Auto-approve the command
+        # Check if ALL actions in the batch are auto-approvable shell commands
+        if settings.shell_allow_list and action_requests:
+            all_auto_approved = True
+            approved_commands = []
+
+            for req in action_requests:
+                if req.get("name") == "shell":
+                    command = req.get("args", {}).get("command", "")
+                    if is_shell_command_allowed(command, settings.shell_allow_list):
+                        approved_commands.append(command)
+                    else:
+                        all_auto_approved = False
+                        break
+                else:
+                    # Non-shell commands need normal approval
+                    all_auto_approved = False
+                    break
+
+            if all_auto_approved and approved_commands:
+                # Auto-approve all commands in the batch
                 result_future.set_result({"type": "approve"})
 
-                # Mount a system message showing the auto-approval
+                # Mount system messages showing the auto-approvals
                 try:
                     messages = self.query_one("#messages", Container)
-                    auto_msg = SystemMessage(
-                        f"[dim]✓ Auto-approved shell command (allow-list): {command}[/dim]"
-                    )
-                    await messages.mount(auto_msg)
+                    for command in approved_commands:
+                        auto_msg = SystemMessage(
+                            f"✓ Auto-approved shell command (allow-list): {command}"
+                        )
+                        await messages.mount(auto_msg)
                     self._scroll_chat_to_bottom()
                 except Exception:
                     pass  # Don't fail if we can't show the message
@@ -601,7 +621,7 @@ class DeepAgentsApp(App):
 
         # Create menu with unique ID to avoid conflicts
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
-        menu = ApprovalMenu(action_request, assistant_id, id=unique_id)
+        menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
         menu.set_future(result_future)
 
         # Store reference

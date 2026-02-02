@@ -1,5 +1,5 @@
 """Textual UI adapter for agent execution."""
-# ruff: noqa: PLR0912, PLR0915, ANN401, PLR2004, BLE001, TRY203
+# ruff: noqa: ANN401, PLR2004, BLE001, TRY203
 # This module has complex streaming logic ported from execution.py
 
 from __future__ import annotations

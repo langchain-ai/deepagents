@@ -20,7 +20,7 @@ from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware, compute_summarization_defaults
 
 # State keys excluded from subagent state transfer
 _EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata"}
@@ -242,25 +242,7 @@ class SubAgentMiddleware(AgentMiddleware):
         Returns:
             List of middleware to apply to the subagent.
         """
-        if (
-            model.profile is not None
-            and isinstance(model.profile, dict)
-            and "max_input_tokens" in model.profile
-            and isinstance(model.profile["max_input_tokens"], int)
-        ):
-            trigger = ("fraction", 0.85)
-            keep = ("fraction", 0.10)
-            truncate_args_settings = {
-                "trigger": ("fraction", 0.85),
-                "keep": ("fraction", 0.10),
-            }
-        else:
-            trigger = ("tokens", 170000)
-            keep = ("messages", 6)
-            truncate_args_settings = {
-                "trigger": ("messages", 20),
-                "keep": ("messages", 20),
-            }
+        summarization_defaults = compute_summarization_defaults(model)
 
         return [
             TodoListMiddleware(),
@@ -268,10 +250,10 @@ class SubAgentMiddleware(AgentMiddleware):
             SummarizationMiddleware(
                 model=model,
                 backend=self._backend,
-                trigger=trigger,
-                keep=keep,
+                trigger=summarization_defaults["trigger"],
+                keep=summarization_defaults["keep"],
                 trim_tokens_to_summarize=None,
-                truncate_args_settings=truncate_args_settings,
+                truncate_args_settings=summarization_defaults["truncate_args_settings"],
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),

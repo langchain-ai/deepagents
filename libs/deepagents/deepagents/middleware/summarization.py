@@ -80,6 +80,51 @@ class TruncateArgsSettings(TypedDict, total=False):
     truncation_text: str
 
 
+class SummarizationDefaults(TypedDict):
+    """Default settings computed from model profile."""
+
+    trigger: ContextSize
+    keep: ContextSize
+    truncate_args_settings: TruncateArgsSettings
+
+
+def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
+    """Compute default summarization settings based on model profile.
+
+    Args:
+        model: A resolved chat model instance.
+
+    Returns:
+        Default settings for trigger, keep, and truncate_args_settings.
+        If the model has a profile with max_input_tokens, uses fraction-based
+        settings. Otherwise, uses fixed token/message counts.
+    """
+    has_profile = (
+        model.profile is not None
+        and isinstance(model.profile, dict)
+        and "max_input_tokens" in model.profile
+        and isinstance(model.profile["max_input_tokens"], int)
+    )
+
+    if has_profile:
+        return {
+            "trigger": ("fraction", 0.85),
+            "keep": ("fraction", 0.10),
+            "truncate_args_settings": {
+                "trigger": ("fraction", 0.85),
+                "keep": ("fraction", 0.10),
+            },
+        }
+    return {
+        "trigger": ("tokens", 170000),
+        "keep": ("messages", 6),
+        "truncate_args_settings": {
+            "trigger": ("messages", 20),
+            "keep": ("messages", 20),
+        },
+    }
+
+
 class SummarizationMiddleware(BaseSummarizationMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
@@ -155,7 +200,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         # Parse truncate_args_settings
         if truncate_args_settings is None:
             self._truncate_args_trigger = None
-            self._truncate_args_keep = ("messages", 20)
+            self._truncate_args_keep: ContextSize = ("messages", 20)
             self._max_arg_length = 2000
             self._truncation_text = "...(argument truncated)"
         else:

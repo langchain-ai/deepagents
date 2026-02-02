@@ -26,7 +26,7 @@ from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware, compute_summarization_defaults
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
@@ -142,25 +142,8 @@ def create_deep_agent(
     elif isinstance(model, str):
         model = init_chat_model(model)
 
-    if (
-        model.profile is not None
-        and isinstance(model.profile, dict)
-        and "max_input_tokens" in model.profile
-        and isinstance(model.profile["max_input_tokens"], int)
-    ):
-        trigger = ("fraction", 0.85)
-        keep = ("fraction", 0.10)
-        truncate_args_settings = {
-            "trigger": ("fraction", 0.85),
-            "keep": ("fraction", 0.10),
-        }
-    else:
-        trigger = ("tokens", 170000)
-        keep = ("messages", 6)
-        truncate_args_settings = {
-            "trigger": ("messages", 20),
-            "keep": ("messages", 20),
-        }
+    # Compute summarization defaults based on model profile
+    summarization_defaults = compute_summarization_defaults(model)
 
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
@@ -199,10 +182,10 @@ def create_deep_agent(
             SummarizationMiddleware(
                 model=model,
                 backend=backend,
-                trigger=trigger,
-                keep=keep,
+                trigger=summarization_defaults["trigger"],
+                keep=summarization_defaults["keep"],
                 trim_tokens_to_summarize=None,
-                truncate_args_settings=truncate_args_settings,
+                truncate_args_settings=summarization_defaults["truncate_args_settings"],
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),

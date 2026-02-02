@@ -1,7 +1,8 @@
 """Tests for command-line argument parsing."""
-# ruff: noqa: ANN001, ANN002, ANN202
 
 import sys
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from unittest.mock import patch
 
 import pytest
@@ -9,12 +10,14 @@ import pytest
 from deepagents_cli.config import _parse_shell_allow_list
 from deepagents_cli.main import parse_args
 
+MockArgvType = Callable[..., AbstractContextManager[object]]
+
 
 @pytest.fixture
-def mock_argv():
+def mock_argv() -> MockArgvType:
     """Factory fixture to mock sys.argv with given arguments."""
 
-    def _mock_argv(*args):
+    def _mock_argv(*args: str) -> AbstractContextManager[object]:
         return patch.object(sys, "argv", ["deepagents", *args])
 
     return _mock_argv
@@ -32,7 +35,7 @@ def mock_argv():
         ),
     ],
 )
-def test_shell_allow_list_argument(args, expected, mock_argv):
+def test_shell_allow_list_argument(args: list[str], expected: str, mock_argv: MockArgvType) -> None:
     """Test --shell-allow-list argument with various values."""
     with mock_argv(*args):
         parsed_args = parse_args()
@@ -40,7 +43,7 @@ def test_shell_allow_list_argument(args, expected, mock_argv):
         assert parsed_args.shell_allow_list == expected
 
 
-def test_shell_allow_list_not_specified(mock_argv):
+def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
     """Test that shell_allow_list is None when not specified."""
     with mock_argv():
         parsed_args = parse_args()
@@ -48,7 +51,7 @@ def test_shell_allow_list_not_specified(mock_argv):
         assert parsed_args.shell_allow_list is None
 
 
-def test_shell_allow_list_combined_with_other_args(mock_argv):
+def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> None:
     """Test that shell-allow-list works with other arguments."""
     with mock_argv("--shell-allow-list", "ls,cat", "--model", "gpt-4o", "--auto-approve"):
         parsed_args = parse_args()
@@ -66,7 +69,7 @@ def test_shell_allow_list_combined_with_other_args(mock_argv):
         ("ls", ["ls"]),
     ],
 )
-def test_shell_allow_list_string_parsing(input_str, expected):
+def test_shell_allow_list_string_parsing(input_str: str, expected: list[str]) -> None:
     """Test parsing shell-allow-list string into list using actual config function."""
     result = _parse_shell_allow_list(input_str)
     assert result == expected

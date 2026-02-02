@@ -1,8 +1,12 @@
 """Non-interactive execution mode for deepagents CLI."""
-# ruff: noqa: T201, PLR0912, PLR0915, PLR2004
+
+from __future__ import annotations
 
 import contextlib
+import sys
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.human_in_the_loop import HITLRequest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -16,7 +20,230 @@ from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
+if TYPE_CHECKING:
+    from langgraph.pregel import Pregel
+
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+
+# Constants for stream chunk validation
+_STREAM_CHUNK_LENGTH = 3
+_MESSAGE_DATA_LENGTH = 2
+
+
+def _write_text(text: str) -> None:
+    """Write text to stdout without newline for streaming output."""
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def _write_newline() -> None:
+    """Write a newline to stdout."""
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+@dataclass
+class StreamState:
+    """Tracks state during agent stream processing."""
+
+    full_response: list[str] = field(default_factory=list)
+    tool_call_buffers: dict[Any, dict[str, Any]] = field(default_factory=dict)
+    pending_interrupts: dict[str, Any] = field(default_factory=dict)
+    hitl_response: dict[str, Any] = field(default_factory=dict)
+    interrupt_occurred: bool = False
+
+
+def _process_interrupts(
+    data: dict[str, Any],
+    state: StreamState,
+) -> None:
+    """Process interrupt data and update state."""
+    interrupts: list[Interrupt] = data["__interrupt__"]
+    if interrupts:
+        for interrupt_obj in interrupts:
+            validated_request = _HITL_REQUEST_ADAPTER.validate_python(interrupt_obj.value)
+            state.pending_interrupts[interrupt_obj.id] = validated_request
+            state.interrupt_occurred = True
+
+
+def _process_text_block(block: dict[str, Any], state: StreamState) -> None:
+    """Process a text block from the stream."""
+    text = block.get("text", "")
+    if text:
+        _write_text(text)
+        state.full_response.append(text)
+
+
+def _process_tool_call_block(
+    block: dict[str, Any],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Process a tool call block from the stream."""
+    chunk_name = block.get("name")
+    chunk_id = block.get("id")
+    chunk_index = block.get("index")
+
+    buffer_key = (
+        chunk_index
+        if chunk_index is not None
+        else (chunk_id if chunk_id is not None else f"unknown-{len(state.tool_call_buffers)}")
+    )
+
+    if buffer_key not in state.tool_call_buffers:
+        state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
+
+    if chunk_name:
+        state.tool_call_buffers[buffer_key]["name"] = chunk_name
+        if state.full_response:
+            _write_newline()
+        console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
+
+
+def _process_ai_message(
+    message_obj: AIMessage,
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Process an AI message from the stream."""
+    if hasattr(message_obj, "content_blocks"):
+        for block in message_obj.content_blocks:
+            block_type = block.get("type")
+            if block_type == "text":
+                _process_text_block(block, state)
+            elif block_type in ("tool_call_chunk", "tool_call"):
+                _process_tool_call_block(block, state, console)
+
+
+def _process_message_chunk(
+    data: tuple[Any, Any],
+    state: StreamState,
+    console: Console,
+    file_op_tracker: FileOpTracker,
+) -> None:
+    """Process a message chunk from the stream."""
+    if not isinstance(data, tuple) or len(data) != _MESSAGE_DATA_LENGTH:
+        return
+
+    message_obj, metadata = data
+
+    # Skip summarization chunks
+    if metadata and metadata.get("lc_source") == "summarization":
+        return
+
+    if isinstance(message_obj, AIMessage):
+        _process_ai_message(message_obj, state, console)
+    elif isinstance(message_obj, ToolMessage):
+        record = file_op_tracker.complete_with_message(message_obj)
+        if record and record.diff:
+            console.print(f"[dim]📝 {record.display_path}[/dim]")
+
+
+def _process_stream_chunk(
+    chunk: object,
+    state: StreamState,
+    console: Console,
+    file_op_tracker: FileOpTracker,
+) -> None:
+    """Process a single chunk from the agent stream."""
+    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+        return
+
+    namespace, stream_mode, data = chunk
+    is_main_agent = not namespace
+
+    if not is_main_agent:
+        return
+
+    if stream_mode == "updates" and "__interrupt__" in data:
+        _process_interrupts(data, state)
+    elif stream_mode == "messages":
+        _process_message_chunk(data, state, console, file_op_tracker)
+
+
+def _make_hitl_decision(action_request: dict[str, Any], console: Console) -> dict[str, str]:
+    """Make a HITL decision for an action request."""
+    action_name = action_request.get("name", "")
+
+    if action_name == "shell" and settings.shell_allow_list:
+        command = action_request.get("args", {}).get("command", "")
+
+        if is_shell_command_allowed(command, settings.shell_allow_list):
+            console.print(f"[dim]✓ Auto-approved: {command}[/dim]")
+            return {"type": "approve"}
+
+        allowed_list_str = ", ".join(settings.shell_allow_list)
+        console.print(f"\n[red]❌ Shell command rejected:[/red] {command}")
+        console.print(f"[yellow]Allowed commands:[/yellow] {allowed_list_str}")
+        return {
+            "type": "reject",
+            "message": (
+                f"Command '{command}' is not in the allow-list. "
+                f"Allowed commands: {allowed_list_str}. "
+                f"Please use allowed commands or try another approach."
+            ),
+        }
+
+    return {"type": "approve"}
+
+
+def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
+    """Process pending HITL interrupts and prepare responses."""
+    current_interrupts = dict(state.pending_interrupts)
+    state.pending_interrupts.clear()
+
+    for interrupt_id, hitl_request in current_interrupts.items():
+        decisions = [
+            _make_hitl_decision(action_request, console)
+            for action_request in hitl_request["action_requests"]
+        ]
+        state.hitl_response[interrupt_id] = {"decisions": decisions}
+
+
+async def _stream_agent(
+    agent: Pregel,
+    stream_input: dict[str, Any] | Command,
+    config: dict[str, Any],
+    state: StreamState,
+    console: Console,
+    file_op_tracker: FileOpTracker,
+) -> None:
+    """Stream agent output and process chunks."""
+    async for chunk in agent.astream(
+        stream_input,
+        stream_mode=["messages", "updates"],
+        subgraphs=True,
+        config=config,
+        durability="exit",
+    ):
+        _process_stream_chunk(chunk, state, console, file_op_tracker)
+
+
+async def _run_agent_loop(
+    agent: Pregel,
+    message: str,
+    config: dict[str, Any],
+    console: Console,
+    file_op_tracker: FileOpTracker,
+) -> None:
+    """Run the main agent loop with HITL interrupt handling."""
+    state = StreamState()
+    stream_input: dict[str, Any] | Command = {"messages": [{"role": "user", "content": message}]}
+
+    # Initial stream
+    await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
+
+    # Handle HITL interrupts
+    while state.interrupt_occurred:
+        state.interrupt_occurred = False
+        _process_hitl_interrupts(state, console)
+        stream_input = Command(resume=state.hitl_response)
+        await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
+
+    if state.full_response:
+        _write_newline()
+
+    console.print("\n[green]✓ Task completed[/green]")
 
 
 async def run_non_interactive(
@@ -39,14 +266,9 @@ async def run_non_interactive(
         Exit code: 0 for success, 1 for error
     """
     console = Console()
-
-    # Create model
     model = create_model(model_name)
-
-    # Generate thread ID
     thread_id = generate_thread_id()
 
-    # Create config
     config = {
         "configurable": {"thread_id": thread_id},
         "metadata": {
@@ -59,7 +281,6 @@ async def run_non_interactive(
     console.print("[dim]Running task non-interactively...[/dim]")
     console.print(f"[dim]Agent: {assistant_id} | Thread: {thread_id}[/dim]\n")
 
-    # Setup sandbox if needed
     sandbox_backend = None
     sandbox_cm = None
 
@@ -74,24 +295,14 @@ async def run_non_interactive(
             return 1
 
     try:
-        # Use async context manager for checkpointer
         async with get_checkpointer() as checkpointer:
-            # Create agent with conditional tools
             tools = [http_request, fetch_url]
             if settings.has_tavily:
                 tools.append(web_search)
 
-            # SECURITY: In non-interactive mode, shell is DISABLED by default.
-            # Shell is only enabled if an explicit allow-list is configured via
-            # DEEPAGENTS_SHELL_ALLOW_LIST environment variable.
-            # This prevents arbitrary command execution without human oversight.
             enable_shell = bool(settings.shell_allow_list)
-
-            # If shell is enabled (allow-list configured), use HITL for selective approval
-            # Otherwise, auto-approve all non-shell tools
             use_auto_approve = not enable_shell
 
-            # Create agent
             agent, composite_backend = create_cli_agent(
                 model=model,
                 assistant_id=assistant_id,
@@ -103,219 +314,18 @@ async def run_non_interactive(
                 checkpointer=checkpointer,
             )
 
-            # Execute the task
-            stream_input = {"messages": [{"role": "user", "content": message}]}
-
             file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=composite_backend)
 
-            # Track assistant response
-            full_response = []
-            tool_call_buffers = {}
-            pending_interrupts = {}
-            hitl_response = {}
-            interrupt_occurred = False
-
-            async for chunk in agent.astream(
-                stream_input,
-                stream_mode=["messages", "updates"],
-                subgraphs=True,
-                config=config,
-                durability="exit",
-            ):
-                if not isinstance(chunk, tuple) or len(chunk) != 3:
-                    continue
-
-                namespace, stream_mode, data = chunk
-
-                # Only show main agent output (empty namespace)
-                is_main_agent = not namespace
-
-                # Handle interrupts (HITL requests)
-                if stream_mode == "updates" and is_main_agent and "__interrupt__" in data:
-                    interrupts: list[Interrupt] = data["__interrupt__"]
-                    if interrupts:
-                        for interrupt_obj in interrupts:
-                            validated_request = _HITL_REQUEST_ADAPTER.validate_python(
-                                interrupt_obj.value
-                            )
-                            pending_interrupts[interrupt_obj.id] = validated_request
-                            interrupt_occurred = True
-
-                if stream_mode == "messages" and is_main_agent:
-                    if not isinstance(data, tuple) or len(data) != 2:
-                        continue
-
-                    message_obj, metadata = data
-
-                    # Skip summarization chunks
-                    if metadata and metadata.get("lc_source") == "summarization":
-                        continue
-
-                    if isinstance(message_obj, AIMessage):
-                        # Process content blocks for streaming text
-                        if hasattr(message_obj, "content_blocks"):
-                            for block in message_obj.content_blocks:
-                                block_type = block.get("type")
-
-                                if block_type == "text":
-                                    text = block.get("text", "")
-                                    if text:
-                                        print(text, end="", flush=True)
-                                        full_response.append(text)
-
-                                elif block_type in ("tool_call_chunk", "tool_call"):
-                                    # Buffer tool call information
-                                    chunk_name = block.get("name")
-                                    chunk_id = block.get("id")
-                                    chunk_index = block.get("index")
-
-                                    buffer_key = (
-                                        chunk_index
-                                        if chunk_index is not None
-                                        else (
-                                            chunk_id
-                                            if chunk_id is not None
-                                            else f"unknown-{len(tool_call_buffers)}"
-                                        )
-                                    )
-
-                                    if buffer_key not in tool_call_buffers:
-                                        tool_call_buffers[buffer_key] = {"name": None, "id": None}
-
-                                    if chunk_name:
-                                        tool_call_buffers[buffer_key]["name"] = chunk_name
-                                        # Show tool call when we get the name
-                                        if full_response:
-                                            print()  # Newline after any text
-                                        console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
-
-                    elif isinstance(message_obj, ToolMessage):
-                        # Track file operations
-                        record = file_op_tracker.complete_with_message(message_obj)
-
-                        # Show file operation diffs
-                        if record and record.diff:
-                            console.print(f"[dim]📝 {record.display_path}[/dim]")
-
-            # Handle HITL interrupts - loop to handle multiple interrupt cycles
-            while interrupt_occurred:
-                interrupt_occurred = False  # Reset flag
-                current_interrupts = dict(pending_interrupts)  # Copy to iterate
-                pending_interrupts.clear()
-
-                for interrupt_id, hitl_request in current_interrupts.items():
-                    decisions = []
-
-                    for action_request in hitl_request["action_requests"]:
-                        action_name = action_request.get("name", "")
-
-                        # Check if this is a shell command and if we have an allow-list
-                        if action_name == "shell" and settings.shell_allow_list:
-                            command = action_request.get("args", {}).get("command", "")
-
-                            if is_shell_command_allowed(command, settings.shell_allow_list):
-                                # Auto-approve allowed commands
-                                console.print(f"[dim]✓ Auto-approved: {command}[/dim]")
-                                decisions.append({"type": "approve"})
-                            else:
-                                # Reject disallowed commands but let agent continue
-                                allowed_list_str = ", ".join(settings.shell_allow_list)
-                                console.print(f"\n[red]❌ Shell command rejected:[/red] {command}")
-                                console.print(
-                                    f"[yellow]Allowed commands:[/yellow] {allowed_list_str}"
-                                )
-                                decisions.append(
-                                    {
-                                        "type": "reject",
-                                        "message": (
-                                            f"Command '{command}' is not in the allow-list. "
-                                            f"Allowed commands: {allowed_list_str}. "
-                                            f"Please use allowed commands or try another approach."
-                                        ),
-                                    }
-                                )
-                        else:
-                            # For non-shell commands or when no allow-list, auto-approve
-                            # (This maintains backward compatibility for non-interactive mode)
-                            decisions.append({"type": "approve"})
-
-                    hitl_response[interrupt_id] = {"decisions": decisions}
-
-                # Resume with decisions
-                stream_input = Command(resume=hitl_response)
-
-                # Continue streaming with the resolution
-                async for chunk in agent.astream(
-                    stream_input,
-                    stream_mode=["messages", "updates"],
-                    subgraphs=True,
-                    config=config,
-                    durability="exit",
-                ):
-                    if not isinstance(chunk, tuple) or len(chunk) != 3:
-                        continue
-
-                    namespace, stream_mode, data = chunk
-                    is_main_agent = not namespace
-
-                    # Handle any new interrupts
-                    if stream_mode == "updates" and is_main_agent and "__interrupt__" in data:
-                        interrupts: list[Interrupt] = data["__interrupt__"]
-                        if interrupts:
-                            for interrupt_obj in interrupts:
-                                validated_request = _HITL_REQUEST_ADAPTER.validate_python(
-                                    interrupt_obj.value
-                                )
-                                pending_interrupts[interrupt_obj.id] = validated_request
-                                interrupt_occurred = True
-
-                    if stream_mode == "messages" and is_main_agent:
-                        if not isinstance(data, tuple) or len(data) != 2:
-                            continue
-
-                        message_obj, metadata = data
-
-                        if isinstance(message_obj, AIMessage):
-                            if hasattr(message_obj, "content_blocks"):
-                                for block in message_obj.content_blocks:
-                                    block_type = block.get("type")
-
-                                    if block_type == "text":
-                                        text = block.get("text", "")
-                                        if text:
-                                            print(text, end="", flush=True)
-                                            full_response.append(text)
-
-                                    elif block_type in ("tool_call_chunk", "tool_call"):
-                                        # Show new tool calls
-                                        chunk_name = block.get("name")
-                                        if chunk_name:
-                                            if full_response:
-                                                print()  # Newline after any text
-                                            console.print(
-                                                f"[dim]🔧 Calling tool: {chunk_name}[/dim]"
-                                            )
-
-                        elif isinstance(message_obj, ToolMessage):
-                            record = file_op_tracker.complete_with_message(message_obj)
-                            if record and record.diff:
-                                console.print(f"[dim]📝 {record.display_path}[/dim]")
-
-            # Final newline
-            if full_response:
-                print()
-
-            console.print("\n[green]✓ Task completed[/green]")
+            await _run_agent_loop(agent, message, config, console, file_op_tracker)
             return 0
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
-        return 130  # Standard exit code for SIGINT
-    except Exception as e:  # noqa: BLE001
+        return 130
+    except (RuntimeError, ValueError, TypeError, OSError) as e:
         console.print(f"\n[red]❌ Error: {e}[/red]")
         return 1
     finally:
-        # Clean up sandbox if we created one
         if sandbox_cm is not None:
             with contextlib.suppress(Exception):
                 sandbox_cm.__exit__(None, None, None)

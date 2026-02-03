@@ -335,7 +335,7 @@ _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
-    "agentcore": "/tmp",
+    "agentcore": "/tmp", # noqa: S108
 }
 
 

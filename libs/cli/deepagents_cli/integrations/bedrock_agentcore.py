@@ -223,7 +223,6 @@ class AgentCoreBackend(BaseSandbox):
         Returns:
             List of FileUploadResponse objects in same order as input files
         """
-        responses: list[FileUploadResponse] = []
         file_list: list[dict[str, str]] = []
 
         for path, content in files:

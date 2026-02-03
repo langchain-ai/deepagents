@@ -1,6 +1,7 @@
 (Replace this entire block of text)
 
 Read the full contributing guidelines: https://docs.langchain.com/oss/python/contributing/overview
+If you paste a large clearly AI generated description here your PR may be IGNORED or CLOSED!
 
 Thank you for contributing to Deep Agents! Follow these steps to have your pull request considered as ready for review.
 
@@ -22,6 +23,8 @@ Thank you for contributing to Deep Agents! Follow these steps to have your pull 
 3. Run `make format`, `make lint` and `make test` from the root of the package(s) you've modified.
 
   - We will not consider a PR unless these three are passing in CI.
+
+4. How did you verify your code works?
 
 Additional guidelines:
 

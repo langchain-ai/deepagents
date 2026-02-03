@@ -14,7 +14,6 @@ from langgraph.types import Command, Overwrite
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
-from deepagents.backends.state import StateBackend
 from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
 from deepagents.middleware.filesystem import (
     FileData,

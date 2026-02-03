@@ -407,11 +407,12 @@ def _create_task_tool_legacy(
 
     def _make_result(result: dict, tool_call_id: str) -> Command:
         if "messages" not in result:
-            raise ValueError(
+            msg = (
                 "CompiledSubAgent must return a state containing a 'messages' key. "
                 "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
                 "in their state schema to communicate results back to the main agent."
             )
+            raise ValueError(msg)
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
         message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
         return Command(update={**state_update, "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)]})
@@ -427,7 +428,8 @@ def _create_task_tool_legacy(
         subagent, state = _prepare_state(subagent_type, description, runtime)
         result = subagent.invoke(state)
         if not runtime.tool_call_id:
-            raise ValueError("Tool call ID is required for subagent invocation")
+            msg = "Tool call ID is required for subagent invocation"
+            raise ValueError(msg)
         return _make_result(result, runtime.tool_call_id)
 
     async def atask(
@@ -441,7 +443,8 @@ def _create_task_tool_legacy(
         subagent, state = _prepare_state(subagent_type, description, runtime)
         result = await subagent.ainvoke(state)
         if not runtime.tool_call_id:
-            raise ValueError("Tool call ID is required for subagent invocation")
+            msg = "Tool call ID is required for subagent invocation"
+            raise ValueError(msg)
         return _make_result(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(
@@ -564,7 +567,8 @@ class SubAgentMiddleware(AgentMiddleware):
             )
         elif using_new_api:
             if not subagents:
-                raise ValueError("At least one subagent must be specified when using the new API")
+                msg = "At least one subagent must be specified when using the new API"
+                raise ValueError(msg)
 
             self._backend = backend
             self._subagents = subagents
@@ -580,7 +584,8 @@ class SubAgentMiddleware(AgentMiddleware):
             # Create the task tool
             self.tools = [self._create_task_tool(task_description)]
         else:
-            raise ValueError("SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)")
+            msg = "SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)"
+            raise ValueError(msg)
 
     def _init_legacy(
         self,
@@ -667,9 +672,11 @@ class SubAgentMiddleware(AgentMiddleware):
 
             # SubAgent - validate required fields
             if "model" not in spec:
-                raise ValueError(f"SubAgent '{spec['name']}' must specify 'model'")
+                msg = f"SubAgent '{spec['name']}' must specify 'model'"
+                raise ValueError(msg)
             if "tools" not in spec:
-                raise ValueError(f"SubAgent '{spec['name']}' must specify 'tools'")
+                msg = f"SubAgent '{spec['name']}' must specify 'tools'"
+                raise ValueError(msg)
 
             # Resolve model if string
             model = spec["model"]
@@ -732,11 +739,12 @@ class SubAgentMiddleware(AgentMiddleware):
         def _make_result(result: dict, tool_call_id: str) -> Command:
             """Convert subagent result to Command with state update."""
             if "messages" not in result:
-                raise ValueError(
+                msg = (
                     "CompiledSubAgent must return a state containing a 'messages' key. "
                     "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
                     "in their state schema to communicate results back to the main agent."
                 )
+                raise ValueError(msg)
             state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
             message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
             return Command(update={**state_update, "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)]})
@@ -752,7 +760,8 @@ class SubAgentMiddleware(AgentMiddleware):
             subagent, state = _prepare_state(subagent_type, description, runtime)
             result = subagent.invoke(state)
             if not runtime.tool_call_id:
-                raise ValueError("Tool call ID is required for subagent invocation")
+                msg = "Tool call ID is required for subagent invocation"
+                raise ValueError(msg)
             return _make_result(result, runtime.tool_call_id)
 
         async def atask(
@@ -766,7 +775,8 @@ class SubAgentMiddleware(AgentMiddleware):
             subagent, state = _prepare_state(subagent_type, description, runtime)
             result = await subagent.ainvoke(state)
             if not runtime.tool_call_id:
-                raise ValueError("Tool call ID is required for subagent invocation")
+                msg = "Tool call ID is required for subagent invocation"
+                raise ValueError(msg)
             return _make_result(result, runtime.tool_call_id)
 
         return StructuredTool.from_function(

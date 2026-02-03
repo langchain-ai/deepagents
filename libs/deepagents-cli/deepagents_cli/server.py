@@ -109,9 +109,7 @@ async def create_github_pr(
                 return pr_url, pr_number
 
             if pr_response.status_code == 422:
-                logger.error(
-                    "GitHub API validation error (422): %s", pr_data.get("message")
-                )
+                logger.error("GitHub API validation error (422): %s", pr_data.get("message"))
             else:
                 logger.error(
                     "GitHub API error (%s): %s",
@@ -188,7 +186,8 @@ class LinearNotifyState(AgentState):
 
 @before_model(state_schema=LinearNotifyState)
 async def check_message_queue_before_model(
-    state: LinearNotifyState, runtime: Runtime
+    state: LinearNotifyState,  # noqa: ARG001
+    runtime: Runtime,  # noqa: ARG001
 ) -> dict[str, Any] | None:
     """Middleware that checks for queued messages before each model call.
 
@@ -242,21 +241,23 @@ async def check_message_queue_before_model(
             thread_id,
         )
 
-        content_parts = [msg.get("content", "") for msg in queued_messages if msg.get("content")]
+        content_blocks = [
+            {"type": "text", "text": msg.get("content", "")}
+            for msg in queued_messages
+            if msg.get("content")
+        ]
 
-        if not content_parts:
+        if not content_blocks:
             return None
-
-        combined_content = "\n\n".join(content_parts)
 
         new_message = {
             "role": "user",
-            "content": combined_content,
+            "content": content_blocks,
         }
 
         logger.info(
             "Injected %d queued message(s) into state for thread %s",
-            len(content_parts),
+            len(content_blocks),
             thread_id,
         )
 

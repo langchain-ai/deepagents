@@ -396,7 +396,7 @@ async def queue_message_for_thread(thread_id: str, message_content: str) -> bool
             if existing_item and existing_item.get("value"):
                 existing_messages = existing_item["value"].get("messages", [])
         except Exception:
-            pass
+            logger.debug("No existing queued messages for thread %s", thread_id)
 
         existing_messages.append(new_message)
         value = {"messages": existing_messages}

@@ -81,6 +81,11 @@ def mock_settings(
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
 
+        # Model identity settings (used in system prompt generation)
+        mock_settings_obj.model_name = None
+        mock_settings_obj.model_provider = None
+        mock_settings_obj.model_context_limit = None
+
         yield agent_dir
 
 

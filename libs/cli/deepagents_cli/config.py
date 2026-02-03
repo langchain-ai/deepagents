@@ -397,6 +397,8 @@ class Settings:
         if not self.project_root:
             return None
         skills_dir = self.get_project_skills_dir()
+        if skills_dir is None:
+            return None
         skills_dir.mkdir(parents=True, exist_ok=True)
         return skills_dir
 
@@ -591,13 +593,13 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        model = ChatOpenAI(model=model_name)
+        model = ChatOpenAI(model=model_name)  # type: ignore[call-arg]
     elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
         model = ChatAnthropic(
             model_name=model_name,
-            max_tokens=20_000,  # type: ignore[arg-type]
+            max_tokens=20_000,
         )
     elif provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -612,7 +614,9 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
 
         if "claude" in model_lower:
             try:
-                from langchain_google_vertexai.model_garden import ChatAnthropicVertex
+                from langchain_google_vertexai.model_garden import (  # type: ignore[unresolved-import]
+                    ChatAnthropicVertex,
+                )
             except ImportError:
                 console.print(
                     "[bold red]Error:[/bold red] langchain-google-vertexai "

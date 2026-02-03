@@ -1,7 +1,7 @@
 """Unit tests for agent formatting functions."""
 
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from deepagents_cli.agent import (
     _format_edit_file_description,
@@ -11,6 +11,7 @@ from deepagents_cli.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    get_system_prompt,
 )
 
 
@@ -268,3 +269,79 @@ def test_format_execute_description():
 
     assert "Execute Command: python script.py" in description
     assert "Location: Remote Sandbox" in description
+
+
+class TestGetSystemPromptModelIdentity:
+    """Tests for model identity section in get_system_prompt."""
+
+    def test_includes_model_identity_when_all_settings_present(self) -> None:
+        """Test that model identity section is included when all settings are set."""
+        mock_settings = Mock()
+        mock_settings.model_name = "claude-sonnet-4-5-20250929"
+        mock_settings.model_provider = "anthropic"
+        mock_settings.model_context_limit = 200000
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Model Identity" in prompt
+        assert "claude-sonnet-4-5-20250929" in prompt
+        assert "(provider: anthropic)" in prompt
+        assert "Your context window is 200,000 tokens." in prompt
+
+    def test_excludes_model_identity_when_model_name_is_none(self) -> None:
+        """Test that model identity section is excluded when model_name is None."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.model_provider = "anthropic"
+        mock_settings.model_context_limit = 200000
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Model Identity" not in prompt
+
+    def test_excludes_provider_when_not_set(self) -> None:
+        """Test that provider is excluded when model_provider is None."""
+        mock_settings = Mock()
+        mock_settings.model_name = "gpt-4"
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = 128000
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Model Identity" in prompt
+        assert "gpt-4" in prompt
+        assert "(provider:" not in prompt
+        assert "Your context window is 128,000 tokens." in prompt
+
+    def test_excludes_context_limit_when_not_set(self) -> None:
+        """Test that context limit is excluded when model_context_limit is None."""
+        mock_settings = Mock()
+        mock_settings.model_name = "gemini-3-pro"
+        mock_settings.model_provider = "google"
+        mock_settings.model_context_limit = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Model Identity" in prompt
+        assert "gemini-3-pro" in prompt
+        assert "(provider: google)" in prompt
+        assert "context window" not in prompt
+
+    def test_model_identity_with_only_model_name(self) -> None:
+        """Test model identity section with only model_name set."""
+        mock_settings = Mock()
+        mock_settings.model_name = "test-model"
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Model Identity" in prompt
+        assert "You are running as model `test-model`." in prompt
+        assert "(provider:" not in prompt
+        assert "context window" not in prompt

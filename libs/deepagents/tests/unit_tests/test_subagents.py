@@ -943,3 +943,171 @@ class TestCompiledSubAgentValidation:
                 {"messages": [HumanMessage(content="Process this")]},
                 config={"configurable": {"thread_id": "test_thread_no_messages"}},
             )
+
+
+class TestMessageExtractionFromSubagents:
+    """Tests for the message extraction logic in _return_command_with_state_update.
+
+    The fix handles edge cases where:
+    1. The last message is a ToolMessage (not an AIMessage)
+    2. AIMessage uses .content instead of .text
+    3. AIMessage has multi-part content (list of content blocks)
+    4. No AIMessage with actual text content exists
+    """
+
+    def test_multipart_content_with_empty_blocks(self) -> None:
+        """Test multi-part content that includes empty text blocks."""
+        from unittest.mock import Mock
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Parse data",
+                                    "subagent_type": "parser",
+                                },
+                                "id": "call_parse",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Parsing complete."),
+                ]
+            )
+        )
+
+        # Create a message with list content including empty and non-text blocks
+        mock_message = Mock()
+        mock_message.type = "ai"
+        mock_message.content = [
+            {"type": "text", "text": ""},  # Empty text block
+            {"type": "text", "text": "First part"},
+            {"type": "image", "data": "..."},  # Non-text block
+            {"type": "text", "text": ""},  # Another empty
+            {"type": "text", "text": "Second part"},
+            "Third part",  # String block
+        ]
+
+        def custom_subagent_func(state: dict[str, Any]) -> dict[str, Any]:
+            return {"messages": state["messages"] + [mock_message]}
+
+        custom_subagent = RunnableLambda(custom_subagent_func)
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="parser",
+                    description="Parser.",
+                    runnable=custom_subagent,
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Parse data")]},
+            config={"configurable": {"thread_id": "test_multipart_empty"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) > 0, "Should have ToolMessage from subagent"
+
+        subagent_response = tool_messages[0]
+        # Should extract all non-empty text parts
+        assert "First part" in subagent_response.content, (
+            f"Should extract first text part, got: {subagent_response.content}"
+        )
+        assert "Second part" in subagent_response.content, (
+            f"Should extract second text part, got: {subagent_response.content}"
+        )
+        assert "Third part" in subagent_response.content, (
+            f"Should extract string block, got: {subagent_response.content}"
+        )
+
+    def test_toolmessage_extraction_for_toolstrategy(self) -> None:
+        """Test that ToolStrategy structured output is properly extracted from ToolMessage.
+
+        When using ToolStrategy, the agent may end with a ToolMessage containing
+        the structured response. This validates Tier 2 fallback works correctly.
+        """
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Get weather",
+                                    "subagent_type": "weather",
+                                },
+                                "id": "call_weather",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Weather retrieved."),
+                ]
+            )
+        )
+
+        # Simulate what ToolStrategy does: returns messages ending with ToolMessage
+        from langchain_core.messages import ToolMessage
+
+        # AIMessage with tool call to structured output tool
+        ai_with_toolcall = AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "WeatherSchema",
+                "args": {"city": "Tokyo", "temp": 22},
+                "id": "struct_call",
+                "type": "tool_call"
+            }]
+        )
+
+        # ToolMessage with the structured result
+        tool_result = ToolMessage(
+            content="Returning structured response: city='Tokyo' temp=22",
+            tool_call_id="struct_call"
+        )
+
+        def toolstrategy_subagent(state: dict[str, Any]) -> dict[str, Any]:
+            return {"messages": state["messages"] + [ai_with_toolcall, tool_result]}
+
+        custom_subagent = RunnableLambda(toolstrategy_subagent)
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="weather",
+                    description="Weather service.",
+                    runnable=custom_subagent,
+                )
+            ],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Get weather")]},
+            config={"configurable": {"thread_id": "test_toolstrategy_extraction"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool" and msg.tool_call_id == "call_weather"]
+        assert len(tool_messages) > 0, "Should have ToolMessage from subagent"
+
+        subagent_response = tool_messages[0]
+        # Should extract from the ToolMessage (Tier 2 fallback)
+        assert "Returning structured response" in subagent_response.content, (
+            f"Should extract ToolMessage content for ToolStrategy, got: {subagent_response.content}"
+        )
+        assert "Tokyo" in subagent_response.content, (
+            f"Should include structured data, got: {subagent_response.content}"
+        )

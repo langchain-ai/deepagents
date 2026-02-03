@@ -115,7 +115,11 @@ class ApprovalMenu(Container):
         self._future = future
 
     def _check_expandable_command(self) -> bool:
-        """Check if there's a shell command that can be expanded."""
+        """Check if there's a shell command that can be expanded.
+
+        Returns:
+            Whether the single action request is an expandable shell command.
+        """
         if len(self._action_requests) != 1:
             return False
         req = self._action_requests[0]
@@ -126,13 +130,22 @@ class ApprovalMenu(Container):
         return len(str(command)) > _SHELL_COMMAND_TRUNCATE_LENGTH
 
     def _get_command_display(self, *, expanded: bool) -> str:
-        """Get the command display string (truncated or full)."""
+        """Get the command display string (truncated or full).
+
+        Args:
+            expanded: Whether to show the full command or truncated version.
+
+        Returns:
+            Formatted command string with Rich markup.
+        """
         req = self._action_requests[0]
         command = str(req.get("args", {}).get("command", ""))
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
             return f"[bold #f59e0b]{command}[/bold #f59e0b]"
         truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + "..."
-        return f"[bold #f59e0b]{truncated}[/bold #f59e0b] [dim](press 'e' to expand)[/dim]"
+        return (
+            f"[bold #f59e0b]{truncated}[/bold #f59e0b] [dim](press 'e' to expand)[/dim]"
+        )
 
     def compose(self) -> ComposeResult:
         """Compose the widget with Static children.
@@ -277,7 +290,9 @@ class ApprovalMenu(Container):
         if not self._has_expandable_command or not self._command_widget:
             return
         self._command_expanded = not self._command_expanded
-        self._command_widget.update(self._get_command_display(expanded=self._command_expanded))
+        self._command_widget.update(
+            self._get_command_display(expanded=self._command_expanded)
+        )
 
     def _handle_selection(self, option: int) -> None:
         """Handle the selected option."""

@@ -285,40 +285,48 @@ def _get_subagents_legacy(
     default_model: str | BaseChatModel,
     default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
     default_middleware: list[AgentMiddleware] | None,
-    general_purpose_middleware: list[AgentMiddleware] | None,
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
     subagents: list[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
 ) -> tuple[dict[str, Any], list[str]]:
     """Create subagent instances from specifications.
 
+    Args:
+        default_model: Default model for subagents that don't specify one.
+        default_tools: Default tools for subagents that don't specify tools.
+        default_middleware: Middleware to apply to all subagents. If `None`,
+            no default middleware is applied.
+        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
+            are also the fallback for any subagents that don't specify their own tool configs.
+        subagents: List of agent specifications or pre-compiled agents.
+        general_purpose_agent: Whether to include a general-purpose subagent.
+
     Returns:
-        Tuple of (agents dict mapping name to runnable, subagent descriptions list).
+        Tuple of (agent_dict, description_list) where agent_dict maps agent names
+        to runnable instances and description_list contains formatted descriptions.
     """
     # Use empty list if None (no default middleware)
     default_subagent_middleware = default_middleware or []
-    gp_only_middleware = general_purpose_middleware or []
 
     agents: dict[str, Any] = {}
-    subagent_descriptions: list[str] = []
+    subagent_descriptions = []
 
     # Create general-purpose agent if enabled
     if general_purpose_agent:
-        # General-purpose agent gets both default middleware AND general-purpose-only middleware
-        gp_middleware = [*default_subagent_middleware, *gp_only_middleware]
+        general_purpose_middleware = [*default_subagent_middleware]
         if default_interrupt_on:
-            gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on))
+            general_purpose_middleware.append(HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on))
         general_purpose_subagent = create_agent(
             default_model,
             system_prompt=DEFAULT_SUBAGENT_PROMPT,
             tools=default_tools,
-            middleware=gp_middleware,
+            middleware=general_purpose_middleware,
             name="general-purpose",
         )
         agents["general-purpose"] = general_purpose_subagent
         subagent_descriptions.append(f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
 
-    # Process custom subagents (they do NOT get general_purpose_middleware)
+    # Process custom subagents
     for agent_ in subagents:
         subagent_descriptions.append(f"- {agent_['name']}: {agent_['description']}")
         if "runnable" in agent_:
@@ -351,32 +359,31 @@ def _create_task_tool_legacy(
     default_model: str | BaseChatModel,
     default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
     default_middleware: list[AgentMiddleware] | None,
-    general_purpose_middleware: list[AgentMiddleware] | None,
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
     subagents: list[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
     task_description: str | None = None,
 ) -> BaseTool:
-    """Create the task tool for invoking subagents.
+    """Create a task tool for invoking subagents.
 
     Args:
         default_model: Default model for subagents.
         default_tools: Default tools for subagents.
-        default_middleware: Default middleware for all subagents.
-        general_purpose_middleware: Middleware only for general-purpose agent.
-        default_interrupt_on: Default interrupt config.
-        subagents: List of subagent specs.
+        default_middleware: Middleware to apply to all subagents.
+        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
+            are also the fallback for any subagents that don't specify their own tool configs.
+        subagents: List of subagent specifications.
         general_purpose_agent: Whether to include general-purpose agent.
-        task_description: Custom description for the tool.
+        task_description: Custom description for the task tool. If `None`,
+            uses default template. Supports `{available_agents}` placeholder.
 
     Returns:
-        A StructuredTool that can invoke subagents.
+        A StructuredTool that can invoke subagents by type.
     """
     subagent_graphs, subagent_descriptions = _get_subagents_legacy(
         default_model=default_model,
         default_tools=default_tools,
         default_middleware=default_middleware,
-        general_purpose_middleware=general_purpose_middleware,
         default_interrupt_on=default_interrupt_on,
         subagents=subagents,
         general_purpose_agent=general_purpose_agent,
@@ -501,7 +508,7 @@ class SubAgentMiddleware(AgentMiddleware):
 
     .. deprecated::
         The following arguments are deprecated and will be removed in a future version:
-        `default_model`, `default_tools`, `default_middleware`, `general_purpose_middleware`,
+        `default_model`, `default_tools`, `default_middleware`,
         `default_interrupt_on`, `general_purpose_agent`. Use `backend` and `subagents` instead.
     """
 
@@ -521,7 +528,6 @@ class SubAgentMiddleware(AgentMiddleware):
         default_model = deprecated_kwargs.get("default_model")
         default_tools = deprecated_kwargs.get("default_tools")
         default_middleware = deprecated_kwargs.get("default_middleware")
-        general_purpose_middleware = deprecated_kwargs.get("general_purpose_middleware")
         default_interrupt_on = deprecated_kwargs.get("default_interrupt_on")
         # general_purpose_agent defaults to True if not specified
         general_purpose_agent = deprecated_kwargs.get("general_purpose_agent", True)
@@ -550,7 +556,6 @@ class SubAgentMiddleware(AgentMiddleware):
                 default_model=default_model,
                 default_tools=default_tools or [],
                 default_middleware=default_middleware,
-                general_purpose_middleware=general_purpose_middleware,
                 default_interrupt_on=default_interrupt_on,
                 subagents=subagents or [],
                 system_prompt=system_prompt,
@@ -583,7 +588,6 @@ class SubAgentMiddleware(AgentMiddleware):
         default_model: str | BaseChatModel,
         default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
         default_middleware: list[AgentMiddleware] | None,
-        general_purpose_middleware: list[AgentMiddleware] | None,
         default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
         subagents: list[SubAgent | CompiledSubAgent],
         system_prompt: str | None,
@@ -595,7 +599,6 @@ class SubAgentMiddleware(AgentMiddleware):
             default_model=default_model,
             default_tools=default_tools,
             default_middleware=default_middleware,
-            general_purpose_middleware=general_purpose_middleware,
             default_interrupt_on=default_interrupt_on,
             subagents=subagents,
             general_purpose_agent=general_purpose_agent,
@@ -614,7 +617,6 @@ class SubAgentMiddleware(AgentMiddleware):
                 default_model=default_model,
                 default_tools=default_tools,
                 default_middleware=default_middleware,
-                general_purpose_middleware=general_purpose_middleware,
                 default_interrupt_on=default_interrupt_on,
                 subagents=subagents,
                 general_purpose_agent=general_purpose_agent,

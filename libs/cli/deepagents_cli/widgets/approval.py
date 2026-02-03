@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 
 from deepagents_cli.widgets.tool_renderers import get_renderer
 
-# Tools that support expandable command display
-_EXPANDABLE_COMMAND_TOOLS: set[str] = {"shell", "execute"}
+# Tools that support expandable command display (must be subset of _SHELL_TOOLS)
+_SHELL_TOOLS: set[str] = {"bash", "shell", "execute"}
 
 # Max length for truncated shell command display
-_SHELL_COMMAND_TRUNCATE_LENGTH = 120
+_SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
 
 
 class ApprovalMenu(Container):
@@ -70,7 +70,7 @@ class ApprovalMenu(Container):
             self.decision = decision
 
     # Tools that don't need detailed info display (already shown in tool call)
-    _MINIMAL_TOOLS: ClassVar[set[str]] = {"bash", "shell"}
+    _MINIMAL_TOOLS: ClassVar[set[str]] = _SHELL_TOOLS
 
     def __init__(
         self,
@@ -124,7 +124,7 @@ class ApprovalMenu(Container):
             return False
         req = self._action_requests[0]
         tool_name = req.get("name", "")
-        if tool_name not in _EXPANDABLE_COMMAND_TOOLS:
+        if tool_name not in _SHELL_TOOLS:
             return False
         command = req.get("args", {}).get("command", "")
         return len(str(command)) > _SHELL_COMMAND_TRUNCATE_LENGTH
@@ -137,7 +137,13 @@ class ApprovalMenu(Container):
 
         Returns:
             Formatted command string with Rich markup.
+
+        Raises:
+            RuntimeError: If called with empty action_requests.
         """
+        if not self._action_requests:
+            msg = "_get_command_display called with empty action_requests"
+            raise RuntimeError(msg)
         req = self._action_requests[0]
         command = str(req.get("args", {}).get("command", ""))
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:

@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from deepagents_cli.widgets.approval import (
     _SHELL_COMMAND_TRUNCATE_LENGTH,
     ApprovalMenu,
@@ -122,3 +124,44 @@ class TestToggleExpand:
         assert menu._command_expanded is False
         menu.action_toggle_expand()
         assert menu._command_expanded is False
+
+
+class TestToolSetConsistency:
+    """Tests for tool set consistency between _MINIMAL_TOOLS and _SHELL_TOOLS."""
+
+    def test_bash_tool_is_expandable(self) -> None:
+        """Test that bash tool commands can be expandable like shell commands.
+
+        The 'bash' tool is in _MINIMAL_TOOLS, so it should also support
+        expandable command display when the command is long.
+        """
+        long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 10)
+        menu = ApprovalMenu({"name": "bash", "args": {"command": long_command}})
+        # bash should be expandable just like shell
+        assert menu._has_expandable_command is True
+
+    def test_bash_short_command_not_expandable(self) -> None:
+        """Test that short bash commands are not expandable."""
+        menu = ApprovalMenu({"name": "bash", "args": {"command": "ls -la"}})
+        assert menu._has_expandable_command is False
+
+    def test_execute_tool_is_minimal(self) -> None:
+        """Test that execute tool uses minimal display like shell.
+
+        The 'execute' tool is in _SHELL_TOOLS, so it should use minimal display.
+        """
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        # execute should use minimal display like shell/bash
+        assert menu._is_minimal is True
+
+
+class TestGetCommandDisplayGuard:
+    """Tests for `_get_command_display` safety guard."""
+
+    def test_raises_on_empty_action_requests(self) -> None:
+        """Test that _get_command_display raises RuntimeError with empty requests."""
+        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+        # Artificially empty the action_requests to test the guard
+        menu._action_requests = []
+        with pytest.raises(RuntimeError, match="empty action_requests"):
+            menu._get_command_display(expanded=False)

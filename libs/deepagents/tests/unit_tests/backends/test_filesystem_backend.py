@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, WriteResult
 
@@ -523,7 +525,18 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path):
     assert any("test3.py" in m["path"] for m in matches)
 
 
-def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("pattern", "expected_file"),
+    [
+        ("def __init__(", "test1.py"),  # Parentheses (not regex grouping)
+        ("str | int", "test2.py"),  # Pipe (not regex OR)
+        ("[a-z]", "test3.py"),  # Brackets (not character class)
+        ("(.*)", "test3.py"),  # Multiple special chars
+        ("$19.99", "test4.txt"),  # Dot and $ (not "any character")
+        ("user@example", "test4.txt"),  # @ character (literal)
+    ],
+)
+def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch, pattern: str, expected_file: str) -> None:
     """Test literal search works correctly with Python fallback (no ripgrep)."""
     import subprocess
 
@@ -543,33 +556,7 @@ def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch) -> Non
 
     monkeypatch.setattr(subprocess, "run", mock_run)
 
-    # Test parentheses (should be literal, not regex grouping)
-    matches = be.grep_raw("def __init__(", path="/")
+    # Test literal search with the pattern
+    matches = be.grep_raw(pattern, path="/")
     assert isinstance(matches, list)
-    assert any("test1.py" in m["path"] for m in matches)
-
-    # Test pipe character (should be literal, not regex OR)
-    matches = be.grep_raw("str | int", path="/")
-    assert isinstance(matches, list)
-    assert any("test2.py" in m["path"] for m in matches)
-
-    # Test brackets (should be literal, not character class)
-    matches = be.grep_raw("[a-z]", path="/")
-    assert isinstance(matches, list)
-    assert any("test3.py" in m["path"] for m in matches)
-
-    # Test multiple special chars together
-    matches = be.grep_raw("(.*)", path="/")
-    assert isinstance(matches, list)
-    assert any("test3.py" in m["path"] for m in matches)
-
-    # Test dot (should be literal, not "any character")
-    # If dot was treated as regex, "$19.99" would also match "$1999" or "$19X99"
-    matches = be.grep_raw("$19.99", path="/")
-    assert isinstance(matches, list)
-    assert any("test4.txt" in m["path"] for m in matches)
-
-    # Test @ character (should be literal)
-    matches = be.grep_raw("user@example", path="/")
-    assert isinstance(matches, list)
-    assert any("test4.txt" in m["path"] for m in matches)
+    assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"

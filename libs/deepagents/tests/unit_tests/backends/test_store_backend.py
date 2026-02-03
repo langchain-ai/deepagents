@@ -1,3 +1,4 @@
+import pytest
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
@@ -135,7 +136,19 @@ def test_store_backend_intercept_large_tool_result():
     assert stored_content.value["content"] == [large_content]
 
 
-def test_store_backend_grep_literal_search_special_chars() -> None:
+@pytest.mark.parametrize(
+    ("pattern", "expected_file"),
+    [
+        ("def __init__(", "code.py"),  # Parentheses (not regex grouping)
+        ("str | int", "types.py"),  # Pipe (not regex OR)
+        ("[a-z]", "regex.py"),  # Brackets (not character class)
+        ("(.*)", "regex.py"),  # Multiple special chars
+        ("api.key", "config.json"),  # Dot (not "any character")
+        ("x * y", "math.py"),  # Asterisk (not "zero or more")
+        ("a^2", "math.py"),  # Caret (not line anchor)
+    ],
+)
+def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_file: str) -> None:
     """Test that grep performs literal search with regex special characters."""
     rt = make_runtime()
     be = StoreBackend(rt)
@@ -153,37 +166,7 @@ def test_store_backend_grep_literal_search_special_chars() -> None:
         res = be.write(path, content)
         assert res.error is None
 
-    # Test parentheses (should be literal, not regex grouping)
-    matches = be.grep_raw("def __init__(", path="/")
+    # Test literal search with the pattern
+    matches = be.grep_raw(pattern, path="/")
     assert isinstance(matches, list)
-    assert any("code.py" in m["path"] and "__init__" in m["text"] for m in matches)
-
-    # Test pipe character (should be literal, not regex OR)
-    matches = be.grep_raw("str | int", path="/")
-    assert isinstance(matches, list)
-    assert any("types.py" in m["path"] for m in matches)
-
-    # Test brackets (should be literal, not character class)
-    matches = be.grep_raw("[a-z]", path="/")
-    assert isinstance(matches, list)
-    assert any("regex.py" in m["path"] for m in matches)
-
-    # Test multiple special chars together
-    matches = be.grep_raw("(.*)", path="/")
-    assert isinstance(matches, list)
-    assert any("regex.py" in m["path"] for m in matches)
-
-    # Test dot (should be literal, not "any character")
-    matches = be.grep_raw("api.key", path="/")
-    assert isinstance(matches, list)
-    assert any("config.json" in m["path"] for m in matches)
-
-    # Test asterisk (should be literal, not "zero or more")
-    matches = be.grep_raw("x * y", path="/")
-    assert isinstance(matches, list)
-    assert any("math.py" in m["path"] for m in matches)
-
-    # Test caret (should be literal, not line anchor)
-    matches = be.grep_raw("a^2", path="/")
-    assert isinstance(matches, list)
-    assert any("math.py" in m["path"] for m in matches)
+    assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"

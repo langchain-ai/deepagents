@@ -1,12 +1,13 @@
 from contextlib import asynccontextmanager
 from typing import Any
 
-from acp.schema import NewSessionRequest, PromptRequest
 from acp.schema import (
-    TextContentBlock,
+    AllowedOutcome,
+    NewSessionRequest,
+    PromptRequest,
     RequestPermissionRequest,
     RequestPermissionResponse,
-    AllowedOutcome,
+    TextContentBlock,
 )
 from dirty_equals import IsUUID
 from langchain_core.messages import AIMessage, BaseMessage
@@ -103,9 +104,7 @@ async def deepagents_acp_test_context(
     )
 
     # Create a new session
-    session_response = await deepagents_acp.newSession(
-        NewSessionRequest(cwd="/tmp", mcpServers=[])
-    )
+    session_response = await deepagents_acp.newSession(NewSessionRequest(cwd="/tmp", mcpServers=[]))
     session_id = session_response.sessionId
 
     # Update the prompt request with the session ID
@@ -282,9 +281,7 @@ async def test_todo_list_handling() -> None:
     )
 
     # Create a new session
-    session_response = await deepagents_acp.newSession(
-        NewSessionRequest(cwd="/tmp", mcpServers=[])
-    )
+    session_response = await deepagents_acp.newSession(NewSessionRequest(cwd="/tmp", mcpServers=[]))
     session_id = session_response.sessionId
     prompt_request.sessionId = session_id
 
@@ -422,8 +419,8 @@ async def test_fake_chat_model_streaming() -> None:
 
 async def test_human_in_the_loop_approval() -> None:
     """Test that DeepagentsACP handles HITL interrupts and permission requests correctly."""
-    from langchain.agents.middleware import HumanInTheLoopMiddleware
     from deepagents.graph import create_deep_agent
+    from langchain.agents.middleware import HumanInTheLoopMiddleware
 
     prompt_request = PromptRequest(
         sessionId="",  # Will be set below
@@ -476,9 +473,7 @@ async def test_human_in_the_loop_approval() -> None:
     )
 
     # Create a new session
-    session_response = await deepagents_acp.newSession(
-        NewSessionRequest(cwd="/tmp", mcpServers=[])
-    )
+    session_response = await deepagents_acp.newSession(NewSessionRequest(cwd="/tmp", mcpServers=[]))
     session_id = session_response.sessionId
     prompt_request.sessionId = session_id
 

@@ -4,7 +4,9 @@
 # - Automatically via workflow_call from release-please.yml when a release PR is merged
 # - Manually via workflow_dispatch
 #
-# Flow: build -> release-notes -> test-pypi -> pre-release-checks -> publish -> mark-release
+# Flow:
+# - CLI: build -> test-pypi -> pre-release-checks -> DRAFT release (PyPI publish happens when draft is published)
+# - Other packages: build -> test-pypi -> pre-release-checks -> publish -> release
 
 name: "🚀 Package Release"
 run-name: "Release ${{ inputs.package }}"
@@ -523,11 +525,13 @@ jobs:
 
   publish:
     # Publishes the package to PyPI
+    # Skipped for CLI - PyPI publish happens via release-publish.yml when draft is published
     needs:
       - setup
       - build
       - test-pypi-publish
       - pre-release-checks
+    if: needs.build.outputs.pkg-name != 'deepagents-cli'
     runs-on: ubuntu-latest
     permissions:
       # This permission is used for trusted publishing:
@@ -566,6 +570,8 @@ jobs:
           attestations: false
 
   # Create GitHub release after checks pass
+  # For CLI: creates a DRAFT release (user edits notes, then publishes to trigger PyPI upload)
+  # For other packages: creates a published release (PyPI upload already done)
   mark-release:
     needs:
       - setup
@@ -574,6 +580,7 @@ jobs:
       - test-pypi-publish
       - pre-release-checks
       - publish
+    if: always() && needs.pre-release-checks.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       # This permission is needed by `ncipollo/release-action` to
@@ -599,13 +606,15 @@ jobs:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
-      - name: Create Tag
+      - name: Create Release
         uses: ncipollo/release-action@v1
         with:
           artifacts: "${{ env.WORKING_DIR }}/dist/*"
           token: ${{ secrets.GITHUB_TOKEN }}
           generateReleaseNotes: false
-          tag: ${{needs.build.outputs.pkg-name}}==${{ needs.build.outputs.version }}
+          tag: ${{ needs.build.outputs.pkg-name }}==${{ needs.build.outputs.version }}
           body: ${{ needs.release-notes.outputs.release-body }}
           commit: ${{ github.sha }}
-          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents'}}
+          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' }}
+          # CLI uses draft releases for manual review before PyPI publish
+          draft: ${{ needs.build.outputs.pkg-name == 'deepagents-cli' }}

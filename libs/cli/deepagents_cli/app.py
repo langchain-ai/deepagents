@@ -1025,7 +1025,8 @@ class DeepAgentsApp(App):
 
     def on_mouse_up(self, event: MouseUp) -> None:
         """Copy selection to clipboard on mouse release."""
-        copy_selection_to_clipboard(self)
+        # Defer clipboard copy to ensure selection state is fully updated
+        self.call_after_refresh(copy_selection_to_clipboard, self)
 
 
 async def run_textual_app(

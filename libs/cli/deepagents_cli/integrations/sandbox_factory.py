@@ -5,7 +5,7 @@ import shlex
 import string
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
@@ -19,6 +19,10 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     Args:
         backend: Sandbox backend instance
         setup_script_path: Path to setup script file
+
+    Raises:
+        FileNotFoundError: If the setup script does not exist.
+        RuntimeError: If the setup script fails to execute.
     """
     script_path = Path(setup_script_path)
     if not script_path.exists():
@@ -28,7 +32,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     console.print(f"[dim]Running setup script: {setup_script_path}...[/dim]")
 
     # Read script content
-    script_content = script_path.read_text()
+    script_content = script_path.read_text(encoding="utf-8")
 
     # Expand ${VAR} syntax using local environment
     template = string.Template(script_content)
@@ -57,13 +61,11 @@ def create_modal_sandbox(
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
-        (ModalBackend, sandbox_id)
+        SandboxBackendProtocol: The Modal sandbox backend instance.
 
     Raises:
-        ImportError: Modal SDK not installed
-        Exception: Sandbox creation/connection failed
-        FileNotFoundError: Setup script not found
-        RuntimeError: Setup script failed
+        RuntimeError: If sandbox terminated unexpectedly or failed to start
+            within timeout.
     """
     import modal
 
@@ -88,13 +90,12 @@ def create_modal_sandbox(
                     msg = "Modal sandbox terminated unexpectedly during startup"
                     raise RuntimeError(msg)
                 # Check if sandbox is ready by attempting a simple command
-                try:
+                # Suppress errors during polling - sandbox may not be ready yet
+                with suppress(OSError, TimeoutError):
                     process = sandbox.exec("echo", "ready", timeout=5)
                     process.wait()
                     if process.returncode == 0:
                         break
-                except Exception:
-                    pass
                 time.sleep(2)
             else:
                 # Timeout - cleanup and fail
@@ -113,7 +114,9 @@ def create_modal_sandbox(
         finally:
             if should_cleanup:
                 try:
-                    console.print(f"[dim]Terminating Modal sandbox {sandbox_id}...[/dim]")
+                    console.print(
+                        f"[dim]Terminating Modal sandbox {sandbox_id}...[/dim]"
+                    )
                     sandbox.terminate()
                     console.print(f"[dim]✓ Modal sandbox {sandbox_id} terminated[/dim]")
                 except Exception as e:
@@ -131,14 +134,11 @@ def create_runloop_sandbox(
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
-        (RunloopBackend, devbox_id)
+        SandboxBackendProtocol: The Runloop devbox backend instance.
 
     Raises:
-        ImportError: Runloop SDK not installed
-        ValueError: RUNLOOP_API_KEY not set
-        RuntimeError: Devbox failed to start within timeout
-        FileNotFoundError: Setup script not found
-        RuntimeError: Setup script failed
+        ValueError: If RUNLOOP_API_KEY environment variable is not set.
+        RuntimeError: If devbox failed to start within 180 seconds.
     """
     from runloop_api_client import Runloop
 
@@ -185,7 +185,9 @@ def create_runloop_sandbox(
     finally:
         if should_cleanup:
             try:
-                console.print(f"[dim]Shutting down Runloop devbox {sandbox_id}...[/dim]")
+                console.print(
+                    f"[dim]Shutting down Runloop devbox {sandbox_id}...[/dim]"
+                )
                 client.devboxes.shutdown(id=devbox.id)
                 console.print(f"[dim]✓ Runloop devbox {sandbox_id} terminated[/dim]")
             except Exception as e:
@@ -203,11 +205,12 @@ def create_daytona_sandbox(
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
-        (DaytonaBackend, sandbox_id)
+        SandboxBackendProtocol: The Daytona sandbox backend instance.
 
-    Note:
-        Connecting to existing Daytona sandbox by ID may not be supported yet.
-        If sandbox_id is provided, this will raise NotImplementedError.
+    Raises:
+        ValueError: If DAYTONA_API_KEY environment variable is not set.
+        NotImplementedError: If sandbox_id is provided (reconnecting not yet supported).
+        RuntimeError: If sandbox failed to start within 180 seconds.
     """
     from daytona import Daytona, DaytonaConfig
 
@@ -234,12 +237,11 @@ def create_daytona_sandbox(
     # Poll until running (Daytona requires this)
     for _ in range(90):  # 180s timeout (90 * 2s)
         # Check if sandbox is ready by attempting a simple command
-        try:
+        # Suppress errors during polling - sandbox may not be ready yet
+        with suppress(OSError, TimeoutError):
             result = sandbox.process.exec("echo ready", timeout=5)
             if result.exit_code == 0:
                 break
-        except Exception:
-            pass
         time.sleep(2)
     else:
         try:
@@ -299,7 +301,10 @@ def create_sandbox(
         setup_script_path: Optional path to setup script to run after sandbox starts
 
     Yields:
-        (SandboxBackend, sandbox_id)
+        SandboxBackendProtocol: The sandbox backend instance.
+
+    Raises:
+        ValueError: If provider is unknown.
     """
     if provider not in _SANDBOX_PROVIDERS:
         msg = (
@@ -310,7 +315,9 @@ def create_sandbox(
 
     sandbox_provider = _SANDBOX_PROVIDERS[provider]
 
-    with sandbox_provider(sandbox_id=sandbox_id, setup_script_path=setup_script_path) as backend:
+    with sandbox_provider(
+        sandbox_id=sandbox_id, setup_script_path=setup_script_path
+    ) as backend:
         yield backend
 
 

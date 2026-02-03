@@ -10,7 +10,8 @@ def find_project_root(start_path: Path | None = None) -> Path | None:
     directory, which indicates the project root.
 
     Args:
-        start_path: Directory to start searching from. Defaults to current working directory.
+        start_path: Directory to start searching from.
+            Defaults to current working directory.
 
     Returns:
         Path to the project root if found, None otherwise.

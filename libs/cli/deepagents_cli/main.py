@@ -1,8 +1,9 @@
 """Main entry point and CLI loop for deepagents."""
-# ruff: noqa: E402, BLE001
+
+# ruff: noqa: E402
+# Imports placed after warning filters to suppress deprecation warnings
 
 # Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
-# ruff: noqa: E402
 import warnings
 
 warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
@@ -10,6 +11,7 @@ warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 import argparse
 import asyncio
 import contextlib
+import importlib.util
 import os
 import sys
 import warnings
@@ -50,24 +52,16 @@ def check_cli_dependencies() -> None:
     """Check if CLI optional dependencies are installed."""
     missing = []
 
-    try:
-        import requests  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("requests") is None:
         missing.append("requests")
 
-    try:
-        import dotenv  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("dotenv") is None:
         missing.append("python-dotenv")
 
-    try:
-        import tavily  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("tavily") is None:
         missing.append("tavily-python")
 
-    try:
-        import textual  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("textual") is None:
         missing.append("textual")
 
     if missing:
@@ -83,9 +77,13 @@ def check_cli_dependencies() -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
+    """Parse command line arguments.
+
+    Returns:
+        Parsed arguments namespace.
+    """
     parser = argparse.ArgumentParser(
-        description="DeepAgents - AI Coding Assistant",
+        description="Deep Agents - AI Coding Assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
@@ -114,7 +112,9 @@ def parse_args() -> argparse.Namespace:
     setup_skills_parser(subparsers)
 
     # Threads command
-    threads_parser = subparsers.add_parser("threads", help="Manage conversation threads")
+    threads_parser = subparsers.add_parser(
+        "threads", help="Manage conversation threads"
+    )
     threads_sub = threads_parser.add_subparsers(dest="threads_command")
 
     # threads list
@@ -122,7 +122,9 @@ def parse_args() -> argparse.Namespace:
     threads_list.add_argument(
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
-    threads_list.add_argument("--limit", type=int, default=20, help="Max threads (default: 20)")
+    threads_list.add_argument(
+        "--limit", type=int, default=20, help="Max threads (default: 20)"
+    )
 
     # threads delete
     threads_delete = threads_sub.add_parser("delete", help="Delete a thread")
@@ -229,7 +231,7 @@ async def run_textual_cli_async(
             try:
                 # Create sandbox context manager but keep it open
                 sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
-                sandbox_backend = sandbox_cm.__enter__()
+                sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
                 console.print("[red]❌ Sandbox creation failed[/red]")
@@ -276,9 +278,10 @@ def cli_main() -> None:
     if sys.platform == "darwin":
         os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
 
-    # Note: LANGSMITH_PROJECT is already overridden in config.py (before LangChain imports)
-    # This ensures agent traces → DEEPAGENTS_LANGSMITH_PROJECT
-    # Shell commands → user's original LANGSMITH_PROJECT (via ShellMiddleware env)
+    # Note: LANGSMITH_PROJECT is already overridden in config.py
+    # (before LangChain imports). This ensures agent traces use
+    # DEEPAGENTS_LANGSMITH_PROJECT while shell commands use the
+    # user's original LANGSMITH_PROJECT (via ShellMiddleware env).
 
     # Check dependencies first
     check_cli_dependencies()
@@ -305,7 +308,9 @@ def cli_main() -> None:
             elif args.threads_command == "delete":
                 asyncio.run(delete_thread_command(args.thread_id))
             else:
-                console.print("[yellow]Usage: deepagents threads <list|delete>[/yellow]")
+                console.print(
+                    "[yellow]Usage: deepagents threads <list|delete>[/yellow]"
+                )
         else:
             # Interactive mode - handle thread resume
             thread_id = None
@@ -313,7 +318,8 @@ def cli_main() -> None:
 
             if args.resume_thread == "__MOST_RECENT__":
                 # -r (no ID): Get most recent thread
-                # If --agent specified, filter by that agent; otherwise get most recent overall
+                # If --agent specified, filter by that agent; otherwise get
+                # most recent overall
                 agent_filter = args.agent if args.agent != "agent" else None
                 thread_id = asyncio.run(get_most_recent(agent_filter))
                 if thread_id:
@@ -344,9 +350,11 @@ def cli_main() -> None:
                     error_msg.append(args.resume_thread)
                     error_msg.append("' not found.", style="red")
                     console.print(error_msg)
-                    console.print(
-                        "[dim]Use 'deepagents threads list' to see available threads.[/dim]"
+                    hint = (
+                        "[dim]Use 'deepagents threads list' to see "
+                        "available threads.[/dim]"
                     )
+                    console.print(hint)
                     sys.exit(1)
 
             # Generate new thread ID if not resuming

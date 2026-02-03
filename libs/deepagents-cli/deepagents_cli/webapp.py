@@ -36,7 +36,9 @@ LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")
 X_SERVICE_AUTH_JWT_SECRET = os.environ.get("X_SERVICE_AUTH_JWT_SECRET", "")
 
 
-def get_service_jwt_token_for_user(user_id: str, tenant_id: str, expiration_seconds: int = 300) -> str:
+def get_service_jwt_token_for_user(
+    user_id: str, tenant_id: str, expiration_seconds: int = 300
+) -> str:
     """Create a short-lived service JWT for authenticating as a specific user.
 
     Args:
@@ -66,6 +68,7 @@ def get_service_jwt_token_for_user(user_id: str, tenant_id: str, expiration_seco
     }
 
     return jwt.encode(payload, X_SERVICE_AUTH_JWT_SECRET, algorithm="HS256")
+
 
 LINEAR_TEAM_TO_REPO: dict[str, dict[str, str]] = {
     "Brace's test workspace": {"owner": "langchain-ai", "name": "open-swe"},
@@ -125,7 +128,6 @@ async def get_github_token_for_user(ls_user_id: str, tenant_id: str) -> dict[str
         return {"error": "GITHUB_OAUTH_PROVIDER_ID not configured"}
 
     try:
-        # Generate a service JWT token associated with the user
         service_token = get_service_jwt_token_for_user(ls_user_id, tenant_id)
 
         headers = {
@@ -367,9 +369,7 @@ async def is_thread_active(thread_id: str) -> bool:
         return False
 
 
-async def queue_message_for_thread(
-    thread_id: str, message_content: str, issue_data: dict[str, Any]
-) -> bool:
+async def queue_message_for_thread(thread_id: str, message_content: str) -> bool:
     """Queue a message for a thread that is currently active.
 
     Stores the message in the langgraph store, namespaced to the thread.
@@ -379,7 +379,6 @@ async def queue_message_for_thread(
     Args:
         thread_id: The LangGraph thread ID
         message_content: The message content to queue
-        issue_data: Additional issue context (comment author, etc.)
 
     Returns:
         True if successfully queued, False otherwise
@@ -388,36 +387,25 @@ async def queue_message_for_thread(
     try:
         namespace = ("queue", thread_id)
         key = "pending_messages"
-        
-        new_message = {
-            "content": message_content,
-            "issue_data": issue_data,
-            "queued_at": datetime.now(tz=UTC).isoformat(),
-        }
-        
-        # Get existing queued messages (if any)
+
+        new_message = {"content": message_content}
+
         existing_messages: list[dict[str, Any]] = []
         try:
             existing_item = await langgraph_client.store.get_item(namespace, key)
             if existing_item and existing_item.get("value"):
                 existing_messages = existing_item["value"].get("messages", [])
         except Exception:
-            # No existing messages or store error - start fresh
             pass
-        
-        # Append new message to the list
+
         existing_messages.append(new_message)
-        
         value = {"messages": existing_messages}
-        
+
         logger.info(
-            "Attempting to queue message for thread %s with namespace=%s, key=%s (total queued: %d)",
+            "Attempting to queue message for thread %s (total queued: %d)",
             thread_id,
-            namespace,
-            key,
             len(existing_messages),
         )
-        # Store the queued messages list with namespace ("queue", thread_id)
         await langgraph_client.store.put_item(namespace, key, value)
         logger.info("Successfully queued message for thread %s", thread_id)
         return True
@@ -473,7 +461,6 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
             user_email = assignee.get("email")
             user_name = user_name or assignee.get("name")
 
-    # Create a mention tag for the user
     user_mention = f"@{user_name}" if user_name else ""
 
     logger.info(
@@ -487,7 +474,9 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
         user_info = await get_ls_user_id_from_email(user_email)
         ls_user_id = user_info.get("ls_user_id")
         tenant_id = user_info.get("tenant_id")
-        logger.info("LangSmith user ID for %s: %s, tenant_id: %s", user_email, ls_user_id, tenant_id)
+        logger.info(
+            "LangSmith user ID for %s: %s, tenant_id: %s", user_email, ls_user_id, tenant_id
+        )
 
         if ls_user_id and tenant_id:
             auth_result = await get_github_token_for_user(ls_user_id, tenant_id)
@@ -512,7 +501,6 @@ Once authenticated, reply to this issue mentioning @openswe to retry."""
             else:
                 logger.warning("Auth result has neither token nor auth_url: %s", auth_result)
         else:
-            # User not found in LangSmith workspace
             logger.warning("User %s not found in LangSmith workspace", user_email)
             comment = f"""🔐 **GitHub Authentication Required** {user_mention}
 
@@ -587,35 +575,28 @@ Please analyze this issue and implement the necessary changes. When you're done,
     if github_token:
         configurable["github_token_encrypted"] = encrypt_token(github_token)
 
-        # Check if thread is currently active (has a running run)
         logger.info("Checking if thread %s is active before creating run", thread_id)
         thread_active = await is_thread_active(thread_id)
         logger.info("Thread %s active status: %s", thread_id, thread_active)
 
         if thread_active:
-            # Thread is busy - queue the message instead of creating a new run
             logger.info(
                 "Thread %s is active (busy), will queue message instead of creating run",
                 thread_id,
             )
 
-            # Queue the message for the before_model middleware to pick up
             queued = await queue_message_for_thread(
                 thread_id=thread_id,
                 message_content=prompt,
-                issue_data={
-                    "linear_issue": configurable.get("linear_issue", {}),
-                    "triggering_comment": issue_data.get("triggering_comment", ""),
-                    "triggering_comment_id": issue_data.get("triggering_comment_id", ""),
-                },
             )
 
             if queued:
-                logger.info("Message queued for thread %s, will be processed by middleware", thread_id)
+                logger.info(
+                    "Message queued for thread %s, will be processed by middleware", thread_id
+                )
             else:
                 logger.error("Failed to queue message for thread %s", thread_id)
         else:
-            # Thread is idle - proceed with creating a new run
             logger.info("Creating LangGraph run for thread %s", thread_id)
             langgraph_client = get_client(url=LANGGRAPH_URL)
             await langgraph_client.runs.create(
@@ -628,7 +609,6 @@ Please analyze this issue and implement the necessary changes. When you're done,
             logger.info("LangGraph run created successfully for thread %s", thread_id)
     else:
         logger.warning("No GitHub token available, cannot create run for issue %s", issue_id)
-        # Send a comment explaining why we couldn't proceed
         if not user_email:
             comment = f"""🔐 **GitHub Authentication Required** {user_mention}
 

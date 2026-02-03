@@ -14,7 +14,6 @@ from langchain.agents.middleware import AgentState, after_agent, after_model, be
 from langgraph.config import get_config, get_store
 from langgraph.graph.state import RunnableConfig
 from langgraph.runtime import Runtime
-from typing_extensions import TypedDict
 
 warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 
@@ -46,7 +45,88 @@ SANDBOX_POLL_INTERVAL = 1.0
 
 _SANDBOX_BACKENDS: dict[str, Any] = {}
 
+import httpx
+
 LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")
+
+
+async def create_github_pr(
+    repo_owner: str,
+    repo_name: str,
+    github_token: str,
+    title: str,
+    head_branch: str,
+    base_branch: str,
+    body: str,
+) -> tuple[str | None, int | None]:
+    """Create a GitHub pull request via the API.
+
+    Args:
+        repo_owner: Repository owner (e.g., "langchain-ai")
+        repo_name: Repository name (e.g., "deepagents")
+        github_token: GitHub access token
+        title: PR title
+        head_branch: Source branch name
+        base_branch: Target branch name
+        body: PR description
+
+    Returns:
+        Tuple of (pr_url, pr_number) if successful, (None, None) otherwise
+    """
+    pr_payload = {
+        "title": title,
+        "head": head_branch,
+        "base": base_branch,
+        "body": body,
+    }
+
+    logger.info(
+        "Creating PR: head=%s, base=%s, repo=%s/%s",
+        head_branch,
+        base_branch,
+        repo_owner,
+        repo_name,
+    )
+
+    try:
+        async with httpx.AsyncClient() as http_client:
+            pr_response = await http_client.post(
+                f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json=pr_payload,
+            )
+
+            pr_data = pr_response.json()
+
+            if pr_response.status_code == 201:
+                pr_url = pr_data.get("html_url")
+                pr_number = pr_data.get("number")
+                logger.info("PR created successfully: %s", pr_url)
+                return pr_url, pr_number
+
+            if pr_response.status_code == 422:
+                logger.error(
+                    "GitHub API validation error (422): %s", pr_data.get("message")
+                )
+            else:
+                logger.error(
+                    "GitHub API error (%s): %s",
+                    pr_response.status_code,
+                    pr_data.get("message"),
+                )
+
+            if "errors" in pr_data:
+                logger.error("GitHub API errors detail: %s", pr_data.get("errors"))
+
+            return None, None
+
+    except httpx.HTTPError as e:
+        logger.error("Failed to create PR via GitHub API: %s", e)
+        return None, None
 
 
 async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
@@ -64,7 +144,6 @@ async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
 
     import httpx
 
-    # Linear uses GraphQL API
     url = "https://api.linear.app/graphql"
 
     mutation = """
@@ -128,7 +207,6 @@ async def check_message_queue_before_model(
         if not thread_id:
             return None
 
-        # Try to get the store from langgraph context
         try:
             store = get_store()
         except Exception as e:
@@ -138,7 +216,6 @@ async def check_message_queue_before_model(
         if store is None:
             return None
 
-        # Check for queued messages in namespace ("queue", thread_id)
         namespace = ("queue", thread_id)
 
         try:
@@ -150,13 +227,13 @@ async def check_message_queue_before_model(
         if queued_item is None:
             return None
 
-        # Extract all queued messages
         queued_value = queued_item.value
         queued_messages = queued_value.get("messages", [])
 
+        # Delete early to prevent duplicate processing if middleware runs again
+        await store.adelete(namespace, "pending_messages")
+
         if not queued_messages:
-            # Empty message list, clear and skip
-            await store.adelete(namespace, "pending_messages")
             return None
 
         logger.info(
@@ -165,61 +242,29 @@ async def check_message_queue_before_model(
             thread_id,
         )
 
-        # Clear the queue to prevent re-processing
-        await store.adelete(namespace, "pending_messages")
+        content_parts = [msg.get("content", "") for msg in queued_messages if msg.get("content")]
 
-        # Build combined message content from all queued messages (FIFO order)
-        combined_content_parts = []
-        for i, msg in enumerate(queued_messages, 1):
-            message_content = msg.get("content", "")
-            queued_at = msg.get("queued_at", "unknown")
-            if message_content:
-                if len(queued_messages) > 1:
-                    combined_content_parts.append(
-                        f"**Follow-up #{i}** (queued at {queued_at}):\n{message_content}"
-                    )
-                else:
-                    combined_content_parts.append(message_content)
-
-        if not combined_content_parts:
+        if not content_parts:
             return None
 
-        combined_content = "\n\n---\n\n".join(combined_content_parts)
-
-        # Create a new human message with the queued content
-        # Frame it so the agent knows to COMPLETE current task first, then handle follow-ups
-        if len(queued_messages) > 1:
-            intro = (
-                f"[IMPORTANT: {len(queued_messages)} follow-up requests received]\n\n"
-                f"{len(queued_messages)} follow-up comments were added while you were working. "
-                "Please FIRST complete your current task fully, then handle these follow-up requests in order:\n\n"
-            )
-        else:
-            intro = (
-                "[IMPORTANT: Follow-up request received]\n\n"
-                "A follow-up comment was added while you were working. "
-                "Please FIRST complete your current task fully, then handle this follow-up request:\n\n"
-            )
+        combined_content = "\n\n".join(content_parts)
 
         new_message = {
             "role": "user",
-            "content": f"{intro}---\n\n{combined_content}",
+            "content": combined_content,
         }
 
         logger.info(
-            "Injected %d queued follow-up message(s) into state for thread %s (will be handled after current task)",
-            len(queued_messages),
+            "Injected %d queued message(s) into state for thread %s",
+            len(content_parts),
             thread_id,
         )
 
-        # Return only the new message to be added to the messages list
         return {"messages": [new_message]}
 
     except Exception as e:
         logger.error("Error in check_message_queue_before_model: %s", e)
         return None
-
-
 
 
 @after_model(state_schema=LinearNotifyState)
@@ -325,29 +370,24 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
     pr_title = "feat: Open SWE PR"
 
     try:
-        # Get config using langgraph's get_config
         config = get_config()
         configurable = config.get("configurable", {})
         thread_id = configurable.get("thread_id")
         logger.debug("Middleware running for thread %s", thread_id)
 
-        # Get the last message content from state
         last_message_content = ""
         messages = state.get("messages", [])
         if messages:
             last_message = messages[-1]
-            # Handle both dict and object message formats
             if isinstance(last_message, dict):
                 last_message_content = last_message.get("content", "")
             elif hasattr(last_message, "content"):
                 last_message_content = last_message.content
 
-        # Get Linear issue info for commenting
         linear_issue = configurable.get("linear_issue", {})
         linear_issue_id = linear_issue.get("id")
 
         if not thread_id:
-            # Still comment on Linear if we have the issue ID
             if linear_issue_id and last_message_content:
                 comment = f"""🤖 **Agent Response**
 
@@ -451,12 +491,13 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
                         sandbox_backend.execute, f"cd {repo_dir} && git push origin {target_branch}"
                     )
 
-            # Try to get the default branch from git
             default_branch_result = await asyncio.to_thread(
                 sandbox_backend.execute,
                 f"cd {repo_dir} && git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
             )
-            base_branch = default_branch_result.output.strip() if default_branch_result.exit_code == 0 else ""
+            base_branch = (
+                default_branch_result.output.strip() if default_branch_result.exit_code == 0 else ""
+            )
 
             # Fallback to main if we couldn't determine the default branch
             if not base_branch:
@@ -467,75 +508,15 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
             pr_title = "feat: Open SWE PR"
             pr_body = "Automated PR created by Open SWE agent."
 
-            logger.info("Creating PR: head=%s, base=%s, repo=%s/%s", target_branch, base_branch, repo_owner, repo_name)
-
-            # Debug: Check token type (first few chars only for security)
-            token_prefix = github_token[:10] if github_token else "None"
-            logger.info("GitHub token prefix: %s... (length: %d)", token_prefix, len(github_token) if github_token else 0)
-            
-            # Check what scopes the token has by calling GitHub API
-            import httpx
-            try:
-                async with httpx.AsyncClient() as debug_client:
-                    debug_resp = await debug_client.get(
-                        "https://api.github.com/user",
-                        headers={"Authorization": f"Bearer {github_token}"}
-                    )
-                    logger.info("Token validation - /user status: %s", debug_resp.status_code)
-                    if "x-oauth-scopes" in debug_resp.headers:
-                        logger.info("Token scopes: %s", debug_resp.headers.get("x-oauth-scopes"))
-                    else:
-                        logger.warning("No x-oauth-scopes header - this might be a GitHub App token, not an OAuth token")
-                    if debug_resp.status_code == 200:
-                        user_data = debug_resp.json()
-                        logger.info("Token belongs to user: %s", user_data.get("login"))
-            except Exception as e:
-                logger.error("Token validation failed: %s", e)
-
-            # Use httpx directly instead of curl to avoid shell escaping issues
-            
-            pr_payload = {
-                "title": pr_title,
-                "head": target_branch,
-                "base": base_branch,
-                "body": pr_body
-            }
-            
-            logger.info("PR payload: %s", pr_payload)
-            
-            try:
-                async with httpx.AsyncClient() as http_client:
-                    pr_response = await http_client.post(
-                        f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls",
-                        headers={
-                            "Authorization": f"Bearer {github_token}",
-                            "Accept": "application/vnd.github+json",
-                            "X-GitHub-Api-Version": "2022-11-28",
-                        },
-                        json=pr_payload,
-                    )
-                    
-                    logger.info("GitHub API response status: %s", pr_response.status_code)
-                    
-                    pr_data = pr_response.json()
-                    logger.info("GitHub API response (first 500 chars): %s", str(pr_data)[:500])
-                    
-                    if pr_response.status_code == 201:
-                        pr_url = pr_data.get("html_url")
-                        pr_number = pr_data.get("number")
-                        logger.info("PR created successfully: %s", pr_url)
-                    elif pr_response.status_code == 422:
-                        # PR already exists or validation error
-                        logger.error("GitHub API validation error (422): %s", pr_data.get("message"))
-                        if "errors" in pr_data:
-                            logger.error("GitHub API errors detail: %s", pr_data.get("errors"))
-                    else:
-                        logger.error("GitHub API error (%s): %s", pr_response.status_code, pr_data.get("message"))
-                        if "errors" in pr_data:
-                            logger.error("GitHub API errors detail: %s", pr_data.get("errors"))
-                            
-            except Exception as e:
-                logger.error("Failed to create PR via GitHub API: %s: %s", type(e).__name__, e)
+            pr_url, pr_number = await create_github_pr(
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                github_token=github_token,
+                title=pr_title,
+                head_branch=target_branch,
+                base_branch=base_branch,
+                body=pr_body,
+            )
 
             linear_issue = configurable.get("linear_issue", {})
             linear_issue_id = linear_issue.get("id")
@@ -783,7 +764,6 @@ async def get_agent(config: RunnableConfig):
                 )
                 logger.info("Repo cloned to %s", repo_dir)
 
-                # Update repo_dir in metadata after clone completes
                 await client.threads.update(
                     thread_id=thread_id,
                     metadata={"repo_dir": repo_dir},
@@ -832,5 +812,9 @@ async def get_agent(config: RunnableConfig):
         sandbox_type="langsmith",
         auto_approve=True,
         working_dir=repo_dir,
-        middleware=[check_message_queue_before_model, post_to_linear_after_model, open_pr_if_needed],
+        middleware=[
+            check_message_queue_before_model,
+            post_to_linear_after_model,
+            open_pr_if_needed,
+        ],
     )

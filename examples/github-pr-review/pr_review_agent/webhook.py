@@ -26,7 +26,9 @@ from .agent import (
     create_quality_review_agent,
     create_chat_agent,
     create_feedback_agent,
+    REMEMBER_PROMPT,
 )
+from .storage import get_memory_path
 from .github_client import GitHubClient
 from .state import StateManager
 from .tools import set_github_client
@@ -1102,7 +1104,8 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
             print(f"[handle_pr_comment] Failed to post help: {e}")
             return {"status": "error", "message": f"Failed to post help: {e}"}
 
-    # Handle /remember - saves to repo-specific memory (no agent needed)
+    # Handle /remember - uses chat agent with MemoryMiddleware to update AGENTS.md
+    # Follows the pattern from libs/cli/deepagents_cli/app.py
     if parsed.command == "remember":
         if not parsed.message or not parsed.message.strip():
             emoji = get_bot_emoji()
@@ -1112,34 +1115,62 @@ async def handle_pr_comment(payload: WebhookPayload) -> dict:
                 f"`@{BOT_USERNAME} /remember We use 4-space indentation in Python files`"
             )
             return {"status": "error", "message": "No memory content provided"}
-        
+
         try:
-            # Get user's permission level to store with the memory
+            # Get user's permission level - only write/admin can update memory
             permission = await get_user_permission(github_client, owner, repo_name, sender_login)
-            
-            state_mgr = StateManager(owner, repo_name, pr_number)
-            state_mgr.repo_memory.add_user_memory(
-                memory=parsed.message.strip(),
-                added_by=sender_login,
-                permission=permission.value,
-                pr_number=pr_number,
+
+            if permission not in (Permission.ADMIN, Permission.WRITE):
+                emoji = get_bot_emoji()
+                await github_client.create_issue_comment(
+                    owner, repo_name, pr_number,
+                    f"❌ {emoji} **Permission denied**\n\n"
+                    f"Only users with write access to this repository can update its memory. "
+                    f"Your permission level: `{permission.value}`\n\n"
+                    f"Please ask a maintainer to add this convention for you."
+                )
+                return {"status": "error", "message": "Permission denied - write access required"}
+
+            # Create chat agent with memory support for this repo
+            chat_agent = create_chat_agent(owner=owner, repo=repo_name)
+            memory_path = get_memory_path(owner, repo_name)
+
+            # Build the prompt with context (follows CLI pattern)
+            agent_prompt = REMEMBER_PROMPT.format(
+                memory_path=memory_path,
+                owner=owner,
+                repo=repo_name,
+                username=sender_login,
+                memory_content=parsed.message.strip(),
             )
-            
-            # Confirm the memory was saved with authority context
-            authority_note = ""
-            if permission in (Permission.ADMIN, Permission.WRITE):
-                authority_note = " ⭐ (maintainer)"
-            
+
+            # Post a thinking message
             emoji = get_bot_emoji()
-            await github_client.create_issue_comment(
+            thinking_comment = await github_client.create_issue_comment(
                 owner, repo_name, pr_number,
-                f"🧠 **{emoji} Remembered for {owner}/{repo_name}**{authority_note}:\n\n"
+                f"🧠 {emoji} Updating repository memory..."
+            )
+
+            # Run the chat agent with the remember prompt
+            from langchain_core.messages import HumanMessage
+            await chat_agent.ainvoke(
+                {"messages": [HumanMessage(content=agent_prompt)]},
+            )
+
+            # Update the comment with success
+            await github_client.update_issue_comment(
+                owner, repo_name, thinking_comment["id"],
+                f"🧠 **{emoji} Remembered for {owner}/{repo_name}** ⭐ (maintainer):\n\n"
                 f"> {parsed.message.strip()}\n\n"
-                f"I'll follow this convention in future reviews of this repository."
+                f"I'll follow this convention in future reviews of this repository.\n\n"
+                f"*Memory stored in `{memory_path}`*"
             )
             return {"status": "success", "command": "remember"}
+
         except Exception as e:
             print(f"[handle_pr_comment] Failed to save memory: {e}")
+            import traceback
+            traceback.print_exc()
             await github_client.create_issue_comment(
                 owner, repo_name, pr_number,
                 f"❌ Failed to save memory: {e}"

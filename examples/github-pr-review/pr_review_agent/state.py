@@ -297,17 +297,16 @@ def get_thread_id(owner: str, repo: str, pr_number: int) -> str:
 
 class StateManager:
     """Unified interface for managing all state for a repository/PR."""
-    
+
     def __init__(self, owner: str, repo: str, pr_number: int):
         self.owner = owner
         self.repo = repo
         self.pr_number = pr_number
-        
-        self.repo_memory = RepoMemory(owner, repo)
+
         self.pr_state = PRState(owner, repo, pr_number)
         self.checkpointer = get_checkpointer(owner, repo)
         self.thread_id = get_thread_id(owner, repo, pr_number)
-    
+
     def get_agent_config(self) -> dict:
         """Get configuration dict for the agent."""
         return {
@@ -315,7 +314,25 @@ class StateManager:
                 "thread_id": self.thread_id,
             }
         }
-    
+
     def get_memory_context(self) -> str:
-        """Get repository memory context for prompts."""
-        return self.repo_memory.get_context_for_prompt()
+        """Get repository memory context for prompts.
+
+        Reads from the AGENTS.md file stored via MemoryMiddleware.
+        Falls back to empty string if no memory file exists.
+        """
+        from .storage import get_storage, get_memory_path
+
+        storage = get_storage()
+        # get_memory_path returns /{owner}/{repo}/AGENTS.md, but storage paths don't have leading /
+        memory_path = get_memory_path(self.owner, self.repo).lstrip("/")
+
+        content = storage.read(memory_path)
+        if not content:
+            return ""
+
+        return f"""## Repository Memory (AGENTS.md)
+The following conventions and preferences have been saved for this repository:
+
+{content}
+"""

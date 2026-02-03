@@ -1,1 +1,1 @@
-"""Sandbox integrations for DeepAgents CLI."""
+"""Sandbox integrations for Deep Agents CLI."""

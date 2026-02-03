@@ -1,4 +1,4 @@
-# Main CI workflow for DeepAgents monorepo
+# Main CI workflow for Deep Agents monorepo
 #
 # Runs on every pull request:
 # - Linting for changed packages

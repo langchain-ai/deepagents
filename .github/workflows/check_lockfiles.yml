@@ -26,10 +26,8 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
 
-      - name: "🐍 Set up Python + UV"
+      - name: "🐍 Set up UV"
         uses: astral-sh/setup-uv@v7
-        with:
-          python-version: "3.11"
 
       - name: "🔍 Check all lockfiles"
         run: |
@@ -41,7 +39,15 @@ jobs:
           failed_dirs=""
           for dir in $lockfile_dirs; do
             echo "::group::Checking $dir"
-            if ! uv lock --check --directory "$dir" 2>&1; then
+
+            # Use appropriate Python version based on project requirements
+            if [ "$dir" = "./libs/acp" ]; then
+              python_version="3.14"
+            else
+              python_version="3.12"
+            fi
+
+            if ! uv lock --check --directory "$dir" --python "$python_version" 2>&1; then
               echo "::error file=$dir/uv.lock::Lockfile is out of sync. Run 'uv lock' in $dir"
               failed_dirs="$failed_dirs $dir"
             else

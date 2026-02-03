@@ -99,6 +99,9 @@ packages = ["deepagents_cli"]
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
 
+[tool.ty.environment]
+extra-paths = ["../deepagents"]
+
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/
 

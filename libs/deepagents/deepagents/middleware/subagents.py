@@ -2,7 +2,7 @@
 
 import warnings
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Any, NotRequired, TypedDict, cast
+from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -20,6 +20,7 @@ from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.summarization import SummarizationMiddleware, compute_summarization_defaults
 
 
@@ -53,6 +54,9 @@ class SubAgent(TypedDict):
         interrupt_on: Configure human-in-the-loop for specific tools.
 
             Requires a checkpointer.
+        skills: Skill source paths for SkillsMiddleware.
+
+            List of paths to skill directories (e.g., `["/skills/user/", "/skills/project/"]`).
     """
 
     name: str
@@ -75,6 +79,9 @@ class SubAgent(TypedDict):
 
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
     """Configure human-in-the-loop for specific tools."""
+
+    skills: NotRequired[list[str]]
+    """Skill source paths for SkillsMiddleware."""
 
 
 class CompiledSubAgent(TypedDict):
@@ -273,6 +280,14 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
 }
 
 
+class _DeprecatedKwargs(TypedDict, total=False):
+    """TypedDict for deprecated SubAgentMiddleware keyword arguments.
+
+    These arguments are deprecated and will be removed in a future version.
+    Use `backend` and fully-specified `subagents` instead.
+    """
+
+
 class SubAgentMiddleware(AgentMiddleware):
     """Middleware for providing subagents to an agent via a `task` tool.
 
@@ -332,36 +347,24 @@ class SubAgentMiddleware(AgentMiddleware):
         subagents: list[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
-        **deprecated_kwargs: Any,
+        **deprecated_kwargs: Unpack[_DeprecatedKwargs],
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
 
         # Handle deprecated kwargs for backward compatibility
-        default_model = deprecated_kwargs.pop("default_model", None)
-        default_tools = deprecated_kwargs.pop("default_tools", None)
-        default_middleware = deprecated_kwargs.pop("default_middleware", None)
-        general_purpose_middleware = deprecated_kwargs.pop("general_purpose_middleware", None)
-        default_interrupt_on = deprecated_kwargs.pop("default_interrupt_on", None)
-        general_purpose_agent = deprecated_kwargs.pop("general_purpose_agent", True)
+        default_model = deprecated_kwargs.get("default_model")
+        default_tools = deprecated_kwargs.get("default_tools")
+        default_middleware = deprecated_kwargs.get("default_middleware")
+        general_purpose_middleware = deprecated_kwargs.get("general_purpose_middleware")
+        default_interrupt_on = deprecated_kwargs.get("default_interrupt_on")
+        # general_purpose_agent defaults to True if not specified
+        general_purpose_agent = deprecated_kwargs.get("general_purpose_agent", True)
 
         # Warn about any deprecated kwargs that were provided
-        provided_deprecated = []
-        if default_model is not None:
-            provided_deprecated.append("default_model")
-        if default_tools is not None:
-            provided_deprecated.append("default_tools")
-        if default_middleware is not None:
-            provided_deprecated.append("default_middleware")
-        if general_purpose_middleware is not None:
-            provided_deprecated.append("general_purpose_middleware")
-        if default_interrupt_on is not None:
-            provided_deprecated.append("default_interrupt_on")
-        if not general_purpose_agent:
+        provided_deprecated = [key for key in deprecated_kwargs if key != "general_purpose_agent"]
+        if "general_purpose_agent" in deprecated_kwargs and not general_purpose_agent:
             provided_deprecated.append("general_purpose_agent")
-        # Warn about any extra unexpected kwargs
-        if deprecated_kwargs:
-            provided_deprecated.extend(deprecated_kwargs.keys())
 
         if provided_deprecated:
             warnings.warn(
@@ -407,9 +410,7 @@ class SubAgentMiddleware(AgentMiddleware):
             # Create the task tool
             self.tools = [self._create_task_tool(task_description)]
         else:
-            raise ValueError(
-                "SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)"
-            )
+            raise ValueError("SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)")
 
     def _init_legacy(
         self,
@@ -604,11 +605,19 @@ class SubAgentMiddleware(AgentMiddleware):
             if isinstance(model, str):
                 model = init_chat_model(model)
 
-            # Build middleware: base stack + user's middleware + interrupt_on
+            # Build middleware: base stack + skills (if specified) + user's middleware + interrupt_on
             middleware: list[AgentMiddleware] = [
                 *self._build_base_middleware(model),
-                *spec.get("middleware", []),
             ]
+
+            # Add SkillsMiddleware if skills are specified
+            skills = spec.get("skills")
+            if skills:
+                middleware.append(SkillsMiddleware(backend=self._backend, sources=skills))
+
+            # Add user's middleware
+            middleware.extend(spec.get("middleware", []))
+
             interrupt_on = spec.get("interrupt_on")
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))

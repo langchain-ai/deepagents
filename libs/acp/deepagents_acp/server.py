@@ -1,4 +1,4 @@
-"""DeepAgents ACP server implementation."""
+"""Deep Agents ACP server implementation."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class DeepagentsACP(Agent):
         connection: AgentSideConnection,
         agent_graph: CompiledStateGraph,
     ) -> None:
-        """Initialize the DeepAgents agent.
+        """Initialize the Deep Agents agent.
 
         Args:
             connection: The ACP connection for communicating with the client
@@ -80,9 +80,9 @@ class DeepagentsACP(Agent):
         return InitializeResponse(
             protocolVersion=PROTOCOL_VERSION,
             agentInfo=Implementation(
-                name="DeepAgents ACP Server",
+                name="Deep Agents ACP Server",
                 version="0.1.0",
-                title="DeepAgents ACP Server",
+                title="Deep Agents ACP Server",
             ),
         )
 

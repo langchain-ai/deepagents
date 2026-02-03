@@ -382,23 +382,33 @@ def _build_task_tool(
     else:
         description = task_description
 
-    def _prepare_state(subagent_type: str, task_desc: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
-        subagent = subagent_graphs[subagent_type]
-        state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
-        state["messages"] = [HumanMessage(content=task_desc)]
-        return subagent, state
-
-    def _make_result(result: dict, tool_call_id: str) -> Command:
+    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+        # Validate that the result contains a 'messages' key
         if "messages" not in result:
-            msg = (
+            error_msg = (
                 "CompiledSubAgent must return a state containing a 'messages' key. "
                 "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
                 "in their state schema to communicate results back to the main agent."
             )
-            raise ValueError(msg)
+            raise ValueError(error_msg)
+
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
+        # Strip trailing whitespace to prevent API errors with Anthropic
         message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
-        return Command(update={**state_update, "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)]})
+        return Command(
+            update={
+                **state_update,
+                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+            }
+        )
+
+    def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
+        """Prepare state for invocation."""
+        subagent = subagent_graphs[subagent_type]
+        # Create a new state dict to avoid mutating the original
+        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+        subagent_state["messages"] = [HumanMessage(content=description)]
+        return subagent, subagent_state
 
     def task(
         description: Annotated[
@@ -409,14 +419,14 @@ def _build_task_tool(
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
-            allowed = ", ".join(f"`{k}`" for k in subagent_graphs)
-            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed}"
-        subagent, state = _prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(state)
+            allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
+            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        result = subagent.invoke(subagent_state)
         if not runtime.tool_call_id:
-            msg = "Tool call ID is required for subagent invocation"
-            raise ValueError(msg)
-        return _make_result(result, runtime.tool_call_id)
+            value_error_msg = "Tool call ID is required for subagent invocation"
+            raise ValueError(value_error_msg)
+        return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
         description: Annotated[
@@ -427,14 +437,14 @@ def _build_task_tool(
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
-            allowed = ", ".join(f"`{k}`" for k in subagent_graphs)
-            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed}"
-        subagent, state = _prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(state)
+            allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
+            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        result = await subagent.ainvoke(subagent_state)
         if not runtime.tool_call_id:
-            msg = "Tool call ID is required for subagent invocation"
-            raise ValueError(msg)
-        return _make_result(result, runtime.tool_call_id)
+            value_error_msg = "Tool call ID is required for subagent invocation"
+            raise ValueError(value_error_msg)
+        return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(
         name="task",

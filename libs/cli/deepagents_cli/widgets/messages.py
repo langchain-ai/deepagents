@@ -7,16 +7,16 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.containers import Vertical
-from textual.events import Click
-from textual.timer import Timer
 from textual.widgets import Markdown, Static
-from textual.widgets._markdown import MarkdownStream
 
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.events import Click
+    from textual.timer import Timer
+    from textual.widgets._markdown import MarkdownStream
 
 # Maximum number of tool arguments to display inline
 _MAX_INLINE_ARGS = 3
@@ -72,7 +72,11 @@ class UserMessage(Static):
         self._content = content
 
     def compose(self) -> ComposeResult:
-        """Compose the user message layout."""
+        """Compose the user message layout.
+
+        Yields:
+            Static widget containing the formatted user message.
+        """
         text = Text()
         text.append("> ", style="bold #10b981")
         text.append(self._content)
@@ -112,7 +116,11 @@ class AssistantMessage(Vertical):
         self._stream: MarkdownStream | None = None
 
     def compose(self) -> ComposeResult:
-        """Compose the assistant message layout."""
+        """Compose the assistant message layout.
+
+        Yields:
+            Markdown widget for rendering assistant content.
+        """
         yield Markdown("", id="assistant-content")
 
     def on_mount(self) -> None:
@@ -120,13 +128,21 @@ class AssistantMessage(Vertical):
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def _get_markdown(self) -> Markdown:
-        """Get the markdown widget, querying if not cached."""
+        """Get the markdown widget, querying if not cached.
+
+        Returns:
+            The Markdown widget for this message.
+        """
         if self._markdown is None:
             self._markdown = self.query_one("#assistant-content", Markdown)
         return self._markdown
 
     def _ensure_stream(self) -> MarkdownStream:
-        """Ensure the markdown stream is initialized."""
+        """Ensure the markdown stream is initialized.
+
+        Returns:
+            The MarkdownStream instance for streaming content.
+        """
         if self._stream is None:
             self._stream = Markdown.get_stream(self._get_markdown())
         return self._stream
@@ -241,7 +257,18 @@ class ToolCallMessage(Vertical):
     """
 
     # Spinner frames for running animation
-    _SPINNER_FRAMES: ClassVar[tuple[str, ...]] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    _SPINNER_FRAMES: ClassVar[tuple[str, ...]] = (
+        "⠋",
+        "⠙",
+        "⠹",
+        "⠸",
+        "⠼",
+        "⠴",
+        "⠦",
+        "⠧",
+        "⠇",
+        "⠏",
+    )
 
     # Max lines/chars to show in preview mode
     _PREVIEW_LINES = 6
@@ -277,7 +304,11 @@ class ToolCallMessage(Vertical):
         self._animation_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
-        """Compose the tool call message layout."""
+        """Compose the tool call message layout.
+
+        Yields:
+            Widgets for header, arguments, status, and output display.
+        """
         tool_label = format_tool_display(self._tool_name, self._args)
         yield Static(
             f"[bold #f59e0b]{tool_label}[/bold #f59e0b]",
@@ -287,7 +318,9 @@ class ToolCallMessage(Vertical):
         if self._tool_name not in _TOOLS_WITH_HEADER_INFO:
             args = self._filtered_args()
             if args:
-                args_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:_MAX_INLINE_ARGS])
+                args_str = ", ".join(
+                    f"{k}={v!r}" for k, v in list(args.items())[:_MAX_INLINE_ARGS]
+                )
                 if len(args) > _MAX_INLINE_ARGS:
                     args_str += ", ..."
                 yield Static(f"[dim]({args_str})[/dim]", classes="tool-args")
@@ -332,7 +365,9 @@ class ToolCallMessage(Vertical):
             return
 
         frame = self._SPINNER_FRAMES[self._spinner_position]
-        self._spinner_position = (self._spinner_position + 1) % len(self._SPINNER_FRAMES)
+        self._spinner_position = (self._spinner_position + 1) % len(
+            self._SPINNER_FRAMES
+        )
 
         elapsed = ""
         if self._start_time is not None:
@@ -420,7 +455,7 @@ class ToolCallMessage(Vertical):
             is_preview: Whether this is for preview (truncated) display
 
         Returns:
-            Formatted output string with Rich markup
+            Formatted output string with Rich markup.
         """
         output = output.strip()
         if not output:
@@ -452,11 +487,19 @@ class ToolCallMessage(Vertical):
         return self._escape_markup(output)
 
     def _escape_markup(self, text: str) -> str:
-        """Escape Rich markup characters."""
+        """Escape Rich markup characters.
+
+        Returns:
+            Escaped text safe for Rich rendering.
+        """
         return text.replace("[", r"\[").replace("]", r"\]")
 
     def _format_todos_output(self, output: str, *, is_preview: bool = False) -> str:
-        """Format write_todos output as a checklist."""
+        """Format write_todos output as a checklist.
+
+        Returns:
+            Formatted checklist string with Rich styling.
+        """
         items = self._parse_todo_items(output)
         if items is None:
             return self._escape_markup(output)
@@ -481,7 +524,11 @@ class ToolCallMessage(Vertical):
         return "\n".join(lines)
 
     def _parse_todo_items(self, output: str) -> list | None:
-        """Parse todo items from output. Returns None if parsing fails."""
+        """Parse todo items from output.
+
+        Returns:
+            List of todo items, or None if parsing fails.
+        """
         import ast
         import re
 
@@ -498,9 +545,17 @@ class ToolCallMessage(Vertical):
             return None
 
     def _build_todo_stats(self, items: list) -> str:
-        """Build stats string for todo list."""
-        completed = sum(1 for i in items if isinstance(i, dict) and i.get("status") == "completed")
-        active = sum(1 for i in items if isinstance(i, dict) and i.get("status") == "in_progress")
+        """Build stats string for todo list.
+
+        Returns:
+            Formatted stats string showing active, pending, and completed counts.
+        """
+        completed = sum(
+            1 for i in items if isinstance(i, dict) and i.get("status") == "completed"
+        )
+        active = sum(
+            1 for i in items if isinstance(i, dict) and i.get("status") == "in_progress"
+        )
         pending = len(items) - completed - active
 
         parts = []
@@ -513,7 +568,11 @@ class ToolCallMessage(Vertical):
         return " | ".join(parts)
 
     def _format_single_todo(self, item: dict | str) -> str:
-        """Format a single todo item."""
+        """Format a single todo item.
+
+        Returns:
+            Rich-formatted string with checkbox and status styling.
+        """
         if isinstance(item, dict):
             content = item.get("content", str(item))
             status = item.get("status", "pending")
@@ -532,7 +591,11 @@ class ToolCallMessage(Vertical):
         return f"    [dim]○ todo[/dim]   {escaped}"
 
     def _format_ls_output(self, output: str, *, is_preview: bool = False) -> str:
-        """Format ls output as a clean directory listing."""
+        """Format ls output as a clean directory listing.
+
+        Returns:
+            Formatted directory listing with file type coloring.
+        """
         import ast
         from pathlib import Path
 
@@ -546,13 +609,13 @@ class ToolCallMessage(Vertical):
                     path = Path(str(item))
                     name = path.name
                     # Color by file type
-                    if path.suffix in (".py", ".pyx"):
+                    if path.suffix in {".py", ".pyx"}:
                         lines.append(f"    [#3b82f6]{name}[/#3b82f6]")
-                    elif path.suffix in (".md", ".txt", ".rst"):
+                    elif path.suffix in {".md", ".txt", ".rst"}:
                         lines.append(f"    {name}")
-                    elif path.suffix in (".json", ".yaml", ".yml", ".toml"):
+                    elif path.suffix in {".json", ".yaml", ".yml", ".toml"}:
                         lines.append(f"    [#f59e0b]{name}[/#f59e0b]")
-                    elif path.suffix == "":
+                    elif not path.suffix:
                         # Likely a directory or no extension
                         lines.append(f"    [#10b981]{name}/[/#10b981]")
                     else:
@@ -569,7 +632,11 @@ class ToolCallMessage(Vertical):
         return self._escape_markup(output)
 
     def _format_file_output(self, output: str, *, is_preview: bool = False) -> str:
-        """Format file read/write output."""
+        """Format file read/write output.
+
+        Returns:
+            Escaped and optionally truncated file content.
+        """
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
@@ -582,7 +649,11 @@ class ToolCallMessage(Vertical):
         return result
 
     def _format_search_output(self, output: str, *, is_preview: bool = False) -> str:
-        """Format grep/glob search output."""
+        """Format grep/glob search output.
+
+        Returns:
+            Formatted list of matching files or search results.
+        """
         import ast
         from pathlib import Path
 
@@ -603,7 +674,9 @@ class ToolCallMessage(Vertical):
                     lines.append(f"    {display}")
 
                 if is_preview and len(items) > max_items:
-                    lines.append(f"    [dim]... {len(items) - max_items} more files[/dim]")
+                    lines.append(
+                        f"    [dim]... {len(items) - max_items} more files[/dim]"
+                    )
 
                 return "\n".join(lines)
         except (ValueError, SyntaxError):
@@ -626,7 +699,11 @@ class ToolCallMessage(Vertical):
         return result
 
     def _format_shell_output(self, output: str, *, is_preview: bool = False) -> str:
-        """Format shell command output."""
+        """Format shell command output.
+
+        Returns:
+            Escaped and optionally truncated shell output.
+        """
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)  # Show all when expanded
 
@@ -639,7 +716,11 @@ class ToolCallMessage(Vertical):
         return result
 
     def _format_web_output(self, output: str, *, is_preview: bool = False) -> str:
-        """Format web_search/fetch_url/http_request output."""
+        """Format web_search/fetch_url/http_request output.
+
+        Returns:
+            Formatted web response with search results or content.
+        """
         data = self._try_parse_web_data(output)
         if isinstance(data, dict):
             return self._format_web_dict(data, is_preview=is_preview)
@@ -647,8 +728,13 @@ class ToolCallMessage(Vertical):
         # Fallback: plain text
         return self._format_lines_output(output.split("\n"), is_preview=is_preview)
 
-    def _try_parse_web_data(self, output: str) -> dict | None:
-        """Try to parse web output as JSON or dict."""
+    @staticmethod
+    def _try_parse_web_data(output: str) -> dict | None:
+        """Try to parse web output as JSON or dict.
+
+        Returns:
+            Parsed dict if successful, None otherwise.
+        """
         import ast
         import json
 
@@ -660,10 +746,16 @@ class ToolCallMessage(Vertical):
             return None
 
     def _format_web_dict(self, data: dict, *, is_preview: bool) -> str:
-        """Format a parsed web response dict."""
+        """Format a parsed web response dict.
+
+        Returns:
+            Rich-formatted string with web response content.
+        """
         # Handle web_search results
         if "results" in data:
-            return self._format_web_search_results(data.get("results", []), is_preview=is_preview)
+            return self._format_web_search_results(
+                data.get("results", []), is_preview=is_preview
+            )
 
         # Handle fetch_url/http_request response
         if "markdown_content" in data:
@@ -673,7 +765,10 @@ class ToolCallMessage(Vertical):
         if "content" in data:
             content = str(data["content"])
             if is_preview and len(content) > _MAX_WEB_PREVIEW_LEN:
-                return self._escape_markup(content[:_MAX_WEB_PREVIEW_LEN]) + "\n[dim]...[/dim]"
+                return (
+                    self._escape_markup(content[:_MAX_WEB_PREVIEW_LEN])
+                    + "\n[dim]...[/dim]"
+                )
             return self._escape_markup(content)
 
         # Generic dict - show key fields
@@ -687,7 +782,11 @@ class ToolCallMessage(Vertical):
         return "\n".join(lines)
 
     def _format_web_search_results(self, results: list, *, is_preview: bool) -> str:
-        """Format web search results."""
+        """Format web search results.
+
+        Returns:
+            Formatted list of search results with titles and URLs.
+        """
         if not results:
             return "[dim]No results[/dim]"
         lines = []
@@ -695,14 +794,22 @@ class ToolCallMessage(Vertical):
         for r in results[:max_results]:
             title = r.get("title", "")
             url = r.get("url", "")
-            lines.append(f"  [bold]{self._escape_markup(title)}[/bold]")
-            lines.append(f"  [dim]{self._escape_markup(url)}[/dim]")
+            lines.extend(
+                [
+                    f"  [bold]{self._escape_markup(title)}[/bold]",
+                    f"  [dim]{self._escape_markup(url)}[/dim]",
+                ]
+            )
         if is_preview and len(results) > max_results:
             lines.append(f"  [dim]... {len(results) - max_results} more results[/dim]")
         return "\n".join(lines)
 
     def _format_lines_output(self, lines: list[str], *, is_preview: bool) -> str:
-        """Format a list of lines with optional preview truncation."""
+        """Format a list of lines with optional preview truncation.
+
+        Returns:
+            Escaped and joined lines, optionally truncated for preview.
+        """
         max_lines = 4 if is_preview else len(lines)
         result = "\n".join(self._escape_markup(line) for line in lines[:max_lines])
         if is_preview and len(lines) > max_lines:
@@ -710,7 +817,11 @@ class ToolCallMessage(Vertical):
         return result
 
     def _format_task_output(self, output: str, *, is_preview: bool = False) -> str:
-        """Format task (subagent) output."""
+        """Format task (subagent) output.
+
+        Returns:
+            Escaped and optionally truncated task output.
+        """
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
@@ -733,7 +844,9 @@ class ToolCallMessage(Vertical):
         total_chars = len(output_stripped)
 
         # Truncate if too many lines OR too many characters
-        needs_truncation = total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
+        needs_truncation = (
+            total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
+        )
 
         if self._expanded:
             # Show full output with formatting
@@ -768,11 +881,19 @@ class ToolCallMessage(Vertical):
 
     @property
     def has_output(self) -> bool:
-        """Check if this tool message has output to display."""
+        """Check if this tool message has output to display.
+
+        Returns:
+            True if there is output content, False otherwise.
+        """
         return bool(self._output)
 
     def _filtered_args(self) -> dict[str, Any]:
-        """Filter large tool args for display."""
+        """Filter large tool args for display.
+
+        Returns:
+            Filtered args dict with only display-relevant keys for write/edit tools.
+        """
         if self._tool_name not in {"write_file", "edit_file"}:
             return self._args
 
@@ -833,7 +954,11 @@ class DiffMessage(Static):
         self._file_path = file_path
 
     def compose(self) -> ComposeResult:
-        """Compose the diff message layout."""
+        """Compose the diff message layout.
+
+        Yields:
+            Widgets displaying the diff header and formatted content.
+        """
         if self._file_path:
             yield Static(f"[bold]File: {self._file_path}[/bold]", classes="diff-header")
 

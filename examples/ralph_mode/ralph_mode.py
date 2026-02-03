@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ralph Mode - Autonomous looping for DeepAgents
+Ralph Mode - Autonomous looping for Deep Agents
 
 Ralph is an autonomous looping pattern created by Geoff Huntley.
 Each loop starts with fresh context. The filesystem and git serve as memory.
@@ -10,7 +10,9 @@ Usage:
     python ralph_mode.py "Build a Python course. Use git."
     python ralph_mode.py "Build a REST API" --iterations 5
 """
+
 import warnings
+
 warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality")
 
 import argparse
@@ -19,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 from deepagents_cli.agent import create_cli_agent
-from deepagents_cli.config import console, COLORS, SessionState, create_model
+from deepagents_cli.config import COLORS, SessionState, console, create_model
 from deepagents_cli.execution import execute_task
 from deepagents_cli.ui import TokenTracker
 
@@ -40,17 +42,23 @@ async def ralph(task: str, max_iterations: int = 0, model_name: str = None):
 
     console.print(f"\n[bold {COLORS['primary']}]Ralph Mode[/bold {COLORS['primary']}]")
     console.print(f"[dim]Task: {task}[/dim]")
-    console.print(f"[dim]Iterations: {'unlimited (Ctrl+C to stop)' if max_iterations == 0 else max_iterations}[/dim]")
+    console.print(
+        f"[dim]Iterations: {'unlimited (Ctrl+C to stop)' if max_iterations == 0 else max_iterations}[/dim]"
+    )
     console.print(f"[dim]Working directory: {work_dir}[/dim]\n")
 
     iteration = 1
     try:
         while max_iterations == 0 or iteration <= max_iterations:
-            console.print(f"\n[bold cyan]{'='*60}[/bold cyan]")
+            console.print(f"\n[bold cyan]{'=' * 60}[/bold cyan]")
             console.print(f"[bold cyan]RALPH ITERATION {iteration}[/bold cyan]")
-            console.print(f"[bold cyan]{'='*60}[/bold cyan]\n")
+            console.print(f"[bold cyan]{'=' * 60}[/bold cyan]\n")
 
-            iter_display = f"{iteration}/{max_iterations}" if max_iterations > 0 else str(iteration)
+            iter_display = (
+                f"{iteration}/{max_iterations}"
+                if max_iterations > 0
+                else str(iteration)
+            )
             prompt = f"""## Iteration {iter_display}
 
 Your previous work is in the filesystem. Check what exists and keep building.
@@ -73,7 +81,9 @@ Make progress. You'll be called again."""
             iteration += 1
 
     except KeyboardInterrupt:
-        console.print(f"\n[bold yellow]Stopped after {iteration} iterations[/bold yellow]")
+        console.print(
+            f"\n[bold yellow]Stopped after {iteration} iterations[/bold yellow]"
+        )
 
     # Show created files
     console.print(f"\n[bold]Files created in {work_dir}:[/bold]")
@@ -84,18 +94,25 @@ Make progress. You'll be called again."""
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Ralph Mode - Autonomous looping for DeepAgents",
+        description="Ralph Mode - Autonomous looping for Deep Agents",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python ralph_mode.py "Build a Python course. Use git."
   python ralph_mode.py "Build a REST API" --iterations 5
   python ralph_mode.py "Create a CLI tool" --model claude-haiku-4-5-20251001
-        """
+        """,
     )
     parser.add_argument("task", help="Task to work on (declarative, what you want)")
-    parser.add_argument("--iterations", type=int, default=0, help="Max iterations (0 = unlimited, default: unlimited)")
-    parser.add_argument("--model", help="Model to use (e.g., claude-haiku-4-5-20251001)")
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=0,
+        help="Max iterations (0 = unlimited, default: unlimited)",
+    )
+    parser.add_argument(
+        "--model", help="Model to use (e.g., claude-haiku-4-5-20251001)"
+    )
     args = parser.parse_args()
 
     try:

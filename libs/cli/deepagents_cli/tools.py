@@ -9,7 +9,9 @@ from tavily import TavilyClient
 from deepagents_cli.config import settings
 
 # Initialize Tavily client if API key is available
-tavily_client = TavilyClient(api_key=settings.tavily_api_key) if settings.has_tavily else None
+tavily_client = (
+    TavilyClient(api_key=settings.tavily_api_key) if settings.has_tavily else None
+)
 
 
 def http_request(
@@ -34,7 +36,7 @@ def http_request(
         Dictionary with response data including status, headers, and content
     """
     try:
-        kwargs = {"url": url, "method": method.upper(), "timeout": timeout}
+        kwargs: dict[str, Any] = {}
 
         if headers:
             kwargs["headers"] = headers
@@ -46,7 +48,7 @@ def http_request(
             else:
                 kwargs["data"] = data
 
-        response = requests.request(**kwargs)
+        response = requests.request(method.upper(), url, timeout=timeout, **kwargs)
 
         try:
             content = response.json()
@@ -122,7 +124,8 @@ def web_search(
     """
     if tavily_client is None:
         return {
-            "error": "Tavily API key not configured. Please set TAVILY_API_KEY environment variable.",
+            "error": "Tavily API key not configured. "
+            "Please set TAVILY_API_KEY environment variable.",
             "query": query,
         }
 

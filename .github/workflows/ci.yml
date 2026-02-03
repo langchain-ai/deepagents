@@ -5,7 +5,7 @@
 # - Unit Tests for changed packages
 #
 # Only packages with changes are tested. SDK changes also trigger CLI tests.
-# Pushes to master and workflow changes run full CI.
+# Pushes to main and workflow changes run full CI.
 
 name: "🔧 CI"
 

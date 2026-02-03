@@ -6,7 +6,7 @@ name: "🔒 Check Lockfiles"
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   merge_group:
 

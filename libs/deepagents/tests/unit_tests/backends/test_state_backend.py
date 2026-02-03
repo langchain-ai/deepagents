@@ -52,9 +52,9 @@ def test_write_read_edit_ls_grep_glob_state_backend():
     matches = be.grep_raw("hi", path="/")
     assert isinstance(matches, list) and any(m["path"] == "/notes.txt" for m in matches)
 
-    # invalid regex yields string error
-    err = be.grep_raw("[", path="/")
-    assert isinstance(err, str)
+    # special characters are treated literally, not regex
+    result = be.grep_raw("[", path="/")
+    assert isinstance(result, list)  # Returns empty list, not error
 
     # glob_info
     infos = be.glob_info("*.txt", path="/")
@@ -160,6 +160,43 @@ def test_state_backend_intercept_large_tool_result():
     assert "/large_tool_results/test_123" in result.update["files"]
     assert result.update["files"]["/large_tool_results/test_123"]["content"] == [large_content]
     assert "Tool result too large" in result.update["messages"][0].content
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected_file"),
+    [
+        ("def __init__(", "code.py"),  # Parentheses (not regex grouping)
+        ("str | int", "types.py"),  # Pipe (not regex OR)
+        ("[a-z]", "regex.py"),  # Brackets (not character class)
+        ("(.*)", "regex.py"),  # Multiple special chars
+        ("api.key", "config.json"),  # Dot (not "any character")
+        ("x * y", "math.py"),  # Asterisk (not "zero or more")
+        ("a^2", "math.py"),  # Caret (not line anchor)
+    ],
+)
+def test_state_backend_grep_literal_search_special_chars(pattern: str, expected_file: str) -> None:
+    """Test that grep performs literal search with regex special characters."""
+    rt = make_runtime()
+    be = StateBackend(rt)
+
+    # Create files with various special regex characters
+    files = {
+        "/code.py": "def __init__(self, arg):\n    pass",
+        "/types.py": "def func(x: str | int) -> None:\n    return x",
+        "/regex.py": "pattern = r'[a-z]+'\nchars = '(.*)'",
+        "/config.json": '{"api.key": "value", "url": "https://example.com"}',
+        "/math.py": "result = x * y + z\nformula = a^2 + b^2",
+    }
+
+    for path, content in files.items():
+        res = be.write(path, content)
+        assert res.error is None
+        rt.state["files"].update(res.files_update)
+
+    # Test literal search with the pattern
+    matches = be.grep_raw(pattern, path="/")
+    assert isinstance(matches, list)
+    assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 
 def test_state_backend_grep_exact_file_path() -> None:

@@ -55,9 +55,9 @@ async def test_awrite_aread_aedit_als_agrep_aglob_state_backend():
     matches = await be.agrep_raw("hi", path="/")
     assert isinstance(matches, list) and any(m["path"] == "/notes.txt" for m in matches)
 
-    # invalid regex yields string error
-    err = await be.agrep_raw("[", path="/")
-    assert isinstance(err, str)
+    # special characters are treated literally, not regex
+    result = await be.agrep_raw("[", path="/")
+    assert isinstance(result, list)  # Returns empty list, not error
 
     # aglob_info
     infos = await be.aglob_info("*.txt", path="/")

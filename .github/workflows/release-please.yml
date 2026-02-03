@@ -7,7 +7,7 @@
 # GitHub releases are created by release.yml after all checks pass,
 # not by release-please directly (skip-github-release: true in config).
 
-name: Release Please
+name: Release Please (CLI ONLY)
 
 on:
   push:

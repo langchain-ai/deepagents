@@ -31,14 +31,18 @@ def query_arxiv(query: str, max_papers: int = 10) -> str:
             query=query, max_results=max_papers, sort_by=arxiv.SortCriterion.Relevance
         )
         results = "\n\n".join(
-            [f"Title: {paper.title}\nSummary: {paper.summary}" for paper in client.results(search)]
+            [
+                f"Title: {paper.title}\nSummary: {paper.summary}"
+                for paper in client.results(search)
+            ]
         )
-        return results if results else "No papers found on arXiv."
+        return results or "No papers found on arXiv."
     except Exception as e:
         return f"Error querying arXiv: {e}"
 
 
 def main() -> None:
+    """Main entry point for the arXiv search CLI tool."""
     parser = argparse.ArgumentParser(description="Search arXiv for research papers")
     parser.add_argument("query", type=str, help="Search query string")
     parser.add_argument(

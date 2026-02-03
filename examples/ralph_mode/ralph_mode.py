@@ -7,7 +7,9 @@ Usage:
     python ralph_mode.py
     python ralph_mode.py --model claude-haiku-4-5-20251001
 """
+
 import warnings
+
 warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality")
 
 import argparse

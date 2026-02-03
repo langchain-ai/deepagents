@@ -127,7 +127,7 @@ jobs:
     if: needs.changes.outputs.harbor == 'true' || github.event_name == 'push'
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.12", "3.13", "3.14"]
       fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:

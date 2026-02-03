@@ -266,7 +266,9 @@ def show_help() -> None:
     )
     console.print("  -r, --resume [ID]             Resume thread: -r for most recent")
     console.print("  -n, --non-interactive MSG     Run a single task and exit")
-    console.print("  --shell-allow-list CMDS       Comma-separated local shell commands to allow")
+    console.print(
+        "  --shell-allow-list CMDS       Comma-separated local shell commands to allow"
+    )
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -306,11 +308,11 @@ def show_help() -> None:
         style=COLORS["dim"],
     )
     console.print(
-        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",
+        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",  # noqa: E501
         style=COLORS["dim"],
     )
     console.print(
-        "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Or specify your own list",
+        "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Or specify your own list",  # noqa: E501
         style=COLORS["dim"],
     )
     console.print()

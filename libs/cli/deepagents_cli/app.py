@@ -556,7 +556,7 @@ class DeepAgentsApp(App):
 
     async def _request_approval(
         self,
-        action_requests: Any,  # noqa: ANN401
+        action_requests: Any,
         assistant_id: str | None,
     ) -> asyncio.Future:
         """Request user approval inline in the messages area.

@@ -61,7 +61,9 @@ def _process_interrupts(
     interrupts: list[Interrupt] = data["__interrupt__"]
     if interrupts:
         for interrupt_obj in interrupts:
-            validated_request = _HITL_REQUEST_ADAPTER.validate_python(interrupt_obj.value)
+            validated_request = _HITL_REQUEST_ADAPTER.validate_python(
+                interrupt_obj.value
+            )
             state.pending_interrupts[interrupt_obj.id] = validated_request
             state.interrupt_occurred = True
 
@@ -87,7 +89,11 @@ def _process_tool_call_block(
     buffer_key = (
         chunk_index
         if chunk_index is not None
-        else (chunk_id if chunk_id is not None else f"unknown-{len(state.tool_call_buffers)}")
+        else (
+            chunk_id
+            if chunk_id is not None
+            else f"unknown-{len(state.tool_call_buffers)}"
+        )
     )
 
     if buffer_key not in state.tool_call_buffers:
@@ -111,7 +117,7 @@ def _process_ai_message(
             block_type = block.get("type")
             if block_type == "text":
                 _process_text_block(block, state)
-            elif block_type in ("tool_call_chunk", "tool_call"):
+            elif block_type in {"tool_call_chunk", "tool_call"}:
                 _process_tool_call_block(block, state, console)
 
 
@@ -161,8 +167,14 @@ def _process_stream_chunk(
         _process_message_chunk(data, state, console, file_op_tracker)
 
 
-def _make_hitl_decision(action_request: dict[str, Any], console: Console) -> dict[str, str]:
-    """Make a HITL decision for an action request."""
+def _make_hitl_decision(
+    action_request: dict[str, Any], console: Console
+) -> dict[str, str]:
+    """Make a HITL decision for an action request.
+
+    Returns:
+        Decision dict with "type" key ("approve" or "reject") and optional "message".
+    """
     action_name = action_request.get("name", "")
 
     if action_name == "shell" and settings.shell_allow_list:
@@ -228,7 +240,9 @@ async def _run_agent_loop(
 ) -> None:
     """Run the main agent loop with HITL interrupt handling."""
     state = StreamState()
-    stream_input: dict[str, Any] | Command = {"messages": [{"role": "user", "content": message}]}
+    stream_input: dict[str, Any] | Command = {
+        "messages": [{"role": "user", "content": message}]
+    }
 
     # Initial stream
     await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
@@ -238,7 +252,9 @@ async def _run_agent_loop(
         state.interrupt_occurred = False
         _process_hitl_interrupts(state, console)
         stream_input = Command(resume=state.hitl_response)
-        await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
+        await _stream_agent(
+            agent, stream_input, config, state, console, file_op_tracker
+        )
 
     if state.full_response:
         _write_newline()
@@ -282,14 +298,14 @@ async def run_non_interactive(
     console.print(f"[dim]Agent: {assistant_id} | Thread: {thread_id}[/dim]\n")
 
     sandbox_backend = None
-    sandbox_cm = None
+    exit_stack = contextlib.ExitStack()
 
     if sandbox_type != "none":
         from deepagents_cli.integrations.sandbox_factory import create_sandbox
 
         try:
             sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
-            sandbox_backend = sandbox_cm.__enter__()
+            sandbox_backend = exit_stack.enter_context(sandbox_cm)
         except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
             console.print(f"[red]❌ Sandbox creation failed: {e}[/red]")
             return 1
@@ -314,7 +330,9 @@ async def run_non_interactive(
                 checkpointer=checkpointer,
             )
 
-            file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=composite_backend)
+            file_op_tracker = FileOpTracker(
+                assistant_id=assistant_id, backend=composite_backend
+            )
 
             await _run_agent_loop(agent, message, config, console, file_op_tracker)
             return 0
@@ -326,6 +344,5 @@ async def run_non_interactive(
         console.print(f"\n[red]❌ Error: {e}[/red]")
         return 1
     finally:
-        if sandbox_cm is not None:
-            with contextlib.suppress(Exception):
-                sandbox_cm.__exit__(None, None, None)
+        with contextlib.suppress(Exception):
+            exit_stack.close()

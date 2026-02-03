@@ -349,8 +349,10 @@ def _parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     """Parse shell allow-list from string.
 
     Args:
-        allow_list_str: Comma-separated list of commands, or "recommended" for safe defaults.
-                       Can also include "recommended" in the list to merge with custom commands.
+        allow_list_str: Comma-separated list of commands, or "recommended" for
+            safe defaults.
+
+            Can also include "recommended" in the list to merge with custom commands.
 
     Returns:
         List of allowed commands, or None if no allow-list configured

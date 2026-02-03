@@ -5,14 +5,18 @@ must follow. Backends can store files in different locations (state, filesystem,
 database, etc.) and provide a uniform interface for file operations.
 """
 
+from __future__ import annotations
+
 import abc
 import asyncio
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, NotRequired, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, NotRequired
 
-from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
+
+if TYPE_CHECKING:
+    from langchain.agents.middleware.types import AgentState
+    from langgraph.runtime import Runtime
 
 FileOperationError = Literal[
     "file_not_found",  # Download: file doesn't exist
@@ -158,6 +162,24 @@ class EditResult:
     occurrences: int | None = None
 
 
+@dataclass
+class BackendContext:
+    """Context provided to backends for accessing agent state and runtime.
+
+    This context is passed to backends via the `bind` method to provide
+    access to the current agent state and runtime without requiring
+    factory functions or artificial ToolRuntime construction.
+
+    Attributes:
+        state: The current agent state containing files and other data.
+        runtime: The LangGraph runtime providing access to context, store, etc.
+            Optional because tool calls only have ToolRuntime, not Runtime.
+    """
+
+    state: AgentState[Any]
+    runtime: Runtime | None = None
+
+
 class BackendProtocol(abc.ABC):
     """Protocol for pluggable memory backends (single, unified).
 
@@ -172,7 +194,24 @@ class BackendProtocol(abc.ABC):
     }
     """
 
-    def ls_info(self, path: str) -> list["FileInfo"]:
+    def bind(self, ctx: BackendContext) -> None:
+        """Bind the backend to an execution context.
+
+        Called by middleware before performing operations to provide the backend
+        with access to the current agent state and runtime. Backends that need
+        access to state (like StateBackend) should override this method to store
+        the context.
+
+        Args:
+            ctx: The context containing state and runtime for the current execution.
+
+        Note:
+            This method replaces the factory pattern. Instead of creating backends
+            via `lambda rt: StateBackend(rt)`, backends are now instantiated once
+            and bound to contexts as needed via this method.
+        """
+
+    def ls_info(self, path: str) -> list[FileInfo]:
         """List all files in a directory with metadata.
 
         Args:
@@ -187,7 +226,7 @@ class BackendProtocol(abc.ABC):
             - `modified_at` (optional): ISO 8601 timestamp
         """
 
-    async def als_info(self, path: str) -> list["FileInfo"]:
+    async def als_info(self, path: str) -> list[FileInfo]:
         """Async version of ls_info."""
         return await asyncio.to_thread(self.ls_info, path)
 
@@ -232,7 +271,7 @@ class BackendProtocol(abc.ABC):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
+    ) -> list[GrepMatch] | str:
         """Search for a literal text pattern in files.
 
         Args:
@@ -272,11 +311,11 @@ class BackendProtocol(abc.ABC):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
+    ) -> list[GrepMatch] | str:
         """Async version of grep_raw."""
         return await asyncio.to_thread(self.grep_raw, pattern, path, glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Find files matching a glob pattern.
 
         Args:
@@ -294,7 +333,7 @@ class BackendProtocol(abc.ABC):
             list of FileInfo
         """
 
-    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
+    async def aglob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Async version of glob_info."""
         return await asyncio.to_thread(self.glob_info, pattern, path)
 
@@ -454,5 +493,8 @@ class SandboxBackendProtocol(BackendProtocol):
         """Unique identifier for the sandbox backend instance."""
 
 
-BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]
-BACKEND_TYPES = BackendProtocol | BackendFactory
+# Note: BackendFactory was removed. Backends should now be instantiated
+# directly and use the bind() method to receive context.
+# The BACKEND_TYPES alias is kept for backwards compatibility but now
+# only includes BackendProtocol.
+BACKEND_TYPES = BackendProtocol

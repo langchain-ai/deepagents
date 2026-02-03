@@ -6,6 +6,7 @@ from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
 
 from deepagents.backends.protocol import (
+    BackendContext,
     BackendProtocol,
     EditResult,
     FileDownloadResponse,
@@ -34,13 +35,17 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime"):
-        """Initialize StoreBackend with runtime.
+    def __init__(self) -> None:
+        """Initialize StoreBackend."""
+        self._context: BackendContext | None = None
+
+    def bind(self, ctx: BackendContext) -> None:
+        """Bind the backend to an execution context.
 
         Args:
-            runtime: The ToolRuntime instance providing store access and configuration.
+            ctx: The context containing state and runtime.
         """
-        self.runtime = runtime
+        self._context = ctx
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
@@ -49,9 +54,16 @@ class StoreBackend(BackendProtocol):
             BaseStore instance from the runtime.
 
         Raises:
+            RuntimeError: If bind() has not been called.
             ValueError: If no store is available in the runtime.
         """
-        store = self.runtime.store
+        if self._context is None:
+            raise RuntimeError("StoreBackend.bind() must be called before accessing store")
+        runtime = self._context.runtime
+        if runtime is None:
+            msg = "StoreBackend requires a runtime with store access"
+            raise ValueError(msg)
+        store = runtime.store
         if store is None:
             msg = "Store is required but not available in runtime"
             raise ValueError(msg)
@@ -61,7 +73,7 @@ class StoreBackend(BackendProtocol):
         """Get the namespace for store operations.
 
         Preference order:
-        1) Use `self.runtime.config` if present (tests pass this explicitly).
+        1) Use runtime.config if present (tests pass this explicitly).
         2) Fallback to `langgraph.config.get_config()` if available.
         3) Default to ("filesystem",).
 
@@ -71,12 +83,13 @@ class StoreBackend(BackendProtocol):
         namespace = "filesystem"
 
         # Prefer the runtime-provided config when present
-        runtime_cfg = getattr(self.runtime, "config", None)
-        if isinstance(runtime_cfg, dict):
-            assistant_id = runtime_cfg.get("metadata", {}).get("assistant_id")
-            if assistant_id:
-                return (assistant_id, namespace)
-            return (namespace,)
+        if self._context is not None and self._context.runtime is not None:
+            runtime_cfg = getattr(self._context.runtime, "config", None)
+            if isinstance(runtime_cfg, dict):
+                assistant_id = runtime_cfg.get("metadata", {}).get("assistant_id")
+                if assistant_id:
+                    return (assistant_id, namespace)
+                return (namespace,)
 
         # Fallback to langgraph's context, but guard against errors when
         # called outside of a runnable context

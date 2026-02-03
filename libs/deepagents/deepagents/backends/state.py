@@ -1,8 +1,11 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
-from typing import TYPE_CHECKING
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
+    BackendContext,
     BackendProtocol,
     EditResult,
     FileDownloadResponse,
@@ -22,7 +25,7 @@ from deepagents.backends.utils import (
 )
 
 if TYPE_CHECKING:
-    from langchain.tools import ToolRuntime
+    from langchain.agents.middleware.types import AgentState
 
 
 class StateBackend(BackendProtocol):
@@ -35,11 +38,39 @@ class StateBackend(BackendProtocol):
     Special handling: Since LangGraph state must be updated via Command objects
     (not direct mutation), operations return Command objects instead of None.
     This is indicated by the uses_state=True flag.
+
+    Usage:
+        ```python
+        backend = StateBackend()
+        # Bind before use (done automatically by middleware)
+        backend.bind(BackendContext(state=state, runtime=runtime))
+        # Now operations can access state
+        files = backend.ls_info("/")
+        ```
     """
 
-    def __init__(self, runtime: "ToolRuntime"):
-        """Initialize StateBackend with runtime."""
-        self.runtime = runtime
+    def __init__(self) -> None:
+        """Initialize StateBackend."""
+        self._context: BackendContext | None = None
+
+    def bind(self, ctx: BackendContext) -> None:
+        """Bind the backend to an execution context.
+
+        Args:
+            ctx: The context containing state and runtime for the current execution.
+        """
+        self._context = ctx
+
+    @property
+    def _state(self) -> AgentState[Any]:
+        """Get the current agent state.
+
+        Raises:
+            RuntimeError: If bind() has not been called.
+        """
+        if self._context is None:
+            raise RuntimeError("StateBackend.bind() must be called before accessing state")
+        return self._context.state
 
     def ls_info(self, path: str) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
@@ -51,7 +82,7 @@ class StateBackend(BackendProtocol):
             List of FileInfo-like dicts for files and directories directly in the directory.
             Directories have a trailing / in their path and is_dir=True.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._state.get("files", {})
         infos: list[FileInfo] = []
         subdirs: set[str] = set()
 
@@ -114,7 +145,7 @@ class StateBackend(BackendProtocol):
         Returns:
             Formatted file content with line numbers, or error message.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._state.get("files", {})
         file_data = files.get(file_path)
 
         if file_data is None:
@@ -130,7 +161,7 @@ class StateBackend(BackendProtocol):
         """Create a new file with content.
         Returns WriteResult with files_update to update LangGraph state.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._state.get("files", {})
 
         if file_path in files:
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
@@ -148,7 +179,7 @@ class StateBackend(BackendProtocol):
         """Edit a file by replacing string occurrences.
         Returns EditResult with files_update and occurrences.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._state.get("files", {})
         file_data = files.get(file_path)
 
         if file_data is None:
@@ -170,12 +201,12 @@ class StateBackend(BackendProtocol):
         path: str = "/",
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
-        files = self.runtime.state.get("files", {})
+        files = self._state.get("files", {})
         return grep_matches_from_files(files, pattern, path, glob)
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Get FileInfo for files matching glob pattern."""
-        files = self.runtime.state.get("files", {})
+        files = self._state.get("files", {})
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
             return []
@@ -217,7 +248,7 @@ class StateBackend(BackendProtocol):
         Returns:
             List of FileDownloadResponse objects, one per input path
         """
-        state_files = self.runtime.state.get("files", {})
+        state_files = self._state.get("files", {})
         responses: list[FileDownloadResponse] = []
 
         for path in paths:

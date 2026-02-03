@@ -13,9 +13,9 @@ when skills have the same name (last one wins). This enables layering: base -> u
 The middleware uses backend APIs exclusively (no direct filesystem access), making it
 portable across different storage backends (filesystem, state, remote storage, etc.).
 
-For StateBackend (ephemeral/in-memory), use a factory function:
+For StateBackend (ephemeral/in-memory):
 ```python
-SkillsMiddleware(backend=lambda rt: StateBackend(rt), ...)
+SkillsMiddleware(backend=StateBackend(), ...)
 ```
 
 ## Skill Structure
@@ -99,7 +99,7 @@ import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
 
 if TYPE_CHECKING:
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
 
 from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict
@@ -110,10 +110,9 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.runnables import RunnableConfig
-from langgraph.prebuilt import ToolRuntime
 from langgraph.runtime import Runtime
 
+from deepagents.backends.protocol import BackendContext
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -502,45 +501,16 @@ class SkillsMiddleware(AgentMiddleware):
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str]) -> None:
+    def __init__(self, *, backend: BackendProtocol, sources: list[str]) -> None:
         """Initialize the skills middleware.
 
         Args:
-            backend: Backend instance or factory function that takes runtime and returns a backend.
-                     Use a factory for StateBackend: `lambda rt: StateBackend(rt)`
+            backend: Backend instance for file operations.
             sources: List of skill source paths (e.g., ["/skills/user/", "/skills/project/"]).
         """
         self._backend = backend
         self.sources = sources
         self.system_prompt_template = SKILLS_SYSTEM_PROMPT
-
-    def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
-        """Resolve backend from instance or factory.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-            config: Runnable config to pass to backend factory.
-
-        Returns:
-            Resolved backend instance
-        """
-        if callable(self._backend):
-            # Construct an artificial tool runtime to resolve backend factory
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            backend = self._backend(tool_runtime)
-            if backend is None:
-                raise AssertionError("SkillsMiddleware requires a valid backend instance")
-            return backend
-
-        return self._backend
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
@@ -588,7 +558,7 @@ class SkillsMiddleware(AgentMiddleware):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    def before_agent(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution (synchronous).
 
         Runs before each agent interaction to discover available skills from all
@@ -600,7 +570,6 @@ class SkillsMiddleware(AgentMiddleware):
         Args:
             state: Current agent state.
             runtime: Runtime context.
-            config: Runnable config.
 
         Returns:
             State update with `skills_metadata` populated, or `None` if already present
@@ -609,21 +578,21 @@ class SkillsMiddleware(AgentMiddleware):
         if "skills_metadata" in state:
             return None
 
-        # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(state, runtime, config)
+        # Bind backend to current context
+        self._backend.bind(BackendContext(state=state, runtime=runtime))
         all_skills: dict[str, SkillMetadata] = {}
 
         # Load skills from each source in order
         # Later sources override earlier ones (last one wins)
         for source_path in self.sources:
-            source_skills = _list_skills(backend, source_path)
+            source_skills = _list_skills(self._backend, source_path)
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
         return SkillsStateUpdate(skills_metadata=skills)
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
+    async def abefore_agent(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:
         """Load skills metadata before agent execution (async).
 
         Runs before each agent interaction to discover available skills from all
@@ -635,7 +604,6 @@ class SkillsMiddleware(AgentMiddleware):
         Args:
             state: Current agent state.
             runtime: Runtime context.
-            config: Runnable config.
 
         Returns:
             State update with `skills_metadata` populated, or `None` if already present
@@ -644,14 +612,14 @@ class SkillsMiddleware(AgentMiddleware):
         if "skills_metadata" in state:
             return None
 
-        # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(state, runtime, config)
+        # Bind backend to current context
+        self._backend.bind(BackendContext(state=state, runtime=runtime))
         all_skills: dict[str, SkillMetadata] = {}
 
         # Load skills from each source in order
         # Later sources override earlier ones (last one wins)
         for source_path in self.sources:
-            source_skills = await _alist_skills(backend, source_path)
+            source_skills = await _alist_skills(self._backend, source_path)
             for skill in source_skills:
                 all_skills[skill["name"]] = skill
 

@@ -4,7 +4,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -23,6 +23,7 @@ from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
+    BackendContext,
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,
@@ -440,7 +441,7 @@ class FilesystemMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES | None = None,
+        backend: BackendProtocol | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
@@ -448,14 +449,14 @@ class FilesystemMiddleware(AgentMiddleware):
         """Initialize the filesystem middleware.
 
         Args:
-            backend: Backend for file storage and optional execution, or a factory callable.
+            backend: Backend for file storage and optional execution.
                 Defaults to StateBackend if not provided.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
         """
-        # Use provided backend or default to StateBackend factory
-        self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+        # Use provided backend or default to StateBackend
+        self.backend = backend if backend is not None else StateBackend()
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -472,17 +473,16 @@ class FilesystemMiddleware(AgentMiddleware):
             self._create_execute_tool(),
         ]
 
-    def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Get the resolved backend instance from backend or factory.
+    def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
+        """Get the backend instance and bind it to the current context.
 
         Args:
             runtime: The tool runtime context.
 
         Returns:
-            Resolved backend instance.
+            Backend instance bound to the current state.
         """
-        if callable(self.backend):
-            return self.backend(runtime)
+        self.backend.bind(BackendContext(state=runtime.state))
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:
@@ -916,9 +916,8 @@ class FilesystemMiddleware(AgentMiddleware):
 
         backend_supports_execution = False
         if has_execute_tool:
-            # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)
-            backend_supports_execution = _supports_execution(backend)
+            # Check if backend supports execution (no need to bind for this check)
+            backend_supports_execution = _supports_execution(self.backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
             if not backend_supports_execution:
@@ -964,9 +963,8 @@ class FilesystemMiddleware(AgentMiddleware):
 
         backend_supports_execution = False
         if has_execute_tool:
-            # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)
-            backend_supports_execution = _supports_execution(backend)
+            # Check if backend supports execution (no need to bind for this check)
+            backend_supports_execution = _supports_execution(self.backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
             if not backend_supports_execution:

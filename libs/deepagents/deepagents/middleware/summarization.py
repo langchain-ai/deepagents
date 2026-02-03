@@ -36,7 +36,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -46,7 +46,6 @@ from langchain.agents.middleware.summarization import (
     SummarizationMiddleware as BaseSummarizationMiddleware,
     TokenCounter,
 )
-from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
@@ -56,10 +55,11 @@ from typing_extensions import TypedDict, override
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
     from langchain.chat_models import BaseChatModel
-    from langchain_core.runnables.config import RunnableConfig
     from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
+
+from deepagents.backends.protocol import BackendContext
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         trigger: ContextSize | list[ContextSize] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
@@ -101,7 +101,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
         Args:
             model: The language model to use for generating summaries.
-            backend: Backend instance or factory for persisting conversation history.
+            backend: Backend instance for persisting conversation history.
             trigger: Threshold(s) that trigger summarization.
             keep: Context retention policy after summarization.
 
@@ -134,7 +134,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
 
             middleware = SummarizationMiddleware(
                 model="gpt-4o-mini",
-                backend=lambda tool_runtime: StateBackend(tool_runtime),
+                backend=StateBackend(),
                 trigger=("tokens", 100000),
                 keep=("messages", 20),
             )
@@ -163,38 +163,6 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             self._truncate_args_keep = truncate_args_settings.get("keep", ("messages", 20))
             self._max_arg_length = truncate_args_settings.get("max_length", 2000)
             self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
-
-    def _get_backend(
-        self,
-        state: AgentState[Any],
-        runtime: Runtime,
-    ) -> BackendProtocol:
-        """Resolve backend from instance or factory.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if callable(self._backend):
-            # Because we're using `before_model`, which doesn't receive `config` as a
-            # parameter, we access it via `runtime.config` instead.
-            # Cast is safe: empty dict `{}` is a valid `RunnableConfig` (all fields are
-            # optional in TypedDict).
-            config = cast("RunnableConfig", getattr(runtime, "config", {}))
-
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            return self._backend(tool_runtime)
-        return self._backend
 
     def _get_thread_id(self) -> str:
         """Extract `thread_id` from langgraph config.
@@ -656,8 +624,8 @@ A condensed summary follows:
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first - abort summarization if this fails to prevent data loss
-        backend = self._get_backend(state, runtime)
-        file_path = self._offload_to_backend(backend, messages_to_summarize)
+        self._backend.bind(BackendContext(state=state, runtime=runtime))
+        file_path = self._offload_to_backend(self._backend, messages_to_summarize)
         if file_path is None:
             warnings.warn(
                 "Offloading conversation history to backend failed during summarization.",
@@ -740,8 +708,8 @@ A condensed summary follows:
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first - abort summarization if this fails to prevent data loss
-        backend = self._get_backend(state, runtime)
-        file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
+        self._backend.bind(BackendContext(state=state, runtime=runtime))
+        file_path = await self._aoffload_to_backend(self._backend, messages_to_summarize)
         if file_path is None:
             warnings.warn(
                 "Offloading conversation history to backend failed during summarization.",

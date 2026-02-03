@@ -256,6 +256,19 @@ def show_help() -> None:
     )
     console.print()
 
+    console.print("[bold]MCP Management:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  deepagents mcp list                     # List configured MCP servers",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents mcp add <name> <url>         # Add a new MCP server", style=COLORS["dim"]
+    )
+    console.print(
+        "  deepagents mcp remove <name>            # Remove an MCP server", style=COLORS["dim"]
+    )
+    console.print()
+
     console.print("[bold]Interactive Features:[/bold]", style=COLORS["primary"])
     console.print("  Enter           Submit your message", style=COLORS["dim"])
     console.print("  Ctrl+J          Insert newline", style=COLORS["dim"])

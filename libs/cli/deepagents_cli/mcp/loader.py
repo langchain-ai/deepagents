@@ -143,7 +143,7 @@ async def load_mcp_tools_from_config() -> list[BaseTool]:
         client = MultiServerMCPClient(connections=normalized_connections)
         logger.debug("[MCP] Loading tools from MCP servers...")
         tools = await client.get_tools()
-    except (OSError, ValueError, TypeError):
+    except BaseException:
         logger.exception("Error loading MCP tools")
         return []
     else:

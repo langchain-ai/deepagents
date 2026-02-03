@@ -342,6 +342,7 @@ class DeepAgentsApp(App):
 
         # If agent is not provided, attempt to bootstrap it (useful for textual run --dev)
         if not self._agent:
+            self._chat_input.set_submit_enabled(enabled=False)
             self.run_worker(self._bootstrap_agent())
         # Load thread history if resuming a session
         elif self._lc_thread_id:
@@ -1068,7 +1069,9 @@ class DeepAgentsApp(App):
             from deepagents_cli.main import create_model, load_mcp_tools_from_config, settings
             from deepagents_cli.tools import fetch_url, http_request, web_search
 
-            await self._mount_message(SystemMessage("Starting internal agent initialization..."))
+            # Show loading widget
+            loading = LoadingWidget("Initializing agent...")
+            await self.query_one("#messages", Container).mount(loading)
 
             # Setup model
             model = create_model()
@@ -1087,7 +1090,6 @@ class DeepAgentsApp(App):
             mcp_tools = await load_mcp_tools_from_config()
             if mcp_tools:
                 tools.extend(mcp_tools)
-                await self._mount_message(SystemMessage(f"Loaded {len(mcp_tools)} MCP tools"))
 
             # Create agent
             agent, composite_backend = create_cli_agent(
@@ -1111,6 +1113,13 @@ class DeepAgentsApp(App):
                 hide_thinking=self._hide_thinking,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
+
+            # Clean up loading and show input
+            await loading.remove()
+            if self._chat_input:
+                self._chat_input.set_submit_enabled(enabled=True)
+                self.call_after_refresh(self._size_initial_spacer)
+                self.call_after_refresh(self._chat_input.focus_input)
 
             await self._mount_message(SystemMessage("Agent ready. (Standalone Mode)"))
 

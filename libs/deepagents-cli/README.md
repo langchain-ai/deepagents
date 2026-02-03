@@ -213,6 +213,7 @@ aws configure
 # Or set environment variables:
 export AWS_ACCESS_KEY_ID="your-key"
 export AWS_SECRET_ACCESS_KEY="your-secret"
+export AWS_SESSION_TOKEN="your-session-token"
 export AWS_REGION="us-west-2"  # optional, defaults to us-west-2
 
 # Modal

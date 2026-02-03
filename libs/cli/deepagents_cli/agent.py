@@ -122,14 +122,14 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
 
     # Build model identity section
     model_identity_section = ""
-    if settings.model_name and isinstance(settings.model_name, str):
+    if settings.model_name:
         model_identity_section = f"""### Model Identity
 
 You are running as model `{settings.model_name}`"""
-        if settings.model_provider and isinstance(settings.model_provider, str):
+        if settings.model_provider:
             model_identity_section += f" (provider: {settings.model_provider})"
         model_identity_section += ".\n"
-        if settings.model_context_limit and isinstance(settings.model_context_limit, int):
+        if settings.model_context_limit:
             model_identity_section += (
                 f"Your context window is {settings.model_context_limit:,} tokens.\n"
             )

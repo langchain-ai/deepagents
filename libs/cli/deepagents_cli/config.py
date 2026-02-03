@@ -622,7 +622,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
                 console.print("  pip install deepagents-cli[vertexai]", markup=False)
                 sys.exit(1)
 
-            return ChatAnthropicVertex(
+            model = ChatAnthropicVertex(
                 # Remove version tag (e.g., "claude-haiku-4-5@20251015" ->
                 # "claude-haiku-4-5"). ChatAnthropicVertex expects just the base
                 # model name without the @version suffix.
@@ -652,11 +652,6 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         settings.model_context_limit = profile["max_input_tokens"]
 
     return model
-
-    # This should be unreachable since all valid providers are handled above,
-    # but we need an explicit return/raise for type safety (RET503)
-    console.print(f"[bold red]Error:[/bold red] Unknown provider: {provider}")
-    sys.exit(1)
 
 
 def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:

@@ -264,3 +264,84 @@ def test_store_backend_namespace_template_legacy_mode() -> None:
     items = store.search(("asst-123", "filesystem"))
     assert len(items) == 1
     assert items[0].key == "/legacy.txt"
+
+
+def test_store_backend_namespace_template_validation_wildcard() -> None:
+    """Test that wildcards are rejected in namespace templates."""
+    import pytest
+
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=InMemoryStore(),
+        stream_writer=lambda _: None,
+        config={"configurable": {"user_id": "alice"}},
+    )
+
+    # Should reject wildcards
+    with pytest.raises(ValueError, match="Invalid namespace template segment"):
+        StoreBackend(rt, namespace_template=("filesystem", "*"))
+
+
+def test_store_backend_namespace_template_validation_special_chars() -> None:
+    """Test that special characters are rejected in namespace templates."""
+    import pytest
+
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=InMemoryStore(),
+        stream_writer=lambda _: None,
+        config={"configurable": {"user_id": "alice"}},
+    )
+
+    # Should reject paths with slashes
+    with pytest.raises(ValueError, match="Invalid namespace template segment"):
+        StoreBackend(rt, namespace_template=("filesystem", "users/{user_id}"))
+
+    # Should reject other special chars like @
+    with pytest.raises(ValueError, match="Invalid namespace template segment"):
+        StoreBackend(rt, namespace_template=("filesystem", "user@domain"))
+
+
+def test_store_backend_namespace_template_validation_valid() -> None:
+    """Test that valid templates are accepted."""
+    store = InMemoryStore()
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t1",
+        store=store,
+        stream_writer=lambda _: None,
+        config={"configurable": {"userId": "alice"}},
+    )
+
+    # Should accept valid templates
+    be = StoreBackend(rt, namespace_template=("filesystem", "{userId}"))
+    assert be is not None
+
+    # Should work with mixed case and numbers
+    rt2 = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t2",
+        store=store,
+        stream_writer=lambda _: None,
+        config={"configurable": {"workspaceId": "ws123"}},
+    )
+    be2 = StoreBackend(rt2, namespace_template=("workspace", "{workspaceId}"))
+    assert be2 is not None
+
+    # Should accept hyphens (for UUIDs)
+    rt3 = ToolRuntime(
+        state={"messages": []},
+        context=None,
+        tool_call_id="t3",
+        store=store,
+        stream_writer=lambda _: None,
+        config={"configurable": {"user_id": "alice", "session_id": "abc-123"}},
+    )
+    be3 = StoreBackend(rt3, namespace_template=("user-sessions", "{user_id}", "{session_id}"))
+    assert be3 is not None

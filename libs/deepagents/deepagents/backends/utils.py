@@ -42,8 +42,11 @@ class NamespaceTemplate:
 
         Args:
             template: Namespace template as tuple or string. Use {var} for placeholders.
+                      Segments can contain alphanumeric characters and hyphens.
+                      Variables can contain alphanumeric, underscores, and hyphens.
         """
         self.template = template if isinstance(template, tuple) else (template,)
+        self._validate_template()
         self.vars = {
             ix: self._extract_var(ns) for ix, ns in enumerate(self.template) if self._extract_var(ns) is not None
         }
@@ -77,6 +80,22 @@ class NamespaceTemplate:
         except KeyError as e:
             msg = f"Missing namespace variable '{e.args[0]}' in config. Available keys: {list(configurable.keys())}"
             raise ValueError(msg) from e
+
+    def _validate_template(self) -> None:
+        """Validate that template segments only contain allowed characters.
+        
+        Allowed patterns:
+        - Plain identifiers: alphanumeric and hyphens (e.g., 'filesystem', 'workspace', 'uuid-123')
+        - Variables: {varname} where varname contains alphanumeric, underscores, hyphens (e.g., '{userId}', '{user-id}')
+        """
+        # Match either: plain alphanumeric+hyphen OR {alphanumeric+underscore+hyphen}
+        plain_pattern = re.compile(r"^[a-zA-Z0-9-]+$")
+        var_pattern = re.compile(r"^{[a-zA-Z0-9_-]+}$")
+        
+        for segment in self.template:
+            if not (plain_pattern.match(segment) or var_pattern.match(segment)):
+                msg = f"Invalid namespace template segment '{segment}'. Only alphanumeric characters and hyphens are allowed, or variables like {{userId}}."
+                raise ValueError(msg)
 
     @staticmethod
     def _extract_var(s: str) -> str | None:

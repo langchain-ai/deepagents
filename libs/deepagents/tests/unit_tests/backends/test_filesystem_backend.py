@@ -536,9 +536,10 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path):
         ("user@example", "test4.txt"),  # @ character (literal)
     ],
 )
-def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch, pattern: str, expected_file: str) -> None:
+def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str, expected_file: str) -> None:
     """Test literal search works correctly with Python fallback (no ripgrep)."""
     import subprocess
+    from typing import Any, Never
 
     root = tmp_path
 
@@ -551,8 +552,9 @@ def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch, patter
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
     # Mock subprocess.run to simulate ripgrep not being available
-    def mock_run(*args, **kwargs):
-        raise FileNotFoundError("rg not found")
+    def mock_run(*_args: Any, **_kwargs: Any) -> Never:
+        msg = "rg not found"
+        raise FileNotFoundError(msg)
 
     monkeypatch.setattr(subprocess, "run", mock_run)
 

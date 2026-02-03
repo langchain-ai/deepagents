@@ -1,8 +1,15 @@
 """Encryption utilities for sensitive data like tokens."""
 
+import logging
 import os
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
+
+logger = logging.getLogger(__name__)
+
+
+class EncryptionKeyMissingError(ValueError):
+    """Raised when TOKEN_ENCRYPTION_KEY environment variable is not set."""
 
 
 def _get_encryption_key() -> bytes:
@@ -13,11 +20,13 @@ def _get_encryption_key() -> bytes:
 
     Returns:
         32-byte Fernet-compatible key
+
+    Raises:
+        EncryptionKeyMissingError: If TOKEN_ENCRYPTION_KEY is not set
     """
-    # Check for explicit encryption key first
     explicit_key = os.environ.get("TOKEN_ENCRYPTION_KEY")
     if not explicit_key:
-        raise ValueError("TOKEN_ENCRYPTION_KEY environment variable not set")
+        raise EncryptionKeyMissingError
 
     return explicit_key.encode()
 
@@ -57,6 +66,9 @@ def decrypt_token(encrypted_token: str) -> str:
         f = Fernet(key)
         decrypted = f.decrypt(encrypted_token.encode())
         return decrypted.decode()
-    except Exception as e:
-        print(f"[Encryption] Failed to decrypt token: {e}")
+    except InvalidToken:
+        logger.warning("Failed to decrypt token: invalid token")
+        return ""
+    except EncryptionKeyMissingError:
+        logger.warning("Failed to decrypt token: encryption key not set")
         return ""

@@ -194,7 +194,7 @@ def ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE
         raise RuntimeError(msg) from e
 
 
-def verify_sandbox_ready(sb: Sandbox, client: SandboxClient) -> None:
+def verify_sandbox_ready(sb: Sandbox, client: SandboxClient) -> None:  # noqa: ARG001
     """Verify sandbox is ready to accept commands.
 
     Args:

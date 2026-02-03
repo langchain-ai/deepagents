@@ -104,15 +104,20 @@ class TestLocalContextMiddleware:
         assert git_info["branch"] == "develop"
         assert git_info["main_branches"] == []
 
+    @patch("deepagents_cli.local_context._get_git_executable")
     @patch("deepagents_cli.local_context.subprocess.run")
     def test_before_agent_with_git_repo(
         self,
         mock_run: Mock,
+        mock_get_git: Mock,
         tmp_path: pytest.TempPathFactory,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test before_agent returns git context when in git repo."""
         monkeypatch.chdir(tmp_path)
+
+        # Mock git executable to be available
+        mock_get_git.return_value = "/usr/bin/git"
 
         # Create a file so the directory isn't empty
         (tmp_path / "test_file.py").write_text("# test")
@@ -122,11 +127,11 @@ class TestLocalContextMiddleware:
             result = Mock()
             result.returncode = 0
 
-            if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            if cmd == ["/usr/bin/git", "rev-parse", "--abbrev-ref", "HEAD"]:
                 result.stdout = "main\n"
-            elif cmd == ["git", "branch"]:
+            elif cmd == ["/usr/bin/git", "branch"]:
                 result.stdout = "* main\n  master\n"
-            elif cmd == ["git", "rev-parse", "--show-toplevel"]:
+            elif cmd == ["/usr/bin/git", "rev-parse", "--show-toplevel"]:
                 result.stdout = str(tmp_path) + "\n"
             else:
                 result.returncode = 1

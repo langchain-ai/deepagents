@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     parser = argparse.ArgumentParser(
-        description="DeepAgents - AI Coding Assistant",
+        description="Deep Agents - AI Coding Assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )

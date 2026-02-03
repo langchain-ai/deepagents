@@ -223,7 +223,7 @@ List what you captured and where you stored it:
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
 
-    TITLE = "DeepAgents"
+    TITLE = "Deep Agents"
     CSS_PATH = "app.tcss"
     ENABLE_COMMAND_PALETTE = False
 
@@ -269,7 +269,7 @@ class DeepAgentsApp(App):
         initial_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
-        """Initialize the DeepAgents application.
+        """Initialize the Deep Agents application.
 
         Args:
             agent: Pre-configured LangGraph agent (optional for standalone mode)

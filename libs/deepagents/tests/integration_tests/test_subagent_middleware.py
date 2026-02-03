@@ -3,10 +3,11 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
+from deepagents.backends.state import StateBackend
 from deepagents.graph import create_agent
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import (
-    DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
+    GENERAL_PURPOSE_SUBAGENT,
     TASK_SYSTEM_PROMPT,
     TASK_TOOL_DESCRIPTION,
     SubAgentMiddleware,
@@ -54,8 +55,14 @@ class TestSubagentMiddleware:
             system_prompt="Use the general-purpose subagent to get the weather in a city.",
             middleware=[
                 SubAgentMiddleware(
-                    default_model="claude-sonnet-4-20250514",
-                    default_tools=[get_weather],
+                    backend=StateBackend,
+                    subagents=[
+                        {
+                            **GENERAL_PURPOSE_SUBAGENT,
+                            "model": "claude-sonnet-4-20250514",
+                            "tools": [get_weather],
+                        }
+                    ],
                 )
             ],
         )
@@ -70,13 +77,13 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    default_model="claude-sonnet-4-20250514",
-                    default_tools=[],
+                    backend=StateBackend,
                     subagents=[
                         {
                             "name": "weather",
                             "description": "This subagent can get weather in cities.",
                             "system_prompt": "Use the get_weather tool to get the weather in a city.",
+                            "model": "claude-sonnet-4-20250514",
                             "tools": [get_weather],
                         }
                     ],
@@ -94,13 +101,13 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    default_model="claude-sonnet-4-20250514",
-                    default_tools=[],
+                    backend=StateBackend,
                     subagents=[
                         {
                             "name": "weather",
                             "description": "This subagent can get weather in cities.",
                             "system_prompt": "Use the get_weather tool to get the weather in a city.",
+                            "model": "claude-sonnet-4-20250514",
                             "tools": [get_weather],
                         }
                     ],
@@ -123,8 +130,7 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    default_model="claude-sonnet-4-20250514",
-                    default_tools=[],
+                    backend=StateBackend,
                     subagents=[
                         {
                             "name": "weather",
@@ -157,8 +163,7 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    default_model="claude-sonnet-4-20250514",
-                    default_tools=[],
+                    backend=StateBackend,
                     subagents=[
                         {
                             "name": "weather",
@@ -197,8 +202,7 @@ class TestSubagentMiddleware:
             system_prompt="Use the task tool to call a subagent.",
             middleware=[
                 SubAgentMiddleware(
-                    default_model="claude-sonnet-4-20250514",
-                    default_tools=[],
+                    backend=StateBackend,
                     subagents=[
                         {
                             "name": "weather",
@@ -223,20 +227,19 @@ class TestSubagentMiddleware:
             {"messages": [HumanMessage(content="What is the weather in Tokyo?")]},
         )
 
-    def test_multiple_subagents_with_interrupt_on_no_middleware_accumulation(self):
+    def test_multiple_subagents_with_interrupt_on(self):
         agent = create_agent(
             model="claude-sonnet-4-20250514",
             system_prompt="Use the task tool to call subagents.",
             middleware=[
                 SubAgentMiddleware(
-                    default_model="claude-sonnet-4-20250514",
-                    default_tools=[],
-                    default_middleware=[PatchToolCallsMiddleware()],
+                    backend=StateBackend,
                     subagents=[
                         {
                             "name": "subagent1",
                             "description": "First subagent.",
                             "system_prompt": "You are subagent 1.",
+                            "model": "claude-sonnet-4-20250514",
                             "tools": [get_weather],
                             "interrupt_on": {"get_weather": True},
                         },
@@ -244,6 +247,7 @@ class TestSubagentMiddleware:
                             "name": "subagent2",
                             "description": "Second subagent.",
                             "system_prompt": "You are subagent 2.",
+                            "model": "claude-sonnet-4-20250514",
                             "tools": [get_weather],
                             "interrupt_on": {"get_weather": True},
                         },
@@ -251,33 +255,297 @@ class TestSubagentMiddleware:
                 )
             ],
         )
-        # This would error if the default middleware was accumulated
-        assert True
+        # This would error if the middleware was accumulated incorrectly
+        assert agent is not None
 
     def test_subagent_middleware_init(self):
         middleware = SubAgentMiddleware(
-            default_model="gpt-4o-mini",
+            backend=StateBackend,
+            subagents=[
+                {
+                    **GENERAL_PURPOSE_SUBAGENT,
+                    "model": "gpt-4o-mini",
+                    "tools": [],
+                }
+            ],
         )
         assert middleware is not None
-        assert middleware.system_prompt is TASK_SYSTEM_PROMPT
+        # System prompt includes TASK_SYSTEM_PROMPT plus available subagent types
+        assert middleware.system_prompt.startswith(TASK_SYSTEM_PROMPT)
+        assert "Available subagent types:" in middleware.system_prompt
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
-        expected_desc = TASK_TOOL_DESCRIPTION.format(available_agents=f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
-        assert middleware.tools[0].description == expected_desc
 
-    def test_default_subagent_with_tools(self):
+    def test_subagent_middleware_with_custom_subagent(self):
         middleware = SubAgentMiddleware(
-            default_model="gpt-4o-mini",
-            default_tools=[],
+            backend=StateBackend,
+            subagents=[
+                {
+                    "name": "weather",
+                    "description": "Weather subagent",
+                    "system_prompt": "Get weather.",
+                    "model": "gpt-4o-mini",
+                    "tools": [get_weather],
+                }
+            ],
         )
         assert middleware is not None
-        assert middleware.system_prompt == TASK_SYSTEM_PROMPT
+        # System prompt includes TASK_SYSTEM_PROMPT plus available subagent types
+        assert middleware.system_prompt.startswith(TASK_SYSTEM_PROMPT)
+        assert "weather" in middleware.system_prompt
 
-    def test_default_subagent_custom_system_prompt(self):
+    def test_subagent_middleware_custom_system_prompt(self):
         middleware = SubAgentMiddleware(
-            default_model="gpt-4o-mini",
-            default_tools=[],
+            backend=StateBackend,
+            subagents=[
+                {
+                    "name": "weather",
+                    "description": "Weather subagent",
+                    "system_prompt": "Get weather.",
+                    "model": "gpt-4o-mini",
+                    "tools": [],
+                }
+            ],
             system_prompt="Use the task tool to call a subagent.",
         )
         assert middleware is not None
-        assert middleware.system_prompt == "Use the task tool to call a subagent."
+        # Custom system prompt plus available subagent types
+        assert middleware.system_prompt.startswith("Use the task tool to call a subagent.")
+
+    # ========== Tests for new API ==========
+
+    def test_new_api_requires_backend(self):
+        """Test that the new API requires backend parameter."""
+        with pytest.raises(ValueError, match="requires either"):
+            SubAgentMiddleware(
+                subagents=[
+                    {
+                        "name": "test",
+                        "description": "Test",
+                        "system_prompt": "Test.",
+                        "model": "gpt-4o-mini",
+                        "tools": [],
+                    }
+                ],
+            )
+
+    def test_new_api_requires_subagents(self):
+        """Test that the new API requires at least one subagent."""
+        with pytest.raises(ValueError, match="At least one subagent"):
+            SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[],
+            )
+
+    def test_new_api_no_deprecation_warning(self):
+        """Test that using only new API args does not emit deprecation warning."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            middleware = SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[
+                    {
+                        "name": "test",
+                        "description": "Test subagent",
+                        "system_prompt": "Test.",
+                        "model": "gpt-4o-mini",
+                        "tools": [],
+                    }
+                ],
+            )
+            # Filter for DeprecationWarnings only
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecation_warnings) == 0, f"Unexpected deprecation warnings: {deprecation_warnings}"
+        assert middleware is not None
+
+    def test_new_api_subagent_requires_model(self):
+        """Test that subagents must specify model when using new API."""
+        with pytest.raises(ValueError, match="must specify 'model'"):
+            SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[
+                    {
+                        "name": "test",
+                        "description": "Test",
+                        "system_prompt": "Test.",
+                        "tools": [],
+                        # Missing "model"
+                    }
+                ],
+            )
+
+    def test_new_api_subagent_requires_tools(self):
+        """Test that subagents must specify tools when using new API."""
+        with pytest.raises(ValueError, match="must specify 'tools'"):
+            SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[
+                    {
+                        "name": "test",
+                        "description": "Test",
+                        "system_prompt": "Test.",
+                        "model": "gpt-4o-mini",
+                        # Missing "tools"
+                    }
+                ],
+            )
+
+    # ========== Tests for deprecated API ==========
+
+    def test_deprecated_api_default_model_warning(self):
+        """Test that default_model emits deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="default_model"):
+            SubAgentMiddleware(default_model="gpt-4o-mini")
+
+    def test_deprecated_api_default_tools_warning(self):
+        """Test that default_tools emits deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="default_tools"):
+            SubAgentMiddleware(default_model="gpt-4o-mini", default_tools=[get_weather])
+
+    def test_deprecated_api_default_middleware_warning(self):
+        """Test that default_middleware emits deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="default_middleware"):
+            SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                default_middleware=[PatchToolCallsMiddleware()],
+            )
+
+    def test_deprecated_api_general_purpose_middleware_warning(self):
+        """Test that general_purpose_middleware emits deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="general_purpose_middleware"):
+            SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                general_purpose_middleware=[PatchToolCallsMiddleware()],
+            )
+
+    def test_deprecated_api_default_interrupt_on_warning(self):
+        """Test that default_interrupt_on emits deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="default_interrupt_on"):
+            SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                default_interrupt_on={"get_weather": True},
+            )
+
+    def test_deprecated_api_general_purpose_agent_false_warning(self):
+        """Test that general_purpose_agent=False emits deprecation warning."""
+        with pytest.warns(DeprecationWarning, match="general_purpose_agent"):
+            SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                general_purpose_agent=False,
+                subagents=[
+                    {
+                        "name": "custom",
+                        "description": "Custom",
+                        "system_prompt": "Custom.",
+                        "tools": [],
+                    }
+                ],
+            )
+
+    def test_deprecated_api_still_works(self):
+        """Test that the deprecated API still works for backward compatibility."""
+        with pytest.warns(DeprecationWarning):
+            middleware = SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                default_tools=[get_weather],
+            )
+        assert middleware is not None
+        assert len(middleware.tools) == 1
+        assert middleware.tools[0].name == "task"
+        assert "general-purpose" in middleware.system_prompt
+
+    def test_deprecated_api_with_custom_subagents(self):
+        """Test the deprecated API with custom subagents."""
+        with pytest.warns(DeprecationWarning):
+            middleware = SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                default_tools=[],
+                subagents=[
+                    {
+                        "name": "custom",
+                        "description": "Custom subagent",
+                        "system_prompt": "You are custom.",
+                        "tools": [get_weather],
+                    }
+                ],
+            )
+        assert middleware is not None
+        assert "custom" in middleware.system_prompt
+        assert "general-purpose" in middleware.system_prompt  # GP is still included
+
+    def test_deprecated_api_subagents_inherit_model(self):
+        """Test that subagents inherit default_model when not specified."""
+        with pytest.warns(DeprecationWarning):
+            middleware = SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                default_tools=[get_weather],
+                subagents=[
+                    {
+                        "name": "custom",
+                        "description": "Custom subagent",
+                        "system_prompt": "You are custom.",
+                        # No model specified - should inherit from default_model
+                    }
+                ],
+            )
+        assert middleware is not None
+        assert "custom" in middleware.system_prompt
+
+    def test_deprecated_api_subagents_inherit_tools(self):
+        """Test that subagents inherit default_tools when not specified."""
+        with pytest.warns(DeprecationWarning):
+            middleware = SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                default_tools=[get_weather],
+                subagents=[
+                    {
+                        "name": "custom",
+                        "description": "Custom subagent",
+                        "system_prompt": "You are custom.",
+                        # No tools specified - should inherit from default_tools
+                    }
+                ],
+            )
+        assert middleware is not None
+        assert "custom" in middleware.system_prompt
+
+    def test_deprecated_api_general_purpose_agent_disabled(self):
+        """Test deprecated API with general_purpose_agent=False."""
+        with pytest.warns(DeprecationWarning):
+            middleware = SubAgentMiddleware(
+                default_model="gpt-4o-mini",
+                general_purpose_agent=False,
+                subagents=[
+                    {
+                        "name": "only_agent",
+                        "description": "The only agent",
+                        "system_prompt": "You are the only one.",
+                        "tools": [],
+                    }
+                ],
+            )
+        assert middleware is not None
+        assert "only_agent" in middleware.system_prompt
+        assert "general-purpose" not in middleware.system_prompt
+
+    # ========== Tests for mixing old and new args ==========
+
+    def test_mixed_args_prefers_new_api(self):
+        """Test that when both backend and deprecated args are provided, new API is used with warning."""
+        with pytest.warns(DeprecationWarning, match="default_model"):
+            middleware = SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[
+                    {
+                        "name": "test",
+                        "description": "Test subagent",
+                        "system_prompt": "Test.",
+                        "model": "gpt-4o-mini",
+                        "tools": [],
+                    }
+                ],
+                default_model="gpt-4o-mini",  # This is deprecated but still triggers warning
+            )
+        assert middleware is not None

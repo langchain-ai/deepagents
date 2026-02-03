@@ -20,12 +20,16 @@ from langgraph.types import Checkpointer
 
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
-from deepagents.middleware._subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from deepagents.middleware.subagents import (
+    GENERAL_PURPOSE_SUBAGENT,
+    CompiledSubAgent,
+    SubAgent,
+    SubAgentMiddleware,
+)
 from deepagents.middleware.summarization import SummarizationMiddleware, compute_summarization_defaults
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
@@ -161,8 +165,23 @@ def create_deep_agent(
         "middleware": gp_middleware,
     }
 
-    # Combine GP with user-provided subagents
-    all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *(subagents or [])]
+    # Process user-provided subagents to fill in defaults for model and tools
+    processed_subagents: list[SubAgent | CompiledSubAgent] = []
+    for spec in subagents or []:
+        if "runnable" in spec:
+            # CompiledSubAgent - use as-is
+            processed_subagents.append(spec)
+        else:
+            # SubAgent - fill in defaults
+            processed_spec: SubAgent = {
+                **spec,
+                "model": spec.get("model", model),
+                "tools": spec.get("tools", tools or []),
+            }
+            processed_subagents.append(processed_spec)
+
+    # Combine GP with processed user-provided subagents
+    all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware] = [

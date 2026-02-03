@@ -59,7 +59,8 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": [
-        "pyproject.toml"
+        "pyproject.toml",
+        "deepagents_cli/_version.py"
       ],
       "changelog-path": "CHANGELOG.md"
     }

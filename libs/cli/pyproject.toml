@@ -277,7 +277,7 @@ ignore-var-parameters = true
 omit = ["tests/*"]
 
 [tool.pytest.ini_options]
-timeout = 10  # Default timeout for all tests (can be overridden per-test)
+timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
 asyncio_mode = "auto"

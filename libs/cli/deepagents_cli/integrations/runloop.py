@@ -10,13 +10,20 @@ if importlib.util.find_spec("runloop_api_client") is None:
     raise ImportError(msg)
 
 import os
+import time
+from typing import Any
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
+    SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import BaseSandbox
+from deepagents.backends.sandbox import (
+    BaseSandbox,
+    SandboxListResponse,
+    SandboxProvider,
+)
 from runloop_api_client import Runloop
 
 
@@ -138,3 +145,86 @@ class RunloopBackend(BaseSandbox):
             responses.append(FileUploadResponse(path=path, error=None))
 
         return responses
+
+
+class RunloopProvider(SandboxProvider[dict[str, Any]]):
+    """Runloop sandbox provider implementation.
+
+    Manages Runloop devbox lifecycle using the Runloop SDK.
+    """
+
+    def __init__(self, api_key: str | None = None) -> None:
+        """Initialize Runloop provider.
+
+        Args:
+            api_key: Runloop API key (defaults to RUNLOOP_API_KEY env var)
+
+        Raises:
+            ValueError: If RUNLOOP_API_KEY environment variable not set
+        """
+        self._api_key = api_key or os.environ.get("RUNLOOP_API_KEY")
+        if not self._api_key:
+            msg = "RUNLOOP_API_KEY environment variable not set"
+            raise ValueError(msg)
+        self._client = Runloop(bearer_token=self._api_key)
+
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxListResponse[dict[str, Any]]:
+        """List available Runloop devboxes.
+
+        Raises:
+            NotImplementedError: Runloop SDK doesn't expose a list API yet.
+        """
+        msg = "Listing with Runloop SDK not yet implemented"
+        raise NotImplementedError(msg)
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        """Get existing or create new Runloop devbox.
+
+        Args:
+            sandbox_id: Existing devbox ID to connect to (if None, creates new)
+            timeout: Timeout in seconds for devbox startup (default: 180)
+            **kwargs: Additional Runloop-specific parameters
+
+        Returns:
+            RunloopBackend instance
+
+        Raises:
+            RuntimeError: Devbox startup failed
+        """
+        if sandbox_id:
+            devbox = self._client.devboxes.retrieve(id=sandbox_id)
+        else:
+            devbox = self._client.devboxes.create()
+
+            # Poll until running
+            for _ in range(timeout // 2):
+                status = self._client.devboxes.retrieve(id=devbox.id)
+                if status.status == "running":
+                    break
+                time.sleep(2)
+            else:
+                self._client.devboxes.shutdown(id=devbox.id)
+                msg = f"Devbox failed to start within {timeout} seconds"
+                raise RuntimeError(msg)
+
+        return RunloopBackend(devbox_id=devbox.id, client=self._client)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        """Delete a Runloop devbox.
+
+        Args:
+            sandbox_id: Devbox ID to delete
+            **kwargs: Additional parameters
+        """
+        self._client.devboxes.shutdown(id=sandbox_id)

@@ -27,7 +27,7 @@ LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL") or os.environ.get(
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
     "LANGSMITH_API_KEY_PROD", ""
 )
-LANGSMITH_API_URL = os.environ.get("LANGSMITH_API_URL", "https://api.smith.langchain.com")
+LANGSMITH_API_URL = os.environ.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
 
 GITHUB_OAUTH_PROVIDER_ID = os.environ.get("GITHUB_OAUTH_PROVIDER_ID", "")
 
@@ -69,6 +69,7 @@ def get_service_jwt_token_for_user(user_id: str, tenant_id: str, expiration_seco
 
 LINEAR_TEAM_TO_REPO: dict[str, dict[str, str]] = {
     "Brace's test workspace": {"owner": "langchain-ai", "name": "open-swe"},
+    "Yogesh-dev": {"owner": "aran-yogesh", "name": "nimedge"},
 }
 
 
@@ -334,6 +335,102 @@ def generate_thread_id_from_issue(issue_id: str) -> str:
     return f"{hash_bytes[:8]}-{hash_bytes[8:12]}-{hash_bytes[12:16]}-{hash_bytes[16:20]}-{hash_bytes[20:32]}"
 
 
+async def is_thread_active(thread_id: str) -> bool:
+    """Check if a thread is currently active (has a running run).
+
+    Args:
+        thread_id: The LangGraph thread ID
+
+    Returns:
+        True if the thread status is "busy", False otherwise
+    """
+    langgraph_client = get_client(url=LANGGRAPH_URL)
+    try:
+        logger.debug("Fetching thread status for %s from %s", thread_id, LANGGRAPH_URL)
+        thread = await langgraph_client.threads.get(thread_id)
+        status = thread.get("status", "idle")
+        logger.info(
+            "Thread %s status check: status=%s, is_busy=%s",
+            thread_id,
+            status,
+            status == "busy",
+        )
+        return status == "busy"
+    except Exception as e:
+        logger.warning(
+            "Failed to get thread status for %s: %s (type: %s) - assuming not active",
+            thread_id,
+            e,
+            type(e).__name__,
+        )
+        # If we can't get the thread, assume it doesn't exist yet (not active)
+        return False
+
+
+async def queue_message_for_thread(
+    thread_id: str, message_content: str, issue_data: dict[str, Any]
+) -> bool:
+    """Queue a message for a thread that is currently active.
+
+    Stores the message in the langgraph store, namespaced to the thread.
+    Supports multiple queued messages by storing them as a list (FIFO order).
+    The before_model middleware will pick them up and inject them into state.
+
+    Args:
+        thread_id: The LangGraph thread ID
+        message_content: The message content to queue
+        issue_data: Additional issue context (comment author, etc.)
+
+    Returns:
+        True if successfully queued, False otherwise
+    """
+    langgraph_client = get_client(url=LANGGRAPH_URL)
+    try:
+        namespace = ("queue", thread_id)
+        key = "pending_messages"
+        
+        new_message = {
+            "content": message_content,
+            "issue_data": issue_data,
+            "queued_at": datetime.now(tz=UTC).isoformat(),
+        }
+        
+        # Get existing queued messages (if any)
+        existing_messages: list[dict[str, Any]] = []
+        try:
+            existing_item = await langgraph_client.store.get_item(namespace, key)
+            if existing_item and existing_item.get("value"):
+                existing_messages = existing_item["value"].get("messages", [])
+        except Exception:
+            # No existing messages or store error - start fresh
+            pass
+        
+        # Append new message to the list
+        existing_messages.append(new_message)
+        
+        value = {"messages": existing_messages}
+        
+        logger.info(
+            "Attempting to queue message for thread %s with namespace=%s, key=%s (total queued: %d)",
+            thread_id,
+            namespace,
+            key,
+            len(existing_messages),
+        )
+        # Store the queued messages list with namespace ("queue", thread_id)
+        await langgraph_client.store.put_item(namespace, key, value)
+        logger.info("Successfully queued message for thread %s", thread_id)
+        return True
+    except Exception as e:
+        logger.error(
+            "Failed to queue message for thread %s: %s (type: %s)",
+            thread_id,
+            e,
+            type(e).__name__,
+        )
+        return False
+
+
 async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str, str]) -> None:
     """Process a Linear issue by creating a new LangGraph thread and run.
 
@@ -490,16 +587,45 @@ Please analyze this issue and implement the necessary changes. When you're done,
     if github_token:
         configurable["github_token_encrypted"] = encrypt_token(github_token)
 
-        logger.info("Creating LangGraph run for thread %s", thread_id)
-        langgraph_client = get_client(url=LANGGRAPH_URL)
-        await langgraph_client.runs.create(
-            thread_id,
-            "agent",
-            input={"messages": [{"role": "user", "content": prompt}]},
-            config={"configurable": configurable},
-            if_not_exists="create",
-        )
-        logger.info("LangGraph run created successfully for thread %s", thread_id)
+        # Check if thread is currently active (has a running run)
+        logger.info("Checking if thread %s is active before creating run", thread_id)
+        thread_active = await is_thread_active(thread_id)
+        logger.info("Thread %s active status: %s", thread_id, thread_active)
+
+        if thread_active:
+            # Thread is busy - queue the message instead of creating a new run
+            logger.info(
+                "Thread %s is active (busy), will queue message instead of creating run",
+                thread_id,
+            )
+
+            # Queue the message for the before_model middleware to pick up
+            queued = await queue_message_for_thread(
+                thread_id=thread_id,
+                message_content=prompt,
+                issue_data={
+                    "linear_issue": configurable.get("linear_issue", {}),
+                    "triggering_comment": issue_data.get("triggering_comment", ""),
+                    "triggering_comment_id": issue_data.get("triggering_comment_id", ""),
+                },
+            )
+
+            if queued:
+                logger.info("Message queued for thread %s, will be processed by middleware", thread_id)
+            else:
+                logger.error("Failed to queue message for thread %s", thread_id)
+        else:
+            # Thread is idle - proceed with creating a new run
+            logger.info("Creating LangGraph run for thread %s", thread_id)
+            langgraph_client = get_client(url=LANGGRAPH_URL)
+            await langgraph_client.runs.create(
+                thread_id,
+                "agent",
+                input={"messages": [{"role": "user", "content": prompt}]},
+                config={"configurable": configurable},
+                if_not_exists="create",
+            )
+            logger.info("LangGraph run created successfully for thread %s", thread_id)
     else:
         logger.warning("No GitHub token available, cannot create run for issue %s", issue_id)
         # Send a comment explaining why we couldn't proceed

@@ -211,11 +211,18 @@ jobs:
             if [ -n "$PR_NUM" ] && [[ ! "$SEEN_PRS" =~ ":$PR_NUM:" ]]; then
               SEEN_PRS="$SEEN_PRS:$PR_NUM:"
 
-              # Get PR author and body
-              PR_DATA=$(gh pr view "$PR_NUM" --json author,body 2>/dev/null || true)
+              # Get PR author, body, and labels
+              PR_DATA=$(gh pr view "$PR_NUM" --json author,body,labels 2>/dev/null || true)
               if [ -n "$PR_DATA" ]; then
                 GH_USER=$(echo "$PR_DATA" | jq -r '.author.login // empty')
                 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // empty')
+
+                # Skip internal contributors (PRs labeled "internal" by tag-external-contributions workflow)
+                IS_INTERNAL=$(echo "$PR_DATA" | jq -r '.labels[].name // empty' | grep -qx "internal" && echo "true" || echo "false")
+                if [ "$IS_INTERNAL" = "true" ]; then
+                  echo "Skipping internal contributor: $GH_USER (PR #$PR_NUM)"
+                  continue
+                fi
 
                 if [ -n "$GH_USER" ]; then
                   # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")

@@ -219,24 +219,33 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     return result
 
 
-def _validate_path(path: str | None) -> str:
-    """Validate and normalize a path to start with /.
+def _normalize_path(path: str | None) -> str:
+    """Normalize a path to canonical form.
+
+    Converts path to absolute form starting with /, removes trailing slashes
+    (except for root), and validates that the path is not empty.
 
     Args:
-        path: Path to validate
+        path: Path to normalize (None defaults to "/")
 
     Returns:
         Normalized path starting with / (without trailing slash unless it's root)
 
     Raises:
-        ValueError: If path is invalid
+        ValueError: If path is invalid (empty string after strip)
+
+    Example:
+        _normalize_path(None) -> "/"
+        _normalize_path("/dir/") -> "/dir"
+        _normalize_path("dir") -> "/dir"
+        _normalize_path("/") -> "/"
     """
     path = path or "/"
     if not path or path.strip() == "":
         raise ValueError("Path cannot be empty")
 
     normalized = path if path.startswith("/") else "/" + path
-    
+
     # Only root should have trailing slash
     if normalized != "/" and normalized.endswith("/"):
         normalized = normalized.rstrip("/")
@@ -244,36 +253,34 @@ def _validate_path(path: str | None) -> str:
     return normalized
 
 
-def _filter_files_by_path(files: dict[str, Any], path: str) -> dict[str, Any]:
-    """Filter files dict by path, handling both exact file matches and directory prefixes.
-    
+def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[str, Any]:
+    """Filter files dict by normalized path, handling exact file matches and directory prefixes.
+
+    Expects a normalized path from _normalize_path (no trailing slash except root).
+
     Args:
         files: Dictionary mapping file paths to file data
-        path: Path to filter by (either exact file path or directory prefix)
-    
+        normalized_path: Normalized path from _normalize_path (e.g., "/", "/dir", "/dir/file")
+
     Returns:
         Filtered dictionary of files matching the path
-        
+
     Example:
         files = {"/dir/file": {...}, "/dir/other": {...}}
         _filter_files_by_path(files, "/dir/file")  # Returns {"/dir/file": {...}}
-        _filter_files_by_path(files, "/dir/")      # Returns both files
+        _filter_files_by_path(files, "/dir")       # Returns both files
     """
-    # Normalize path (remove trailing slash except for root)
-    normalized = path if path == "/" else path.rstrip("/")
-    
     # Check if path matches an exact file
-    if normalized in files:
-        return {normalized: files[normalized]}
-    
+    if normalized_path in files:
+        return {normalized_path: files[normalized_path]}
+
     # Otherwise treat as directory prefix
-    if normalized == "/":
+    if normalized_path == "/":
         # Root directory - match all files starting with /
         return {fp: fd for fp, fd in files.items() if fp.startswith("/")}
-    else:
-        # Non-root directory - add trailing slash for prefix matching
-        dir_prefix = normalized + "/"
-        return {fp: fd for fp, fd in files.items() if fp.startswith(dir_prefix)}
+    # Non-root directory - add trailing slash for prefix matching
+    dir_prefix = normalized_path + "/"
+    return {fp: fd for fp, fd in files.items() if fp.startswith(dir_prefix)}
 
 
 def _glob_search_files(
@@ -300,7 +307,7 @@ def _glob_search_files(
         ```
     """
     try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_path(path)
     except ValueError:
         return "No files found"
 
@@ -317,14 +324,14 @@ def _glob_search_files(
         # Compute relative path for glob matching
         # If normalized_path is "/dir", we want "/dir/file.txt" -> "file.txt"
         # If normalized_path is "/dir/file.txt" (exact file), we want "file.txt"
-        if normalized_path == "/" :
+        if normalized_path == "/":
             relative = file_path[1:]  # Remove leading slash
         elif file_path == normalized_path:
             # Exact file match - use just the filename
             relative = file_path.split("/")[-1]
         else:
             # Directory prefix - strip the directory path
-            relative = file_path[len(normalized_path) + 1:]  # +1 for the slash
+            relative = file_path[len(normalized_path) + 1 :]  # +1 for the slash
 
         if wcglob.globmatch(relative, effective_pattern, flags=wcglob.BRACE | wcglob.GLOBSTAR):
             matches.append((file_path, file_data["modified_at"]))
@@ -398,7 +405,7 @@ def _grep_search_files(
         return f"Invalid regex pattern: {e}"
 
     try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_path(path)
     except ValueError:
         return "No matches found"
 
@@ -441,7 +448,7 @@ def grep_matches_from_files(
         return f"Invalid regex pattern: {e}"
 
     try:
-        normalized_path = _validate_path(path)
+        normalized_path = _normalize_path(path)
     except ValueError:
         return []
 

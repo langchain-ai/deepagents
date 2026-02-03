@@ -1,3 +1,4 @@
+import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
@@ -163,17 +164,17 @@ def test_state_backend_intercept_large_tool_result():
 
 def test_state_backend_grep_exact_file_path() -> None:
     """Test that grep works with exact file paths (no trailing slash).
-    
+
     This reproduces the bug where _validate_path adds a trailing slash to all paths,
     causing exact file path matching to fail with startswith filter.
-    
+
     Bug: When grep is called with an exact file path like "/data/result_abc123",
     _validate_path adds a trailing slash making it "/data/result_abc123/",
     which doesn't match the key in state (which has no trailing slash).
     """
     rt = make_runtime()
     be = StateBackend(rt)
-    
+
     # Simulate an evicted large tool result (like what happens with large API responses)
     evicted_path = "/large_tool_results/toolu_01ABC123XYZ"
     content = """Task Results:
@@ -182,25 +183,25 @@ Project Beta - Status: Pending
 Project Gamma - Status: Completed
 Total projects: 3
 """
-    
+
     res = be.write(evicted_path, content)
     assert res.error is None
     rt.state["files"].update(res.files_update)
-    
+
     # Test 1: Grep with parent directory path works (establishes baseline)
     matches_parent = be.grep_raw("Project Beta", path="/large_tool_results/")
     assert isinstance(matches_parent, list)
     assert len(matches_parent) == 1
     assert matches_parent[0]["path"] == evicted_path
     assert "Project Beta" in matches_parent[0]["text"]
-    
+
     # Test 2: Grep with exact file path should also work (THIS IS THE BUG)
     matches_exact = be.grep_raw("Project Beta", path=evicted_path)
     assert isinstance(matches_exact, list), f"Expected list but got: {matches_exact}"
     assert len(matches_exact) == 1, f"Expected 1 match but got {len(matches_exact)} matches"
     assert matches_exact[0]["path"] == evicted_path
     assert "Project Beta" in matches_exact[0]["text"]
-    
+
     # Test 3: Verify glob also works with exact file paths
     glob_matches = be.glob_info("*", path=evicted_path)
     assert len(glob_matches) == 1
@@ -211,46 +212,46 @@ def test_state_backend_path_edge_cases() -> None:
     """Test edge cases in path handling for grep and glob operations."""
     rt = make_runtime()
     be = StateBackend(rt)
-    
+
     # Create test files
     files = {
         "/file.txt": "root content",
         "/dir/nested.txt": "nested content",
         "/dir/subdir/deep.txt": "deep content",
     }
-    
+
     for path, content in files.items():
         res = be.write(path, content)
         assert res.error is None
         rt.state["files"].update(res.files_update)
-    
+
     # Test 1: Grep with None path should default to root
     matches = be.grep_raw("content", path=None)
     assert isinstance(matches, list)
     assert len(matches) == 3
-    
+
     # Test 2: Grep with trailing slash on directory
     matches_slash = be.grep_raw("nested", path="/dir/")
     assert isinstance(matches_slash, list)
     assert len(matches_slash) == 1
     assert matches_slash[0]["path"] == "/dir/nested.txt"
-    
+
     # Test 3: Grep with no trailing slash on directory
     matches_no_slash = be.grep_raw("nested", path="/dir")
     assert isinstance(matches_no_slash, list)
     assert len(matches_no_slash) == 1
     assert matches_no_slash[0]["path"] == "/dir/nested.txt"
-    
+
     # Test 4: Glob with exact file path
     glob_exact = be.glob_info("*.txt", path="/file.txt")
     assert len(glob_exact) == 1
     assert glob_exact[0]["path"] == "/file.txt"
-    
+
     # Test 5: Glob with directory and pattern
     glob_dir = be.glob_info("*.txt", path="/dir/")
     assert len(glob_dir) == 1  # Only nested.txt, not deep.txt (non-recursive)
     assert glob_dir[0]["path"] == "/dir/nested.txt"
-    
+
     # Test 6: Glob with recursive pattern
     glob_recursive = be.glob_info("**/*.txt", path="/dir/")
     assert len(glob_recursive) == 2  # Both nested.txt and deep.txt
@@ -259,32 +260,31 @@ def test_state_backend_path_edge_cases() -> None:
     assert "/dir/subdir/deep.txt" in paths
 
 
-def test_state_backend_grep_with_path_variations() -> None:
+@pytest.mark.parametrize(
+    ("path", "expected_count", "expected_paths"),
+    [
+        ("/app/main.py/", 1, ["/app/main.py"]),  # Exact file with trailing slash
+        ("/app", 2, ["/app/main.py", "/app/utils.py"]),  # Directory without slash
+        ("/app/", 2, ["/app/main.py", "/app/utils.py"]),  # Directory with slash
+    ],
+)
+def test_state_backend_grep_with_path_variations(path: str, expected_count: int, expected_paths: list[str]) -> None:
     """Test grep with various path input formats."""
     rt = make_runtime()
     be = StateBackend(rt)
-    
+
     # Create nested structure
     res1 = be.write("/app/main.py", "import os\nprint('main')")
     res2 = be.write("/app/utils.py", "import sys\nprint('utils')")
     res3 = be.write("/tests/test_main.py", "import pytest")
-    
+
     for res in [res1, res2, res3]:
         assert res.error is None
         rt.state["files"].update(res.files_update)
-    
-    # Test exact file with trailing slash (should be normalized)
-    matches = be.grep_raw("import", path="/app/main.py/")
+
+    # Test the path variation
+    matches = be.grep_raw("import", path=path)
     assert isinstance(matches, list)
-    assert len(matches) == 1
-    assert matches[0]["path"] == "/app/main.py"
-    
-    # Test directory without trailing slash
-    matches_dir = be.grep_raw("import", path="/app")
-    assert isinstance(matches_dir, list)
-    assert len(matches_dir) == 2
-    
-    # Test directory with trailing slash
-    matches_dir_slash = be.grep_raw("import", path="/app/")
-    assert isinstance(matches_dir_slash, list)
-    assert len(matches_dir_slash) == 2
+    assert len(matches) == expected_count
+    match_paths = {m["path"] for m in matches}
+    assert match_paths == set(expected_paths)

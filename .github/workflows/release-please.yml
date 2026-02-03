@@ -14,13 +14,12 @@ on:
     branches:
       - master
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       deepagents-cli--release_created: ${{ steps.release.outputs['libs/cli--release_created'] }}
@@ -39,6 +38,8 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.pr != ''
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout release branch
         uses: actions/checkout@v6

@@ -24,12 +24,52 @@ jobs:
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       deepagents-cli--release_created: ${{ steps.release.outputs['libs/cli--release_created'] }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # Update uv.lock files when release-please creates/updates a PR
+  # release-please updates pyproject.toml versions but doesn't regenerate lockfiles
+  # https://github.com/googleapis/release-please/issues/2561
+  update-lockfiles:
+    needs: release-please
+    if: needs.release-please.outputs.pr != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Update lockfiles
+        run: |
+          for dir in $(find . -name "uv.lock" -type f -exec dirname {} \;); do
+            echo "Updating $dir"
+            if [ "$dir" = "./libs/acp" ]; then
+              uv lock --directory "$dir" --python 3.14
+            else
+              uv lock --directory "$dir" --python 3.12
+            fi
+          done
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "*/uv.lock"
+          if git diff --staged --quiet; then
+            echo "No lockfile changes to commit"
+          else
+            git commit -m "chore: update lockfiles"
+            git push
+          fi
 
   # Trigger release workflow when CLI package is released
   # GitHub release is created by release.yml AFTER all checks pass

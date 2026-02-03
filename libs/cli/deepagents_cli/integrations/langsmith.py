@@ -130,7 +130,9 @@ class LangSmithBackend(BaseSandbox):
         for path in paths:
             # Use LangSmith's native file read API (returns bytes)
             content = self._sandbox.read(path)
-            responses.append(FileDownloadResponse(path=path, content=content, error=None))
+            responses.append(
+                FileDownloadResponse(path=path, content=content, error=None)
+            )
 
         return responses
 
@@ -168,7 +170,9 @@ DEFAULT_TEMPLATE_IMAGE = os.getenv(
 )
 
 
-def _ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLATE_NAME) -> None:
+def _ensure_template(
+    client: SandboxClient, template_name: str = DEFAULT_TEMPLATE_NAME
+) -> None:
     """Ensure template exists, creating it if needed.
 
     Args:
@@ -184,7 +188,9 @@ def _ensure_template(client: SandboxClient, template_name: str = DEFAULT_TEMPLAT
         templates = client.list_templates()
         for template in templates:
             if template.name == template_name:
-                console.print(f"[green]✓ Template '{template_name}' already exists[/green]")
+                console.print(
+                    f"[green]✓ Template '{template_name}' already exists[/green]"
+                )
                 return
         client.get_template(template_name)
     except ResourceNotFoundError:
@@ -214,7 +220,7 @@ def _verify_sandbox_ready(sb: Sandbox, client: SandboxClient) -> None:  # noqa: 
         result = sb.run("echo ready", timeout=5)
         if result.exit_code != 0:
             readiness_error = RuntimeError("Sandbox readiness check failed")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         readiness_error = e
 
     if readiness_error:
@@ -267,14 +273,22 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             api_key: LangSmith API key (defaults to LANGSMITH_API_KEY env var)
             api_endpoint: LangSmith API endpoint (defaults to standard endpoint)
             template_name: Default template name for new sandboxes
+
+        Raises:
+            ValueError: If no API key is found in parameters or environment.
         """
         from langsmith import sandbox
 
-        self._api_key = api_key or os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
-            "LANGSMITH_API_KEY_PROD"
+        self._api_key = (
+            api_key
+            or os.environ.get("LANGSMITH_API_KEY")
+            or os.environ.get("LANGSMITH_API_KEY_PROD")
         )
         if not self._api_key:
-            msg = "LANGSMITH_API_KEY or LANGSMITH_API_KEY_PROD environment variable not set"
+            msg = (
+                "LANGSMITH_API_KEY or LANGSMITH_API_KEY_PROD "
+                "environment variable not set"
+            )
             raise ValueError(msg)
 
         langsmith_endpoint = api_endpoint or os.environ.get(
@@ -291,8 +305,8 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
     def list(
         self,
         *,
-        cursor: str | None = None,
-        **kwargs: Any,
+        cursor: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
     ) -> SandboxListResponse[dict[str, Any]]:
         """List available LangSmith sandboxes.
 
@@ -344,7 +358,9 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
 
             # Verify the existing sandbox is ready
             _verify_sandbox_ready(sb, self._client)
-            console.print(f"[green]✓ Connected to existing LangSmith sandbox: {sb.name}[/green]")
+            console.print(
+                f"[green]✓ Connected to existing LangSmith sandbox: {sb.name}[/green]"
+            )
         else:
             # Ensure template exists and create new sandbox
             _ensure_template(self._client, template)
@@ -359,8 +375,6 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             sandbox_id: Sandbox name to delete
             **kwargs: Additional parameters
         """
-        try:
+        # Idempotent - ignore errors if sandbox doesn't exist
+        with contextlib.suppress(Exception):
             self._client.delete_sandbox(sandbox_id)
-        except Exception:
-            # Idempotent - ignore errors if sandbox doesn't exist
-            pass

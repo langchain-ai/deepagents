@@ -116,8 +116,9 @@ def get_system_prompt(
 
     Args:
         assistant_id: The agent identifier for path references
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona", "langsmith").
-                     If None, agent is operating in local mode.
+        sandbox_type: Type of sandbox provider
+            ("modal", "runloop", "daytona", "langsmith").
+            If None, agent is operating in local mode.
         working_dir: Override the default working directory (e.g., cloned repo path).
                     If None, uses the sandbox provider's default.
 

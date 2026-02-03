@@ -22,6 +22,10 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     Args:
         backend: Sandbox backend instance
         setup_script_path: Path to setup script file
+
+    Raises:
+        FileNotFoundError: If the setup script does not exist.
+        RuntimeError: If the setup script fails to execute.
     """
     script_path = Path(setup_script_path)
     if not script_path.exists():
@@ -31,7 +35,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
     console.print(f"[dim]Running setup script: {setup_script_path}...[/dim]")
 
     # Read script content
-    script_content = script_path.read_text()
+    script_content = script_path.read_text(encoding="utf-8")
 
     # Expand ${VAR} syntax using local environment
     template = string.Template(script_content)

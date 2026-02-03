@@ -1,4 +1,4 @@
-"""A wrapper for DeepAgents to run in Harbor environments."""
+"""A wrapper for Deep Agents to run in Harbor environments."""
 
 import json
 import os
@@ -53,9 +53,9 @@ Your current working directory is:
 
 
 class DeepAgentsWrapper(BaseAgent):
-    """Harbor agent implementation using LangChain DeepAgents.
+    """Harbor agent implementation using LangChain Deep Agents.
 
-    Wraps DeepAgents to execute tasks in Harbor environments.
+    Wraps Deep Agents to execute tasks in Harbor environments.
     """
 
     def __init__(
@@ -68,7 +68,7 @@ class DeepAgentsWrapper(BaseAgent):
         *args,
         **kwargs,
     ) -> None:
-        """Initialize DeepAgentsWrapper.
+        """Initialize Deep AgentsWrapper.
 
         Args:
             logs_dir: Directory for storing logs
@@ -76,12 +76,12 @@ class DeepAgentsWrapper(BaseAgent):
             temperature: Temperature setting for the model
             verbose: Enable verbose output
             use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
-                          If False, use create_deep_agent from SDK.
+                If False, use create_deep_agent from SDK.
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
         if model_name is None:
-            # Use DeepAgents default
+            # Use Deep Agents default
             model_name = "anthropic:claude-sonnet-4-5-20250929"
 
         self._model_name = model_name

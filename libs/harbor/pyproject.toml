@@ -1,7 +1,7 @@
 [project]
 name = "deepagents-harbor"
 version = "0.0.1"
-description = "Harbor integration with LangChain DeepAgents and LangSmith tracing"
+description = "Harbor integration with LangChain Deep Agents and LangSmith tracing"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"

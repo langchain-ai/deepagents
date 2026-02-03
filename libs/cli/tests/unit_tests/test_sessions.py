@@ -81,7 +81,8 @@ class TestThreadFunctions:
         for tid, agent, updated in threads:
             metadata = json.dumps({"agent_name": agent, "updated_at": updated})
             conn.execute(
-                "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, metadata) "
+                "INSERT INTO checkpoints "
+                "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
                 "VALUES (?, '', ?, ?)",
                 (tid, f"cp_{tid}", metadata),
             )

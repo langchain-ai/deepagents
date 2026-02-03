@@ -39,7 +39,9 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
 
 
 @contextmanager
-def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator[Path, None, None]:
+def mock_settings(
+    tmp_path: Path, assistant_id: str = "test-agent"
+) -> Generator[Path, None, None]:
     """Context manager for patching CLI settings with temporary directories.
 
     Args:
@@ -65,9 +67,9 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
         mock_settings_obj.ensure_user_skills_dir.return_value = skills_dir
         mock_settings_obj.get_project_skills_dir.return_value = None
 
-        # Mock methods that get called during agent execution to return real Path objects
-        # This prevents MagicMock objects from being stored in state
-        # (which would fail serialization)
+        # Mock methods that get called during agent execution to return
+        # real Path objects. This prevents MagicMock objects from being
+        # stored in state (which would fail serialization)
         def get_user_agent_md_path(agent_id: str) -> Path:
             return tmp_path / "agents" / agent_id / "agent.md"
 
@@ -176,7 +178,9 @@ class TestDeepAgentsCLIEndToEnd:
                 {"messages": input_messages},
                 {"configurable": {"thread_id": thread_id}},
             )
-            assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+            assert (
+                result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+            )
             assert backend.ls_info("/conversation_history/")
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:

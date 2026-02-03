@@ -1,4 +1,4 @@
-"""LangSmith integration for Harbor DeepAgents."""
+"""LangSmith integration for Harbor Deep Agents."""
 
 import hashlib
 import uuid

@@ -19,7 +19,11 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import BaseSandbox, SandboxListResponse, SandboxProvider
+from deepagents.backends.sandbox import (
+    BaseSandbox,
+    SandboxListResponse,
+    SandboxProvider,
+)
 from runloop_api_client import Runloop
 
 
@@ -154,6 +158,9 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
 
         Args:
             api_key: Runloop API key (defaults to RUNLOOP_API_KEY env var)
+
+        Raises:
+            ValueError: If RUNLOOP_API_KEY environment variable not set
         """
         self._api_key = api_key or os.environ.get("RUNLOOP_API_KEY")
         if not self._api_key:
@@ -193,7 +200,6 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
             RunloopBackend instance
 
         Raises:
-            ImportError: Runloop SDK not installed
             RuntimeError: Devbox startup failed
         """
         if sandbox_id:

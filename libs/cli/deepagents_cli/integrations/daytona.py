@@ -12,7 +12,11 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import BaseSandbox, SandboxListResponse, SandboxProvider
+from deepagents.backends.sandbox import (
+    BaseSandbox,
+    SandboxListResponse,
+    SandboxProvider,
+)
 
 if TYPE_CHECKING:
     from daytona import Sandbox
@@ -134,6 +138,9 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
 
         Args:
             api_key: Daytona API key (defaults to DAYTONA_API_KEY env var)
+
+        Raises:
+            ValueError: If DAYTONA_API_KEY environment variable not set
         """
         from daytona import Daytona, DaytonaConfig
 

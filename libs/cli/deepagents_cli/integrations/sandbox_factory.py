@@ -78,11 +78,6 @@ def create_sandbox(
 
     Yields:
         SandboxBackendProtocol instance
-
-    Raises:
-        ValueError: If provider is unknown
-        ImportError: If required SDK is not installed
-        RuntimeError: If sandbox creation/startup fails
     """
     # Get provider instance
     provider_obj = _get_provider(provider)
@@ -93,7 +88,9 @@ def create_sandbox(
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
     backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
-    console.print(f"[green]✓ {provider.capitalize()} sandbox ready: {backend.id}[/green]")
+    console.print(
+        f"[green]✓ {provider.capitalize()} sandbox ready: {backend.id}[/green]"
+    )
 
     # Run setup script if provided
     if setup_script_path:
@@ -104,17 +101,24 @@ def create_sandbox(
     finally:
         if should_cleanup:
             try:
-                console.print(f"[dim]Terminating {provider} sandbox {backend.id}...[/dim]")
+                console.print(
+                    f"[dim]Terminating {provider} sandbox {backend.id}...[/dim]"
+                )
                 provider_obj.delete(sandbox_id=backend.id)
                 console.print(
-                    f"[dim]✓ {provider.capitalize()} sandbox {backend.id} terminated[/dim]"
+                    f"[dim]✓ {provider.capitalize()} sandbox "
+                    f"{backend.id} terminated[/dim]"
                 )
             except Exception as e:
                 console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
 
 
 def _get_available_sandbox_types() -> list[str]:
-    """Get list of available sandbox provider types (internal)."""
+    """Get list of available sandbox provider types (internal).
+
+    Returns:
+        List of available sandbox provider type names
+    """
     return sorted(_PROVIDER_TO_WORKING_DIR.keys())
 
 
@@ -147,7 +151,6 @@ def _get_provider(provider_name: str) -> SandboxProvider:
 
     Raises:
         ValueError: If provider_name is unknown
-        ImportError: If required SDK is not installed
     """
     if provider_name == "modal":
         return ModalProvider()

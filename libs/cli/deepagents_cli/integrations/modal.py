@@ -11,7 +11,11 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import BaseSandbox, SandboxListResponse, SandboxProvider
+from deepagents.backends.sandbox import (
+    BaseSandbox,
+    SandboxListResponse,
+    SandboxProvider,
+)
 
 if TYPE_CHECKING:
     import modal
@@ -183,7 +187,6 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
             ModalBackend instance
 
         Raises:
-            ImportError: Modal SDK not installed
             RuntimeError: Sandbox startup failed
         """
         import modal
@@ -220,9 +223,6 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         Args:
             sandbox_id: Sandbox ID to delete
             **kwargs: Additional parameters
-
-        Raises:
-            ImportError: Modal SDK not installed
         """
         import modal
 

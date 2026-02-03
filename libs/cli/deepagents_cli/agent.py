@@ -107,13 +107,19 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
+def get_system_prompt(
+    assistant_id: str,
+    sandbox_type: str | None = None,
+    working_dir: str | None = None,
+) -> str:
     """Get the base system prompt for the agent.
 
     Args:
         assistant_id: The agent identifier for path references
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona", "langsmith").
                      If None, agent is operating in local mode.
+        working_dir: Override the default working directory (e.g., cloned repo path).
+                    If None, uses the sandbox provider's default.
 
     Returns:
         The system prompt string (without AGENTS.md content)
@@ -136,9 +142,9 @@ You are running as model `{settings.model_name}`"""
         model_identity_section += "\n"
 
     if sandbox_type:
-        # Get provider-specific working directory
-
-        working_dir = get_default_working_dir(sandbox_type)
+        # Get provider-specific working directory, or use override
+        if working_dir is None:
+            working_dir = get_default_working_dir(sandbox_type)
 
         working_dir_section = f"""### Current Working Directory
 

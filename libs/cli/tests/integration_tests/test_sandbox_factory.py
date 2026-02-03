@@ -316,3 +316,4 @@ class TestModalIntegration(BaseSandboxIntegrationTest):
         """Provide a Modal sandbox instance."""
         with create_sandbox("modal") as sandbox:
             yield sandbox
+

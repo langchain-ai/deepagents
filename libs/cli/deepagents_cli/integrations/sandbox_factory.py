@@ -12,6 +12,7 @@ from deepagents.backends.sandbox import SandboxProvider
 
 from deepagents_cli.config import console
 from deepagents_cli.integrations.daytona import DaytonaProvider
+from deepagents_cli.integrations.langsmith import LangSmithProvider
 from deepagents_cli.integrations.modal import ModalProvider
 from deepagents_cli.integrations.runloop import RunloopProvider
 
@@ -57,6 +58,7 @@ _PROVIDER_TO_WORKING_DIR = {
     "modal": "/workspace",
     "runloop": "/home/user",
     "daytona": "/home/daytona",
+    "langsmith": "/tmp",  # noqa: S108
 }
 
 
@@ -144,7 +146,7 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a SandboxProvider instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider ("modal", "runloop", "daytona")
+        provider_name: Name of the provider ("modal", "runloop", "daytona", "langsmith")
 
     Returns:
         SandboxProvider instance
@@ -158,6 +160,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         return RunloopProvider()
     if provider_name == "daytona":
         return DaytonaProvider()
+    if provider_name == "langsmith":
+        return LangSmithProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "
         f"Available providers: {', '.join(_get_available_sandbox_types())}"

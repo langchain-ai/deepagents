@@ -1,6 +1,7 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
+import base64
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
@@ -40,6 +41,72 @@ EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
+
+# Image file extensions supported by LLM APIs (OpenAI and Anthropic)
+# Note: BMP is NOT supported - only jpeg, png, gif, webp work with vision APIs
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def _detect_model_provider(model_name: str | None) -> str:
+    """Detect the model provider from the model name.
+
+    Args:
+        model_name: Model name string (e.g., "openai:gpt-4o", "anthropic:claude-sonnet-4-5-20250929")
+
+    Returns:
+        Provider string: "openai", "anthropic", etc.
+    """
+    if not model_name:
+        return "anthropic"  # Default
+
+    model_lower = model_name.lower()
+
+    if model_lower.startswith("openai:") or "gpt" in model_lower:
+        return "openai"
+    elif model_lower.startswith("anthropic:") or "claude" in model_lower:
+        return "anthropic"
+    elif model_lower.startswith("google:") or "gemini" in model_lower:
+        return "openai"  # Google uses similar format to OpenAI
+    else:
+        return "anthropic"  # Default to Anthropic format
+
+
+def _create_image_content_block(image_b64: str, media_type: str, provider: str = "anthropic") -> dict:
+    """Create image content block in the appropriate format for the model provider.
+
+    Args:
+        image_b64: Base64-encoded image data
+        media_type: MIME type (e.g., "image/png")
+        provider: Model provider ("anthropic" or "openai")
+
+    Returns:
+        Content block dict in the provider's expected format
+    """
+    if provider == "openai":
+        # OpenAI format: image_url with data URL
+        return {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{media_type};base64,{image_b64}"
+            }
+        }
+    else:
+        # Anthropic format (default)
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": image_b64,
+            }
+        }
 
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
@@ -193,20 +260,36 @@ READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
 - Exploring unfamiliar codebases
 - Checking configuration files
 - Reading documentation
+- **Viewing images** (png, jpg, jpeg, gif, webp, bmp)
 - ALWAYS read a file before attempting to edit it
 
 **When NOT to Use:**
 - Finding files by name pattern (use `glob` instead)
 - Searching for text across multiple files (use `grep` instead)
 
+**Unsupported Formats (use CLI tools instead):**
+- Video files (.mp4, .mov, .avi, etc.) - use ffmpeg or similar
+- Audio files (.mp3, .wav, etc.) - use ffprobe or similar
+- PDF documents - use pdftotext or similar
+- Office documents (.docx, .xlsx) - use appropriate converters
+- Binary/executable files - use hexdump, strings, or file-specific tools
+
+If you need to process these formats, use `execute()` with appropriate command-line tools.
+
 **CRITICAL: You MUST read a file before editing it. The edit tool will fail if you haven't read the file first.**
 
-**Pagination (IMPORTANT for large files):**
+**Image Support:**
+- Images are returned as visual content you can see and analyze
+- Supported formats: PNG, JPG, JPEG, GIF, WebP
+- Use this to view screenshots, diagrams, charts, or any visual content
+
+**Pagination (IMPORTANT for large text files):**
 - By default, reads up to 100 lines from the beginning
 - Use `offset` and `limit` parameters for pagination:
   - First scan: `read_file(path, limit=100)` - See structure
   - Continue: `read_file(path, offset=100, limit=200)` - Next section
   - Full read: Only when necessary for immediate editing
+- Pagination parameters are ignored for images
 
 **When to paginate:**
 - Files >500 lines
@@ -214,7 +297,8 @@ READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
 - Reading multiple files in sequence
 
 **Output format:**
-- Results use cat -n format with line numbers starting at 1
+- Text files: cat -n format with line numbers starting at 1
+- Images: Visual content displayed directly
 - Lines >5,000 chars split into continuation lines (5.1, 5.2, etc.)
 - Empty files return a system reminder warning
 
@@ -559,6 +643,8 @@ class FilesystemMiddleware(AgentMiddleware):
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
+        model_provider: str | None = None,
+        model_name: str | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -568,6 +654,9 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+            model_provider: Model provider for image format ("anthropic" or "openai").
+                If not specified, auto-detected from model_name.
+            model_name: Model name used to auto-detect provider if model_provider not set.
         """
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
@@ -576,6 +665,8 @@ class FilesystemMiddleware(AgentMiddleware):
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
+        # Auto-detect provider from model name if not explicitly set
+        self._model_provider = model_provider or _detect_model_provider(model_name)
 
         self.tools = [
             self._create_ls_tool(),
@@ -639,16 +730,46 @@ class FilesystemMiddleware(AgentMiddleware):
         """Create the read_file tool."""
         tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
         token_limit = self._tool_token_limit_before_evict
+        model_provider = self._model_provider
 
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> str:
+        ) -> Command | str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             validated_path = _validate_path(file_path)
+
+            # Check if this is an image file
+            ext = os.path.splitext(validated_path)[1].lower()
+            if ext in IMAGE_EXTENSIONS:
+                # Download image as raw bytes
+                responses = resolved_backend.download_files([validated_path])
+                if responses and responses[0].content is not None:
+                    image_bytes = responses[0].content
+                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
+                    image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+                    # Create image content block for the appropriate provider
+                    image_block = _create_image_content_block(image_b64, media_type, model_provider)
+                    # Return multimodal content via Command
+                    return Command(
+                        update={
+                            "messages": [
+                                ToolMessage(
+                                    content=[image_block],
+                                    tool_call_id=runtime.tool_call_id,
+                                )
+                            ],
+                        }
+                    )
+                elif responses and responses[0].error:
+                    return f"Error reading image: {responses[0].error}"
+                else:
+                    return "Error reading image: unknown error"
+
+            # Text file handling (original logic)
             result = resolved_backend.read(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)
@@ -671,10 +792,39 @@ class FilesystemMiddleware(AgentMiddleware):
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> str:
+        ) -> Command | str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             validated_path = _validate_path(file_path)
+
+            # Check if this is an image file
+            ext = os.path.splitext(validated_path)[1].lower()
+            if ext in IMAGE_EXTENSIONS:
+                # Download image as raw bytes
+                responses = await resolved_backend.adownload_files([validated_path])
+                if responses and responses[0].content is not None:
+                    image_bytes = responses[0].content
+                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
+                    image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+                    # Create image content block for the appropriate provider
+                    image_block = _create_image_content_block(image_b64, media_type, model_provider)
+                    # Return multimodal content via Command
+                    return Command(
+                        update={
+                            "messages": [
+                                ToolMessage(
+                                    content=[image_block],
+                                    tool_call_id=runtime.tool_call_id,
+                                )
+                            ],
+                        }
+                    )
+                elif responses and responses[0].error:
+                    return f"Error reading image: {responses[0].error}"
+                else:
+                    return "Error reading image: unknown error"
+
+            # Text file handling (original logic)
             result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)

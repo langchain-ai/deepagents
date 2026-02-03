@@ -199,6 +199,24 @@ For large files (>500 lines), read in chunks using offset/limit.
 - Don't re-read files after successfully editing them
 - For commands with long output, consider redirecting to temp files
 
+## File Format Support
+
+The `read_file` tool can directly read:
+- **Text files**: Any plain text file regardless of extension
+- **Images**: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` (rendered visually)
+
+**For other formats, use command-line tools or libraries:**
+
+| Format Type | Approach |
+|-------------|----------|
+| Video/Audio | Use CLI tools to extract frames, metadata, or convert |
+| PDF | Use CLI tools to extract text content |
+| Office docs | Use CLI tools or libraries to read content |
+| CSV/data files | Use appropriate libraries for analysis |
+| Binary files | Use specialized tools to inspect or convert |
+
+**Key principle:** If `read_file` returns binary garbage or unexpected content, don't persist - switch to using `execute()` with appropriate tools to process the file.
+
 ---
 
 # Git Safety Protocol

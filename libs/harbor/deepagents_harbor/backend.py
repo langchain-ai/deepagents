@@ -1,18 +1,48 @@
 """Implement harbor backend."""
 
+import asyncio
 import base64
+import hashlib
 import json
+import re
 import shlex
+import time
 
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileDownloadResponse,
     FileInfo,
     GrepMatch,
     SandboxBackendProtocol,
     WriteResult,
 )
+from deepagents.backends.utils import truncate_execute_output
 from harbor.environments.base import BaseEnvironment
+
+# Default per-command timeout (5 minutes) - prevents hanging on stuck commands
+DEFAULT_COMMAND_TIMEOUT_SEC = 300
+
+# Patterns for commands that produce build artifacts needing cleanup
+# These patterns match when the command STARTS with or has the build tool as a primary command
+# (not when it's just a package name in apt-get/pip)
+# Note: For g++, we use (?:\s|$) instead of \b since word boundary doesn't work after +
+BUILD_ARTIFACT_PATTERNS = [
+    r"^gcc\b",                 # gcc at start of command
+    r"^g\+\+(?:\s|$)",         # g++ at start of command followed by space or end
+    r"^make\b",                # make at start of command
+    r"^cmake\b",               # cmake at start of command
+    r"^cargo\s+build\b",       # cargo build at start of command
+    r"^rustc\b",               # rustc at start of command
+    r"&&\s*gcc\b",             # gcc after && (chained command)
+    r"&&\s*g\+\+(?:\s|$)",     # g++ after && (chained command)
+    r"&&\s*make\b",            # make after && (chained command)
+    r"&&\s*cmake\b",           # cmake after && (chained command)
+    r";\s*gcc\b",              # gcc after ; (chained command)
+    r";\s*g\+\+(?:\s|$)",      # g++ after ; (chained command)
+    r";\s*make\b",             # make after ; (chained command)
+    r";\s*cmake\b",            # cmake after ; (chained command)
+]
 
 
 class HarborSandbox(SandboxBackendProtocol):
@@ -29,9 +59,40 @@ class HarborSandbox(SandboxBackendProtocol):
     async def aexecute(
         self,
         command: str,
+        timeout_sec: int = DEFAULT_COMMAND_TIMEOUT_SEC,
     ) -> ExecuteResponse:
-        """Execute a bash command in the task environment."""
-        result = await self.environment.exec(command)
+        """Execute a bash command in the task environment.
+
+        Args:
+            command: The bash command to execute
+            timeout_sec: Maximum time in seconds to wait for the command (default: 300s)
+                        Set to 0 to disable timeout (not recommended)
+        """
+        # Apply per-command timeout to prevent hanging on stuck commands
+        # This is critical for commands like apt-get that can hang indefinitely
+        try:
+            if timeout_sec > 0:
+                result = await asyncio.wait_for(
+                    self.environment.exec(command),
+                    timeout=timeout_sec
+                )
+            else:
+                result = await self.environment.exec(command)
+        except asyncio.TimeoutError:
+            return ExecuteResponse(
+                output=f"ERROR: Command timed out after {timeout_sec} seconds.\n"
+                       f"Command: {command[:200]}{'...' if len(command) > 200 else ''}\n\n"
+                       f"SUGGESTION: This command is taking too long. Consider:\n"
+                       f"- Breaking it into smaller steps\n"
+                       f"- Using a shorter timeout with the timeout_sec parameter\n"
+                       f"- For package installs: use --no-install-recommends or check if already installed\n"
+                       f"- For long builds: run in background with nohup or use pre-built binaries",
+                exit_code=124,  # Standard timeout exit code
+                truncated=False,
+            )
+
+        # Check if this was a build command that may leave artifacts
+        is_build_command = any(re.search(pattern, command) for pattern in BUILD_ARTIFACT_PATTERNS)
 
         # These errors appear in harbor environments when running bash commands
         # in non-interactive/non-TTY contexts. They're harmless artifacts.
@@ -63,14 +124,43 @@ class HarborSandbox(SandboxBackendProtocol):
             bash_msg_text = "\n".join(bash_messages)
             stderr = f"{bash_msg_text}\n{stderr}".strip() if stderr else bash_msg_text
 
+        # Truncate stdout if too long (prevents context overflow from verbose commands)
+        # Save full output to a file so agent can access it if needed
+        truncated = False
+        if stdout and stdout.count('\n') > 200:
+            # Save full output to a unique file before truncating
+            hash_suffix = hashlib.md5(f"{time.time()}{command}".encode()).hexdigest()[:8]
+            saved_path = f"/tmp/full_output_{hash_suffix}.txt"
+            try:
+                await self.environment.exec(
+                    f"cat > {saved_path} << 'DEEPAGENTS_EOF'\n{stdout}\nDEEPAGENTS_EOF"
+                )
+            except Exception:
+                saved_path = None  # Don't reference if save failed
+
+            stdout, truncated = truncate_execute_output(stdout, saved_path=saved_path)
+
         # Only append stderr label if there's actual stderr content
         if stderr:
             output = stdout + "\n\n stderr: " + stderr if stdout else "\n stderr: " + stderr
         else:
             output = stdout
+
+        # Add cleanup reminder after successful build commands
+        # This helps agents remember to remove intermediate files before verification
+        if is_build_command and result.return_code == 0:
+            cleanup_reminder = (
+                "\n\n[SYSTEM REMINDER: Build completed. Before finishing, ensure you:\n"
+                "  1. Remove intermediate files (.o, .a, build/, __pycache__/) if they interfere with verification\n"
+                "  2. Keep only the final executable/output file\n"
+                "  3. Run 'make clean' or equivalent if provided by the build system]"
+            )
+            output = output + cleanup_reminder
+
         return ExecuteResponse(
             output=output,
             exit_code=result.return_code,
+            truncated=truncated,
         )
 
     def execute(
@@ -423,3 +513,84 @@ done
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Find files matching glob pattern using shell commands."""
         raise NotImplementedError("Use aglob_info instead")
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download files as raw bytes using base64 encoding over shell.
+
+        This is primarily used for binary files like images that need to be
+        returned as multimodal content.
+        """
+        responses: list[FileDownloadResponse] = []
+
+        for path in paths:
+            safe_path = shlex.quote(path)
+
+            # Check if file exists and read as base64
+            # Use environment.exec directly to bypass truncation (base64 must not be truncated)
+            cmd = f"""
+if [ ! -f {safe_path} ]; then
+    echo "FILE_NOT_FOUND"
+    exit 1
+fi
+base64 {safe_path}
+"""
+            result = await self.environment.exec(cmd)
+
+            if result.return_code != 0 or "FILE_NOT_FOUND" in (result.stdout or ""):
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="file_not_found")
+                )
+            else:
+                try:
+                    # Clean up base64 output - remove any whitespace/newlines
+                    b64_data = (result.stdout or "").strip().replace("\n", "").replace("\r", "")
+                    # Decode the base64 output to get raw bytes
+                    content = base64.b64decode(b64_data)
+
+                    # Validate it's actually a valid image by checking magic bytes
+                    if not _is_valid_image(content):
+                        responses.append(
+                            FileDownloadResponse(path=path, content=None, error="invalid_image_format")
+                        )
+                        continue
+
+                    responses.append(
+                        FileDownloadResponse(path=path, content=content, error=None)
+                    )
+                except Exception as e:
+                    responses.append(
+                        FileDownloadResponse(path=path, content=None, error=f"decode_error: {e}")
+                    )
+
+        return responses
+
+
+def _is_valid_image(data: bytes) -> bool:
+    """Check if data is a valid image by examining magic bytes.
+
+    This prevents sending corrupted or non-image data to the vision API.
+    """
+    if len(data) < 8:
+        return False
+
+    # PNG magic bytes
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return True
+
+    # JPEG magic bytes (FFD8FF)
+    if data[:3] == b'\xff\xd8\xff':
+        return True
+
+    # GIF magic bytes
+    if data[:6] in (b'GIF87a', b'GIF89a'):
+        return True
+
+    # WebP magic bytes (RIFF....WEBP)
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return True
+
+    return False
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download files as raw bytes."""
+        raise NotImplementedError("Use adownload_files instead")

@@ -147,14 +147,15 @@ def create_deep_agent(
         and "max_input_tokens" in model.profile
         and isinstance(model.profile["max_input_tokens"], int)
     ):
-        trigger = ("fraction", 0.85)
+        # Trigger at 70% to leave headroom for large tool outputs
+        trigger = ("fraction", 0.70)
         keep = ("fraction", 0.10)
         truncate_args_settings = {
-            "trigger": ("fraction", 0.85),
+            "trigger": ("fraction", 0.70),
             "keep": ("fraction", 0.10),
         }
     else:
-        trigger = ("tokens", 170000)
+        trigger = ("tokens", 140000)
         keep = ("messages", 6)
         truncate_args_settings = {
             "trigger": ("messages", 20),
@@ -168,17 +169,20 @@ def create_deep_agent(
 
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
+    # Extract model name for provider detection in FilesystemMiddleware
+    model_name = getattr(model, "model_name", None) or getattr(model, "model", None)
+
     if skills is not None:
         subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     subagent_middleware.extend(
         [
-            FilesystemMiddleware(backend=backend),
+            FilesystemMiddleware(backend=backend, model_name=model_name),
             SummarizationMiddleware(
                 model=model,
                 backend=backend,
                 trigger=trigger,
                 keep=keep,
-                trim_tokens_to_summarize=None,
+                trim_tokens_to_summarize=100000,  # Limit summary input to prevent overflow
                 truncate_args_settings=truncate_args_settings,
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
@@ -196,7 +200,7 @@ def create_deep_agent(
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
         [
-            FilesystemMiddleware(backend=backend),
+            FilesystemMiddleware(backend=backend, model_name=model_name),
             SubAgentMiddleware(
                 default_model=model,
                 default_tools=tools,
@@ -210,7 +214,7 @@ def create_deep_agent(
                 backend=backend,
                 trigger=trigger,
                 keep=keep,
-                trim_tokens_to_summarize=None,
+                trim_tokens_to_summarize=100000,  # Limit summary input to prevent overflow
                 truncate_args_settings=truncate_args_settings,
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),

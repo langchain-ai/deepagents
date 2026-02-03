@@ -219,6 +219,58 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     return result
 
 
+# Maximum lines to keep in execute output before truncating
+# This prevents context overflow from verbose commands (MCMC iterations, compilation logs, etc.)
+EXECUTE_OUTPUT_MAX_LINES = 200
+
+
+def truncate_execute_output(
+    output: str,
+    max_lines: int = EXECUTE_OUTPUT_MAX_LINES,
+    saved_path: str | None = None,
+) -> tuple[str, bool]:
+    """Truncate execute command output if it exceeds max lines.
+
+    Preserves first half and last half of lines, with truncation notice in the middle.
+    This is designed for verbose command output (compilation logs, MCMC iterations, etc.)
+    that would otherwise cause context overflow.
+
+    Args:
+        output: Raw command output string
+        max_lines: Maximum lines before truncation (default: 200)
+        saved_path: Optional path where full output was saved (included in message)
+
+    Returns:
+        Tuple of (truncated_output, was_truncated)
+        - truncated_output: Either original output or truncated with notice
+        - was_truncated: True if truncation occurred
+
+    Example:
+        ```python
+        output, truncated = truncate_execute_output(long_output, saved_path="/tmp/full.txt")
+        if truncated:
+            print("Output was truncated, full version at:", saved_path)
+        ```
+    """
+    if not output:
+        return output, False
+
+    lines = output.split('\n')
+    if len(lines) <= max_lines:
+        return output, False
+
+    half = max_lines // 2
+    truncated_count = len(lines) - max_lines
+
+    if saved_path:
+        notice = f'\n\n... [{truncated_count} lines truncated - full output saved to {saved_path}] ...\n\n'
+    else:
+        notice = f'\n\n... [{truncated_count} lines truncated] ...\n\n'
+
+    truncated_output = '\n'.join(lines[:half]) + notice + '\n'.join(lines[-half:])
+    return truncated_output, True
+
+
 def _validate_path(path: str | None) -> str:
     """Validate and normalize a path.
 

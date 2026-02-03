@@ -31,6 +31,12 @@ from langsmith import trace
 from langsmith.client import Client
 
 from deepagents_harbor.backend import HarborSandbox
+from deepagents_harbor.middleware import (
+    APIErrorRecoveryMiddleware,
+    ContextBudgetMiddleware,
+    LoopDetectionMiddleware,
+    PreCompletionCheckMiddleware,
+)
 
 # Load .env file if present
 load_dotenv()
@@ -230,65 +236,116 @@ def _format_local_context(context: dict[str, str | None], file_listing: str) -> 
     sections.append("Work in the current directory unless explicitly instructed otherwise.")
     sections.append("")
 
-    # Terminal Bench specific guidance - FOCUSED
-    sections.append("---")
-    sections.append("")
-    sections.append("## CRITICAL REMINDERS")
-    sections.append("")
-    sections.append("### 1. YOU MUST EXECUTE - Not Describe")
-    sections.append("```")
-    sections.append("WRONG: 'To solve this, run: python script.py'  # Text does nothing")
-    sections.append("RIGHT: [calls execute tool with 'python script.py']  # Actually runs")
-    sections.append("```")
-    sections.append("")
-    sections.append("### 2. VERIFY BY RUNNING")
-    sections.append("After writing code, EXECUTE it and check output. Don't just assume it works.")
-    sections.append("```bash")
-    sections.append("python solution.py        # Run it")
-    sections.append("cat /app/result.txt       # Check the output")
-    sections.append("curl localhost:8080       # Verify server responds")
-    sections.append("```")
-    sections.append("")
-    sections.append("### 3. FIND ALL SOLUTIONS")
-    sections.append("If task asks for 'best', 'all', or 'every' - find EVERY valid answer.")
-    sections.append("Don't stop at the first one. A partial answer = FAILED task.")
-    sections.append("")
-    sections.append("### 4. USE EXACT NAMES FROM SPECS")
-    sections.append("- Spec says `value` → use `value`, NOT `val`")
-    sections.append("- Spec says `/app/result.txt` → use that EXACT path")
-    sections.append("")
-    sections.append("### 5. USE WEB TOOLS FOR MISSING DATA")
-    sections.append("If local files are empty/missing, DON'T GIVE UP. Use:")
-    sections.append("- `web_search` to find information")
-    sections.append("- `fetch_url` to retrieve content")
-    sections.append("")
-    sections.append("### 6. TRY MULTIPLE APPROACHES")
-    sections.append("If one approach fails, try at least 2 more alternatives.")
-    sections.append("Pivot to standard library or CLI tools if packages fail.")
-    sections.append("")
-    sections.append("### 7. BACKGROUND PROCESSES DON'T PERSIST")
-    sections.append("Verification runs in a SEPARATE process. Background servers won't be running.")
-    sections.append("→ Verify servers work BEFORE you finish (curl them)")
-    sections.append("→ Or create a startup script the verifier can run")
-    sections.append("")
-    sections.append("### 8. PREFER STDLIB AND CLI TOOLS")
-    sections.append("```python")
-    sections.append("# BAD: pip install requests → won't persist")
-    sections.append("# GOOD: subprocess.run(['curl', url]) → always works")
-    sections.append("```")
-    sections.append("")
-    sections.append("---")
-    sections.append("")
-    sections.append("## PRE-COMPLETION CHECKLIST (Walk through this!)")
-    sections.append("")
-    sections.append("Before finishing, verify EACH item:")
-    sections.append("")
-    sections.append("☐ Did I EXECUTE my code (not just write it)?")
-    sections.append("☐ Did I check the ACTUAL OUTPUT matches requirements?")
-    sections.append("☐ Are field names/paths EXACTLY as specified?")
-    sections.append("☐ If task asked for ALL solutions, did I find ALL of them?")
-    sections.append("☐ If server task, is the server actually responding?")
-    sections.append("☐ Will automated verification pass immediately after I finish?")
+    # Terminal Bench specific guidance - as a clean multi-line string
+    sections.append("""---
+
+## INTEGRITY RULES (VIOLATIONS = AUTOMATIC FAILURE)
+
+1. **NO DATA FABRICATION**: NEVER invent, guess, or fabricate data. If you cannot recover/extract actual data, report the failure. Do not make up values.
+
+2. **NO TEST OVERFITTING**: Your solution must work for ANY valid input, not just test examples. Do NOT read test files to build lookup tables or hardcode answers.
+
+3. **NO BENCHMARK GAMING**: Do NOT modify timing functions, measurement code, or evaluation logic. Optimize the actual algorithm, not the measurement.
+
+4. **NO INTERFACE BYPASS**: When a task specifies using a particular API/function, use ONLY that interface. Do NOT read source code or access internal variables to bypass constraints.
+
+5. **NO SERVICE KILLING**: When you start a server/service for a task, do NOT terminate it. Verification needs it running. Use background execution (`&`, `nohup`, daemon mode).
+
+---
+
+## CRITICAL REMINDERS
+
+### 1. YOU MUST EXECUTE - Not Describe
+```
+WRONG: 'To solve this, run: python script.py'  # Text does nothing
+RIGHT: [calls execute tool with 'python script.py']  # Actually runs
+```
+
+### 2. VERIFY BY RUNNING
+After writing code, EXECUTE it and check output. Don't just assume it works.
+```bash
+python solution.py        # Run it
+cat /app/result.txt       # Check the output
+curl localhost:8080       # Verify server responds
+```
+
+### 3. FIND ALL SOLUTIONS
+If task asks for 'best', 'all', or 'every' - find EVERY valid answer.
+Don't stop at the first one. A partial answer = FAILED task.
+
+### 4. USE EXACT NAMES FROM SPECS
+- Spec says `value` → use `value`, NOT `val`
+- Spec says `/app/result.txt` → use that EXACT path
+- For argparse: use `--flag` style (named args) unless positional explicitly required
+
+### 5. USE WEB TOOLS FOR MISSING DATA
+If local files are empty/missing, DON'T GIVE UP. Use:
+- `web_search` to find information
+- `fetch_url` to retrieve content
+
+### 6. TRY MULTIPLE APPROACHES
+If one approach fails, try at least 2 more alternatives.
+Pivot to standard library or CLI tools if packages fail.
+
+### 7. BACKGROUND PROCESSES DON'T PERSIST
+Verification runs in a SEPARATE process. Background servers won't be running.
+→ Verify servers work BEFORE you finish (curl them)
+→ Or create a startup script the verifier can run
+
+### 8. PREFER STDLIB AND CLI TOOLS
+```python
+# BAD: pip install requests → won't persist
+# GOOD: subprocess.run(['curl', url]) → always works
+```
+
+### 9. VISION vs PROGRAMMATIC PROCESSING
+**When to use vision (read_image tool):**
+- Screenshots, diagrams, UI layouts - where spatial relationships matter
+- Handwritten content, stylized text, complex visual formatting
+- Images where content cannot be extracted programmatically
+
+**When to use programmatic processing:**
+- PDFs with text: use `pdftotext`, `PyPDF2`, or similar
+- Structured data: parse JSON/CSV/XML directly
+- Code files: read them as text, don't screenshot
+- Videos: extract frames/audio programmatically, then process
+
+Rule: If the content CAN be extracted as text, DO extract it as text.
+Vision is for visual reasoning, not text extraction from machine-readable formats.
+
+### 10. COMMAND TIMEOUTS
+Commands that run >5 minutes are likely stuck. If you see a timeout error:
+- Don't retry the same command without changes
+- Break the operation into smaller steps
+- For apt-get/pip: check if package is already installed first
+- For builds: consider pre-built binaries or cached dependencies
+
+### 11. OPTIMIZATION TASKS
+For any task asking you to "optimize" or "improve performance":
+- ALWAYS benchmark BEFORE making changes
+- ALWAYS benchmark AFTER to verify improvement
+- Do NOT assume common patterns (CTEs, caching) help - MEASURE
+- Use EXPLAIN or profiling tools to understand what's slow
+
+### 12. FILE EDITING STRATEGY
+If `edit_file` fails with "appears multiple times":
+- Switch to `write_file` to rewrite the entire file
+- Don't keep retrying the same failing edit
+
+---
+
+## PRE-COMPLETION CHECKLIST (Walk through this!)
+
+Before finishing, verify EACH item:
+
+☐ Did I EXECUTE my code (not just write it)?
+☐ Did I check the ACTUAL OUTPUT matches requirements?
+☐ Are field names/paths EXACTLY as specified?
+☐ If task asked for ALL solutions, did I find ALL of them?
+☐ If server task, is the server actually responding?
+☐ If I compiled code, did I clean up intermediate files (.o, .a, build/)?
+☐ If I started a service, is it still running (not killed)?
+☐ Will automated verification pass immediately after I finish?""")
 
     return "\n".join(sections)
 
@@ -375,6 +432,9 @@ class DeepAgentsWrapper(BaseAgent):
         temperature: float = 0.0,
         verbose: bool = True,
         use_cli_agent: bool = True,
+        reasoning_effort: str = "high",
+        experiment_name: str | None = None,
+        experiment_tags: str | None = None,
         *args,
         **kwargs,
     ) -> None:
@@ -387,6 +447,10 @@ class DeepAgentsWrapper(BaseAgent):
             verbose: Enable verbose output
             use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
                           If False, use create_deep_agent from SDK.
+            reasoning_effort: Reasoning effort level for OpenAI reasoning models
+                             ("low", "medium", "high", "xhigh"). Default: "high"
+            experiment_name: Name for this experiment run (for LangSmith grouping)
+            experiment_tags: Comma-separated tags for this experiment (for LangSmith filtering)
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
@@ -398,15 +462,19 @@ class DeepAgentsWrapper(BaseAgent):
         self._temperature = temperature
         self._verbose = verbose
         self._use_cli_agent = use_cli_agent
+        self._reasoning_effort = reasoning_effort
+        self._experiment_name = experiment_name
+        # Parse comma-separated tags into list
+        self._experiment_tags = [t.strip() for t in experiment_tags.split(",")] if experiment_tags else []
 
         # Configure model with provider-specific settings
         model_kwargs: dict = {"temperature": temperature}
 
-        # GPT-5.2-codex and similar reasoning models need Responses API with max reasoning
+        # GPT-5.2-codex and similar reasoning models need Responses API
         model_lower = model_name.lower() if model_name else ""
         if "codex" in model_lower or "gpt-5" in model_lower:
             model_kwargs["use_responses_api"] = True
-            model_kwargs["reasoning_effort"] = "high"  # max reasoning for benchmarks
+            model_kwargs["reasoning_effort"] = reasoning_effort
 
         self._model = init_chat_model(model_name, **model_kwargs)
 
@@ -529,6 +597,14 @@ class DeepAgentsWrapper(BaseAgent):
                 harbor_tools.append(web_search)
 
             # Use CLI agent with auto-approve mode
+            # Build middleware stack for Harbor benchmarks
+            harbor_middleware = [
+                APIErrorRecoveryMiddleware(),      # Catch and recover from API errors
+                LoopDetectionMiddleware(),         # Detect stuck editing loops
+                ContextBudgetMiddleware(),         # Prevent context overflow
+                PreCompletionCheckMiddleware(),    # Enforce checklist before finishing
+            ]
+
             deep_agent, _ = create_cli_agent(
                 model=self._model,
                 assistant_id=sanitized_assistant_id,
@@ -540,6 +616,7 @@ class DeepAgentsWrapper(BaseAgent):
                 enable_memory=False,
                 enable_skills=False,  # Disable CLI skills for now
                 enable_shell=False,  # Sandbox provides execution
+                middleware=harbor_middleware,
             )
         else:
             # Use SDK agent
@@ -557,9 +634,13 @@ class DeepAgentsWrapper(BaseAgent):
         metadata = {
             "task_instruction": instruction,
             "model": self._model_name,
+            "reasoning_effort": self._reasoning_effort,
             # Job-level identifiers for grouping runs in LangSmith
             "job_id": self._job_id,
             "job_start_time": self._job_start_time,
+            # Experiment tracking
+            "experiment_name": self._experiment_name,
+            "experiment_tags": self._experiment_tags,
             # Task-level identifiers
             "task_name": task_name,
             "harbor_session_id": environment.session_id,
@@ -571,14 +652,21 @@ class DeepAgentsWrapper(BaseAgent):
         # Look up example_id from instruction using the mapping built at initialization
         example_id = self._instruction_to_example_id.get(instruction)
 
+        # Build tags list - include experiment tags for easy filtering
+        run_tags = [
+            self._model_name,
+            self._job_id,
+            task_name,
+            "cli-agent" if self._use_cli_agent else "sdk-agent",
+            f"reasoning:{self._reasoning_effort}",
+        ]
+        if self._experiment_name:
+            run_tags.append(f"exp:{self._experiment_name}")
+        run_tags.extend(self._experiment_tags)
+
         config: RunnableConfig = {
             "run_name": f"{task_name}",
-            "tags": [
-                self._model_name,
-                self._job_id,
-                task_name,
-                "cli-agent" if self._use_cli_agent else "sdk-agent",
-            ],
+            "tags": run_tags,
             "configurable": {
                 "thread_id": str(uuid.uuid4()),
             },

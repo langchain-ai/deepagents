@@ -335,6 +335,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     checkpointer: BaseCheckpointSaver | None = None,
+    middleware: list | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -358,6 +359,8 @@ def create_cli_agent(
         enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
         checkpointer: Optional checkpointer for session persistence. If None, uses
                      InMemorySaver (no persistence across CLI invocations).
+        middleware: Additional middleware to add to the agent. These are appended
+                   after the standard CLI middleware stack.
 
     Returns:
         2-tuple of (agent_graph, backend)
@@ -495,6 +498,10 @@ def create_cli_agent(
             default=backend,
             routes={},
         )
+
+    # Add custom middleware if provided
+    if middleware:
+        agent_middleware.extend(middleware)
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver

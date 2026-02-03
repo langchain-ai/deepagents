@@ -354,41 +354,24 @@ def _get_subagents_legacy(
     return agents, subagent_descriptions
 
 
-def _create_task_tool_legacy(
-    *,
-    default_model: str | BaseChatModel,
-    default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
-    default_middleware: list[AgentMiddleware] | None,
-    default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-    subagents: list[SubAgent | CompiledSubAgent],
-    general_purpose_agent: bool,
+def _build_task_tool(
+    subagent_graphs: dict[str, Runnable],
+    subagent_descriptions: list[str],
     task_description: str | None = None,
 ) -> BaseTool:
-    """Create a task tool for invoking subagents.
+    """Create a task tool from pre-built subagent graphs.
+
+    This is the shared implementation used by both the legacy API and new API.
 
     Args:
-        default_model: Default model for subagents.
-        default_tools: Default tools for subagents.
-        default_middleware: Middleware to apply to all subagents.
-        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
-            are also the fallback for any subagents that don't specify their own tool configs.
-        subagents: List of subagent specifications.
-        general_purpose_agent: Whether to include general-purpose agent.
+        subagent_graphs: Map of subagent names to runnable instances.
+        subagent_descriptions: List of formatted agent descriptions (e.g., "- name: description").
         task_description: Custom description for the task tool. If `None`,
             uses default template. Supports `{available_agents}` placeholder.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
     """
-    subagent_graphs, subagent_descriptions = _get_subagents_legacy(
-        default_model=default_model,
-        default_tools=default_tools,
-        default_middleware=default_middleware,
-        default_interrupt_on=default_interrupt_on,
-        subagents=subagents,
-        general_purpose_agent=general_purpose_agent,
-    )
-
     subagent_description_str = "\n".join(subagent_descriptions)
 
     # Use custom description if provided, otherwise use default template
@@ -418,13 +401,16 @@ def _create_task_tool_legacy(
         return Command(update={**state_update, "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)]})
 
     def task(
-        description: Annotated[str, "A detailed description of the task for the subagent to perform autonomously."],
-        subagent_type: Annotated[str, "The type of subagent to use."],
+        description: Annotated[
+            str,
+            "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
+        ],
+        subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed = ", ".join(f"`{k}`" for k in subagent_graphs)
-            return f"Unknown subagent `{subagent_type}`. Available: {allowed}"
+            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed}"
         subagent, state = _prepare_state(subagent_type, description, runtime)
         result = subagent.invoke(state)
         if not runtime.tool_call_id:
@@ -433,13 +419,16 @@ def _create_task_tool_legacy(
         return _make_result(result, runtime.tool_call_id)
 
     async def atask(
-        description: Annotated[str, "A detailed description of the task for the subagent to perform autonomously."],
-        subagent_type: Annotated[str, "The type of subagent to use."],
+        description: Annotated[
+            str,
+            "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
+        ],
+        subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed = ", ".join(f"`{k}`" for k in subagent_graphs)
-            return f"Unknown subagent `{subagent_type}`. Available: {allowed}"
+            return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed}"
         subagent, state = _prepare_state(subagent_type, description, runtime)
         result = await subagent.ainvoke(state)
         if not runtime.tool_call_id:
@@ -453,6 +442,44 @@ def _create_task_tool_legacy(
         coroutine=atask,
         description=description,
     )
+
+
+def _create_task_tool_legacy(
+    *,
+    default_model: str | BaseChatModel,
+    default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
+    default_middleware: list[AgentMiddleware] | None,
+    default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+    subagents: list[SubAgent | CompiledSubAgent],
+    general_purpose_agent: bool,
+    task_description: str | None = None,
+) -> BaseTool:
+    """Create a task tool for invoking subagents (legacy API).
+
+    Args:
+        default_model: Default model for subagents.
+        default_tools: Default tools for subagents.
+        default_middleware: Middleware to apply to all subagents.
+        default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
+            are also the fallback for any subagents that don't specify their own tool configs.
+        subagents: List of subagent specifications.
+        general_purpose_agent: Whether to include general-purpose agent.
+        task_description: Custom description for the task tool. If `None`,
+            uses default template. Supports `{available_agents}` placeholder.
+
+    Returns:
+        A StructuredTool that can invoke subagents by type.
+    """
+    subagent_graphs, subagent_descriptions = _get_subagents_legacy(
+        default_model=default_model,
+        default_tools=default_tools,
+        default_middleware=default_middleware,
+        default_interrupt_on=default_interrupt_on,
+        subagents=subagents,
+        general_purpose_agent=general_purpose_agent,
+    )
+
+    return _build_task_tool(subagent_graphs, subagent_descriptions, task_description)
 
 
 class _DeprecatedKwargs(TypedDict, total=False):
@@ -721,70 +748,10 @@ class SubAgentMiddleware(AgentMiddleware):
         """
         subagent_graphs = self._get_subagents()
 
-        # Build description
-        agent_list = "\n".join(f"- {spec['name']}: {spec['description']}" for spec in self._subagents)
-        description = task_description or TASK_TOOL_DESCRIPTION
+        # Build description list
+        subagent_descriptions = [f"- {spec['name']}: {spec['description']}" for spec in self._subagents]
 
-        # Format available_agents placeholder if present
-        if "{available_agents}" in description:
-            description = description.format(available_agents=agent_list)
-
-        def _prepare_state(subagent_type: str, task_desc: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
-            """Prepare state for subagent invocation."""
-            subagent = subagent_graphs[subagent_type]
-            state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
-            state["messages"] = [HumanMessage(content=task_desc)]
-            return subagent, state
-
-        def _make_result(result: dict, tool_call_id: str) -> Command:
-            """Convert subagent result to Command with state update."""
-            if "messages" not in result:
-                msg = (
-                    "CompiledSubAgent must return a state containing a 'messages' key. "
-                    "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
-                    "in their state schema to communicate results back to the main agent."
-                )
-                raise ValueError(msg)
-            state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-            message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
-            return Command(update={**state_update, "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)]})
-
-        def task(
-            description: Annotated[str, "A detailed description of the task for the subagent to perform autonomously."],
-            subagent_type: Annotated[str, "The type of subagent to use."],
-            runtime: ToolRuntime,
-        ) -> str | Command:
-            if subagent_type not in subagent_graphs:
-                allowed = ", ".join(f"`{k}`" for k in subagent_graphs)
-                return f"Unknown subagent `{subagent_type}`. Available: {allowed}"
-            subagent, state = _prepare_state(subagent_type, description, runtime)
-            result = subagent.invoke(state)
-            if not runtime.tool_call_id:
-                msg = "Tool call ID is required for subagent invocation"
-                raise ValueError(msg)
-            return _make_result(result, runtime.tool_call_id)
-
-        async def atask(
-            description: Annotated[str, "A detailed description of the task for the subagent to perform autonomously."],
-            subagent_type: Annotated[str, "The type of subagent to use."],
-            runtime: ToolRuntime,
-        ) -> str | Command:
-            if subagent_type not in subagent_graphs:
-                allowed = ", ".join(f"`{k}`" for k in subagent_graphs)
-                return f"Unknown subagent `{subagent_type}`. Available: {allowed}"
-            subagent, state = _prepare_state(subagent_type, description, runtime)
-            result = await subagent.ainvoke(state)
-            if not runtime.tool_call_id:
-                msg = "Tool call ID is required for subagent invocation"
-                raise ValueError(msg)
-            return _make_result(result, runtime.tool_call_id)
-
-        return StructuredTool.from_function(
-            name="task",
-            func=task,
-            coroutine=atask,
-            description=description,
-        )
+        return _build_task_tool(subagent_graphs, subagent_descriptions, task_description)
 
     def wrap_model_call(
         self,

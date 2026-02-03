@@ -304,7 +304,7 @@ def _glob_search_files(
     except ValueError:
         return "No files found"
 
-    filtered = _filter_files_by_path(files, path)
+    filtered = _filter_files_by_path(files, normalized_path)
 
     # Respect standard glob semantics:
     # - Patterns without path separators (e.g., "*.py") match only in the current
@@ -402,7 +402,7 @@ def _grep_search_files(
     except ValueError:
         return "No matches found"
 
-    filtered = _filter_files_by_path(files, path)
+    filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
         filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}
@@ -445,7 +445,7 @@ def grep_matches_from_files(
     except ValueError:
         return []
 
-    filtered = _filter_files_by_path(files, path)
+    filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
         filtered = {fp: fd for fp, fd in filtered.items() if wcglob.globmatch(Path(fp).name, glob, flags=wcglob.BRACE)}

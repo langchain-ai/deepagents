@@ -318,3 +318,86 @@ Total projects: 3
     glob_matches = await be.aglob_info("*", path=evicted_path)
     assert len(glob_matches) == 1
     assert glob_matches[0]["path"] == evicted_path
+
+
+async def test_state_backend_apath_edge_cases() -> None:
+    """Test edge cases in path handling for async grep and glob operations."""
+    rt = make_runtime()
+    be = StateBackend(rt)
+    
+    # Create test files
+    files = {
+        "/file.txt": "root content",
+        "/dir/nested.txt": "nested content",
+        "/dir/subdir/deep.txt": "deep content",
+    }
+    
+    for path, content in files.items():
+        res = await be.awrite(path, content)
+        assert res.error is None
+        rt.state["files"].update(res.files_update)
+    
+    # Test 1: Grep with None path should default to root
+    matches = await be.agrep_raw("content", path=None)
+    assert isinstance(matches, list)
+    assert len(matches) == 3
+    
+    # Test 2: Grep with trailing slash on directory
+    matches_slash = await be.agrep_raw("nested", path="/dir/")
+    assert isinstance(matches_slash, list)
+    assert len(matches_slash) == 1
+    assert matches_slash[0]["path"] == "/dir/nested.txt"
+    
+    # Test 3: Grep with no trailing slash on directory
+    matches_no_slash = await be.agrep_raw("nested", path="/dir")
+    assert isinstance(matches_no_slash, list)
+    assert len(matches_no_slash) == 1
+    assert matches_no_slash[0]["path"] == "/dir/nested.txt"
+    
+    # Test 4: Glob with exact file path
+    glob_exact = await be.aglob_info("*.txt", path="/file.txt")
+    assert len(glob_exact) == 1
+    assert glob_exact[0]["path"] == "/file.txt"
+    
+    # Test 5: Glob with directory and pattern
+    glob_dir = await be.aglob_info("*.txt", path="/dir/")
+    assert len(glob_dir) == 1  # Only nested.txt, not deep.txt (non-recursive)
+    assert glob_dir[0]["path"] == "/dir/nested.txt"
+    
+    # Test 6: Glob with recursive pattern
+    glob_recursive = await be.aglob_info("**/*.txt", path="/dir/")
+    assert len(glob_recursive) == 2  # Both nested.txt and deep.txt
+    paths = {g["path"] for g in glob_recursive}
+    assert "/dir/nested.txt" in paths
+    assert "/dir/subdir/deep.txt" in paths
+
+
+async def test_state_backend_agrep_with_path_variations() -> None:
+    """Test async grep with various path input formats."""
+    rt = make_runtime()
+    be = StateBackend(rt)
+    
+    # Create nested structure
+    res1 = await be.awrite("/app/main.py", "import os\nprint('main')")
+    res2 = await be.awrite("/app/utils.py", "import sys\nprint('utils')")
+    res3 = await be.awrite("/tests/test_main.py", "import pytest")
+    
+    for res in [res1, res2, res3]:
+        assert res.error is None
+        rt.state["files"].update(res.files_update)
+    
+    # Test exact file with trailing slash (should be normalized)
+    matches = await be.agrep_raw("import", path="/app/main.py/")
+    assert isinstance(matches, list)
+    assert len(matches) == 1
+    assert matches[0]["path"] == "/app/main.py"
+    
+    # Test directory without trailing slash
+    matches_dir = await be.agrep_raw("import", path="/app")
+    assert isinstance(matches_dir, list)
+    assert len(matches_dir) == 2
+    
+    # Test directory with trailing slash
+    matches_dir_slash = await be.agrep_raw("import", path="/app/")
+    assert isinstance(matches_dir_slash, list)
+    assert len(matches_dir_slash) == 2

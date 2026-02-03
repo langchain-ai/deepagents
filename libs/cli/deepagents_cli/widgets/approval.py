@@ -123,11 +123,10 @@ class ApprovalMenu(Container):
         if len(self._action_requests) != 1:
             return False
         req = self._action_requests[0]
-        tool_name = req.get("name", "")
-        if tool_name not in _SHELL_TOOLS:
+        if req.get("name", "") not in _SHELL_TOOLS:
             return False
-        command = req.get("args", {}).get("command", "")
-        return len(str(command)) > _SHELL_COMMAND_TRUNCATE_LENGTH
+        command = str(req.get("args", {}).get("command", ""))
+        return len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH
 
     def _get_command_display(self, *, expanded: bool) -> str:
         """Get the command display string (truncated or full).

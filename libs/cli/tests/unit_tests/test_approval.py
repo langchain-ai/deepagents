@@ -88,6 +88,37 @@ class TestGetCommandDisplay:
         assert "press 'e' to expand" not in display
         assert "..." not in display
 
+    def test_short_command_shows_full_even_when_expanded_true(self) -> None:
+        """Test that short commands show in full even when expanded=True."""
+        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+        display = menu._get_command_display(expanded=True)
+        assert "echo hello" in display
+        assert "press 'e' to expand" not in display
+        assert "..." not in display
+
+    def test_command_at_boundary_plus_one_is_expandable(self) -> None:
+        """Test off-by-one: command at exactly threshold + 1 is expandable."""
+        boundary_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 1)
+        menu = ApprovalMenu({"name": "shell", "args": {"command": boundary_command}})
+        assert menu._has_expandable_command is True
+        display = menu._get_command_display(expanded=False)
+        assert "..." in display
+        assert "press 'e' to expand" in display
+
+    def test_none_command_value_handled(self) -> None:
+        """Test that None command value is handled gracefully."""
+        menu = ApprovalMenu({"name": "shell", "args": {"command": None}})
+        assert menu._has_expandable_command is False
+        display = menu._get_command_display(expanded=False)
+        assert "None" in display
+
+    def test_integer_command_value_handled(self) -> None:
+        """Test that integer command value is converted to string."""
+        menu = ApprovalMenu({"name": "shell", "args": {"command": 12345}})
+        assert menu._has_expandable_command is False
+        display = menu._get_command_display(expanded=False)
+        assert "12345" in display
+
 
 class TestToggleExpand:
     """Tests for `ApprovalMenu.action_toggle_expand`."""
@@ -104,6 +135,27 @@ class TestToggleExpand:
         assert menu._command_expanded is True
         menu.action_toggle_expand()
         assert menu._command_expanded is False
+
+    def test_toggle_updates_widget_with_correct_content(self) -> None:
+        """Test that toggling calls widget.update() with correct display content."""
+        long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 10)
+        menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
+        menu._command_widget = MagicMock()
+
+        # First toggle: expand
+        menu.action_toggle_expand()
+        menu._command_widget.update.assert_called_once()
+        expanded_call = menu._command_widget.update.call_args[0][0]
+        assert long_command in expanded_call
+        assert "..." not in expanded_call
+
+        # Second toggle: collapse
+        menu._command_widget.reset_mock()
+        menu.action_toggle_expand()
+        menu._command_widget.update.assert_called_once()
+        collapsed_call = menu._command_widget.update.call_args[0][0]
+        assert "..." in collapsed_call
+        assert "press 'e' to expand" in collapsed_call
 
     def test_toggle_does_nothing_for_non_expandable(self) -> None:
         """Test that toggling does nothing for non-expandable commands."""

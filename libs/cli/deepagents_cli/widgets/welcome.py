@@ -14,7 +14,11 @@ from deepagents_cli.config import DEEP_AGENTS_ASCII, settings
 
 
 def _fetch_project_url(project_name: str) -> str | None:
-    """Fetch the LangSmith project URL (blocking, run in a thread)."""
+    """Fetch the LangSmith project URL (blocking, run in a thread).
+
+    Returns:
+        Project URL string if found, None otherwise.
+    """
     try:
         from langsmith import Client
 
@@ -22,7 +26,7 @@ def _fetch_project_url(project_name: str) -> str | None:
     except (OSError, ValueError, RuntimeError):
         return None
     else:
-        return project.url if project.url else None
+        return project.url or None
 
 
 class WelcomeBanner(Static):
@@ -46,7 +50,9 @@ class WelcomeBanner(Static):
         self._thread_id: str | None = thread_id
         self._project_name: str | None = None
 
-        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY")
+        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
+            "LANGCHAIN_API_KEY"
+        )
         langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
             "LANGCHAIN_TRACING_V2"
         )
@@ -78,7 +84,11 @@ class WelcomeBanner(Static):
             self.update(self._build_banner(project_url))
 
     def _build_banner(self, project_url: str | None = None) -> Text:
-        """Build the banner rich text."""
+        """Build the banner rich text.
+
+        Returns:
+            Rich Text object containing the formatted banner.
+        """
         banner = Text()
         banner.append(DEEP_AGENTS_ASCII + "\n", style=Style(bold=True, color="#10b981"))
 

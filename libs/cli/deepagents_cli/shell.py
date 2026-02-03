@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
-import subprocess
+
+# S404: subprocess is required - this middleware intentionally provides shell access
+# to agents with human-in-the-loop approval as the security boundary
+import subprocess  # noqa: S404
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
@@ -44,6 +47,9 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
                 Defaults to 100,000 bytes.
             env: Environment variables to pass to the subprocess. If None,
                 uses the current process's environment. Defaults to None.
+
+        Raises:
+            ValueError: If timeout is not positive.
         """
         super().__init__()
         if timeout <= 0:
@@ -57,11 +63,12 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
 
         # Build description with working directory information
         description = (
-            "Execute a shell command directly on the host. Commands will run in "
-            f"the working directory: {workspace_root}. Each command runs in a fresh shell "
-            "environment with the current process's environment variables. Commands may "
-            f"be truncated if they exceed the configured timeout ({self._default_timeout} seconds) "
-            "or output limits. Use the optional timeout parameter (in seconds) for long-running "
+            "Execute a shell command directly on the host. Commands will run "
+            f"in the working directory: {workspace_root}. Each command runs in "
+            "a fresh shell environment with the current process's environment "
+            "variables. Commands may be truncated if they exceed the configured "
+            f"timeout ({self._default_timeout} seconds) or output limits. Use "
+            "the optional timeout parameter (in seconds) for long-running "
             "commands."
         )
 
@@ -76,9 +83,12 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
             Args:
                 command: The shell command to execute.
                 runtime: The tool runtime context.
-                timeout: Optional timeout in seconds for this command. Use for long-running
-                    commands that may exceed the default timeout.
-                    Example: timeout=300 for 5 minutes.
+                timeout: Optional timeout in seconds for this command.
+                    Use for long-running commands that may exceed the
+                    default timeout. Example: timeout=300 for 5 minutes.
+
+            Returns:
+                ToolMessage with command output or error, or string on failure.
             """
             return self._run_shell_command(
                 command, tool_call_id=runtime.tool_call_id, timeout=timeout
@@ -103,6 +113,9 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
 
         Returns:
             A ToolMessage with the command output or an error message.
+
+        Raises:
+            ToolException: If command is empty or timeout is not positive.
         """
         if not command or not isinstance(command, str):
             msg = "Shell tool expects a non-empty command string."
@@ -115,7 +128,9 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
             raise ToolException(msg)
 
         try:
-            result = subprocess.run(
+            # shell=True is intentional: this middleware provides shell access to agents
+            # with human-in-the-loop approval as the safeguard (see class docstring)
+            result = subprocess.run(  # noqa: S602
                 command,
                 check=False,
                 shell=True,
@@ -132,8 +147,7 @@ class ShellMiddleware(AgentMiddleware[AgentState, Any]):
                 output_parts.append(result.stdout)
             if result.stderr:
                 stderr_lines = result.stderr.strip().split("\n")
-                for line in stderr_lines:
-                    output_parts.append(f"[stderr] {line}")
+                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
 
             output = "\n".join(output_parts) if output_parts else "<no output>"
 

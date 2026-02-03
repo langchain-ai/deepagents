@@ -46,7 +46,8 @@ class DaytonaBackend(BaseSandbox):
             command: Full shell command string to execute.
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+            ExecuteResponse with combined output, exit code, optional signal, and
+                truncation flag.
         """
         result = self._sandbox.process.exec(command, timeout=self._timeout)
 
@@ -110,7 +111,9 @@ class DaytonaBackend(BaseSandbox):
         from daytona import FileUpload
 
         # Create batch upload request using Daytona's native batch API
-        upload_requests = [FileUpload(source=content, destination=path) for path, content in files]
+        upload_requests = [
+            FileUpload(source=content, destination=path) for path, content in files
+        ]
         self._sandbox.fs.upload_files(upload_requests)
 
         # TODO: Check if Daytona returns error info and map to FileOperationError codes

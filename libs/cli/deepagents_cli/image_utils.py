@@ -3,12 +3,29 @@
 import base64
 import io
 import os
-import subprocess
+import pathlib
+import shutil
+
+# S404: subprocess needed for clipboard access via pngpaste/osascript
+import subprocess  # noqa: S404
 import sys
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
+
+
+def _get_executable(name: str) -> str | None:
+    """Get full path to an executable using shutil.which().
+
+    Args:
+        name: Name of the executable to find
+
+    Returns:
+        Full path to executable, or None if not found.
+    """
+    return shutil.which(name)
 
 
 @dataclass
@@ -23,7 +40,7 @@ class ImageData:
         """Convert to LangChain message content format.
 
         Returns:
-            Dict with type and image_url for multimodal messages
+            Dict with type and image_url for multimodal messages.
         """
         return {
             "type": "image_url",
@@ -37,7 +54,7 @@ def get_clipboard_image() -> ImageData | None:
     Supports macOS via `pngpaste` or `osascript`.
 
     Returns:
-        ImageData if an image is found, None otherwise
+        ImageData if an image is found, None otherwise.
     """
     if sys.platform == "darwin":
         return _get_macos_clipboard_image()
@@ -51,30 +68,36 @@ def _get_macos_clipboard_image() -> ImageData | None:
     First tries pngpaste (faster if installed), then falls back to osascript.
 
     Returns:
-        ImageData if an image is found, None otherwise
+        ImageData if an image is found, None otherwise.
     """
     # Try pngpaste first (fast if installed)
-    try:
-        result = subprocess.run(
-            ["pngpaste", "-"],
-            capture_output=True,
-            check=False,
-            timeout=2,
-        )
-        if result.returncode == 0 and result.stdout:
-            # Successfully got PNG data
-            try:
-                Image.open(io.BytesIO(result.stdout))  # Validate it's a real image
-                base64_data = base64.b64encode(result.stdout).decode("utf-8")
-                return ImageData(
-                    base64_data=base64_data,
-                    format="png",  # 'pngpaste -' always outputs PNG
-                    placeholder="[image]",
-                )
-            except Exception:
-                pass  # Invalid image data
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass  # pngpaste not installed or timed out
+    pngpaste_path = _get_executable("pngpaste")
+    if pngpaste_path:
+        with suppress(
+            FileNotFoundError,
+            subprocess.TimeoutExpired,
+        ):  # pngpaste not installed or timed out
+            # S603: pngpaste_path is validated via shutil.which(), args are hardcoded
+            result = subprocess.run(  # noqa: S603
+                [pngpaste_path, "-"],
+                capture_output=True,
+                check=False,
+                timeout=2,
+            )
+            if result.returncode == 0 and result.stdout:
+                # Successfully got PNG data - validate it's a real image
+                with suppress(
+                    # UnidentifiedImageError: corrupted or non-image data
+                    UnidentifiedImageError,
+                    OSError,  # OSError: I/O errors during image processing
+                ):
+                    Image.open(io.BytesIO(result.stdout))
+                    base64_data = base64.b64encode(result.stdout).decode("utf-8")
+                    return ImageData(
+                        base64_data=base64_data,
+                        format="png",  # 'pngpaste -' always outputs PNG
+                        placeholder="[image]",
+                    )
 
     # Fallback to osascript with temp file (built-in but slower)
     return _get_clipboard_via_osascript()
@@ -87,16 +110,22 @@ def _get_clipboard_via_osascript() -> ImageData | None:
     so we write to a temp file instead.
 
     Returns:
-        ImageData if an image is found, None otherwise
+        ImageData if an image is found, None otherwise.
     """
+    # Get osascript path - it's a macOS builtin so should always exist
+    osascript_path = _get_executable("osascript")
+    if not osascript_path:
+        return None
+
     # Create a temp file for the image
     fd, temp_path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
 
     try:
         # First check if clipboard has PNG data
-        check_result = subprocess.run(
-            ["osascript", "-e", "clipboard info"],
+        # S603: osascript_path is validated via shutil.which(), args are hardcoded
+        check_result = subprocess.run(  # noqa: S603
+            [osascript_path, "-e", "clipboard info"],
             capture_output=True,
             check=False,
             timeout=2,
@@ -119,7 +148,7 @@ def _get_clipboard_via_osascript() -> ImageData | None:
             write pngData to theFile
             close access theFile
             return "success"
-            """
+            """  # noqa: E501
         else:
             get_script = f"""
             set tiffData to the clipboard as TIFF picture
@@ -127,10 +156,11 @@ def _get_clipboard_via_osascript() -> ImageData | None:
             write tiffData to theFile
             close access theFile
             return "success"
-            """
+            """  # noqa: E501
 
-        result = subprocess.run(
-            ["osascript", "-e", get_script],
+        # S603: osascript_path validated via shutil.which(), script is internal
+        result = subprocess.run(  # noqa: S603
+            [osascript_path, "-e", get_script],
             capture_output=True,
             check=False,
             timeout=3,
@@ -141,12 +171,14 @@ def _get_clipboard_via_osascript() -> ImageData | None:
             return None
 
         # Check if file was created and has content
-        if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+        if (
+            not pathlib.Path(temp_path).exists()
+            or pathlib.Path(temp_path).stat().st_size == 0
+        ):
             return None
 
         # Read and validate the image
-        with open(temp_path, "rb") as f:
-            image_data = f.read()
+        image_data = pathlib.Path(temp_path).read_bytes()
 
         try:
             image = Image.open(io.BytesIO(image_data))
@@ -161,17 +193,19 @@ def _get_clipboard_via_osascript() -> ImageData | None:
                 format="png",
                 placeholder="[image]",
             )
-        except Exception:
+        except (
+            # UnidentifiedImageError: corrupted or non-image data
+            UnidentifiedImageError,
+            OSError,  # OSError: I/O errors during image processing
+        ):
             return None
 
     except (subprocess.TimeoutExpired, OSError):
         return None
     finally:
         # Clean up temp file
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
+        with suppress(OSError):
+            pathlib.Path(temp_path).unlink()
 
 
 def encode_image_to_base64(image_bytes: bytes) -> str:
@@ -181,7 +215,7 @@ def encode_image_to_base64(image_bytes: bytes) -> str:
         image_bytes: Raw image bytes
 
     Returns:
-        Base64-encoded string
+        Base64-encoded string.
     """
     return base64.b64encode(image_bytes).decode("utf-8")
 
@@ -194,7 +228,7 @@ def create_multimodal_content(text: str, images: list[ImageData]) -> list[dict]:
         images: List of ImageData objects
 
     Returns:
-        List of content blocks in LangChain format
+        List of content blocks in LangChain format.
     """
     content_blocks = []
 
@@ -203,7 +237,6 @@ def create_multimodal_content(text: str, images: list[ImageData]) -> list[dict]:
         content_blocks.append({"type": "text", "text": text})
 
     # Add image blocks
-    for image in images:
-        content_blocks.append(image.to_message_content())
+    content_blocks.extend(image.to_message_content() for image in images)
 
     return content_blocks

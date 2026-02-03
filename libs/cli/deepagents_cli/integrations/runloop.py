@@ -1,8 +1,8 @@
 """BackendProtocol implementation for Runloop."""
 
-try:
-    import runloop_api_client
-except ImportError:
+import importlib.util
+
+if importlib.util.find_spec("runloop_api_client") is None:
     msg = (
         "runloop_api_client package is required for RunloopBackend. "
         "Install with `pip install runloop_api_client`."
@@ -11,7 +11,11 @@ except ImportError:
 
 import os
 
-from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
+from deepagents.backends.protocol import (
+    ExecuteResponse,
+    FileDownloadResponse,
+    FileUploadResponse,
+)
 from deepagents.backends.sandbox import BaseSandbox
 from runloop_api_client import Runloop
 
@@ -35,7 +39,11 @@ class RunloopBackend(BaseSandbox):
             devbox_id: ID of the Runloop devbox to operate on.
             client: Optional existing Runloop client instance
             api_key: Optional API key for creating a new client
-                         (defaults to RUNLOOP_API_KEY environment variable)
+                (defaults to RUNLOOP_API_KEY environment variable)
+
+        Raises:
+            ValueError: If both client and api_key are provided, or if neither
+                is available.
         """
         if client and api_key:
             msg = "Provide either client or bearer_token, not both."
@@ -65,10 +73,10 @@ class RunloopBackend(BaseSandbox):
 
         Args:
             command: Full shell command string to execute.
-            timeout: Maximum execution time in seconds (default: 30 minutes).
 
         Returns:
-            ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
+            ExecuteResponse with combined output, exit code, optional signal,
+                and truncation flag.
         """
         result = self._client.devboxes.execute_and_await_completion(
             devbox_id=self._devbox_id,
@@ -93,15 +101,20 @@ class RunloopBackend(BaseSandbox):
         FileDownloadResponse objects preserving order and reporting per-file
         errors rather than raising exceptions.
 
-        TODO: Implement proper error handling with standardized FileOperationError codes.
-        Currently only implements happy path.
+        TODO: Implement proper error handling with standardized
+        FileOperationError codes. Currently only implements happy path.
+
+        Returns:
+            List of FileDownloadResponse objects preserving input order.
         """
         responses: list[FileDownloadResponse] = []
         for path in paths:
             # devboxes.download_file returns a BinaryAPIResponse which exposes .read()
             resp = self._client.devboxes.download_file(self._devbox_id, path=path)
             content = resp.read()
-            responses.append(FileDownloadResponse(path=path, content=content, error=None))
+            responses.append(
+                FileDownloadResponse(path=path, content=content, error=None)
+            )
 
         return responses
 
@@ -112,8 +125,11 @@ class RunloopBackend(BaseSandbox):
         FileUploadResponse objects preserving order and reporting per-file
         errors rather than raising exceptions.
 
-        TODO: Implement proper error handling with standardized FileOperationError codes.
-        Currently only implements happy path.
+        TODO: Implement proper error handling with standardized
+            FileOperationError codes. Currently only implements happy path.
+
+        Returns:
+            List of FileUploadResponse objects preserving input order.
         """
         responses: list[FileUploadResponse] = []
         for path, content in files:

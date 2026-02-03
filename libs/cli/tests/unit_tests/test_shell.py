@@ -65,7 +65,9 @@ class TestRunShellCommand:
         """Test that per-command timeout overrides default."""
         mw = ShellMiddleware(workspace_root=str(tmp_path), timeout=1)
         # Command should succeed with longer timeout
-        result = mw._run_shell_command("sleep 0.1 && echo done", tool_call_id="test", timeout=5)
+        result = mw._run_shell_command(
+            "sleep 0.1 && echo done", tool_call_id="test", timeout=5
+        )
         assert "done" in result.content
         assert result.status == "success"
 
@@ -112,7 +114,9 @@ class TestRunShellCommand:
 class TestTimeoutRetryWorkflow:
     """Tests simulating the model retrying with increased `timeout`."""
 
-    def test_command_fails_with_short_timeout_succeeds_with_longer(self, tmp_path: str) -> None:
+    def test_command_fails_with_short_timeout_succeeds_with_longer(
+        self, tmp_path: str
+    ) -> None:
         """Test that a command timing out can succeed with increased `timeout`.
 
         This simulates the workflow where:
@@ -130,11 +134,15 @@ class TestTimeoutRetryWorkflow:
         assert "timed out" in result1.content
 
         # Second attempt: model increases timeout, command succeeds
-        result2 = mw._run_shell_command("sleep 2 && echo done", tool_call_id="attempt2", timeout=5)
+        result2 = mw._run_shell_command(
+            "sleep 2 && echo done", tool_call_id="attempt2", timeout=5
+        )
         assert result2.status == "success"
         assert "done" in result2.content
 
-    def test_timeout_error_message_guides_model_to_solution(self, tmp_path: str) -> None:
+    def test_timeout_error_message_guides_model_to_solution(
+        self, tmp_path: str
+    ) -> None:
         """Test that timeout error message tells model how to fix the issue."""
         mw = ShellMiddleware(workspace_root=str(tmp_path))
         result = mw._run_shell_command("sleep 10", tool_call_id="test", timeout=1)

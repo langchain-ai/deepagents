@@ -35,7 +35,9 @@ def mock_argv() -> MockArgvType:
         ),
     ],
 )
-def test_shell_allow_list_argument(args: list[str], expected: str, mock_argv: MockArgvType) -> None:
+def test_shell_allow_list_argument(
+    args: list[str], expected: str, mock_argv: MockArgvType
+) -> None:
     """Test --shell-allow-list argument with various values."""
     with mock_argv(*args):
         parsed_args = parse_args()
@@ -53,7 +55,9 @@ def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
 
 def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> None:
     """Test that shell-allow-list works with other arguments."""
-    with mock_argv("--shell-allow-list", "ls,cat", "--model", "gpt-4o", "--auto-approve"):
+    with mock_argv(
+        "--shell-allow-list", "ls,cat", "--model", "gpt-4o", "--auto-approve"
+    ):
         parsed_args = parse_args()
         assert parsed_args.shell_allow_list == "ls,cat"
         assert parsed_args.model == "gpt-4o"

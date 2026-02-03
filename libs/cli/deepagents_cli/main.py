@@ -190,7 +190,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--shell-allow-list",
-        help="Comma-separated list of shell commands to allow, or 'recommended' for safe defaults",
+        help="Comma-separated list of shell commands to allow, or 'recommended' for safe defaults",  # noqa: E501
     )
     return parser.parse_args()
 

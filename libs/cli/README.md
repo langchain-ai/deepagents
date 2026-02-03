@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/master/libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
-</p>
+# 🧠🤖 Deep Agents CLI
 
 [![PyPI - Version](https://img.shields.io/pypi/v/deepagents-cli?label=%20)](https://pypi.org/project/deepagents-cli/#history)
 [![PyPI - License](https://img.shields.io/pypi/l/deepagents-cli)](https://opensource.org/licenses/MIT)
@@ -13,7 +11,7 @@ To help you ship LangChain apps to production faster, check out [LangSmith](http
 LangSmith is a unified developer platform for building, testing, and monitoring LLM applications.
 
 <p align="center">
-  <img src="./images/cli.png" alt="Deep Agents CLI" width="600"/>
+  <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/master/libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
 </p>
 
 ## Quick Install

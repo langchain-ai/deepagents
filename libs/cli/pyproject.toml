@@ -153,6 +153,7 @@ ignore-var-parameters = true
     "SIM108",   # Use ternary operator instead of if-else
 ]
 "deepagents_cli/app.py" = [
+    "S110",     # Blind except
     "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
     "ARG002",   # Unused method argument
     "ASYNC110", # Use `asyncio.Event` instead of busy-waiting

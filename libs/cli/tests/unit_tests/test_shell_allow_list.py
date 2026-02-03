@@ -80,7 +80,9 @@ def test_simple_command_not_allowed(command: str, basic_allow_list: list[str]) -
         "ls -la /tmp/test",
     ],
 )
-def test_command_with_arguments_allowed(command: str, basic_allow_list: list[str]) -> None:
+def test_command_with_arguments_allowed(
+    command: str, basic_allow_list: list[str]
+) -> None:
     """Test commands with arguments that are in the allow-list."""
     assert is_shell_command_allowed(command, basic_allow_list)
 
@@ -89,7 +91,9 @@ def test_command_with_arguments_allowed(command: str, basic_allow_list: list[str
     "command",
     ["rm -rf /tmp", "mv file1 file2"],
 )
-def test_command_with_arguments_not_allowed(command: str, basic_allow_list: list[str]) -> None:
+def test_command_with_arguments_not_allowed(
+    command: str, basic_allow_list: list[str]
+) -> None:
     """Test commands with arguments that are not in the allow-list."""
     assert not is_shell_command_allowed(command, basic_allow_list)
 
@@ -116,7 +120,9 @@ def test_piped_commands_all_allowed(command: str, allow_list: list[str]) -> None
         "grep pattern file | rm",  # rm not in allow-list
     ],
 )
-def test_piped_commands_some_not_allowed(command: str, basic_allow_list: list[str]) -> None:
+def test_piped_commands_some_not_allowed(
+    command: str, basic_allow_list: list[str]
+) -> None:
     """Test piped commands where some parts are not in the allow-list."""
     assert not is_shell_command_allowed(command, basic_allow_list)
 
@@ -164,7 +170,9 @@ def test_and_operator_commands(
         ("ls || rm file", False),
     ],
 )
-def test_or_operator_commands(command: str, *, expected: bool, basic_allow_list: list[str]) -> None:
+def test_or_operator_commands(
+    command: str, *, expected: bool, basic_allow_list: list[str]
+) -> None:
     """Test commands with || operator."""
     assert is_shell_command_allowed(command, basic_allow_list) == expected
 
@@ -217,7 +225,9 @@ def test_empty_command_rejected(command: str, basic_allow_list: list[str]) -> No
         ("Cat", False),
     ],
 )
-def test_case_sensitivity(command: str, *, expected: bool, basic_allow_list: list[str]) -> None:
+def test_case_sensitivity(
+    command: str, *, expected: bool, basic_allow_list: list[str]
+) -> None:
     """Test that command matching is case-sensitive."""
     assert is_shell_command_allowed(command, basic_allow_list) == expected
 
@@ -236,7 +246,9 @@ def test_case_sensitivity(command: str, *, expected: bool, basic_allow_list: lis
         "wc -l file",
     ],
 )
-def test_common_read_only_commands(command: str, extended_allow_list: list[str]) -> None:
+def test_common_read_only_commands(
+    command: str, extended_allow_list: list[str]
+) -> None:
     """Test common read-only commands are allowed."""
     assert is_shell_command_allowed(command, extended_allow_list)
 
@@ -251,7 +263,9 @@ def test_common_read_only_commands(command: str, extended_allow_list: list[str])
         "mkfs.ext4 /dev/sda",
     ],
 )
-def test_dangerous_commands_not_allowed(command: str, basic_allow_list: list[str]) -> None:
+def test_dangerous_commands_not_allowed(
+    command: str, basic_allow_list: list[str]
+) -> None:
     """Test that dangerous commands are not allowed by default."""
     assert not is_shell_command_allowed(command, basic_allow_list)
 
@@ -263,7 +277,9 @@ def test_dangerous_commands_not_allowed(command: str, basic_allow_list: list[str
         ("cat file.txt | grep error | rm | wc -l", False),
     ],
 )
-def test_complex_pipeline(command: str, *, expected: bool, pipeline_allow_list: list[str]) -> None:
+def test_complex_pipeline(
+    command: str, *, expected: bool, pipeline_allow_list: list[str]
+) -> None:
     """Test complex pipelines with multiple operators."""
     assert is_shell_command_allowed(command, pipeline_allow_list) == expected
 
@@ -314,7 +330,9 @@ class TestShellInjectionPrevention:
             "echo hello\n/bin/sh",
         ],
     )
-    def test_newline_injection_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_newline_injection_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """Newline characters must be blocked (command injection)."""
         assert not is_shell_command_allowed(command, injection_allow_list)
 
@@ -338,7 +356,9 @@ class TestShellInjectionPrevention:
             "cat\t/etc/passwd",
         ],
     )
-    def test_tab_injection_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_tab_injection_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """Tab characters must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
 
@@ -376,7 +396,9 @@ class TestShellInjectionPrevention:
             "grep pattern <<< 'test'",
         ],
     )
-    def test_here_string_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_here_string_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """Here-strings (<<<) must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
 
@@ -387,7 +409,9 @@ class TestShellInjectionPrevention:
             "cat <<EOF",
         ],
     )
-    def test_here_doc_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_here_doc_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """Here-documents (<<) must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
 
@@ -399,7 +423,9 @@ class TestShellInjectionPrevention:
             "cat file > /etc/passwd",
         ],
     )
-    def test_output_redirect_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_output_redirect_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """Output redirection (>) must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
 
@@ -410,7 +436,9 @@ class TestShellInjectionPrevention:
             "ls >> output.txt",
         ],
     )
-    def test_append_redirect_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_append_redirect_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """Append redirection (>>) must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
 
@@ -421,7 +449,9 @@ class TestShellInjectionPrevention:
             "grep pattern < input.txt",
         ],
     )
-    def test_input_redirect_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_input_redirect_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """Input redirection (<) must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
 
@@ -464,7 +494,9 @@ class TestShellInjectionPrevention:
             "../../../bin/sh",
         ],
     )
-    def test_path_bypass_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_path_bypass_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """Commands with paths (not in allow-list) must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
 
@@ -479,6 +511,8 @@ class TestShellInjectionPrevention:
             r"cat $'\074/etc/passwd'",
         ],
     )
-    def test_ansi_c_quoting_blocked(self, command: str, injection_allow_list: list[str]) -> None:
+    def test_ansi_c_quoting_blocked(
+        self, command: str, injection_allow_list: list[str]
+    ) -> None:
         """ANSI-C quoting $'...' with escape sequences must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)

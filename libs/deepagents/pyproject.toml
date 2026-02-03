@@ -105,14 +105,14 @@ ignore-var-parameters = true
     "S101",    # Allow asserts in tests
     "S311",    # Allow pseudo-random generators in tests
     # Add more test-specific ignores
-    "PLR2004", # Hard coded constants are usually preferred in tests
+    "PLR2004", # Magic values in comparisons (fine for test assertions)
     "ARG002",  # https://docs.astral.sh/ruff/rules/unused-method-argument/
 ]
 
 "deepagents/backends/composite.py" = ["B007", "BLE001", "D102", "EM101", "FBT001", "FBT002", "PLW2901", "S110"]
 "deepagents/backends/filesystem.py" = ["BLE001", "D102", "D205", "D417", "DTZ006", "EM101", "EM102", "FBT001", "FBT002", "PLR0912", "S112", "TRY003"]
 "deepagents/backends/protocol.py" = ["B024", "B027", "FBT001", "FBT002"]
-"deepagents/backends/sandbox.py" = ["FBT001", "FBT002", "PLR2004"]
+"deepagents/backends/sandbox.py" = ["FBT001", "FBT002", "PLC0105", "PLR2004"]
 "deepagents/backends/state.py" = ["ANN204", "D102", "D205", "EM101", "FBT001", "FBT002", "PERF401"]
 "deepagents/backends/store.py" = ["A002", "ANN204", "BLE001", "D102", "D205", "F821", "FBT001", "FBT002", "PERF401"]
 "deepagents/backends/utils.py" = ["D301", "E501", "EM101", "FBT001", "RET504", "RUF005", "TRY003"]

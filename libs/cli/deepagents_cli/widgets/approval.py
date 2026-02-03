@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from textual import events
-from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.message import Message
 from textual.widgets import Static
+
+if TYPE_CHECKING:
+    import asyncio
+
+    from textual import events
+    from textual.app import ComposeResult
 
 from deepagents_cli.widgets.tool_renderers import get_renderer
 
@@ -50,6 +53,12 @@ class ApprovalMenu(Container):
         """Message sent when user makes a decision."""
 
         def __init__(self, decision: dict[str, str]) -> None:
+            """Initialize a Decided message with the user's decision.
+
+            Args:
+                decision: Dictionary containing the decision type (e.g., 'approve',
+                    'reject', or 'auto_approve_all').
+            """
             super().__init__()
             self.decision = decision
 
@@ -60,9 +69,20 @@ class ApprovalMenu(Container):
         self,
         action_requests: list[dict[str, Any]] | dict[str, Any],
         _assistant_id: str | None = None,
-        id: str | None = None,  # noqa: A002
+        id: str | None = None,
         **kwargs: Any,
     ) -> None:
+        """Initialize the ApprovalMenu widget.
+
+        Args:
+            action_requests: A single action request dictionary or a list of action
+                request dictionaries requiring approval. Each dictionary should
+                contain 'name' (tool name) and 'args' (tool arguments).
+            _assistant_id: Optional assistant ID (currently unused, reserved for
+                future use).
+            id: Optional widget ID. Defaults to 'approval-menu'.
+            **kwargs: Additional keyword arguments passed to the Container base class.
+        """
         super().__init__(id=id or "approval-menu", classes="approval-menu", **kwargs)
         # Support both single request (legacy) and list of requests (batch)
         if isinstance(action_requests, dict):
@@ -88,6 +108,9 @@ class ApprovalMenu(Container):
 
         Layout: Tool info first (what's being approved), then options at bottom.
         For bash/shell, skip tool info since it's already shown in tool call.
+
+        Yields:
+            Widgets for title, tool info, options, and help text.
         """
         # Title - show count if multiple tools
         count = len(self._action_requests)
@@ -167,7 +190,9 @@ class ApprovalMenu(Container):
                 "3. Auto-approve all this session (a)",
             ]
 
-        for i, (text, widget) in enumerate(zip(options, self._option_widgets, strict=True)):
+        for i, (text, widget) in enumerate(
+            zip(options, self._option_widgets, strict=True)
+        ):
             cursor = "› " if i == self._selected else "  "
             widget.update(f"{cursor}{text}")
 

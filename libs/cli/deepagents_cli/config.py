@@ -24,7 +24,7 @@ if _deepagents_project:
     os.environ["LANGSMITH_PROJECT"] = _deepagents_project
 
 # Now safe to import LangChain modules
-from langchain_core.language_models import BaseChatModel
+from langchain_core.language_models import BaseChatModel  # noqa: E402
 
 # Color scheme
 COLORS = {
@@ -83,7 +83,8 @@ def _find_project_root(start_path: Path | None = None) -> Path | None:
     directory, which indicates the project root.
 
     Args:
-        start_path: Directory to start searching from. Defaults to current working directory.
+        start_path: Directory to start searching from.
+            Defaults to current working directory.
 
     Returns:
         Path to the project root if found, None otherwise.
@@ -145,8 +146,10 @@ class Settings:
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
         tavily_api_key: Tavily API key if available
-        deepagents_langchain_project: LangSmith project name for deepagents agent tracing
-        user_langchain_project: Original LANGSMITH_PROJECT from environment (for user code)
+        deepagents_langchain_project: LangSmith project name for deepagents
+            agent tracing
+        user_langchain_project: Original LANGSMITH_PROJECT from environment
+            (for user code)
     """
 
     # API keys
@@ -226,10 +229,11 @@ class Settings:
 
     @property
     def has_vertex_ai(self) -> bool:
-        """Check if VertexAI is available (Google Cloud project set, but no Google API key).
+        """Check if VertexAI is available (Google Cloud project set, no API key).
 
         VertexAI uses Application Default Credentials (ADC) for authentication,
-        so if GOOGLE_CLOUD_PROJECT is set and GOOGLE_API_KEY is not, we assume VertexAI.
+        so if GOOGLE_CLOUD_PROJECT is set and GOOGLE_API_KEY is not, we assume
+        VertexAI.
         """
         return self.google_cloud_project is not None and self.google_api_key is None
 
@@ -257,7 +261,8 @@ class Settings:
         """
         return Path.home() / ".deepagents"
 
-    def get_user_agent_md_path(self, agent_name: str) -> Path:
+    @staticmethod
+    def get_user_agent_md_path(agent_name: str) -> Path:
         """Get user-level AGENTS.md path for a specific agent.
 
         Returns path regardless of whether the file exists.
@@ -284,7 +289,11 @@ class Settings:
 
     @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:
-        """Validate prevent invalid filesystem paths and security issues."""
+        """Validate to prevent invalid filesystem paths and security issues.
+
+        Returns:
+            True if the agent name is valid, False otherwise.
+        """
         if not agent_name or not agent_name.strip():
             return False
         # Allow only alphanumeric, hyphens, underscores, and whitespace
@@ -298,11 +307,14 @@ class Settings:
 
         Returns:
             Path to ~/.deepagents/{agent_name}
+
+        Raises:
+            ValueError: If the agent name contains invalid characters.
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (
-                f"Invalid agent name: {agent_name!r}. "
-                "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
+                f"Invalid agent name: {agent_name!r}. Agent names can only "
+                "contain letters, numbers, hyphens, underscores, and spaces."
             )
             raise ValueError(msg)
         return Path.home() / ".deepagents" / agent_name
@@ -315,11 +327,14 @@ class Settings:
 
         Returns:
             Path to ~/.deepagents/{agent_name}
+
+        Raises:
+            ValueError: If the agent name contains invalid characters.
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (
-                f"Invalid agent name: {agent_name!r}. "
-                "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
+                f"Invalid agent name: {agent_name!r}. Agent names can only "
+                "contain letters, numbers, hyphens, underscores, and spaces."
             )
             raise ValueError(msg)
         agent_dir = self.get_agent_dir(agent_name)
@@ -415,6 +430,12 @@ class SessionState:
     """Holds mutable session state (auto-approve mode, etc)."""
 
     def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
+        """Initialize session state with optional flags.
+
+        Args:
+            auto_approve: Whether to auto-approve tool calls without prompting.
+            no_splash: Whether to skip displaying the splash screen on startup.
+        """
         self.auto_approve = auto_approve
         self.no_splash = no_splash
         self.exit_hint_until: float | None = None
@@ -422,7 +443,11 @@ class SessionState:
         self.thread_id = str(uuid.uuid4())
 
     def toggle_auto_approve(self) -> bool:
-        """Toggle auto-approve and return new state."""
+        """Toggle auto-approve and return new state.
+
+        Returns:
+            The new auto_approve state.
+        """
         self.auto_approve = not self.auto_approve
         return self.auto_approve
 
@@ -432,6 +457,9 @@ def get_default_coding_instructions() -> str:
 
     These are the immutable base instructions that cannot be modified by the agent.
     Long-term memory (AGENTS.md) is handled separately by the middleware.
+
+    Returns:
+        The default agent instructions as a string.
     """
     default_prompt_path = Path(__file__).parent / "default_agent_prompt.md"
     return default_prompt_path.read_text()
@@ -483,7 +511,8 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         provider = _detect_provider(model_name_override)
         if not provider:
             console.print(
-                f"[bold red]Error:[/bold red] Could not detect provider from model name: {model_name_override}"
+                "[bold red]Error:[/bold red] Could not detect provider "
+                f"from model name: {model_name_override}"
             )
             console.print("\nSupported model name patterns:")
             console.print("  - OpenAI: gpt-*, o1-*, o3-*")
@@ -498,17 +527,20 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         # Check if credentials for detected provider are available
         if provider == "openai" and not settings.has_openai:
             console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires OPENAI_API_KEY"
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
+                "requires OPENAI_API_KEY"
             )
             sys.exit(1)
         elif provider == "anthropic" and not settings.has_anthropic:
             console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires ANTHROPIC_API_KEY"
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
+                "requires ANTHROPIC_API_KEY"
             )
             sys.exit(1)
         elif provider == "google" and not settings.has_google:
             console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY"
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
+                "requires GOOGLE_API_KEY"
             )
             sys.exit(1)
         elif provider == "vertexai" and not settings.has_vertex_ai:
@@ -542,7 +574,8 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
         console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
         console.print(
-            "  - GOOGLE_CLOUD_PROJECT (for VertexAI models, with Application Default Credentials)"
+            "  - GOOGLE_CLOUD_PROJECT (for VertexAI models, "
+            "with Application Default Credentials)"
         )
         console.print("\nExample:")
         console.print("  export OPENAI_API_KEY=your_api_key_here")
@@ -582,15 +615,17 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
                 from langchain_google_vertexai.model_garden import ChatAnthropicVertex
             except ImportError:
                 console.print(
-                    "[bold red]Error:[/bold red] langchain-google-vertexai package is required for this model"
+                    "[bold red]Error:[/bold red] langchain-google-vertexai "
+                    "package is required for this model"
                 )
                 console.print("\nInstall it with:")
                 console.print("  pip install deepagents-cli[vertexai]", markup=False)
                 sys.exit(1)
 
-            model = ChatAnthropicVertex(
-                # Remove version tag (e.g., "claude-haiku-4-5@20251015" -> "claude-haiku-4-5")
-                # ChatAnthropicVertex expects just the base model name without the @version suffix
+            return ChatAnthropicVertex(
+                # Remove version tag (e.g., "claude-haiku-4-5@20251015" ->
+                # "claude-haiku-4-5"). ChatAnthropicVertex expects just the base
+                # model name without the @version suffix.
                 model_name=model_name,
                 project=settings.google_cloud_project,
                 location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
@@ -618,6 +653,11 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
 
     return model
 
+    # This should be unreachable since all valid providers are handled above,
+    # but we need an explicit return/raise for type safety (RET503)
+    console.print(f"[bold red]Error:[/bold red] Unknown provider: {provider}")
+    sys.exit(1)
+
 
 def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
     """Validate that the model has required capabilities for `deepagents`.
@@ -630,19 +670,18 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
         model: The instantiated model to validate.
         model_name: Model name for error/warning messages.
 
-    Raises:
-        SystemExit: If model profile explicitly indicates `tool_calling=False`.
-
     Note:
-        This validation is best-effort. Models without profiles will pass with a warning.
+        This validation is best-effort. Models without profiles will pass with
+        a warning. Exits via sys.exit(1) if model profile explicitly indicates
+        tool_calling=False.
     """
     profile = getattr(model, "profile", None)
 
     if profile is None:
         # Model doesn't have profile data - warn but allow
         console.print(
-            f"[dim][yellow]Note:[/yellow] No capability profile for '{model_name}'. "
-            "Cannot verify tool calling support.[/dim]"
+            f"[dim][yellow]Note:[/yellow] No capability profile for "
+            f"'{model_name}'. Cannot verify tool calling support.[/dim]"
         )
         return
 
@@ -653,7 +692,8 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
     tool_calling = profile.get("tool_calling")
     if tool_calling is False:
         console.print(
-            f"[bold red]Error:[/bold red] Model '{model_name}' does not support tool calling."
+            f"[bold red]Error:[/bold red] Model '{model_name}' "
+            "does not support tool calling."
         )
         console.print(
             "\nDeep Agents requires tool calling for agent functionality. "
@@ -664,7 +704,7 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
 
     # Warn about potentially limited context (< 8k tokens)
     max_input_tokens = profile.get("max_input_tokens")
-    if max_input_tokens and max_input_tokens < 8000:  # noqa: PLR2004
+    if max_input_tokens and max_input_tokens < 8000:
         console.print(
             f"[dim][yellow]Warning:[/yellow] Model '{model_name}' has limited context "
             f"({max_input_tokens:,} tokens). Agent performance may be affected.[/dim]"

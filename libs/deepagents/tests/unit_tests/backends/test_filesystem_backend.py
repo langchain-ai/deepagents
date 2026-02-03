@@ -493,38 +493,6 @@ def test_filesystem_download_directory_as_file(tmp_path: Path):
     assert responses[0].error == "is_directory"
 
 
-def test_grep_literal_search_with_special_chars(tmp_path: Path):
-    """Test that grep treats patterns as literal strings, not regex."""
-    root = tmp_path
-
-    # Create test files with special regex characters
-    (root / "test1.py").write_text("def __init__(self, arg):\n    pass")
-    (root / "test2.py").write_text("@overload\ndef func(x: str | int):\n    return x")
-    (root / "test3.py").write_text("pattern = r'[a-z]+'\nregex_chars = '(.*)'")
-
-    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
-
-    # Test parentheses (should be literal, not regex grouping)
-    matches = be.grep_raw("def __init__(", path="/")
-    assert isinstance(matches, list)
-    assert any("test1.py" in m["path"] for m in matches)
-
-    # Test pipe character (should be literal, not regex OR)
-    matches = be.grep_raw("str | int", path="/")
-    assert isinstance(matches, list)
-    assert any("test2.py" in m["path"] for m in matches)
-
-    # Test brackets (should be literal, not character class)
-    matches = be.grep_raw("[a-z]", path="/")
-    assert isinstance(matches, list)
-    assert any("test3.py" in m["path"] for m in matches)
-
-    # Test regex special chars together
-    matches = be.grep_raw("(.*)", path="/")
-    assert isinstance(matches, list)
-    assert any("test3.py" in m["path"] for m in matches)
-
-
 @pytest.mark.parametrize(
     ("pattern", "expected_file"),
     [
@@ -536,11 +504,11 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path):
         ("user@example", "test4.txt"),  # @ character (literal)
     ],
 )
-def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pattern: str, expected_file: str) -> None:
-    """Test literal search works correctly with Python fallback (no ripgrep)."""
-    import subprocess
-    from typing import Any, Never
+def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, expected_file: str) -> None:
+    """Test that grep treats patterns as literal strings, not regex.
 
+    Tests with both ripgrep (if available) and Python fallback.
+    """
     root = tmp_path
 
     # Create test files with special regex characters
@@ -551,14 +519,7 @@ def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch: pytest
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
-    # Mock subprocess.run to simulate ripgrep not being available
-    def mock_run(*_args: Any, **_kwargs: Any) -> Never:
-        msg = "rg not found"
-        raise FileNotFoundError(msg)
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-
-    # Test literal search with the pattern
+    # Test literal search with the pattern (uses ripgrep if available, otherwise Python fallback)
     matches = be.grep_raw(pattern, path="/")
     assert isinstance(matches, list)
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"

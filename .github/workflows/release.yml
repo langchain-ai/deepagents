@@ -196,8 +196,9 @@ jobs:
             COMMITS=$(git rev-list "$PREV_TAG"..HEAD -- "$WORKING_DIR" | head -100)
           fi
 
-          # Find PRs and collect contributors (GitHub username + optional Twitter)
-          declare -A CONTRIBUTORS  # Map: github_username -> twitter_handle (or empty)
+          # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
+          declare -A TWITTER_HANDLES  # Map: github_username -> twitter_handle (or empty)
+          declare -A LINKEDIN_URLS    # Map: github_username -> linkedin_url (or empty)
           SEEN_PRS=""
 
           for sha in $COMMITS; do
@@ -218,23 +219,47 @@ jobs:
                   # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
                   TWITTER=$(echo "$PR_BODY" | grep -iP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
 
-                  # Add user if not seen, or update Twitter if newly provided
-                  if [ -z "${CONTRIBUTORS[$GH_USER]+x}" ]; then
-                    CONTRIBUTORS[$GH_USER]="$TWITTER"
-                  elif [ -n "$TWITTER" ] && [ -z "${CONTRIBUTORS[$GH_USER]}" ]; then
-                    CONTRIBUTORS[$GH_USER]="$TWITTER"
+                  # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
+                  LINKEDIN=$(echo "$PR_BODY" | grep -iP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
+
+                  # Add user if not seen, or update socials if newly provided
+                  if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then
+                    TWITTER_HANDLES[$GH_USER]="$TWITTER"
+                    LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
+                  else
+                    [ -n "$TWITTER" ] && [ -z "${TWITTER_HANDLES[$GH_USER]}" ] && TWITTER_HANDLES[$GH_USER]="$TWITTER"
+                    [ -n "$LINKEDIN" ] && [ -z "${LINKEDIN_URLS[$GH_USER]}" ] && LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
                   fi
                 fi
               fi
             fi
           done
 
-          # Build contributor list: @ghuser ([Twitter](url)) or just @ghuser
+          # Build contributor list: @ghuser ([Twitter](url), [LinkedIn](url)) or just @ghuser
           CONTRIBUTOR_LIST=""
-          for GH_USER in "${!CONTRIBUTORS[@]}"; do
-            TWITTER="${CONTRIBUTORS[$GH_USER]}"
+          for GH_USER in "${!TWITTER_HANDLES[@]}"; do
+            TWITTER="${TWITTER_HANDLES[$GH_USER]}"
+            LINKEDIN="${LINKEDIN_URLS[$GH_USER]}"
+
+            # Build social links
+            SOCIALS=""
             if [ -n "$TWITTER" ]; then
-              ENTRY="@$GH_USER ([Twitter](https://x.com/$TWITTER))"
+              SOCIALS="[Twitter](https://x.com/$TWITTER)"
+            fi
+            if [ -n "$LINKEDIN" ]; then
+              # Ensure LinkedIn URL has https:// prefix
+              if [[ ! "$LINKEDIN" =~ ^https?:// ]]; then
+                LINKEDIN="https://$LINKEDIN"
+              fi
+              if [ -n "$SOCIALS" ]; then
+                SOCIALS="$SOCIALS, [LinkedIn]($LINKEDIN)"
+              else
+                SOCIALS="[LinkedIn]($LINKEDIN)"
+              fi
+            fi
+
+            if [ -n "$SOCIALS" ]; then
+              ENTRY="@$GH_USER ($SOCIALS)"
             else
               ENTRY="@$GH_USER"
             fi

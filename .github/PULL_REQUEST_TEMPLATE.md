@@ -29,6 +29,7 @@ Additional guidelines:
   - PRs should not touch more than one package unless absolutely necessary.
   - Do not update the `uv.lock` files or add dependencies to `pyproject.toml` files (even optional ones) unless you have explicit permission to do so by a maintainer.
 
-## Twitter handle (optional)
-<!-- If you'd like a shoutout on release, add your Twitter/X handle below -->
+## Social handles (optional)
+<!-- If you'd like a shoutout on release, add your socials below -->
 Twitter: @
+LinkedIn: https://linkedin.com/in/

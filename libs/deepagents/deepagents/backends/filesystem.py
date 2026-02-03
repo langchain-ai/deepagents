@@ -390,7 +390,7 @@ class FilesystemBackend(BackendProtocol):
     ) -> list[GrepMatch] | str:
         """Search for a literal text pattern in files.
 
-        Uses ripgrep if available, falling back to Python regex search.
+        Uses ripgrep if available, falling back to Python search.
 
         Args:
             pattern: Literal string to search for (NOT regex).
@@ -400,9 +400,6 @@ class FilesystemBackend(BackendProtocol):
         Returns:
             List of GrepMatch dicts containing path, line number, and matched text.
         """
-        # Escape pattern to make it literal (not regex)
-        escaped_pattern = re.escape(pattern)
-
         # Resolve base path
         try:
             base_full = self._resolve_path(path or ".")
@@ -412,10 +409,11 @@ class FilesystemBackend(BackendProtocol):
         if not base_full.exists():
             return []
 
-        # Try ripgrep first
-        results = self._ripgrep_search(escaped_pattern, base_full, glob)
+        # Try ripgrep first (with -F flag for literal search)
+        results = self._ripgrep_search(pattern, base_full, glob)
         if results is None:
-            results = self._python_search(escaped_pattern, base_full, glob)
+            # Python fallback needs escaped pattern for literal search
+            results = self._python_search(re.escape(pattern), base_full, glob)
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -424,10 +422,10 @@ class FilesystemBackend(BackendProtocol):
         return matches
 
     def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:
-        """Search using ripgrep with JSON output parsing.
+        """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
-            pattern: Escaped regex pattern (from re.escape) for literal search.
+            pattern: Literal string to search for (unescaped).
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files.
 
@@ -435,7 +433,7 @@ class FilesystemBackend(BackendProtocol):
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
                 Returns `None` if ripgrep is unavailable or times out.
         """
-        cmd = ["rg", "--json"]
+        cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
             cmd.extend(["--glob", include_glob])
         cmd.extend(["--", pattern, str(base_full)])
@@ -480,7 +478,7 @@ class FilesystemBackend(BackendProtocol):
         return results
 
     def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:
-        """Fallback search using Python regex when ripgrep is unavailable.
+        """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit.
 
@@ -492,7 +490,7 @@ class FilesystemBackend(BackendProtocol):
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
         """
-        # Pattern is already escaped by grep_raw, compile it as-is
+        # Compile escaped pattern once for efficiency (used in loop)
         regex = re.compile(pattern)
 
         results: dict[str, list[tuple[int, str]]] = {}

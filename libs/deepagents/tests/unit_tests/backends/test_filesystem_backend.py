@@ -521,3 +521,55 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path):
     matches = be.grep_raw("(.*)", path="/")
     assert isinstance(matches, list)
     assert any("test3.py" in m["path"] for m in matches)
+
+
+def test_grep_literal_search_python_fallback(tmp_path: Path, monkeypatch) -> None:
+    """Test literal search works correctly with Python fallback (no ripgrep)."""
+    import subprocess
+
+    root = tmp_path
+
+    # Create test files with special regex characters
+    (root / "test1.py").write_text("def __init__(self, arg):\n    pass")
+    (root / "test2.py").write_text("@overload\ndef func(x: str | int):\n    return x")
+    (root / "test3.py").write_text("pattern = r'[a-z]+'\nregex_chars = '(.*)'")
+    (root / "test4.txt").write_text("Price: $19.99\nEmail: user@example.com")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Mock subprocess.run to simulate ripgrep not being available
+    def mock_run(*args, **kwargs):
+        raise FileNotFoundError("rg not found")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    # Test parentheses (should be literal, not regex grouping)
+    matches = be.grep_raw("def __init__(", path="/")
+    assert isinstance(matches, list)
+    assert any("test1.py" in m["path"] for m in matches)
+
+    # Test pipe character (should be literal, not regex OR)
+    matches = be.grep_raw("str | int", path="/")
+    assert isinstance(matches, list)
+    assert any("test2.py" in m["path"] for m in matches)
+
+    # Test brackets (should be literal, not character class)
+    matches = be.grep_raw("[a-z]", path="/")
+    assert isinstance(matches, list)
+    assert any("test3.py" in m["path"] for m in matches)
+
+    # Test multiple special chars together
+    matches = be.grep_raw("(.*)", path="/")
+    assert isinstance(matches, list)
+    assert any("test3.py" in m["path"] for m in matches)
+
+    # Test dot (should be literal, not "any character")
+    # If dot was treated as regex, "$19.99" would also match "$1999" or "$19X99"
+    matches = be.grep_raw("$19.99", path="/")
+    assert isinstance(matches, list)
+    assert any("test4.txt" in m["path"] for m in matches)
+
+    # Test @ character (should be literal)
+    matches = be.grep_raw("user@example", path="/")
+    assert isinstance(matches, list)
+    assert any("test4.txt" in m["path"] for m in matches)

@@ -328,6 +328,57 @@ def _get_subagents(
     return agents, subagent_descriptions
 
 
+def _extract_message_content(messages: list) -> str:
+    """Extract text content from a list of messages.
+
+    Implements a multi-tier extraction strategy:
+    - Tier 1 (Priority): Extract from AIMessage with backward iteration
+    - Tier 2 (Fallback): Extract from ToolMessage when no AIMessage has content
+    - Tier 3 (Default): Return empty string
+
+    Args:
+        messages: List of message objects to extract content from.
+
+    Returns:
+        Extracted message content as a string, or empty string if no content found.
+    """
+    message_text = ""
+    tool_fallback = ""
+
+    # Iterate backward through messages to find the last message with content
+    for msg in reversed(messages):
+        msg_type = getattr(msg, "type", None)
+
+        # Check AIMessage first (most common case)
+        if msg_type == "ai":
+            content = getattr(msg, "content", None) or getattr(msg, "text", None)
+            if content:
+                # String content
+                if isinstance(content, str):
+                    stripped = content.strip()
+                    if stripped:
+                        message_text = stripped
+                        break
+                # List content (Anthropic format)
+                elif isinstance(content, list):
+                    text_parts = (
+                        block.get("text", "") if isinstance(block, dict) and block.get("type") == "text" else block if isinstance(block, str) else ""
+                        for block in content
+                    )
+                    joined = " ".join(filter(None, text_parts))
+                    if joined:
+                        message_text = joined
+                        break
+
+        # Check ToolMessage as fallback
+        elif msg_type == "tool" and not tool_fallback:
+            content = getattr(msg, "content", None) or getattr(msg, "text", None)
+            if content and isinstance(content, str) and (stripped := content.strip()):
+                tool_fallback = stripped
+
+    return message_text or tool_fallback
+
+
 def _create_task_tool(
     *,
     default_model: str | BaseChatModel,
@@ -375,45 +426,7 @@ def _create_task_tool(
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-        messages = result["messages"]
-
-        # Extract message content: AIMessage > ToolMessage > empty string
-        message_text = ""
-        tool_fallback = ""
-
-        # Iterate backward through messages to find the last message with content
-        for msg in reversed(messages):
-            msg_type = getattr(msg, "type", None)
-
-            # Check AIMessage first (most common case)
-            if msg_type == "ai":
-                content = getattr(msg, "content", None) or getattr(msg, "text", None)
-                if content:
-                    # String content
-                    if isinstance(content, str):
-                        stripped = content.strip()
-                        if stripped:
-                            message_text = stripped
-                            break
-                    # List content (Anthropic format)
-                    elif isinstance(content, list):
-                        text_parts = (
-                            block.get("text", "") if isinstance(block, dict) and block.get("type") == "text"
-                            else block if isinstance(block, str) else ""
-                            for block in content
-                        )
-                        joined = " ".join(filter(None, text_parts))
-                        if joined:
-                            message_text = joined
-                            break
-
-            # Check ToolMessage as fallback
-            elif msg_type == "tool" and not tool_fallback:
-                content = getattr(msg, "content", None) or getattr(msg, "text", None)
-                if content and isinstance(content, str) and (stripped := content.strip()):
-                    tool_fallback = stripped
-
-        message_text = message_text or tool_fallback
+        message_text = _extract_message_content(result["messages"])
 
         return Command(
             update={

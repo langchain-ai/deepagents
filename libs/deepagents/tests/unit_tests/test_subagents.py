@@ -1020,15 +1020,9 @@ class TestMessageExtractionFromSubagents:
 
         subagent_response = tool_messages[0]
         # Should extract all non-empty text parts
-        assert "First part" in subagent_response.content, (
-            f"Should extract first text part, got: {subagent_response.content}"
-        )
-        assert "Second part" in subagent_response.content, (
-            f"Should extract second text part, got: {subagent_response.content}"
-        )
-        assert "Third part" in subagent_response.content, (
-            f"Should extract string block, got: {subagent_response.content}"
-        )
+        assert "First part" in subagent_response.content, f"Should extract first text part, got: {subagent_response.content}"
+        assert "Second part" in subagent_response.content, f"Should extract second text part, got: {subagent_response.content}"
+        assert "Third part" in subagent_response.content, f"Should extract string block, got: {subagent_response.content}"
 
     def test_toolmessage_extraction_for_toolstrategy(self) -> None:
         """Test that ToolStrategy structured output is properly extracted from ToolMessage.
@@ -1063,20 +1057,11 @@ class TestMessageExtractionFromSubagents:
 
         # AIMessage with tool call to structured output tool
         ai_with_toolcall = AIMessage(
-            content="",
-            tool_calls=[{
-                "name": "WeatherSchema",
-                "args": {"city": "Tokyo", "temp": 22},
-                "id": "struct_call",
-                "type": "tool_call"
-            }]
+            content="", tool_calls=[{"name": "WeatherSchema", "args": {"city": "Tokyo", "temp": 22}, "id": "struct_call", "type": "tool_call"}]
         )
 
         # ToolMessage with the structured result
-        tool_result = ToolMessage(
-            content="Returning structured response: city='Tokyo' temp=22",
-            tool_call_id="struct_call"
-        )
+        tool_result = ToolMessage(content="Returning structured response: city='Tokyo' temp=22", tool_call_id="struct_call")
 
         def toolstrategy_subagent(state: dict[str, Any]) -> dict[str, Any]:
             return {"messages": state["messages"] + [ai_with_toolcall, tool_result]}
@@ -1108,6 +1093,4 @@ class TestMessageExtractionFromSubagents:
         assert "Returning structured response" in subagent_response.content, (
             f"Should extract ToolMessage content for ToolStrategy, got: {subagent_response.content}"
         )
-        assert "Tokyo" in subagent_response.content, (
-            f"Should include structured data, got: {subagent_response.content}"
-        )
+        assert "Tokyo" in subagent_response.content, f"Should include structured data, got: {subagent_response.content}"

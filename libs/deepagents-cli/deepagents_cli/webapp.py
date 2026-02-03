@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -9,12 +10,12 @@ from typing import Any
 
 import httpx
 import jwt
-
-logger = logging.getLogger(__name__)
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from langgraph_sdk import get_client
 
 from deepagents_cli.encryption import encrypt_token
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -27,7 +28,7 @@ LANGGRAPH_URL = os.environ.get("LANGGRAPH_URL") or os.environ.get(
 LANGSMITH_API_KEY = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
     "LANGSMITH_API_KEY_PROD", ""
 )
-LANGSMITH_API_URL = os.environ.get("LANGSMITH_API_URL", "https://api.smith.langchain.com")
+LANGSMITH_API_URL = os.environ.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
 
 GITHUB_OAUTH_PROVIDER_ID = os.environ.get("GITHUB_OAUTH_PROVIDER_ID", "")
 
@@ -36,7 +37,9 @@ LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")
 X_SERVICE_AUTH_JWT_SECRET = os.environ.get("X_SERVICE_AUTH_JWT_SECRET", "")
 
 
-def get_service_jwt_token_for_user(user_id: str, tenant_id: str, expiration_seconds: int = 300) -> str:
+def get_service_jwt_token_for_user(
+    user_id: str, tenant_id: str, expiration_seconds: int = 300
+) -> str:
     """Create a short-lived service JWT for authenticating as a specific user.
 
     Args:
@@ -51,9 +54,8 @@ def get_service_jwt_token_for_user(user_id: str, tenant_id: str, expiration_seco
         ValueError: If X_SERVICE_AUTH_JWT_SECRET is not configured
     """
     if not X_SERVICE_AUTH_JWT_SECRET:
-        raise ValueError(
-            "X_SERVICE_AUTH_JWT_SECRET is not configured. Cannot generate service keys."
-        )
+        msg = "X_SERVICE_AUTH_JWT_SECRET is not configured. Cannot generate service keys."
+        raise ValueError(msg)
 
     exp_datetime = datetime.now(tz=UTC) + timedelta(seconds=expiration_seconds)
     exp = int(exp_datetime.timestamp())
@@ -67,8 +69,10 @@ def get_service_jwt_token_for_user(user_id: str, tenant_id: str, expiration_seco
 
     return jwt.encode(payload, X_SERVICE_AUTH_JWT_SECRET, algorithm="HS256")
 
+
 LINEAR_TEAM_TO_REPO: dict[str, dict[str, str]] = {
     "Brace's test workspace": {"owner": "langchain-ai", "name": "open-swe"},
+    "Yogesh-dev": {"owner": "aran-yogesh", "name": "nimedge"},
 }
 
 
@@ -102,9 +106,9 @@ async def get_ls_user_id_from_email(email: str) -> dict[str, str | None]:
                     "ls_user_id": member.get("ls_user_id"),
                     "tenant_id": member.get("tenant_id"),
                 }
-            return {"ls_user_id": None, "tenant_id": None}
-        except Exception:
-            return {"ls_user_id": None, "tenant_id": None}
+        except httpx.HTTPError:
+            logger.debug("HTTP error getting LangSmith user info for email")
+        return {"ls_user_id": None, "tenant_id": None}
 
 
 LANGSMITH_HOST_API_URL = os.environ.get("LANGSMITH_HOST_API_URL", "https://api.host.langchain.com")
@@ -124,7 +128,6 @@ async def get_github_token_for_user(ls_user_id: str, tenant_id: str) -> dict[str
         return {"error": "GITHUB_OAUTH_PROVIDER_ID not configured"}
 
     try:
-        # Generate a service JWT token associated with the user
         service_token = get_service_jwt_token_for_user(ls_user_id, tenant_id)
 
         headers = {
@@ -160,7 +163,7 @@ async def get_github_token_for_user(ls_user_id: str, tenant_id: str) -> dict[str
 
     except httpx.HTTPStatusError as e:
         return {"error": f"HTTP error: {e.response.status_code} - {e.response.text}"}
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
 
@@ -202,11 +205,8 @@ async def react_to_linear_comment(comment_id: str, emoji: str = "👀") -> bool:
             )
             response.raise_for_status()
             result = response.json()
-
-            if result.get("data", {}).get("reactionCreate", {}).get("success"):
-                return True
-            return False
-        except Exception:
+            return bool(result.get("data", {}).get("reactionCreate", {}).get("success"))
+        except Exception:  # noqa: BLE001
             return False
 
 
@@ -251,11 +251,8 @@ async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
             )
             response.raise_for_status()
             result = response.json()
-
-            if result.get("data", {}).get("commentCreate", {}).get("success"):
-                return True
-            return False
-        except Exception:
+            return bool(result.get("data", {}).get("commentCreate", {}).get("success"))
+        except Exception:  # noqa: BLE001
             return False
 
 
@@ -313,11 +310,8 @@ async def fetch_linear_issue_details(issue_id: str) -> dict[str, Any] | None:
             response.raise_for_status()
             result = response.json()
 
-            issue = result.get("data", {}).get("issue")
-            if issue:
-                return issue
-            return None
-        except Exception:
+            return result.get("data", {}).get("issue")
+        except httpx.HTTPError:
             return None
 
 
@@ -331,10 +325,91 @@ def generate_thread_id_from_issue(issue_id: str) -> str:
         A UUID-formatted thread ID derived from the issue ID
     """
     hash_bytes = hashlib.sha256(f"linear-issue:{issue_id}".encode()).hexdigest()
-    return f"{hash_bytes[:8]}-{hash_bytes[8:12]}-{hash_bytes[12:16]}-{hash_bytes[16:20]}-{hash_bytes[20:32]}"
+    return (
+        f"{hash_bytes[:8]}-{hash_bytes[8:12]}-{hash_bytes[12:16]}-"
+        f"{hash_bytes[16:20]}-{hash_bytes[20:32]}"
+    )
 
 
-async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str, str]) -> None:
+async def is_thread_active(thread_id: str) -> bool:
+    """Check if a thread is currently active (has a running run).
+
+    Args:
+        thread_id: The LangGraph thread ID
+
+    Returns:
+        True if the thread status is "busy", False otherwise
+    """
+    langgraph_client = get_client(url=LANGGRAPH_URL)
+    try:
+        logger.debug("Fetching thread status for %s from %s", thread_id, LANGGRAPH_URL)
+        thread = await langgraph_client.threads.get(thread_id)
+        status = thread.get("status", "idle")
+        logger.info(
+            "Thread %s status check: status=%s, is_busy=%s",
+            thread_id,
+            status,
+            status == "busy",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Failed to get thread status for %s: %s (type: %s) - assuming not active",
+            thread_id,
+            e,
+            type(e).__name__,
+        )
+        status = "idle"
+    return status == "busy"
+
+
+async def queue_message_for_thread(thread_id: str, message_content: str) -> bool:
+    """Queue a message for a thread that is currently active.
+
+    Stores the message in the langgraph store, namespaced to the thread.
+    Supports multiple queued messages by storing them as a list (FIFO order).
+    The before_model middleware will pick them up and inject them into state.
+
+    Args:
+        thread_id: The LangGraph thread ID
+        message_content: The message content to queue
+
+    Returns:
+        True if successfully queued, False otherwise
+    """
+    langgraph_client = get_client(url=LANGGRAPH_URL)
+    try:
+        namespace = ("queue", thread_id)
+        key = "pending_messages"
+
+        new_message = {"content": message_content}
+
+        existing_messages: list[dict[str, Any]] = []
+        try:
+            existing_item = await langgraph_client.store.get_item(namespace, key)
+            if existing_item and existing_item.get("value"):
+                existing_messages = existing_item["value"].get("messages", [])
+        except Exception:  # noqa: BLE001
+            logger.debug("No existing queued messages for thread %s", thread_id)
+
+        existing_messages.append(new_message)
+        value = {"messages": existing_messages}
+
+        logger.info(
+            "Attempting to queue message for thread %s (total queued: %d)",
+            thread_id,
+            len(existing_messages),
+        )
+        await langgraph_client.store.put_item(namespace, key, value)
+        logger.info("Successfully queued message for thread %s", thread_id)
+        return True  # noqa: TRY300
+    except Exception:
+        logger.exception("Failed to queue message for thread %s", thread_id)
+        return False
+
+
+async def process_linear_issue(  # noqa: PLR0912, PLR0915
+    issue_data: dict[str, Any], repo_config: dict[str, str]
+) -> None:
     """Process a Linear issue by creating a new LangGraph thread and run.
 
     Args:
@@ -376,7 +451,6 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
             user_email = assignee.get("email")
             user_name = user_name or assignee.get("name")
 
-    # Create a mention tag for the user
     user_mention = f"@{user_name}" if user_name else ""
 
     logger.info(
@@ -390,7 +464,9 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
         user_info = await get_ls_user_id_from_email(user_email)
         ls_user_id = user_info.get("ls_user_id")
         tenant_id = user_info.get("tenant_id")
-        logger.info("LangSmith user ID for %s: %s, tenant_id: %s", user_email, ls_user_id, tenant_id)
+        logger.info(
+            "LangSmith user ID for %s: %s, tenant_id: %s", user_email, ls_user_id, tenant_id
+        )
 
         if ls_user_id and tenant_id:
             auth_result = await get_github_token_for_user(ls_user_id, tenant_id)
@@ -402,28 +478,29 @@ async def process_linear_issue(issue_data: dict[str, Any], repo_config: dict[str
             elif "auth_url" in auth_result:
                 auth_url = auth_result["auth_url"]
                 logger.info("GitHub auth required for user %s, sending auth URL", user_email)
-                comment = f"""🔐 **GitHub Authentication Required** {user_mention}
-
-To allow the Open SWE agent to work on this issue, please authenticate with GitHub by clicking the link below:
-
-[Authenticate with GitHub]({auth_url})
-
-Once authenticated, reply to this issue mentioning @openswe to retry."""
+                comment = (
+                    f"🔐 **GitHub Authentication Required** {user_mention}\n\n"
+                    "To allow the Open SWE agent to work on this issue, "
+                    "please authenticate with GitHub by clicking the link below:\n\n"
+                    f"[Authenticate with GitHub]({auth_url})\n\n"
+                    "Once authenticated, reply to this issue mentioning @openswe to retry."
+                )
 
                 await comment_on_linear_issue(issue_id, comment)
                 return
             else:
                 logger.warning("Auth result has neither token nor auth_url: %s", auth_result)
         else:
-            # User not found in LangSmith workspace
             logger.warning("User %s not found in LangSmith workspace", user_email)
-            comment = f"""🔐 **GitHub Authentication Required** {user_mention}
-
-Could not find a LangSmith account for **{user_email}**.
-
-Please ensure this email is invited to the main LangSmith organization. If your Linear account uses a different email than your LangSmith account, you may need to update one of them to match.
-
-Once your email is added to LangSmith, reply to this issue mentioning @openswe to retry."""
+            comment = (
+                f"🔐 **GitHub Authentication Required** {user_mention}\n\n"
+                f"Could not find a LangSmith account for **{user_email}**.\n\n"
+                "Please ensure this email is invited to the main LangSmith organization. "
+                "If your Linear account uses a different email than your LangSmith account, "
+                "you may need to update one of them to match.\n\n"
+                "Once your email is added to LangSmith, "
+                "reply to this issue mentioning @openswe to retry."
+            )
 
             await comment_on_linear_issue(issue_id, comment)
             return
@@ -467,16 +544,14 @@ Once your email is added to LangSmith, reply to this issue mentioning @openswe t
                     continue
                 comments_text += f"\n**{author}:** {body}\n"
 
-    prompt = f"""Please work on the following issue:
-
-## Title: {title}
-
-## Description:
-{description}
-{comments_text}
-
-Please analyze this issue and implement the necessary changes. When you're done, commit and push your changes.
-"""
+    prompt = (
+        f"Please work on the following issue:\n\n"
+        f"## Title: {title}\n\n"
+        f"## Description:\n{description}\n"
+        f"{comments_text}\n\n"
+        "Please analyze this issue and implement the necessary changes. "
+        "When you're done, commit and push your changes."
+    )
 
     configurable: dict[str, Any] = {
         "repo": repo_config,
@@ -490,37 +565,60 @@ Please analyze this issue and implement the necessary changes. When you're done,
     if github_token:
         configurable["github_token_encrypted"] = encrypt_token(github_token)
 
-        logger.info("Creating LangGraph run for thread %s", thread_id)
-        langgraph_client = get_client(url=LANGGRAPH_URL)
-        await langgraph_client.runs.create(
-            thread_id,
-            "agent",
-            input={"messages": [{"role": "user", "content": prompt}]},
-            config={"configurable": configurable},
-            if_not_exists="create",
-        )
-        logger.info("LangGraph run created successfully for thread %s", thread_id)
+        logger.info("Checking if thread %s is active before creating run", thread_id)
+        thread_active = await is_thread_active(thread_id)
+        logger.info("Thread %s active status: %s", thread_id, thread_active)
+
+        if thread_active:
+            logger.info(
+                "Thread %s is active (busy), will queue message instead of creating run",
+                thread_id,
+            )
+
+            queued = await queue_message_for_thread(
+                thread_id=thread_id,
+                message_content=prompt,
+            )
+
+            if queued:
+                logger.info(
+                    "Message queued for thread %s, will be processed by middleware", thread_id
+                )
+            else:
+                logger.error("Failed to queue message for thread %s", thread_id)
+        else:
+            logger.info("Creating LangGraph run for thread %s", thread_id)
+            langgraph_client = get_client(url=LANGGRAPH_URL)
+            await langgraph_client.runs.create(
+                thread_id,
+                "agent",
+                input={"messages": [{"role": "user", "content": prompt}]},
+                config={"configurable": configurable},
+                if_not_exists="create",
+            )
+            logger.info("LangGraph run created successfully for thread %s", thread_id)
     else:
         logger.warning("No GitHub token available, cannot create run for issue %s", issue_id)
-        # Send a comment explaining why we couldn't proceed
         if not user_email:
-            comment = f"""🔐 **GitHub Authentication Required** {user_mention}
-
-Could not determine the user email from this issue. Please ensure your Linear account has an email address configured.
-
-Reply to this issue mentioning @openswe to retry."""
+            comment = (
+                f"🔐 **GitHub Authentication Required** {user_mention}\n\n"
+                "Could not determine the user email from this issue. "
+                "Please ensure your Linear account has an email address configured.\n\n"
+                "Reply to this issue mentioning @openswe to retry."
+            )
         elif not GITHUB_OAUTH_PROVIDER_ID:
-            comment = f"""❌ **Configuration Error** {user_mention}
-
-The Open SWE agent is not properly configured (missing GitHub OAuth provider).
-
-Please contact your administrator."""
+            comment = (
+                f"❌ **Configuration Error** {user_mention}\n\n"
+                "The Open SWE agent is not properly configured (missing GitHub OAuth provider).\n\n"
+                "Please contact your administrator."
+            )
         else:
-            comment = f"""🔐 **GitHub Authentication Required** {user_mention}
-
-Unable to authenticate with GitHub. Please ensure you have connected your GitHub account in LangSmith.
-
-Reply to this issue mentioning @openswe to retry."""
+            comment = (
+                f"🔐 **GitHub Authentication Required** {user_mention}\n\n"
+                "Unable to authenticate with GitHub. "
+                "Please ensure you have connected your GitHub account in LangSmith.\n\n"
+                "Reply to this issue mentioning @openswe to retry."
+            )
 
         await comment_on_linear_issue(issue_id, comment)
 
@@ -545,7 +643,9 @@ def verify_linear_signature(body: bytes, signature: str, secret: str) -> bool:
 
 
 @app.post("/webhooks/linear")
-async def linear_webhook(request: Request, background_tasks: BackgroundTasks):
+async def linear_webhook(  # noqa: PLR0911, PLR0912, PLR0915
+    request: Request, background_tasks: BackgroundTasks
+) -> dict[str, str]:
     """Handle Linear webhooks.
 
     Triggers a new LangGraph run when an issue gets the 'open-swe' label added.
@@ -561,11 +661,9 @@ async def linear_webhook(request: Request, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
-        import json
-
         payload = json.loads(body)
-    except Exception:
-        logger.error("Failed to parse webhook JSON")
+    except json.JSONDecodeError:
+        logger.exception("Failed to parse webhook JSON")
         return {"status": "error", "message": "Invalid JSON"}
 
     if payload.get("type") != "Comment":
@@ -652,12 +750,12 @@ async def linear_webhook(request: Request, background_tasks: BackgroundTasks):
 
 
 @app.get("/webhooks/linear")
-async def linear_webhook_verify():
+async def linear_webhook_verify() -> dict[str, str]:
     """Verify endpoint for Linear webhook setup."""
     return {"status": "ok", "message": "Linear webhook endpoint is active"}
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "healthy"}

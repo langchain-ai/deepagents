@@ -504,9 +504,9 @@ def create_server_agent(
     sandbox_type: str | None = None,
     system_prompt: str | None = None,
     auto_approve: bool = False,
-    enable_memory: bool = True,
-    enable_skills: bool = True,
-    enable_shell: bool = True,
+    enable_memory: bool = True,  # noqa: ARG001
+    enable_skills: bool = True,  # noqa: ARG001
+    enable_shell: bool = True,  # noqa: ARG001
     working_dir: str | None = None,
     middleware: Sequence[AgentMiddleware] = (),
 ) -> tuple[Pregel, CompositeBackend]:
@@ -527,13 +527,12 @@ def create_server_agent(
                       based on sandbox_type and assistant_id.
         auto_approve: If True, automatically approves all tool calls without human
                      confirmation. Useful for automated workflows.
-        enable_memory: Enable MemoryMiddleware for persistent memory
-        enable_skills: Enable SkillsMiddleware for custom agent skills
-        enable_shell: Enable ShellMiddleware for local shell execution (only in local mode)
+        enable_memory: Enable MemoryMiddleware for persistent memory (unused in server mode)
+        enable_skills: Enable SkillsMiddleware for custom agent skills (unused in server mode)
+        enable_shell: Enable ShellMiddleware for local shell execution (unused in server mode)
         working_dir: Override the default working directory (e.g., cloned repo path).
                     Used in system prompt to tell the agent where to operate.
-        checkpointer: Optional checkpointer for session persistence. If None, uses
-                     InMemorySaver (no persistence across CLI invocations).
+        middleware: Sequence of middleware to apply to the agent.
 
     Returns:
         2-tuple of (agent_graph, backend)
@@ -559,9 +558,7 @@ def create_server_agent(
                 working_dir=working_dir,
             )
         if sandbox_type is None:
-            # NOTE: (harrison)
-            # This only happens when thread_id is None
-            # That only happens when not actually running, so system_prompt doesn't matter
+            # Only happens when thread_id is None / not actually running
             system_prompt = ""
 
     # Configure interrupt_on based on auto_approve setting
@@ -572,7 +569,7 @@ def create_server_agent(
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()
 
-    agent = create_deep_agent(
+    return create_deep_agent(
         model=model,
         system_prompt=system_prompt,
         tools=tools,
@@ -580,4 +577,3 @@ def create_server_agent(
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
     ).with_config(config)
-    return agent

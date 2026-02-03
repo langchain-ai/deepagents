@@ -10,11 +10,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from langchain.agents.middleware import AgentState, after_agent, after_model
-from langgraph.config import get_config
+from langchain.agents.middleware import AgentState, after_agent, after_model, before_model
+from langgraph.config import get_config, get_store
 from langgraph.graph.state import RunnableConfig
+from langgraph.pregel import Pregel
 from langgraph.runtime import Runtime
-from typing_extensions import TypedDict
 
 warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 
@@ -24,9 +24,9 @@ import asyncio
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
 # Now safe to import agent (which imports LangChain modules)
-from deepagents_cli.agent import create_server_agent
+from deepagents.backends.sandbox import SandboxBackendProtocol
 
-# CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
+from deepagents_cli.agent import create_server_agent
 from deepagents_cli.config import settings
 from deepagents_cli.encryption import decrypt_token
 from deepagents_cli.integrations.sandbox_factory import create_sandbox_async
@@ -44,9 +44,138 @@ SANDBOX_CREATING = "__creating__"
 SANDBOX_CREATION_TIMEOUT = 180
 SANDBOX_POLL_INTERVAL = 1.0
 
+# HTTP status codes
+HTTP_CREATED = 201
+HTTP_UNPROCESSABLE_ENTITY = 422
+
+# Message count thresholds
+MIN_MESSAGES_FOR_PREV_CHECK = 2
+
 _SANDBOX_BACKENDS: dict[str, Any] = {}
 
+import httpx
+
 LINEAR_API_KEY = os.environ.get("LINEAR_API_KEY", "")
+
+
+async def create_github_pr(
+    repo_owner: str,
+    repo_name: str,
+    github_token: str,
+    title: str,
+    head_branch: str,
+    base_branch: str,
+    body: str,
+) -> tuple[str | None, int | None]:
+    """Create a GitHub pull request via the API.
+
+    Args:
+        repo_owner: Repository owner (e.g., "langchain-ai")
+        repo_name: Repository name (e.g., "deepagents")
+        github_token: GitHub access token
+        title: PR title
+        head_branch: Source branch name
+        base_branch: Target branch name
+        body: PR description
+
+    Returns:
+        Tuple of (pr_url, pr_number) if successful, (None, None) otherwise
+    """
+    pr_payload = {
+        "title": title,
+        "head": head_branch,
+        "base": base_branch,
+        "body": body,
+    }
+
+    logger.info(
+        "Creating PR: head=%s, base=%s, repo=%s/%s",
+        head_branch,
+        base_branch,
+        repo_owner,
+        repo_name,
+    )
+
+    try:
+        async with httpx.AsyncClient() as http_client:
+            pr_response = await http_client.post(
+                f"https://api.github.com/repos/{repo_owner}/{repo_name}/pulls",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json=pr_payload,
+            )
+
+            pr_data = pr_response.json()
+
+            if pr_response.status_code == HTTP_CREATED:
+                pr_url = pr_data.get("html_url")
+                pr_number = pr_data.get("number")
+                logger.info("PR created successfully: %s", pr_url)
+                return pr_url, pr_number
+
+            if pr_response.status_code == HTTP_UNPROCESSABLE_ENTITY:
+                logger.error("GitHub API validation error (422): %s", pr_data.get("message"))
+            else:
+                logger.error(
+                    "GitHub API error (%s): %s",
+                    pr_response.status_code,
+                    pr_data.get("message"),
+                )
+
+            if "errors" in pr_data:
+                logger.error("GitHub API errors detail: %s", pr_data.get("errors"))
+
+            return None, None
+
+    except httpx.HTTPError:
+        logger.exception("Failed to create PR via GitHub API")
+        return None, None
+
+
+async def get_github_default_branch(
+    repo_owner: str,
+    repo_name: str,
+    github_token: str,
+) -> str:
+    """Get the default branch of a GitHub repository via the API.
+
+    Args:
+        repo_owner: Repository owner (e.g., "langchain-ai")
+        repo_name: Repository name (e.g., "deepagents")
+        github_token: GitHub access token
+
+    Returns:
+        The default branch name (e.g., "main" or "master")
+    """
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.get(
+                f"https://api.github.com/repos/{repo_owner}/{repo_name}",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+
+            if response.status_code == 200:  # noqa: PLR2004
+                repo_data = response.json()
+                default_branch = repo_data.get("default_branch", "main")
+                logger.debug("Got default branch from GitHub API: %s", default_branch)
+                return default_branch
+
+            logger.warning(
+                "Failed to get repo info from GitHub API (%s), falling back to 'main'",
+                response.status_code,
+            )
+            return "main"
+
+    except httpx.HTTPError:
+        logger.exception("Failed to get default branch from GitHub API, falling back to 'main'")
+        return "main"
 
 
 async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
@@ -64,7 +193,6 @@ async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
 
     import httpx
 
-    # Linear uses GraphQL API
     url = "https://api.linear.app/graphql"
 
     mutation = """
@@ -93,11 +221,8 @@ async def comment_on_linear_issue(issue_id: str, comment_body: str) -> bool:
             )
             response.raise_for_status()
             result = response.json()
-
-            if result.get("data", {}).get("commentCreate", {}).get("success"):
-                return True
-            return False
-        except Exception:
+            return bool(result.get("data", {}).get("commentCreate", {}).get("success"))
+        except Exception:  # noqa: BLE001
             return False
 
 
@@ -107,9 +232,93 @@ class LinearNotifyState(AgentState):
     linear_messages_sent_count: int
 
 
+@before_model(state_schema=LinearNotifyState)
+async def check_message_queue_before_model(  # noqa: PLR0911
+    state: LinearNotifyState,  # noqa: ARG001
+    runtime: Runtime,  # noqa: ARG001
+) -> dict[str, Any] | None:
+    """Middleware that checks for queued messages before each model call.
+
+    If messages are found in the queue for this thread, it extracts all messages,
+    adds them to the conversation state as new human messages, and clears the queue.
+    Messages are processed in FIFO order (oldest first).
+
+    This enables handling of follow-up comments that arrive while the agent is busy.
+    The agent will see the new messages and can incorporate them into its response.
+    """
+    try:
+        config = get_config()
+        configurable = config.get("configurable", {})
+        thread_id = configurable.get("thread_id")
+
+        if not thread_id:
+            return None
+
+        try:
+            store = get_store()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not get store from context: %s", e)
+            return None
+
+        if store is None:
+            return None
+
+        namespace = ("queue", thread_id)
+
+        try:
+            queued_item = await store.aget(namespace, "pending_messages")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to get queued item: %s", e)
+            return None
+
+        if queued_item is None:
+            return None
+
+        queued_value = queued_item.value
+        queued_messages = queued_value.get("messages", [])
+
+        # Delete early to prevent duplicate processing if middleware runs again
+        await store.adelete(namespace, "pending_messages")
+
+        if not queued_messages:
+            return None
+
+        logger.info(
+            "Found %d queued message(s) for thread %s, injecting into state",
+            len(queued_messages),
+            thread_id,
+        )
+
+        content_blocks = [
+            {"type": "text", "text": msg.get("content", "")}
+            for msg in queued_messages
+            if msg.get("content")
+        ]
+
+        if not content_blocks:
+            return None
+
+        new_message = {
+            "role": "user",
+            "content": content_blocks,
+        }
+
+        logger.info(
+            "Injected %d queued message(s) into state for thread %s",
+            len(content_blocks),
+            thread_id,
+        )
+
+        return {"messages": [new_message]}  # noqa: TRY300
+    except Exception:
+        logger.exception("Error in check_message_queue_before_model")
+    return None
+
+
 @after_model(state_schema=LinearNotifyState)
-async def post_to_linear_after_model(
-    state: LinearNotifyState, runtime: Runtime
+async def post_to_linear_after_model(  # noqa: PLR0911, PLR0912
+    state: LinearNotifyState,
+    runtime: Runtime,  # noqa: ARG001
 ) -> dict[str, Any] | None:
     """Middleware that posts AI responses to Linear after each model call.
 
@@ -171,7 +380,7 @@ async def post_to_linear_after_model(
         if ai_message_count <= sent_count:
             return None
 
-        if len(messages) >= 2:
+        if len(messages) >= MIN_MESSAGES_FOR_PREV_CHECK:
             prev_message = messages[-2]
             if isinstance(prev_message, dict):
                 prev_role = prev_message.get("role", "")
@@ -194,15 +403,17 @@ async def post_to_linear_after_model(
             logger.info("Successfully posted to Linear")
             return {"linear_messages_sent_count": ai_message_count}
         logger.warning("Failed to post to Linear")
-        return None
 
-    except Exception as e:
-        logger.error("Error in post_to_linear_after_model: %s", e)
-        return None
+    except Exception:
+        logger.exception("Error in post_to_linear_after_model")
+    return None
 
 
 @after_agent
-async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+async def open_pr_if_needed(  # noqa: PLR0912, PLR0915
+    state: AgentState,
+    runtime: Runtime,  # noqa: ARG001
+) -> dict[str, Any] | None:
     """Middleware that commits/pushes changes and comments on Linear after agent runs."""
     logger.info("After-agent middleware started")
     pr_url = None
@@ -210,29 +421,24 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
     pr_title = "feat: Open SWE PR"
 
     try:
-        # Get config using langgraph's get_config
         config = get_config()
         configurable = config.get("configurable", {})
         thread_id = configurable.get("thread_id")
         logger.debug("Middleware running for thread %s", thread_id)
 
-        # Get the last message content from state
         last_message_content = ""
         messages = state.get("messages", [])
         if messages:
             last_message = messages[-1]
-            # Handle both dict and object message formats
             if isinstance(last_message, dict):
                 last_message_content = last_message.get("content", "")
             elif hasattr(last_message, "content"):
                 last_message_content = last_message.content
 
-        # Get Linear issue info for commenting
         linear_issue = configurable.get("linear_issue", {})
         linear_issue_id = linear_issue.get("id")
 
         if not thread_id:
-            # Still comment on Linear if we have the issue ID
             if linear_issue_id and last_message_content:
                 comment = f"""🤖 **Agent Response**
 
@@ -265,10 +471,11 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
         await asyncio.to_thread(
             sandbox_backend.execute, f"cd {repo_dir} && git fetch origin 2>/dev/null || true"
         )
-        unpushed_result = await asyncio.to_thread(
-            sandbox_backend.execute,
-            f"cd {repo_dir} && git log --oneline @{{upstream}}..HEAD 2>/dev/null || git log --oneline origin/HEAD..HEAD 2>/dev/null || echo ''",
+        git_log_cmd = (
+            f"cd {repo_dir} && git log --oneline @{{upstream}}..HEAD 2>/dev/null "
+            "|| git log --oneline origin/HEAD..HEAD 2>/dev/null || echo ''"
         )
+        unpushed_result = await asyncio.to_thread(sandbox_backend.execute, git_log_cmd)
         has_unpushed_commits = unpushed_result.exit_code == 0 and unpushed_result.output.strip()
 
         has_changes = has_uncommitted_changes or has_unpushed_commits
@@ -336,47 +543,25 @@ async def open_pr_if_needed(state: AgentState, runtime: Runtime) -> dict[str, An
                         sandbox_backend.execute, f"cd {repo_dir} && git push origin {target_branch}"
                     )
 
-            # Try to get the default branch from git
-            default_branch_result = await asyncio.to_thread(
-                sandbox_backend.execute,
-                f"cd {repo_dir} && git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@'",
-            )
-            base_branch = default_branch_result.output.strip() if default_branch_result.exit_code == 0 else ""
-
-            # Fallback to main if we couldn't determine the default branch
-            if not base_branch:
-                base_branch = "main"
-
+            # Get default branch from GitHub API (most reliable method)
+            base_branch = await get_github_default_branch(repo_owner, repo_name, github_token)
             logger.info("Using base branch: %s", base_branch)
 
             pr_title = "feat: Open SWE PR"
             pr_body = "Automated PR created by Open SWE agent."
 
-            create_pr_cmd = f"""curl -s -X POST \\
-                -H "Authorization: Bearer {github_token}" \\
-                -H "Accept: application/vnd.github+json" \\
-                -H "X-GitHub-Api-Version: 2022-11-28" \\
-                https://api.github.com/repos/{repo_owner}/{repo_name}/pulls \\
-                -d '{{"title":"{pr_title}","head":"{target_branch}","base":"{base_branch}","body":"{pr_body}"}}'
-            """
-
-            pr_result = await asyncio.to_thread(sandbox_backend.execute, create_pr_cmd)
+            pr_url, pr_number = await create_github_pr(
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                github_token=github_token,
+                title=pr_title,
+                head_branch=target_branch,
+                base_branch=base_branch,
+                body=pr_body,
+            )
 
             linear_issue = configurable.get("linear_issue", {})
             linear_issue_id = linear_issue.get("id")
-
-            if pr_result.exit_code == 0:
-                import json
-
-                pr_response = json.loads(pr_result.output)
-                pr_url = pr_response.get("html_url")
-                pr_number = pr_response.get("number")
-                if pr_url:
-                    logger.info("PR created successfully: %s", pr_url)
-                else:
-                    logger.warning(
-                        "PR creation response did not contain html_url: %s", pr_result.output[:200]
-                    )
 
         if linear_issue_id and last_message_content:
             if pr_url:
@@ -398,10 +583,9 @@ I've created a pull request to address this issue:
             await comment_on_linear_issue(linear_issue_id, comment)
 
         logger.info("After-agent middleware completed successfully")
-        return None
 
     except Exception as e:
-        logger.error("Error in after-agent middleware: %s: %s", type(e).__name__, e)
+        logger.exception("Error in after-agent middleware")
         try:
             config = get_config()
             configurable = config.get("configurable", {})
@@ -416,13 +600,16 @@ An error occurred while processing this issue:
 {type(e).__name__}: {e}
 ```"""
                 await comment_on_linear_issue(linear_issue_id, error_comment)
-        except Exception as inner_e:
-            logger.error("Failed to post error comment to Linear: %s", inner_e)
-        return None
+        except Exception:
+            logger.exception("Failed to post error comment to Linear")
+    return None
 
 
-async def _clone_or_pull_repo_in_sandbox(
-    sandbox_backend: Any, owner: str, repo: str, github_token: str | None = None
+async def _clone_or_pull_repo_in_sandbox(  # noqa: PLR0915
+    sandbox_backend: SandboxBackendProtocol,
+    owner: str,
+    repo: str,
+    github_token: str | None = None,
 ) -> str:
     """Clone a GitHub repo into the sandbox, or pull if it already exists.
 
@@ -456,8 +643,8 @@ async def _clone_or_pull_repo_in_sandbox(
             check_result.exit_code,
             check_result.output[:200] if check_result.output else "",
         )
-    except Exception as e:
-        logger.error("Failed to execute check command in sandbox: %s", e, exc_info=True)
+    except Exception:
+        logger.exception("Failed to execute check command in sandbox")
         raise
 
     if check_result.exit_code == 0 and "exists" in check_result.output:
@@ -467,8 +654,8 @@ async def _clone_or_pull_repo_in_sandbox(
                 None, sandbox_backend.execute, f"cd {repo_dir} && git status --porcelain"
             )
             logger.debug("Git status result: exit_code=%s", status_result.exit_code)
-        except Exception as e:
-            logger.error("Failed to get git status: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Failed to get git status")
             raise
 
         # CRITICAL: Ensure remote URL doesn't contain token (clean up from previous runs)
@@ -479,8 +666,8 @@ async def _clone_or_pull_repo_in_sandbox(
                 sandbox_backend.execute,
                 f"cd {repo_dir} && git remote set-url origin {clean_url}",
             )
-        except Exception as e:
-            logger.error("Failed to set remote URL: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Failed to set remote URL")
             raise
 
         if status_result.exit_code == 0 and not status_result.output.strip():
@@ -496,8 +683,8 @@ async def _clone_or_pull_repo_in_sandbox(
                         pull_result.exit_code,
                         pull_result.output[:200] if pull_result.output else "",
                     )
-            except Exception as e:
-                logger.error("Failed to execute git pull: %s", e, exc_info=True)
+            except Exception:
+                logger.exception("Failed to execute git pull")
                 raise
     else:
         logger.info("Cloning repo %s/%s to %s", owner, repo, repo_dir)
@@ -507,8 +694,8 @@ async def _clone_or_pull_repo_in_sandbox(
                 None, sandbox_backend.execute, f"git clone {clone_url} {repo_dir}"
             )
             logger.debug("Git clone result: exit_code=%s", result.exit_code)
-        except Exception as e:
-            logger.error("Failed to execute git clone: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Failed to execute git clone")
             raise
 
         if result.exit_code != 0:
@@ -523,8 +710,8 @@ async def _clone_or_pull_repo_in_sandbox(
                 sandbox_backend.execute,
                 f"cd {repo_dir} && git remote set-url origin {clean_url}",
             )
-        except Exception as e:
-            logger.error("Failed to set remote URL after clone: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Failed to set remote URL after clone")
             raise
 
     logger.info("Repo setup complete at %s", repo_dir)
@@ -559,6 +746,7 @@ async def _wait_for_sandbox_id(thread_id: str) -> str:
 
 
 def graph_loaded_for_execution(config: RunnableConfig) -> bool:
+    """Check if the graph is loaded for actual execution vs introspection."""
     return (
         config["configurable"].get("__is_for_execution__", False)
         if "configurable" in config
@@ -566,7 +754,7 @@ def graph_loaded_for_execution(config: RunnableConfig) -> bool:
     )
 
 
-async def get_agent(config: RunnableConfig):
+async def get_agent(config: RunnableConfig) -> Pregel:  # noqa: PLR0915
     """Get or create an agent with a sandbox for the given thread."""
     thread_id = config["configurable"].get("thread_id", None)
     logger.info("get_agent called for thread %s", thread_id)
@@ -621,18 +809,17 @@ async def get_agent(config: RunnableConfig):
                 )
                 logger.info("Repo cloned to %s", repo_dir)
 
-                # Update repo_dir in metadata after clone completes
                 await client.threads.update(
                     thread_id=thread_id,
                     metadata={"repo_dir": repo_dir},
                 )
-        except Exception as e:
-            logger.error("Failed to create sandbox or clone repo: %s", e, exc_info=True)
+        except Exception:
+            logger.exception("Failed to create sandbox or clone repo")
             try:
                 await client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
                 logger.info("Reset sandbox_id to None for thread %s", thread_id)
-            except Exception as reset_error:
-                logger.error("Failed to reset sandbox_id metadata: %s", reset_error)
+            except Exception:
+                logger.exception("Failed to reset sandbox_id metadata")
             raise
     else:
         logger.info("Connecting to existing sandbox %s", sandbox_id)
@@ -640,10 +827,8 @@ async def get_agent(config: RunnableConfig):
             sandbox_cm = create_sandbox_async("langsmith", sandbox_id=sandbox_id, cleanup=False)
             sandbox_backend = await sandbox_cm.__aenter__()
             logger.info("Connected to existing sandbox %s", sandbox_id)
-        except Exception as e:
-            logger.error(
-                "Failed to connect to existing sandbox %s: %s", sandbox_id, e, exc_info=True
-            )
+        except Exception:
+            logger.exception("Failed to connect to existing sandbox %s", sandbox_id)
             raise
 
         thread = await client.threads.get(thread_id=thread_id)
@@ -655,8 +840,8 @@ async def get_agent(config: RunnableConfig):
                 repo_dir = await _clone_or_pull_repo_in_sandbox(
                     sandbox_backend, repo_owner, repo_name, github_token
                 )
-            except Exception as e:
-                logger.error("Failed to pull repo in existing sandbox: %s", e, exc_info=True)
+            except Exception:
+                logger.exception("Failed to pull repo in existing sandbox")
                 raise
 
     _SANDBOX_BACKENDS[thread_id] = sandbox_backend
@@ -670,5 +855,9 @@ async def get_agent(config: RunnableConfig):
         sandbox_type="langsmith",
         auto_approve=True,
         working_dir=repo_dir,
-        middleware=[post_to_linear_after_model, open_pr_if_needed],
+        middleware=[
+            check_message_queue_before_model,
+            post_to_linear_after_model,
+            open_pr_if_needed,
+        ],
     )

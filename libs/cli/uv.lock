@@ -234,6 +234,53 @@ wheels = [
 ]
 
 [[package]]
+name = "bedrock-agentcore"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "urllib3" },
+    { name = "uvicorn" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9c/65/6b4826347ca76e0f44b871111585cec5cb49d7bd7d083da0ed6d0593c71d/bedrock_agentcore-1.2.0.tar.gz", hash = "sha256:0d8a80b39d5c4a34e92d57e0113f45c623a79cb2cb5a07d0930a0cb5563dfda9", size = 408490, upload-time = "2026-01-13T22:05:28.477Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/11/c3bf53670e2fe13354b72a7c8e9518ca22210527ff6e65ef1a86917a6e5e/bedrock_agentcore-1.2.0-py3-none-any.whl", hash = "sha256:3a17184d24b2fe77a4f49c813956623dec8011523da44df187ec22d064237fcb", size = 118697, upload-time = "2026-01-13T22:05:27.131Z" },
+]
+
+[[package]]
+name = "boto3"
+version = "1.42.40"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore" },
+    { name = "jmespath" },
+    { name = "s3transfer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d1/5a/bc190b2e8f2f625cbe50e1226fd7ce6b3719159add6d8d3c01a60defb7c4/boto3-1.42.40.tar.gz", hash = "sha256:e9e08059ae1bd47de411d361e9bfaaa6f35c8f996d68025deefff2b4dda79318", size = 112843, upload-time = "2026-02-02T20:35:04.404Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/e7/e0d57bcb17aa0ef1d234c9685b67d26e92ee5d2031415a3ca051803ebc6c/boto3-1.42.40-py3-none-any.whl", hash = "sha256:91d776b8b68006c1aca204d384be191883c2a36443f4a90561165986dae17b74", size = 140604, upload-time = "2026-02-02T20:35:01.913Z" },
+]
+
+[[package]]
+name = "botocore"
+version = "1.42.40"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jmespath" },
+    { name = "python-dateutil" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c0/ea/912061bde3c36b951d7e56e53f48445f8ecf769c222ef46f604ecf8f574f/botocore-1.42.40.tar.gz", hash = "sha256:6cfa07cf35ad477daef4920324f6d81b8d3a10a35baeafaa5fca22fb3ad225e2", size = 14916776, upload-time = "2026-02-02T20:34:52.409Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ac/6a/a8b4fa14774b576bd7410c32a63d06a3a55287457d67c6bf11ebfef22aeb/botocore-1.42.40-py3-none-any.whl", hash = "sha256:b115cdfece8162cb30f387fdff2ee4693713744c97ebb4b89742e53675dc521c", size = 14592684, upload-time = "2026-02-02T20:34:48.087Z" },
+]
+
+[[package]]
 name = "bottleneck"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -749,6 +796,7 @@ version = "0.0.16"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "bedrock-agentcore" },
     { name = "daytona" },
     { name = "deepagents" },
     { name = "langchain" },
@@ -794,6 +842,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
+    { name = "bedrock-agentcore", specifier = ">=1.1.4" },
     { name = "daytona", specifier = ">=0.113.0,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.2.7,<2.0.0" },
@@ -1555,6 +1604,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/85/15/d6eb3b770f6a0d332675141ab3962fd4a7c270ede3515d9f3583e1d28276/jiter-0.12.0-graalpy312-graalpy250_312_native-macosx_11_0_arm64.whl", hash = "sha256:89163163c0934854a668ed783a2546a0617f71706a2551a4a0666d91ab365d6b", size = 304233, upload-time = "2025-11-09T20:49:18.734Z" },
     { url = "https://files.pythonhosted.org/packages/8c/3e/e7e06743294eea2cf02ced6aa0ff2ad237367394e37a0e2b4a1108c67a36/jiter-0.12.0-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d96b264ab7d34bbb2312dedc47ce07cd53f06835eacbc16dde3761f47c3a9e7f", size = 338537, upload-time = "2025-11-09T20:49:20.317Z" },
     { url = "https://files.pythonhosted.org/packages/2f/9c/6753e6522b8d0ef07d3a3d239426669e984fb0eba15a315cdbc1253904e4/jiter-0.12.0-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c24e864cb30ab82311c6425655b0cdab0a98c5d973b065c66a3f020740c2324c", size = 346110, upload-time = "2025-11-09T20:49:21.817Z" },
+]
+
+[[package]]
+name = "jmespath"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/59/322338183ecda247fb5d1763a6cbe46eff7222eaeebafd9fa65d4bf5cb11/jmespath-1.1.0.tar.gz", hash = "sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d", size = 27377, upload-time = "2026-01-22T16:35:26.279Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/2f/967ba146e6d58cf6a652da73885f52fc68001525b4197effc174321d70b4/jmespath-1.1.0-py3-none-any.whl", hash = "sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64", size = 20419, upload-time = "2026-01-22T16:35:24.919Z" },
 ]
 
 [[package]]
@@ -3278,6 +3336,18 @@ wheels = [
 ]
 
 [[package]]
+name = "s3transfer"
+version = "0.16.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/05/04/74127fc843314818edfa81b5540e26dd537353b123a4edc563109d8f17dd/s3transfer-0.16.0.tar.gz", hash = "sha256:8e990f13268025792229cd52fa10cb7163744bf56e719e0b9cb925ab79abf920", size = 153827, upload-time = "2025-12-01T02:30:59.114Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fc/51/727abb13f44c1fcf6d145979e1535a35794db0f6e450a0cb46aa24732fe2/s3transfer-0.16.0-py3-none-any.whl", hash = "sha256:18e25d66fed509e3868dc1572b3f427ff947dd2c56f844a5bf09481ad3f3b2fe", size = 86830, upload-time = "2025-12-01T02:30:57.729Z" },
+]
+
+[[package]]
 name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3336,6 +3406,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f2/48/dbb2cc4e5bad88c89c7bb296e2d0a8df58aab9edc75853728c361eefc24f/sqlite_vec-0.1.6-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7b0519d9cd96164cd2e08e8eed225197f9cd2f0be82cb04567692a0a4be02da3", size = 103704, upload-time = "2024-11-20T16:40:33.729Z" },
     { url = "https://files.pythonhosted.org/packages/80/76/97f33b1a2446f6ae55e59b33869bed4eafaf59b7f4c662c8d9491b6a714a/sqlite_vec-0.1.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux1_x86_64.whl", hash = "sha256:823b0493add80d7fe82ab0fe25df7c0703f4752941aee1c7b2b02cec9656cb24", size = 151556, upload-time = "2024-11-20T16:40:35.387Z" },
     { url = "https://files.pythonhosted.org/packages/6a/98/e8bc58b178266eae2fcf4c9c7a8303a8d41164d781b32d71097924a6bebe/sqlite_vec-0.1.6-py3-none-win_amd64.whl", hash = "sha256:c65bcfd90fa2f41f9000052bcb8bb75d38240b2dae49225389eca6c3136d3f0c", size = 281540, upload-time = "2024-11-20T16:40:37.296Z" },
+]
+
+[[package]]
+name = "starlette"
+version = "0.52.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702, upload-time = "2026-01-18T13:34:11.062Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/0d/13d1d239a25cbfb19e740db83143e95c772a1fe10202dda4b76792b114dd/starlette-0.52.1-py3-none-any.whl", hash = "sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74", size = 74272, upload-time = "2026-01-18T13:34:09.188Z" },
 ]
 
 [[package]]
@@ -3675,6 +3758,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/47/22/8e3142b4baffee77ce533fe956446d3699ec42f1d5252911208cbef4501e/uuid_utils-0.13.0-pp311-pypy311_pp73-manylinux_2_24_i686.whl", hash = "sha256:aeee3bd89e8de6184a3ab778ce19f5ce9ad32849d1be549516e0ddb257562d8d", size = 359503, upload-time = "2026-01-08T15:48:06.347Z" },
     { url = "https://files.pythonhosted.org/packages/bd/1a/756f1f9e31b15019c87cd2becb1c596351c50967cd143443da38df8818d1/uuid_utils-0.13.0-pp311-pypy311_pp73-manylinux_2_24_ppc64le.whl", hash = "sha256:97985256c2e59b7caa51f5c8515f64d777328562a9c900ec65e9d627baf72737", size = 467480, upload-time = "2026-01-08T15:48:07.681Z" },
     { url = "https://files.pythonhosted.org/packages/0a/20/a6929e98d9a461ca49e96194a82a1cc3fd5420f3a2f53cbb34fca438549e/uuid_utils-0.13.0-pp311-pypy311_pp73-manylinux_2_24_x86_64.whl", hash = "sha256:b7ccaa20e24c5f60f41a69ef571ed820737f9b0ade4cbeef56aaa8f80f5aa475", size = 333610, upload-time = "2026-01-08T15:48:09.375Z" },
+]
+
+[[package]]
+name = "uvicorn"
+version = "0.40.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "h11" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c3/d1/8f3c683c9561a4e6689dd3b1d345c815f10f86acd044ee1fb9a4dcd0b8c5/uvicorn-0.40.0.tar.gz", hash = "sha256:839676675e87e73694518b5574fd0f24c9d97b46bea16df7b8c05ea1a51071ea", size = 81761, upload-time = "2025-12-21T14:16:22.45Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/d8/2083a1daa7439a66f3a48589a57d576aa117726762618f6bb09fe3798796/uvicorn-0.40.0-py3-none-any.whl", hash = "sha256:c6c8f55bc8bf13eb6fa9ff87ad62308bbbc33d0b67f84293151efe87e0d5f2ee", size = 68502, upload-time = "2025-12-21T14:16:21.041Z" },
 ]
 
 [[package]]

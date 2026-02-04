@@ -25,20 +25,49 @@ from deepagents_cli.config import COLORS, COMMANDS, SessionState, console
 from deepagents_cli.image_utils import ImageData, get_clipboard_image
 
 PATH_CHAR_CLASS = r"A-Za-z0-9._~/\\:-"
-"""Characters allowed in file paths: alphanumeric, period, underscore, tilde (home),
-forward/back slashes (path separators), colon (Windows drive letters), and hyphen.
+"""Characters allowed in file paths.
+
+Includes alphanumeric, period, underscore, tilde (home), forward/back slashes
+(path separators), colon (Windows drive letters), and hyphen.
 """
 
-# Regex patterns for context-aware completion
 AT_MENTION_RE = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])*)$")
+"""Pattern for tab-completion of @file mentions.
+
+Matches `@` followed by zero or more path characters at the end of input.
+
+Uses `*` (not `+`) so that typing just `@` and pressing `Tab`
+triggers completion.
+"""
+
 SLASH_COMMAND_RE = re.compile(r"^/(?P<command>[a-z]*)$")
-# Shared mention parser for injecting file content
+"""Pattern for tab-completion of slash commands.
+
+Matches `/` at the start of input followed by lowercase letters, used to trigger
+command autocompletion (e.g., `/help`, `/clear`).
+"""
+
 FILE_MENTION_PATTERN = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])+)")
+"""Pattern for extracting `@file` mentions from input text.
+
+Matches `@` followed by one or more path characters anywhere in the text.
+
+Uses `+` (not `*`) because a bare `@` without a path is not a valid
+file reference.
+"""
+
 INPUT_HIGHLIGHT_PATTERN = re.compile(
     r"(^\/[a-zA-Z0-9_-]+|@(?:\\.|[" + PATH_CHAR_CLASS + r"])+)"
 )
+"""Pattern for syntax highlighting in the input prompt.
+
+Matches either:
+- Slash commands at the start of a line (e.g., `/help`)
+- `@file` mentions anywhere in the text (e.g., `@README.md`)
+"""
 
 EXIT_CONFIRM_WINDOW = 3.0
+"""Time window in seconds for confirming exit with repeated `Ctrl+C`."""
 
 
 class ImageTracker:

@@ -1,0 +1,39 @@
+[project]
+name = "mcp-tools-integration"
+version = "0.1.0"
+description = "Example: Integrating MCP tools with DeepAgents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "deepagents>=0.3.9",
+    "langchain-mcp-adapters>=0.1.0",
+    "langchain-openai>=1.1.7",
+    "langchain-anthropic>=0.3.0",
+    "nest-asyncio>=1.6.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

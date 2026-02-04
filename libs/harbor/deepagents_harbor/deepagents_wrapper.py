@@ -1,4 +1,4 @@
-"""A wrapper for DeepAgents to run in Harbor environments."""
+"""A wrapper for Deep Agents to run in Harbor environments."""
 
 import json
 import os
@@ -53,9 +53,9 @@ Your current working directory is:
 
 
 class DeepAgentsWrapper(BaseAgent):
-    """Harbor agent implementation using LangChain DeepAgents.
+    """Harbor agent implementation using LangChain Deep Agents.
 
-    Wraps DeepAgents to execute tasks in Harbor environments.
+    Wraps Deep Agents to execute tasks in Harbor environments.
     """
 
     def __init__(
@@ -68,7 +68,7 @@ class DeepAgentsWrapper(BaseAgent):
         *args,
         **kwargs,
     ) -> None:
-        """Initialize DeepAgentsWrapper.
+        """Initialize Deep AgentsWrapper.
 
         Args:
             logs_dir: Directory for storing logs
@@ -76,12 +76,12 @@ class DeepAgentsWrapper(BaseAgent):
             temperature: Temperature setting for the model
             verbose: Enable verbose output
             use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
-                          If False, use create_deep_agent from SDK.
+                If False, use create_deep_agent from SDK.
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
         if model_name is None:
-            # Use DeepAgents default
+            # Use Deep Agents default
             model_name = "anthropic:claude-sonnet-4-5-20250929"
 
         self._model_name = model_name
@@ -105,7 +105,7 @@ class DeepAgentsWrapper(BaseAgent):
 
                 # Build mapping from instruction to example ID
                 for example in examples:
-                    instruction = example.inputs.get("instruction")
+                    instruction = example.inputs.get("instruction") if example.inputs else None
                     if instruction:
                         self._instruction_to_example_id[instruction] = str(example.id)
             except Exception as e:
@@ -256,7 +256,7 @@ class DeepAgentsWrapper(BaseAgent):
             ) as run_tree:
                 # Invoke deep agent with LangSmith tracing
                 result = await deep_agent.ainvoke(
-                    {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                    {"messages": [{"role": "user", "content": instruction}]},
                     config=config,
                 )
                 # Extract last AI message and add as output
@@ -266,7 +266,7 @@ class DeepAgentsWrapper(BaseAgent):
         else:
             config["metadata"] = metadata
             result = await deep_agent.ainvoke(
-                {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                {"messages": [{"role": "user", "content": instruction}]},
                 config=config,
             )
 

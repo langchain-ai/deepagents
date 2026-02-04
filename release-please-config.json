@@ -1,0 +1,71 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "skip-github-release": true,
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "perf",
+      "section": "Performance Improvements"
+    },
+    {
+      "type": "revert",
+      "section": "Reverted Changes"
+    },
+    {
+      "type": "docs",
+      "section": "Documentation",
+      "hidden": true
+    },
+    {
+      "type": "style",
+      "hidden": true
+    },
+    {
+      "type": "chore",
+      "hidden": true
+    },
+    {
+      "type": "refactor",
+      "hidden": true
+    },
+    {
+      "type": "test",
+      "hidden": true
+    },
+    {
+      "type": "ci",
+      "hidden": true
+    },
+    {
+      "type": "hotfix",
+      "hidden": true
+    }
+  ],
+  "pull-request-title-pattern": "release(${component}): ${version}",
+  "component-no-space": true,
+  "pull-request-header": "",
+  "packages": {
+    "libs/cli": {
+      "release-type": "python",
+      "package-name": "deepagents-cli",
+      "component": "deepagents-cli",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "deepagents_cli/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    }
+  },
+  "tag-separator": "==",
+  "include-component-in-tag": true,
+  "include-v-in-tag": false
+}

@@ -1,3 +1,4 @@
+import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
@@ -18,6 +19,7 @@ from deepagents.middleware.filesystem import (
     FileData,
     FilesystemMiddleware,
     FilesystemState,
+    _create_content_preview,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
@@ -558,6 +560,7 @@ class TestFilesystemMiddleware:
         assert "/tests/test.py" not in result
 
     def test_grep_search_shortterm_regex_pattern(self):
+        """Test grep with literal pattern (not regex)."""
         state = FilesystemState(
             messages=[],
             files={
@@ -570,9 +573,10 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        # Search for literal "def " - literal search, not regex
         result = grep_search_tool.invoke(
             {
-                "pattern": r"def \w+\(",
+                "pattern": "def ",
                 "output_mode": "content",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
@@ -604,6 +608,7 @@ class TestFilesystemMiddleware:
         assert result == "No matches found"
 
     def test_grep_search_shortterm_invalid_regex(self):
+        """Test grep with special characters (literal search, not regex)."""
         state = FilesystemState(
             messages=[],
             files={
@@ -616,13 +621,14 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        # Special characters are treated literally, so no matches expected
         result = grep_search_tool.invoke(
             {
                 "pattern": "[invalid",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        assert "Invalid regex pattern" in result
+        assert "No matches found" in result
 
     def test_search_store_paginated_empty(self):
         """Test pagination with no items."""
@@ -1299,20 +1305,33 @@ class TestFilesystemMiddleware:
         assert not _supports_execution(comp_without_sandbox)
 
     def test_intercept_truncates_content_sample_lines(self):
-        """Test that content sample in large tool result has lines limited to 1000 chars."""
+        """Test that content sample shows head and tail with truncation notice and lines limited to 1000 chars."""
         from langgraph.types import Command
 
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
 
-        # Create content with multiple lines, some longer than 1000 chars
-        line1 = "short line"
-        line2 = "a" * 1500  # Long line that should be truncated
-        line3 = "another short line"
-        line4 = "b" * 2000  # Another long line
-        line5 = "c" * 500  # Short line
-        large_content = f"{line1}\n{line2}\n{line3}\n{line4}\n{line5}\n" + ("x" * 1000)
+        # Create content with 15 lines (more than head_lines + tail_lines = 10) to trigger truncation
+        # Some lines are longer than 1000 chars to test line truncation
+        lines_content = [
+            "line 0",
+            "a" * 2000,  # Long line in head
+            "line 2",
+            "line 3",
+            "line 4",
+            "line 5",  # This will be truncated
+            "line 6",
+            "line 7",
+            "line 8",
+            "line 9",
+            "line 10",
+            "line 11",
+            "b" * 2000,  # Long line in tail
+            "line 13",
+            "line 14",
+        ]
+        large_content = "\n".join(lines_content)
 
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
         result = middleware._intercept_large_tool_result(tool_message, runtime)
@@ -1321,27 +1340,73 @@ class TestFilesystemMiddleware:
         processed_message = result.update["messages"][0]
         content_sample_section = processed_message.content
 
-        # Verify the message contains the expected structure
+        # Verify the message contains the expected structure with head and tail
         assert "Tool result too large" in content_sample_section
-        assert "first 10 lines" in content_sample_section
+        assert "head and tail" in content_sample_section
 
-        # Extract the content sample part (after "Here are the first 10 lines of the result:")
-        lines = content_sample_section.split("\n")
+        # Verify truncation notice is present
+        assert "lines truncated" in content_sample_section
+        assert "[5 lines truncated]" in content_sample_section
 
-        # Find where the actual content sample starts
-        sample_start_idx = None
-        for i, line in enumerate(lines):
-            if "first 10 lines" in line:
-                sample_start_idx = i + 1
-                break
+        # Verify head lines are present (lines 0-4)
+        assert "line 0" in content_sample_section
+        assert "line 4" in content_sample_section
 
-        assert sample_start_idx is not None, "Could not find content sample in message"
+        # Verify tail lines are present (lines 10-14)
+        assert "line 10" in content_sample_section
+        assert "line 14" in content_sample_section
+
+        # Verify middle lines are NOT present (lines 5-9)
+        assert "line 5" not in content_sample_section
+        assert "line 9" not in content_sample_section
 
         # Check each line in the content sample doesn't exceed 1000 chars
-        for i in range(sample_start_idx, len(lines)):
-            line = lines[i]
-            if line.strip():  # Skip empty lines
-                assert len(line) <= 1010, f"Line {i} exceeds 1000 chars: {len(line)} chars"
+        lines = content_sample_section.split("\n")
+        for line in lines:
+            if line.strip() and "truncated" not in line:  # Skip empty lines and truncation notice
+                assert len(line) <= 1010, f"Line exceeds 1000 chars: {len(line)} chars"
+
+    @pytest.mark.parametrize(
+        ("num_lines", "should_truncate"),
+        [
+            (0, False),  # Empty content
+            (1, False),  # Single line
+            (5, False),  # Fewer than head_lines + tail_lines
+            (10, False),  # Exactly head_lines + tail_lines
+            (11, True),  # Just over threshold
+            (20, True),  # Well over threshold
+        ],
+    )
+    def test_content_preview_edge_cases(self, num_lines, should_truncate):
+        """Test _create_content_preview with various line counts."""
+        # Create content with specified number of lines
+        if num_lines == 0:
+            content_str = ""
+        else:
+            lines = [f"line {i}" for i in range(num_lines)]
+            content_str = "\n".join(lines)
+
+        preview = _create_content_preview(content_str)
+
+        if should_truncate:
+            # Should have truncation notice
+            assert "truncated" in preview
+            # Should have head lines (0-4)
+            assert "line 0" in preview
+            assert "line 4" in preview
+            # Should have tail lines
+            assert f"line {num_lines - 5}" in preview
+            assert f"line {num_lines - 1}" in preview
+            # Should NOT have middle lines
+            if num_lines > 11:
+                assert "line 5" not in preview
+                assert f"line {num_lines - 6}" not in preview
+        else:
+            # Should NOT have truncation notice
+            assert "truncated" not in preview
+            # Should have all lines
+            for i in range(num_lines):
+                assert f"line {i}" in preview
 
 
 class TestPatchToolCallsMiddleware:

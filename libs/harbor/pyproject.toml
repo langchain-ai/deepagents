@@ -1,9 +1,22 @@
 [project]
 name = "deepagents-harbor"
 version = "0.0.1"
-description = "Harbor integration with LangChain DeepAgents and LangSmith tracing"
+description = "Harbor integration with LangChain Deep Agents and LangSmith tracing"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.12"
+keywords = ["agents", "ai", "harbor", "llm", "langgraph", "langchain", "langsmith", "tracing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     # Harbor runtime
     "harbor>=0.1.12",
@@ -20,11 +33,20 @@ dependencies = [
 test = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.8.0",
+    "ty>=0.0.1,<1.0.0",
     "python-dotenv>=1.0.0",
     "pytest-socket>=0.7.0",
     "pytest-cov>=7.0.0",
 ]
+
+[project.urls]
+Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
+Documentation = "https://reference.langchain.com/python/deepagents/"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Twitter = "https://x.com/LangChain"
 
 [build-system]
 requires = ["setuptools>=75.0"]
@@ -38,18 +60,25 @@ include = ["deepagents_harbor*"]
 override-dependencies = [
     "openai>=1.109.1,<2.0.0",
     "e2b==2.4.3",
+    # CVE-2026-24486: path traversal vulnerability in < 0.0.22
+    "python-multipart>=0.0.22",
+    # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
+    "protobuf>=6.33.5",
 ]
 
 [tool.uv.sources]
-deepagents-cli = { path = "../deepagents-cli" }
+deepagents-cli = { path = "../cli" }
 deepagents = { path = "../deepagents", editable = true }
+
+[tool.ty.environment]
+extra-paths = ["../deepagents", "../cli"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "TID252"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]

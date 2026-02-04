@@ -266,6 +266,128 @@ class TestTextualSessionState:
         assert state.thread_id == new_id
 
 
+class TestExportThreadFromCheckpointBlob:
+    """Test for bug where thread with messages in checkpoint blob can't be exported.
+
+    Reproduces: Thread shows in `deepagents threads list` but
+    `deepagents threads export <id>` says "not found or has no messages".
+
+    Root cause: With `durability='exit'`, LangGraph stores messages in the
+    checkpoint blob, NOT in the writes table. export_thread reads from writes
+    table which is empty, while list_threads reads from checkpoints table.
+
+    See commit e0344cc for similar fix applied to list_threads.
+    """
+
+    @pytest.fixture
+    def temp_db_with_checkpoint_messages(self, tmp_path: Path) -> Path:
+        """Create database with messages in checkpoint blob (no writes).
+
+        This simulates real LangGraph behavior with durability='exit'.
+        """
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+        db_path = tmp_path / "test_sessions.db"
+        conn = sqlite3.connect(str(db_path))
+
+        # Create both tables
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                parent_checkpoint_id TEXT,
+                type TEXT,
+                checkpoint BLOB,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS writes (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                type TEXT,
+                value BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+            )
+        """)
+
+        # Create checkpoint blob with messages (simulating durability='exit')
+        serde = JsonPlusSerializer()
+        checkpoint_data = {
+            "v": 1,
+            "ts": "2024-01-01T00:00:00+00:00",
+            "id": "test-checkpoint-id",
+            "channel_values": {
+                "messages": [
+                    {"type": "human", "kwargs": {"content": "Hello, how are you?"}},
+                    {"type": "ai", "kwargs": {"content": "I'm doing well, thanks!"}},
+                    {"type": "human", "kwargs": {"content": "Great to hear."}},
+                ],
+            },
+            "channel_versions": {},
+            "versions_seen": {},
+            "updated_channels": [],
+        }
+        type_str, checkpoint_blob = serde.dumps_typed(checkpoint_data)
+        metadata = json.dumps(
+            {"agent_name": "agent", "updated_at": "2024-01-01T10:00:00"}
+        )
+
+        conn.execute(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, type, checkpoint, metadata) "
+            "VALUES (?, '', ?, ?, ?, ?)",
+            ("7add40b6", "cp_1", type_str, checkpoint_blob, metadata),
+        )
+
+        # NO entries in writes table - this is the bug scenario
+
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_thread_visible_in_list(
+        self, temp_db_with_checkpoint_messages: Path
+    ) -> None:
+        """Thread appears in list_threads."""
+        with patch.object(
+            sessions, "get_db_path", return_value=temp_db_with_checkpoint_messages
+        ):
+            threads = asyncio.run(sessions.list_threads())
+            thread_ids = [t["thread_id"] for t in threads]
+            assert "7add40b6" in thread_ids
+
+    def test_export_reads_messages_from_checkpoint_blob(
+        self, temp_db_with_checkpoint_messages: Path
+    ) -> None:
+        """Export should read messages from checkpoint blob, not writes table.
+
+        BUG: Currently export_thread reads from writes table which is empty
+        with durability='exit'. Should read from checkpoint blob like
+        list_threads does (see commit e0344cc).
+        """
+        with patch.object(
+            sessions, "get_db_path", return_value=temp_db_with_checkpoint_messages
+        ):
+            content = asyncio.run(sessions.export_thread("7add40b6"))
+
+            # Should successfully export the 3 messages from checkpoint blob
+            assert content is not None, (
+                "Thread '7add40b6' has messages in checkpoint blob but export "
+                "returns None. export_thread should read from checkpoint blob "
+                "like list_threads does (see commit e0344cc)."
+            )
+            assert "Hello, how are you?" in content
+            assert "I'm doing well, thanks!" in content
+            assert "Great to hear." in content
+
+
 class TestExportThread:
     """Tests for export_thread function."""
 

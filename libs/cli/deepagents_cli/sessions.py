@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from rich.table import Table
 
@@ -280,10 +281,159 @@ async def delete_thread_command(thread_id: str) -> None:
         console.print(f"[red]Thread '{thread_id}' not found.[/red]")
 
 
+def _extract_from_content_blocks(content_blocks: list) -> str:
+    """Extract text content from content blocks.
+
+    Args:
+        content_blocks: List of typed content blocks.
+
+    Returns:
+        Concatenated text from all text blocks.
+    """
+    text_parts = [
+        block.get("text", "")
+        for block in content_blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    return "".join(text_parts)
+
+
+def _parse_message(msg_data: object) -> dict | None:
+    """Parse a message into role/content format.
+
+    Handles both plain dicts (from writes table) and LangChain message
+    objects (HumanMessage, AIMessage) from checkpoint blob.
+
+    Args:
+        msg_data: Message dict or LangChain message object.
+
+    Returns:
+        Dict with 'role' and 'content' keys, or None if no content.
+    """
+    # Handle LangChain message objects (HumanMessage, AIMessage, etc.)
+    # Use .content_blocks for typed content (supports multimodal in future)
+    if hasattr(msg_data, "type") and hasattr(msg_data, "content_blocks"):
+        msg_type = msg_data.type
+        content = _extract_from_content_blocks(msg_data.content_blocks)
+    # Handle plain dicts (from writes table or test fixtures)
+    elif isinstance(msg_data, dict):
+        msg_type = msg_data.get("type", "")
+        content = msg_data.get("kwargs", {}).get("content", "")
+    else:
+        return None
+
+    if msg_type == "human":
+        role = "user"
+    elif msg_type == "ai":
+        role = "assistant"
+    else:
+        role = msg_type
+
+    if content:
+        return {"role": role, "content": content}
+    return None
+
+
+async def _get_messages_from_writes(
+    conn: aiosqlite.Connection, thread_id: str
+) -> list[dict]:
+    """Get messages from the writes table.
+
+    Args:
+        conn: Database connection.
+        thread_id: The thread ID to get messages for.
+
+    Returns:
+        List of message dicts with 'role' and 'content' keys.
+    """
+    if not await _table_exists(conn, "writes"):
+        return []
+
+    query = """
+        SELECT value, idx
+        FROM writes
+        WHERE thread_id = ? AND channel = 'messages'
+        ORDER BY checkpoint_id, idx
+    """
+    async with conn.execute(query, (thread_id,)) as cursor:
+        rows = await cursor.fetchall()
+
+    messages = []
+    for value_blob, _ in rows:
+        try:
+            if isinstance(value_blob, bytes):
+                msg_data = json.loads(value_blob.decode("utf-8"))
+            else:
+                msg_data = json.loads(value_blob)
+
+            parsed = _parse_message(msg_data)
+            if parsed:
+                messages.append(parsed)
+        except (json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError) as e:
+            logger.debug("Skipped malformed message in thread %s: %s", thread_id, e)
+            continue
+
+    return messages
+
+
+async def _get_messages_from_checkpoint(
+    conn: aiosqlite.Connection, thread_id: str
+) -> list[dict]:
+    """Get messages from the checkpoint blob.
+
+    With durability='exit', LangGraph stores messages in the checkpoint blob
+    rather than the writes table.
+
+    Args:
+        conn: Database connection.
+        thread_id: The thread ID to get messages for.
+
+    Returns:
+        List of message dicts with 'role' and 'content' keys.
+    """
+    if not await _table_exists(conn, "checkpoints"):
+        return []
+
+    query = """
+        SELECT type, checkpoint
+        FROM checkpoints
+        WHERE thread_id = ?
+        ORDER BY checkpoint_id DESC
+        LIMIT 1
+    """
+    async with conn.execute(query, (thread_id,)) as cursor:
+        row = await cursor.fetchone()
+
+    if not row:
+        return []
+
+    type_str, checkpoint_blob = row
+    if not checkpoint_blob:
+        return []
+
+    try:
+        serde = JsonPlusSerializer()
+        data = serde.loads_typed((type_str, checkpoint_blob))
+        channel_values = data.get("channel_values", {})
+        raw_messages = channel_values.get("messages", [])
+    except (KeyError, TypeError, ValueError) as e:
+        logger.debug("Failed to parse checkpoint blob for thread %s: %s", thread_id, e)
+        return []
+
+    messages = []
+    for msg_data in raw_messages:
+        parsed = _parse_message(msg_data)
+        if parsed:
+            messages.append(parsed)
+    return messages
+
+
 async def export_thread(thread_id: str, output_format: str = "markdown") -> str | None:
     """Export thread conversation history as markdown or JSON.
 
     Exports user/assistant message text only from the local database.
+    Reads from writes table first, then falls back to checkpoint blob
+    (for durability='exit' mode).
 
     For full trace data (tool calls, latencies, tokens), use LangSmith fetch.
 
@@ -297,52 +447,12 @@ async def export_thread(thread_id: str, output_format: str = "markdown") -> str 
     """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
-        if not await _table_exists(conn, "writes"):
-            return None
+        # Try writes table first
+        messages = await _get_messages_from_writes(conn, thread_id)
 
-        # First check if thread exists
-        check_query = "SELECT 1 FROM writes WHERE thread_id = ? LIMIT 1"
-        async with conn.execute(check_query, (thread_id,)) as cursor:
-            if await cursor.fetchone() is None:
-                return None
-
-        # Fetch messages from writes table
-        query = """
-            SELECT value, idx
-            FROM writes
-            WHERE thread_id = ? AND channel = 'messages'
-            ORDER BY checkpoint_id, idx
-        """
-        async with conn.execute(query, (thread_id,)) as cursor:
-            rows = await cursor.fetchall()
-
-        if not rows:
-            return None
-
-        # Parse message blobs
-        messages = []
-        for value_blob, _ in rows:
-            try:
-                if isinstance(value_blob, bytes):
-                    msg_data = json.loads(value_blob.decode("utf-8"))
-                else:
-                    msg_data = json.loads(value_blob)
-
-                msg_type = msg_data.get("type", "")
-                content = msg_data.get("kwargs", {}).get("content", "")
-
-                if msg_type == "human":
-                    role = "user"
-                elif msg_type == "ai":
-                    role = "assistant"
-                else:
-                    role = msg_type
-
-                if content:
-                    messages.append({"role": role, "content": content})
-            except (json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError) as e:
-                logger.debug("Skipped malformed message in thread %s: %s", thread_id, e)
-                continue
+        # Fall back to checkpoint blob (for durability='exit' mode)
+        if not messages:
+            messages = await _get_messages_from_checkpoint(conn, thread_id)
 
         if not messages:
             return None

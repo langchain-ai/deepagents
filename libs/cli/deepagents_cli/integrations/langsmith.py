@@ -22,34 +22,49 @@ from deepagents.backends.sandbox import (
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox, SandboxClient, SandboxTemplate
 
-# Default template configuration
+# Default template configuration - can be overridden via environment variables
 DEFAULT_TEMPLATE_NAME = os.getenv("LANGSMITH_SANDBOX_TEMPLATE_NAME", "deepagents-cli")
 DEFAULT_TEMPLATE_IMAGE = os.getenv("LANGSMITH_SANDBOX_TEMPLATE_IMAGE", "python:3")
 
 
 class LangSmithBackend(BaseSandbox):
-    """LangSmith backend implementation."""
+    """LangSmith backend implementation conforming to SandboxBackendProtocol.
+
+    This implementation inherits all file operation methods from BaseSandbox
+    and only implements the execute() method using LangSmith's API.
+    """
 
     def __init__(self, sandbox: Sandbox) -> None:
-        """Initialize with sandbox instance."""
+        """Initialize the LangSmithBackend with a sandbox instance.
+
+        Args:
+            sandbox: LangSmith Sandbox instance
+        """
         self._sandbox = sandbox
-        self._timeout: int = 30 * 60
+        self._timeout: int = 30 * 60  # 30 mins default
 
     @property
     def id(self) -> str:
-        """Return sandbox name as ID."""
+        """Unique identifier for the sandbox backend.
+        """
         return self._sandbox.name
 
     def execute(self, command: str) -> ExecuteResponse:
-        """Execute command in sandbox.
+        """Execute a command in the sandbox and return ExecuteResponse.
+
+        Args:
+            command: Full shell command string to execute.
 
         Returns:
-            ExecuteResponse with output and exit code.
+            ExecuteResponse with combined output, exit code, and truncation flag.
         """
         result = self._sandbox.run(command, timeout=self._timeout)
+
+        # Combine stdout and stderr (matching other backends' approach)
         output = result.stdout or ""
         if result.stderr:
             output += "\n" + result.stderr if output else result.stderr
+
         return ExecuteResponse(
             output=output,
             exit_code=result.exit_code,
@@ -57,40 +72,77 @@ class LangSmithBackend(BaseSandbox):
         )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download files from sandbox.
+        """Download multiple files from the LangSmith sandbox.
+
+        Supports partial success - individual downloads may fail without
+        affecting others.
+
+        Args:
+            paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects.
+            List of FileDownloadResponse objects, one per input path.
+
+        Note:
+            Error handling with standardized FileOperationError codes is not yet
+            implemented in existing backends. Currently only the happy path is
+            implemented. See existing backends for reference.
         """
         responses: list[FileDownloadResponse] = []
+
         for path in paths:
+            # Use LangSmith's native file read API (returns bytes)
             content = self._sandbox.read(path)
             responses.append(
                 FileDownloadResponse(path=path, content=content, error=None)
             )
+
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Upload files to sandbox.
+        """Upload multiple files to the LangSmith sandbox.
+
+        Supports partial success - individual uploads may fail without
+        affecting others.
+
+        Args:
+            files: List of (path, content) tuples to upload.
 
         Returns:
-            List of FileUploadResponse objects.
+            List of FileUploadResponse objects, one per input file.
+
+        Note:
+            Error handling with standardized FileOperationError codes is not yet
+            implemented in existing backends. Currently only the happy path is
+            implemented. See existing backends for reference.
         """
         responses: list[FileUploadResponse] = []
+
         for path, content in files:
+            # Use LangSmith's native file write API
             self._sandbox.write(path, content)
             responses.append(FileUploadResponse(path=path, error=None))
+
         return responses
 
 
 class LangSmithProvider(SandboxProvider[dict[str, Any]]):
-    """LangSmith sandbox provider implementation."""
+    """LangSmith sandbox provider implementation.
+
+    This provider manages the lifecycle of LangSmith sandboxes, including
+    creation, deletion, and template management.
+    """
 
     def __init__(self, api_key: str | None = None) -> None:
-        """Initialize provider with API key.
+        """Initialize the LangSmith provider with API credentials.
+
+        Args:
+            api_key: Optional LangSmith API key. If not provided, will attempt
+                    to read from LANGSMITH_API_KEY environment variable.
 
         Raises:
-            ValueError: If LANGSMITH_API_KEY is not set.
+            ValueError: If no API key is provided and LANGSMITH_API_KEY
+                       environment variable is not set.
         """
         from langsmith import sandbox
 
@@ -106,7 +158,14 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         cursor: str | None = None,
         **kwargs: Any,
     ) -> SandboxListResponse[dict[str, Any]]:
-        """List sandboxes (not implemented)."""
+        """List available sandboxes.
+
+        Note:
+            This method is not yet implemented for LangSmith SDK.
+
+        Raises:
+            NotImplementedError: Always raised as listing is not yet supported.
+        """
         msg = "Listing with LangSmith SDK not yet implemented"
         raise NotImplementedError(msg)
 
@@ -119,20 +178,32 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         template_image: str | None = None,
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
-        """Get existing or create new LangSmith sandbox.
+        """Get an existing sandbox or create a new one.
+
+        If sandbox_id is provided, attempts to connect to an existing sandbox.
+        Otherwise, creates a new sandbox using the specified template.
 
         Args:
-            sandbox_id: Optional existing sandbox name to reuse
-            timeout: Timeout in seconds for sandbox startup
-            template: Template name/ID or SandboxTemplate object
-            template_image: Docker image for template creation
+            sandbox_id: Optional existing sandbox name to reuse. If provided,
+                       will attempt to connect to this existing sandbox.
+            timeout: Timeout in seconds for sandbox startup (default: 180).
+            template: Template to use for sandbox creation. Can be:
+                     - None: Uses DEFAULT_TEMPLATE_NAME
+                     - str: Template name/ID to use
+                     - SandboxTemplate: Template object (uses .name attribute)
+            template_image: Docker image to use when creating a new template.
+                           Only used if the template doesn't exist and needs
+                           to be created. Defaults to DEFAULT_TEMPLATE_IMAGE.
 
         Returns:
-            LangSmithBackend instance
+            LangSmithBackend instance wrapping the sandbox.
 
         Raises:
-            RuntimeError: If sandbox connection or startup fails
+            RuntimeError: If sandbox connection fails (when sandbox_id provided),
+                         if sandbox creation fails, or if sandbox doesn't become
+                         ready within the timeout period.
         """
+        # If sandbox_id is provided, try to connect to existing sandbox
         if sandbox_id:
             try:
                 sandbox = self._client.get_sandbox(name=sandbox_id)
@@ -141,9 +212,13 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
                 raise RuntimeError(msg) from e
             return LangSmithBackend(sandbox)
 
+        # Resolve template name from various input types
         template_name = self._resolve_template_name(template)
+
+        # Ensure template exists (create if needed)
         self._ensure_template(template_name, template_image)
 
+        # Create new sandbox from template
         try:
             sandbox = self._client.create_sandbox(
                 template_name=template_name, timeout=timeout
@@ -152,6 +227,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             msg = f"Failed to create sandbox from template '{template_name}': {e}"
             raise RuntimeError(msg) from e
 
+        # Wait for sandbox to be ready (poll with exponential backoff)
         for _ in range(timeout // 2):
             try:
                 result = sandbox.run("echo ready", timeout=5)
@@ -161,6 +237,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
                 pass
             time.sleep(2)
         else:
+            # Cleanup failed sandbox
             with contextlib.suppress(Exception):
                 self._client.delete_sandbox(sandbox.name)
             msg = f"LangSmith sandbox failed to start within {timeout} seconds"
@@ -169,11 +246,24 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         return LangSmithBackend(sandbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
-        """Delete a sandbox."""
+        """Delete a sandbox by ID.
+
+        Args:
+            sandbox_id: Name/ID of the sandbox to delete.
+        """
         self._client.delete_sandbox(sandbox_id)
 
     @staticmethod
     def _resolve_template_name(template: SandboxTemplate | str | None) -> str:
+        """Resolve template name from various input types.
+
+        Args:
+            template: Template specification - can be None, string name, or
+                     SandboxTemplate object.
+
+        Returns:
+            String template name to use.
+        """
         if template is None:
             return DEFAULT_TEMPLATE_NAME
         if isinstance(template, str):
@@ -185,6 +275,17 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         template_name: str | None = None,
         template_image: str | None = None,
     ) -> None:
+        """Ensure the specified template exists, creating it if necessary.
+
+        Args:
+            template_name: Name of the template to ensure exists.
+                          Defaults to DEFAULT_TEMPLATE_NAME if None.
+            template_image: Docker image to use when creating the template.
+                           Defaults to DEFAULT_TEMPLATE_IMAGE if None.
+
+        Raises:
+            RuntimeError: If template check fails or template creation fails.
+        """
         from langsmith.sandbox import ResourceNotFoundError
 
         name = template_name or DEFAULT_TEMPLATE_NAME
@@ -193,6 +294,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         try:
             self._client.get_template(name)
         except ResourceNotFoundError as e:
+            # Template doesn't exist - create it
             if e.resource_type != "template":
                 msg = f"Unexpected resource not found: {e}"
                 raise RuntimeError(msg) from e

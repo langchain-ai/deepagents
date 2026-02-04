@@ -98,4 +98,5 @@ jobs:
     permissions:
       contents: write
       id-token: write
-      pull-requests: read
+      # write needed to update PR label from "autorelease: pending" to "autorelease: tagged"
+      pull-requests: write

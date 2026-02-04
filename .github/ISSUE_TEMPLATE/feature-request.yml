@@ -59,3 +59,5 @@ body:
     attributes:
       label: Additional context (optional)
       description: Links, examples, or related issues
+footer: |
+  Thanks for helping improve Deep Agents.

@@ -168,6 +168,57 @@ PyPI does not allow re-uploading the same version. If a release failed partway:
 2. If only on test PyPI: the workflow uses `skip-existing: true`, so re-running should work
 3. If the GitHub release exists but PyPI publish failed: delete the release/tag and re-run the workflow
 
+### "Untagged, merged release PRs outstanding" Error
+
+If release-please logs show:
+
+```txt
+⚠ There are untagged, merged release PRs outstanding - aborting
+```
+
+This means a release PR was merged but its merge commit doesn't have the expected tag. This can happen if:
+
+- The release workflow failed and the tag was manually created on a different commit (e.g., a hotfix)
+- Someone manually moved or recreated a tag
+
+**To diagnose**, compare the tag's commit with the release PR's merge commit:
+
+```bash
+# Find what commit the tag points to
+git ls-remote --tags origin | grep "deepagents-cli==<VERSION>"
+
+# Find the release PR's merge commit
+gh pr view <PR_NUMBER> --json mergeCommit --jq '.mergeCommit.oid'
+```
+
+If these differ, release-please is confused.
+
+**To fix**, move the tag and update the GitHub release:
+
+```bash
+# 1. Delete the remote tag
+git push origin :refs/tags/deepagents-cli==<VERSION>
+
+# 2. Delete local tag if it exists
+git tag -d deepagents-cli==<VERSION> 2>/dev/null || true
+
+# 3. Create tag on the correct commit (the release PR's merge commit)
+git tag deepagents-cli==<VERSION> <MERGE_COMMIT_SHA>
+
+# 4. Push the new tag
+git push origin deepagents-cli==<VERSION>
+
+# 5. Update the GitHub release's target_commitish to match
+#    (moving a tag doesn't update this field automatically)
+gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-ai/deepagents/releases --jq '.[] | select(.tag_name == "deepagents-cli==<VERSION>") | .id') \
+  -f target_commitish=<MERGE_COMMIT_SHA>
+```
+
+After fixing, the next push to master should properly create new release PRs.
+
+> [!NOTE]
+> Moving a tag will put the associated GitHub release back into draft state. If the package was already published to PyPI, you can safely re-publish the draft — the publish workflow uses `skip-existing: true`, so it will succeed without re-uploading.
+
 ## References
 
 - [release-please documentation](https://github.com/googleapis/release-please)

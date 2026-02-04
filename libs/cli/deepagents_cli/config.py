@@ -423,6 +423,37 @@ class Settings:
             return None
         return self.project_root / ".deepagents" / "agents"
 
+    @property
+    def user_agents_dir(self) -> Path:
+        """Get the base user-level `.agents` directory (`~/.agents`).
+
+        Returns:
+            Path to `~/.agents`
+        """
+        return Path.home() / ".agents"
+
+    def get_user_agent_skills_dir(self) -> Path:
+        """Get user-level `~/.agents/skills/` directory.
+
+        This is a generic alias path for skills that is tool-agnostic.
+
+        Returns:
+            Path to `~/.agents/skills/`
+        """
+        return self.user_agents_dir / "skills"
+
+    def get_project_agent_skills_dir(self) -> Path | None:
+        """Get project-level `.agents/skills/` directory.
+
+        This is a generic alias path for skills that is tool-agnostic.
+
+        Returns:
+            Path to `{project_root}/.agents/skills/`, or `None` if not in a project
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".agents" / "skills"
+
 
 # Global settings instance (initialized once)
 settings = Settings.from_environment()

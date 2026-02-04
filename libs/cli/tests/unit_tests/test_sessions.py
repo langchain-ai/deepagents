@@ -263,3 +263,302 @@ class TestTextualSessionState:
         assert new_id != old_id
         assert len(new_id) == 8
         assert state.thread_id == new_id
+
+
+class TestFindSimilarThreads:
+    """Tests for find_similar_threads function."""
+
+    @pytest.fixture
+    def temp_db_with_threads(self, tmp_path):
+        """Create a temporary database with test threads."""
+        db_path = tmp_path / "test_sessions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+
+        # Insert threads with various IDs
+        threads = ["abc12345", "abc99999", "abcdef00", "xyz12345"]
+        for tid in threads:
+            metadata = json.dumps({"agent_name": "agent1", "updated_at": "2024-01-01"})
+            conn.execute(
+                "INSERT INTO checkpoints "
+                "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+                "VALUES (?, '', ?, ?)",
+                (tid, f"cp_{tid}", metadata),
+            )
+
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_finds_matching_prefix(self, temp_db_with_threads):
+        """Find threads that start with given prefix."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db_with_threads):
+            results = asyncio.run(sessions.find_similar_threads("abc"))
+            assert len(results) == 3
+            assert all(r.startswith("abc") for r in results)
+
+    def test_no_matches(self, temp_db_with_threads):
+        """Return empty list when no matches found."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db_with_threads):
+            results = asyncio.run(sessions.find_similar_threads("zzz"))
+            assert results == []
+
+    def test_respects_limit(self, temp_db_with_threads):
+        """Respects the limit parameter."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db_with_threads):
+            results = asyncio.run(sessions.find_similar_threads("abc", limit=2))
+            assert len(results) == 2
+
+    def test_empty_db(self, tmp_path):
+        """Return empty list for empty database."""
+        db_path = tmp_path / "empty.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.close()
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            results = asyncio.run(sessions.find_similar_threads("abc"))
+            assert results == []
+
+
+class TestGetThreadMessageCount:
+    """Tests for get_thread_message_count function."""
+
+    @pytest.fixture
+    def temp_db_with_messages(self, tmp_path):
+        """Create a temporary database with test messages."""
+        db_path = tmp_path / "test_sessions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS writes (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                type TEXT,
+                value BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+            )
+        """)
+
+        # Insert messages for thread1
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO writes "
+                "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel) "
+                "VALUES (?, '', ?, ?, ?, 'messages')",
+                ("thread1", f"cp_{i}", "task1", i),
+            )
+
+        # Insert non-message writes for thread1
+        conn.execute(
+            "INSERT INTO writes "
+            "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel) "
+            "VALUES (?, '', ?, ?, ?, 'other')",
+            ("thread1", "cp_other", "task1", 0),
+        )
+
+        # Insert messages for thread2
+        for i in range(2):
+            conn.execute(
+                "INSERT INTO writes "
+                "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel) "
+                "VALUES (?, '', ?, ?, ?, 'messages')",
+                ("thread2", f"cp_{i}", "task1", i),
+            )
+
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_counts_messages(self, temp_db_with_messages):
+        """Count messages for a thread."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db_with_messages):
+            count = asyncio.run(sessions.get_thread_message_count("thread1"))
+            assert count == 5
+
+    def test_different_thread(self, temp_db_with_messages):
+        """Count messages for different thread."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db_with_messages):
+            count = asyncio.run(sessions.get_thread_message_count("thread2"))
+            assert count == 2
+
+    def test_nonexistent_thread(self, temp_db_with_messages):
+        """Return 0 for nonexistent thread."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db_with_messages):
+            count = asyncio.run(sessions.get_thread_message_count("nonexistent"))
+            assert count == 0
+
+    def test_no_writes_table(self, tmp_path):
+        """Return 0 when writes table doesn't exist."""
+        db_path = tmp_path / "empty.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.close()
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            count = asyncio.run(sessions.get_thread_message_count("thread1"))
+            assert count == 0
+
+
+class TestExportThread:
+    """Tests for export_thread function."""
+
+    @pytest.fixture
+    def temp_db_with_conversation(self, tmp_path):
+        """Create a temporary database with a conversation."""
+        db_path = tmp_path / "test_sessions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS writes (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                type TEXT,
+                value BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+            )
+        """)
+
+        # Insert conversation messages
+        messages = [
+            {"type": "human", "kwargs": {"content": "Hello, how are you?"}},
+            {"type": "ai", "kwargs": {"content": "I'm doing well, thanks!"}},
+            {"type": "human", "kwargs": {"content": "Great to hear."}},
+        ]
+
+        for i, msg in enumerate(messages):
+            value = json.dumps(msg).encode("utf-8")
+            conn.execute(
+                "INSERT INTO writes "
+                "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, "
+                "value) VALUES (?, '', ?, ?, ?, 'messages', ?)",
+                ("thread1", f"cp_{i}", "task1", i, value),
+            )
+
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_export_markdown(self, temp_db_with_conversation):
+        """Export thread as markdown."""
+        with patch.object(
+            sessions, "get_db_path", return_value=temp_db_with_conversation
+        ):
+            content = asyncio.run(
+                sessions.export_thread("thread1", output_format="markdown")
+            )
+            assert content is not None
+            assert "# Thread: thread1" in content
+            assert "**User:**" in content
+            assert "**Assistant:**" in content
+            assert "Hello, how are you?" in content
+            assert "I'm doing well, thanks!" in content
+
+    def test_export_json(self, temp_db_with_conversation):
+        """Export thread as JSON."""
+        with patch.object(
+            sessions, "get_db_path", return_value=temp_db_with_conversation
+        ):
+            content = asyncio.run(
+                sessions.export_thread("thread1", output_format="json")
+            )
+            assert content is not None
+            data = json.loads(content)
+            assert data["thread_id"] == "thread1"
+            assert len(data["messages"]) == 3
+            assert data["messages"][0]["role"] == "user"
+            assert data["messages"][1]["role"] == "assistant"
+
+    def test_nonexistent_thread(self, temp_db_with_conversation):
+        """Return None for nonexistent thread."""
+        with patch.object(
+            sessions, "get_db_path", return_value=temp_db_with_conversation
+        ):
+            content = asyncio.run(sessions.export_thread("nonexistent"))
+            assert content is None
+
+    def test_no_writes_table(self, tmp_path):
+        """Return None when writes table doesn't exist."""
+        db_path = tmp_path / "empty.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.close()
+        with patch.object(sessions, "get_db_path", return_value=db_path):
+            content = asyncio.run(sessions.export_thread("thread1"))
+            assert content is None
+
+
+class TestListThreadsWithMessageCount:
+    """Tests for list_threads with message count."""
+
+    @pytest.fixture
+    def temp_db_with_messages(self, tmp_path):
+        """Create a temporary database with threads and messages."""
+        db_path = tmp_path / "test_sessions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS writes (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                value BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+            )
+        """)
+
+        # Insert threads
+        metadata = json.dumps({"agent_name": "agent1", "updated_at": "2024-01-01"})
+        conn.execute(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+            "VALUES (?, '', ?, ?)",
+            ("thread1", "cp_1", metadata),
+        )
+
+        # Insert messages
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO writes "
+                "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel) "
+                "VALUES (?, '', ?, ?, ?, 'messages')",
+                ("thread1", f"cp_{i}", "task1", i),
+            )
+
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_includes_message_count(self, temp_db_with_messages):
+        """List threads includes message count when requested."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db_with_messages):
+            threads = asyncio.run(sessions.list_threads(include_message_count=True))
+            assert len(threads) == 1
+            assert threads[0]["message_count"] == 3
+
+    def test_no_message_count_by_default(self, temp_db_with_messages):
+        """List threads does not include message count by default."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db_with_messages):
+            threads = asyncio.run(sessions.list_threads())
+            assert len(threads) == 1
+            assert "message_count" not in threads[0]

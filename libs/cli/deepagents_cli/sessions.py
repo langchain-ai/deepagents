@@ -1,9 +1,12 @@
 """Thread management using LangGraph's built-in checkpoint persistence."""
 
+import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 import aiosqlite
@@ -82,11 +85,18 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
 async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
+    include_message_count: bool = False,
 ) -> list[dict]:
     """List threads from checkpoints table.
 
+    Args:
+        agent_name: Optional filter by agent name.
+        limit: Maximum number of threads to return.
+        include_message_count: Whether to include message counts.
+
     Returns:
-        List of thread dicts with thread_id, agent_name, and updated_at.
+        List of thread dicts with `thread_id`, `agent_name`, `updated_at`,
+            and optionally `message_count`.
     """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
@@ -120,10 +130,30 @@ async def list_threads(
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
-            return [
+            threads = [
                 {"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]}
                 for r in rows
             ]
+
+        # Fetch message counts if requested
+        if include_message_count and threads:
+            writes_exists = await _table_exists(conn, "writes")
+            for thread in threads:
+                if writes_exists:
+                    count_query = """
+                        SELECT COUNT(*)
+                        FROM writes
+                        WHERE thread_id = ? AND channel = 'messages'
+                    """
+                    async with conn.execute(
+                        count_query, (thread["thread_id"],)
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                        thread["message_count"] = row[0] if row else 0
+                else:
+                    thread["message_count"] = 0
+
+        return threads
 
 
 async def get_most_recent(agent_name: str | None = None) -> str | None:
@@ -195,6 +225,58 @@ async def thread_exists(thread_id: str) -> bool:
             return row is not None
 
 
+async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
+    """Find threads with IDs matching prefix of given ID.
+
+    Args:
+        thread_id: The thread ID to search for (partial match).
+        limit: Maximum number of suggestions to return.
+
+    Returns:
+        List of thread IDs that start with the given prefix.
+    """
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return []
+
+        query = """
+            SELECT DISTINCT thread_id
+            FROM checkpoints
+            WHERE thread_id LIKE ?
+            ORDER BY thread_id
+            LIMIT ?
+        """
+        prefix = thread_id + "%"
+        async with conn.execute(query, (prefix, limit)) as cursor:
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
+
+
+async def get_thread_message_count(thread_id: str) -> int:
+    """Count messages in a thread from the writes table.
+
+    Args:
+        thread_id: The thread ID to count messages for.
+
+    Returns:
+        Number of messages in the thread (0 if thread not found).
+    """
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        if not await _table_exists(conn, "writes"):
+            return 0
+
+        query = """
+            SELECT COUNT(*)
+            FROM writes
+            WHERE thread_id = ? AND channel = 'messages'
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
 async def delete_thread(thread_id: str) -> bool:
     """Delete thread checkpoints.
 
@@ -232,7 +314,7 @@ async def list_threads_command(
     limit: int = 20,
 ) -> None:
     """CLI handler for: deepagents threads list."""
-    threads = await list_threads(agent_name, limit=limit)
+    threads = await list_threads(agent_name, limit=limit, include_message_count=True)
 
     if not threads:
         if agent_name:
@@ -251,12 +333,14 @@ async def list_threads_command(
     )
     table.add_column("Thread ID", style="bold")
     table.add_column("Agent")
+    table.add_column("Messages", justify="right")
     table.add_column("Last Used", style="dim")
 
     for t in threads:
         table.add_row(
             t["thread_id"],
             t["agent_name"] or "unknown",
+            str(t.get("message_count", 0)),
             _format_timestamp(t.get("updated_at")),
         )
 
@@ -273,3 +357,110 @@ async def delete_thread_command(thread_id: str) -> None:
         console.print(f"[green]Thread '{thread_id}' deleted.[/green]")
     else:
         console.print(f"[red]Thread '{thread_id}' not found.[/red]")
+
+
+async def export_thread(thread_id: str, output_format: str = "markdown") -> str | None:
+    """Export thread conversation history as markdown or JSON.
+
+    Exports user/assistant message text only from the local database.
+    For full trace data (tool calls, latencies, tokens), use langsmith fetch.
+
+    Args:
+        thread_id: The thread ID to export.
+        output_format: Output format, either `'markdown'` or `'json'`.
+
+    Returns:
+        Exported content as string, or `None` if thread not found.
+    """
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        if not await _table_exists(conn, "writes"):
+            return None
+
+        # First check if thread exists
+        check_query = "SELECT 1 FROM writes WHERE thread_id = ? LIMIT 1"
+        async with conn.execute(check_query, (thread_id,)) as cursor:
+            if await cursor.fetchone() is None:
+                return None
+
+        # Fetch messages from writes table
+        query = """
+            SELECT value, idx
+            FROM writes
+            WHERE thread_id = ? AND channel = 'messages'
+            ORDER BY checkpoint_id, idx
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            rows = await cursor.fetchall()
+
+        if not rows:
+            return None
+
+        # Parse message blobs
+        messages = []
+        for value_blob, _ in rows:
+            try:
+                # The value is stored as JSON blob
+                if isinstance(value_blob, bytes):
+                    msg_data = json.loads(value_blob.decode("utf-8"))
+                else:
+                    msg_data = json.loads(value_blob)
+
+                # Extract role and content from the message
+                msg_type = msg_data.get("type", "")
+                content = msg_data.get("kwargs", {}).get("content", "")
+
+                # Map type to role
+                if msg_type == "human":
+                    role = "user"
+                elif msg_type == "ai":
+                    role = "assistant"
+                else:
+                    role = msg_type
+
+                if content:
+                    messages.append({"role": role, "content": content})
+            except (json.JSONDecodeError, KeyError, TypeError):
+                # Skip malformed messages
+                continue
+
+        if not messages:
+            return None
+
+        # Format output
+        if output_format == "json":
+            return json.dumps({"thread_id": thread_id, "messages": messages}, indent=2)
+
+        # Markdown format
+        lines = [f"# Thread: {thread_id}", ""]
+        for msg in messages:
+            role_label = "**User:**" if msg["role"] == "user" else "**Assistant:**"
+            lines.extend([role_label, "", msg["content"], "", "---", ""])
+        return "\n".join(lines)
+
+
+async def export_thread_command(
+    thread_id: str, output_path: str | None, output_format: str
+) -> None:
+    """CLI handler for: deepagents threads export.
+
+    Args:
+        thread_id: Thread ID to export.
+        output_path: File path to write output, or None for stdout.
+        output_format: Output format (`'markdown'` or `'json'`).
+    """
+    content = await export_thread(thread_id, output_format=output_format)
+
+    if content is None:
+        console.print(f"[red]Thread '{thread_id}' not found or has no messages.[/red]")
+        return
+
+    if output_path:
+        # Run file write in executor to avoid blocking async
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, partial(Path(output_path).write_text, content, encoding="utf-8")
+        )
+        console.print(f"[green]Exported to {output_path}[/green]")
+    else:
+        console.print(content)

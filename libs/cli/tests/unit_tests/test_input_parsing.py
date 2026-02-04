@@ -18,6 +18,7 @@ def test_parse_file_mentions_with_chinese_sentence(tmp_path, monkeypatch):
 
 
 def test_parse_file_mentions_handles_multiple_mentions(tmp_path, monkeypatch):
+    """Ensure multiple @file mentions are extracted from a single input."""
     first = tmp_path / "a.txt"
     second = tmp_path / "b.txt"
     first.write_text("1")
@@ -32,6 +33,7 @@ def test_parse_file_mentions_handles_multiple_mentions(tmp_path, monkeypatch):
 
 
 def test_highlighter_marks_file_mentions():
+    """Ensure @file mentions are highlighted with the correct style."""
     lexer = MentionHighlightLexer()
     document = Document("请阅读@README.md然后继续", cursor_position=0)
     tokens = lexer.lex_document(document)(0)
@@ -47,6 +49,7 @@ def test_highlighter_marks_file_mentions():
 
 
 def test_highlighter_marks_slash_only_on_first_line():
+    """Ensure slash commands are only highlighted on the first line."""
     lexer = MentionHighlightLexer()
     document = Document("/help 命令\n/ignore", cursor_position=0)
 

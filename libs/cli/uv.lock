@@ -853,7 +853,7 @@ requires-dist = [
     { name = "langchain-google-vertexai", marker = "extra == 'vertexai'", specifier = ">=3.0.0,<4.0.0" },
     { name = "langchain-openai", specifier = ">=1.1.7,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
-    { name = "langsmith", git = "https://github.com/langchain-ai/langsmith-sdk?subdirectory=python&branch=main" },
+    { name = "langsmith", specifier = ">=0.6.6" },
     { name = "markdownify", specifier = ">=0.13.0,<2.0.0" },
     { name = "modal", specifier = ">=0.65.0,<2.0.0" },
     { name = "pillow", specifier = ">=10.0.0,<13.0.0" },
@@ -1860,8 +1860,8 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.6.8"
-source = { git = "https://github.com/langchain-ai/langsmith-sdk?subdirectory=python&branch=main#96b84cd04982c843927b24e1cb015d2b534050e9" }
+version = "0.6.7"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson", marker = "platform_python_implementation != 'PyPy'" },
@@ -1872,6 +1872,10 @@ dependencies = [
     { name = "uuid-utils" },
     { name = "xxhash" },
     { name = "zstandard" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/bb/b8a196c9b9a7ca8b8845eaec7dbae35bcfcb0da3068794e76b29211eae2b/langsmith-0.6.7.tar.gz", hash = "sha256:d89c604a18fc606b7835d8e7924f7cdbe130ca2207bdff8f989590e50d65b802", size = 963940, upload-time = "2026-01-31T02:10:34.069Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/9a/5bc17ea3c746363e73c11df5e89068fea1ed175ca9c00fdb6886efc35b21/langsmith-0.6.7-py3-none-any.whl", hash = "sha256:4bd4372b8bf724b86314f64644562b5598407614e04e74b536c09490d153bd61", size = 309369, upload-time = "2026-01-31T02:10:32.6Z" },
 ]
 
 [[package]]

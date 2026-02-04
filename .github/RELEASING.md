@@ -141,11 +141,11 @@ Using the PyPI web interface or a CLI tool.
 
 ```bash
 # Delete the GitHub release
-gh release delete "deepagents-cli==<VERSION>" --yes
+gh release delete "deepagents-cli@<VERSION>" --yes
 
 # Delete the git tag
-git tag -d "deepagents-cli==<VERSION>"
-git push origin --delete "deepagents-cli==<VERSION>"
+git tag -d "deepagents-cli@<VERSION>"
+git push origin --delete "deepagents-cli@<VERSION>"
 ```
 
 #### 3. Fix the Manifest
@@ -185,7 +185,7 @@ This means a release PR was merged but its merge commit doesn't have the expecte
 
 ```bash
 # Find what commit the tag points to
-git ls-remote --tags origin | grep "deepagents-cli==<VERSION>"
+git ls-remote --tags origin | grep "deepagents-cli@<VERSION>"
 
 # Find the release PR's merge commit
 gh pr view <PR_NUMBER> --json mergeCommit --jq '.mergeCommit.oid'
@@ -197,20 +197,20 @@ If these differ, release-please is confused.
 
 ```bash
 # 1. Delete the remote tag
-git push origin :refs/tags/deepagents-cli==<VERSION>
+git push origin :refs/tags/deepagents-cli@<VERSION>
 
 # 2. Delete local tag if it exists
-git tag -d deepagents-cli==<VERSION> 2>/dev/null || true
+git tag -d deepagents-cli@<VERSION> 2>/dev/null || true
 
 # 3. Create tag on the correct commit (the release PR's merge commit)
-git tag deepagents-cli==<VERSION> <MERGE_COMMIT_SHA>
+git tag deepagents-cli@<VERSION> <MERGE_COMMIT_SHA>
 
 # 4. Push the new tag
-git push origin deepagents-cli==<VERSION>
+git push origin deepagents-cli@<VERSION>
 
 # 5. Update the GitHub release's target_commitish to match
 #    (moving a tag doesn't update this field automatically)
-gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-ai/deepagents/releases --jq '.[] | select(.tag_name == "deepagents-cli==<VERSION>") | .id') \
+gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-ai/deepagents/releases --jq '.[] | select(.tag_name == "deepagents-cli@<VERSION>") | .id') \
   -f target_commitish=<MERGE_COMMIT_SHA>
 ```
 

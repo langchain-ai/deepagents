@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+import warnings
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -658,8 +659,10 @@ A condensed summary follows:
         backend = self._get_backend(state, runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
-            # Offloading failed - don't proceed with summarization to preserve messages
-            return None
+            warnings.warn(
+                "Offloading conversation history to backend failed during summarization.",
+                stacklevel=2,
+            )
 
         # Generate summary
         summary = self._create_summary(messages_to_summarize)
@@ -740,8 +743,10 @@ A condensed summary follows:
         backend = self._get_backend(state, runtime)
         file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
         if file_path is None:
-            # Offloading failed - don't proceed with summarization to preserve messages
-            return None
+            warnings.warn(
+                "Offloading conversation history to backend failed during summarization.",
+                stacklevel=2,
+            )
 
         # Generate summary
         summary = await self._acreate_summary(messages_to_summarize)

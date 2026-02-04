@@ -1,15 +1,28 @@
 [project]
 name = "deepagents"
-version = "0.3.8"
+version = "0.3.10"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
+keywords = ["agents", "ai", "llm", "langgraph", "langchain", "deep-agent", "sub-agents", "agentic"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
-    "langchain-core>=1.2.6,<2.0.0",
-    "langchain>=1.2.4,<2.0.0",
+    "langchain-core>=1.2.7,<2.0.0",
+    "langchain>=1.2.7,<2.0.0",
     "langchain-anthropic>=1.3.1,<2.0.0",
-    "langchain-google-genai>=4.1.3,<5.0.0",
+    "langchain-google-genai>=4.2.0,<5.0.0",
     "wcmatch",
 ]
 
@@ -17,7 +30,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
-Source = "https://github.com/langchain-ai/deepagents"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
 Twitter = "https://x.com/LangChain"
 Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
@@ -91,12 +105,14 @@ ignore-var-parameters = true
     "S101",    # Allow asserts in tests
     "S311",    # Allow pseudo-random generators in tests
     # Add more test-specific ignores
+    "PLR2004", # Magic values in comparisons (fine for test assertions)
+    "ARG002",  # https://docs.astral.sh/ruff/rules/unused-method-argument/
 ]
 
 "deepagents/backends/composite.py" = ["B007", "BLE001", "D102", "EM101", "FBT001", "FBT002", "PLW2901", "S110"]
 "deepagents/backends/filesystem.py" = ["BLE001", "D102", "D205", "D417", "DTZ006", "EM101", "EM102", "FBT001", "FBT002", "PLR0912", "S112", "TRY003"]
 "deepagents/backends/protocol.py" = ["B024", "B027", "FBT001", "FBT002"]
-"deepagents/backends/sandbox.py" = ["FBT001", "FBT002", "PLR2004"]
+"deepagents/backends/sandbox.py" = ["FBT001", "FBT002", "PLC0105", "PLR2004"]
 "deepagents/backends/state.py" = ["ANN204", "D102", "D205", "EM101", "FBT001", "FBT002", "PERF401"]
 "deepagents/backends/store.py" = ["A002", "ANN204", "BLE001", "D102", "D205", "F821", "FBT001", "FBT002", "PERF401"]
 "deepagents/backends/utils.py" = ["D301", "E501", "EM101", "FBT001", "RET504", "RUF005", "TRY003"]
@@ -109,24 +125,25 @@ ignore-var-parameters = true
 "tests/integration_tests/test_filesystem_middleware.py" = ["ANN001", "ANN201", "ANN202", "ARG002", "E731", "PLR2004", "SIM118", "T201"]
 "tests/integration_tests/test_hitl.py" = ["ANN201", "C419", "E501", "PLR2004"]
 "tests/integration_tests/test_subagent_middleware.py" = ["ANN001", "ANN201", "F841", "RUF012", "SIM118"]
-"tests/unit_tests/backends/test_composite_backend.py" = ["ANN001", "ANN201", "ANN202", "ARG001", "ARG002", "F841", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/backends/test_composite_backend_async.py" = ["ANN001", "ANN201", "ANN202", "ARG001", "ARG002", "F841", "INP001", "PLR2004", "PT018"]
+"tests/unit_tests/backends/test_composite_backend.py" = ["ANN001", "ANN201", "ANN202", "ARG001", "F841", "INP001", "PLR2004", "PT018"]
+"tests/unit_tests/backends/test_composite_backend_async.py" = ["ANN001", "ANN201", "ANN202", "ARG001", "F841", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/backends/test_filesystem_backend.py" = ["ANN201", "ARG005", "B007", "B011", "INP001", "PLR2004", "PT015", "PT018"]
 "tests/unit_tests/backends/test_filesystem_backend_async.py" = ["ANN201", "ARG005", "B007", "INP001", "PLR2004", "PT011", "PT018"]
 "tests/unit_tests/backends/test_state_backend.py" = ["ANN001", "ANN201", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/backends/test_state_backend_async.py" = ["ANN001", "ANN201", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/backends/test_store_backend.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
+"tests/unit_tests/backends/test_sandbox_backend.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
 "tests/unit_tests/backends/test_store_backend_async.py" = ["ANN201", "INP001", "PLR2004", "PT018"]
-"tests/unit_tests/chat_model.py" = ["ARG002", "D301", "PLR0912", "RUF012"]
+"tests/unit_tests/chat_model.py" = ["D301", "PLR0912", "RUF012"]
 "tests/unit_tests/middleware/test_memory_middleware.py" = ["F841", "PGH003", "PLR2004", "RUF001", "TC002"]
 "tests/unit_tests/middleware/test_memory_middleware_async.py" = ["F841", "PGH003", "PLR2004", "RUF001"]
 "tests/unit_tests/middleware/test_skills_middleware.py" = ["F841", "PGH003", "PLR2004", "TC002"]
 "tests/unit_tests/middleware/test_middleware_config.py" = ["ANN201", "FBT003"]
 "tests/unit_tests/middleware/test_skills_middleware_async.py" = ["F841", "PGH003", "PLR2004"]
 "tests/unit_tests/middleware/test_validate_path.py" = ["ANN201"]
-"tests/unit_tests/test_end_to_end.py" = ["ARG002", "PLR2004"]
-"tests/unit_tests/test_middleware.py" = ["ANN001", "ANN201", "ANN202", "ARG002", "E731", "PLR2004", "SIM118", "T201"]
-"tests/unit_tests/test_middleware_async.py" = ["ANN001", "ANN201", "ANN202", "ARG002"]
+"tests/unit_tests/test_end_to_end.py" = ["PLR2004"]
+"tests/unit_tests/test_middleware.py" = ["ANN001", "ANN201", "ANN202", "E731", "PLR2004", "SIM118", "T201"]
+"tests/unit_tests/test_middleware_async.py" = ["ANN001", "ANN201", "ANN202"]
 "tests/unit_tests/test_subagents.py" = ["PLR2004"]
 "tests/unit_tests/test_todo_middleware.py" = ["E501", "PLR2004"]
 "tests/utils.py" = ["ANN001", "ANN201", "RUF012", "SIM118"]

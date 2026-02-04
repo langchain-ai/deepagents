@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from textual.app import App
 
-logger = logging.getLogger(__name__)
-
 _PREVIEW_MAX_LENGTH = 40
 
 
@@ -60,7 +58,10 @@ def copy_selection_to_clipboard(app: App) -> None:
             result = widget.get_selection(selection)
         except (AttributeError, TypeError, ValueError) as e:
             logger.debug(
-                "Failed to get selection from widget %s: %s", type(widget).__name__, e
+                "Failed to get selection from widget %s: %s",
+                type(widget).__name__,
+                e,
+                exc_info=True,
             )
             continue
 
@@ -103,7 +104,12 @@ def copy_selection_to_clipboard(app: App) -> None:
                 markup=False,
             )
         except (OSError, RuntimeError, TypeError) as e:
-            logger.debug("Clipboard copy method %s failed: %s", copy_fn.__name__, e)
+            logger.debug(
+                "Clipboard copy method %s failed: %s",
+                getattr(copy_fn, "__name__", repr(copy_fn)),
+                e,
+                exc_info=True,
+            )
             continue
         else:
             return

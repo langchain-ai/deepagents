@@ -16,6 +16,8 @@ from dataclasses import dataclass
 
 from PIL import Image, UnidentifiedImageError
 
+logger = logging.getLogger(__name__)
+
 
 def _get_executable(name: str) -> str | None:
     """Get full path to an executable using shutil.which().
@@ -27,9 +29,6 @@ def _get_executable(name: str) -> str | None:
         Full path to executable, or None if not found.
     """
     return shutil.which(name)
-
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -96,9 +95,13 @@ def _get_macos_clipboard_image() -> ImageData | None:
                         placeholder="[image]",
                     )
                 except (UnidentifiedImageError, OSError) as e:
-                    logger.debug("Invalid image data from pngpaste: %s", e)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass  # pngpaste not installed or timed out
+                    logger.debug(
+                        "Invalid image data from pngpaste: %s", e, exc_info=True
+                    )
+        except FileNotFoundError:
+            pass  # pngpaste not installed - expected on systems without it
+        except subprocess.TimeoutExpired:
+            logger.debug("pngpaste timed out after 2 seconds")
 
     # Fallback to osascript with temp file (built-in but slower)
     return _get_clipboard_via_osascript()
@@ -195,10 +198,16 @@ def _get_clipboard_via_osascript() -> ImageData | None:
                 placeholder="[image]",
             )
         except (UnidentifiedImageError, OSError) as e:
-            logger.debug("Failed to process clipboard image via osascript: %s", e)
+            logger.debug(
+                "Failed to process clipboard image via osascript: %s", e, exc_info=True
+            )
             return None
 
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        logger.debug("osascript timed out while accessing clipboard")
+        return None
+    except OSError as e:
+        logger.debug("OSError accessing clipboard via osascript: %s", e)
         return None
     finally:
         # Clean up temp file

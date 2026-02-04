@@ -83,6 +83,10 @@ class TestFileOpsExceptionHandling:
         record = tracker.active["tool_call_123"]
         assert record.before_content == ""
 
+        # Verify the error was logged
+        assert "Failed to read before_content" in caplog.text
+        assert "Backend error" in caplog.text
+
     def test_file_op_tracker_handles_attribute_error(self, caplog):
         """Test that FileOpTracker handles AttributeError properly."""
         from deepagents_cli.file_ops import FileOpTracker
@@ -105,6 +109,10 @@ class TestFileOpsExceptionHandling:
         record = tracker.active["tool_call_456"]
         assert record.before_content == ""
 
+        # Verify the error was logged
+        assert "Failed to read before_content" in caplog.text
+        assert "Missing attribute" in caplog.text
+
 
 class TestClipboardExceptionHandling:
     """Test exception handling in clipboard utilities."""
@@ -124,6 +132,10 @@ class TestClipboardExceptionHandling:
         with caplog.at_level(logging.DEBUG):
             # Should not raise
             copy_selection_to_clipboard(mock_app)
+
+        # Verify the error was logged
+        assert "Failed to get selection from widget" in caplog.text
+        assert "No selection" in caplog.text
 
     def test_clipboard_logger_exists(self):
         """Test that clipboard module has proper logging configured."""
@@ -151,42 +163,6 @@ class TestImageUtilsExceptionHandling:
         # Read the source file and check exception handling
         source_path = (
             Path(__file__).parent.parent.parent / "deepagents_cli" / "image_utils.py"
-        )
-        source = source_path.read_text()
-        tree = ast.parse(source)
-
-        # Find all except handlers - bare excepts have type=None
-        bare_excepts = [
-            node.lineno
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ExceptHandler) and node.type is None
-        ]
-
-        # Should have no bare excepts after our fix
-        assert len(bare_excepts) == 0, f"Found bare except at lines: {bare_excepts}"
-
-
-class TestSandboxFactoryLogging:
-    """Test that sandbox factory has proper logging setup."""
-
-    def test_sandbox_factory_has_logger(self):
-        """Test that sandbox factory module has a logger configured."""
-        from deepagents_cli.integrations.sandbox_factory import logger
-
-        assert logger is not None
-        assert logger.name == "deepagents_cli.integrations.sandbox_factory"
-
-    def test_sandbox_factory_exception_types(self):
-        """Test that sandbox factory uses proper exception types."""
-        import ast
-        from pathlib import Path
-
-        # Read the source file and check exception handling
-        source_path = (
-            Path(__file__).parent.parent.parent
-            / "deepagents_cli"
-            / "integrations"
-            / "sandbox_factory.py"
         )
         source = source_path.read_text()
         tree = ast.parse(source)

@@ -37,6 +37,10 @@ class TestFilesystemBackendExceptionHandling:
         # Should return empty list and log the error
         assert isinstance(result, list)
 
+        # Verify the error was logged
+        assert "Failed to list directory" in caplog.text
+        assert "Access denied" in caplog.text
+
     def test_glob_info_handles_oserror_gracefully(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """Test that glob_info logs and handles OS errors."""
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
@@ -49,6 +53,10 @@ class TestFilesystemBackendExceptionHandling:
 
         # Should return empty list
         assert isinstance(result, list)
+
+        # Verify the error was logged
+        assert "Failed to glob pattern" in caplog.text
+        assert "Filesystem error" in caplog.text
 
     def test_ripgrep_search_handles_path_outside_root(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """Test that ripgrep search logs when paths are outside root."""
@@ -120,6 +128,10 @@ class TestStoreBackendExceptionHandling:
 
         # Should return default namespace
         assert namespace == ("filesystem",)
+
+        # Verify the error was logged
+        assert "Failed to get langgraph config" in caplog.text
+        assert "No config" in caplog.text
 
 
 # CLI-specific tests are in the deepagents-cli package

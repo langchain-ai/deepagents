@@ -4,11 +4,12 @@ import asyncio
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import (
+    CompleteEvent,
     Completer,
     Completion,
     PathCompleter,
@@ -17,7 +18,7 @@ from prompt_toolkit.completion import (
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 
 from deepagents_cli.config import COLORS, COMMANDS, SessionState, console
 from deepagents_cli.image_utils import ImageData, get_clipboard_image
@@ -33,6 +34,11 @@ class ImageTracker:
     """Track pasted images in the current conversation."""
 
     def __init__(self) -> None:
+        """Initialize an empty image tracker.
+
+        Sets up an empty list to store images and initializes the ID counter
+        to 1 for generating unique placeholder identifiers.
+        """
         self.images: list[ImageData] = []
         self.next_id = 1
 
@@ -52,7 +58,11 @@ class ImageTracker:
         return placeholder
 
     def get_images(self) -> list[ImageData]:
-        """Get all tracked images."""
+        """Get all tracked images.
+
+        Returns:
+            Copy of the list of tracked images.
+        """
         return self.images.copy()
 
     def clear(self) -> None:
@@ -65,14 +75,26 @@ class FilePathCompleter(Completer):
     """Activate filesystem completion only when cursor is after '@'."""
 
     def __init__(self) -> None:
+        """Initialize the file path completer.
+
+        Creates an underlying PathCompleter configured to expand user home
+        directories (~), accept any input length, and complete both files
+        and directories.
+        """
         self.path_completer = PathCompleter(
             expanduser=True,
             min_input_len=0,
             only_directories=False,
         )
 
-    def get_completions(self, document, complete_event):
-        """Get file path completions when @ is detected."""
+    def get_completions(
+        self, document: Document, complete_event: CompleteEvent
+    ) -> Iterable[Completion]:
+        """Get file path completions when @ is detected.
+
+        Yields:
+            Completion objects for matching file paths.
+        """
         text = document.text_before_cursor
 
         # Use regex to detect @path pattern at end of line
@@ -85,11 +107,13 @@ class FilePathCompleter(Completer):
         # Unescape the path for PathCompleter (it doesn't understand escape sequences)
         unescaped_fragment = path_fragment.replace("\\ ", " ")
 
-        # Strip trailing backslash if present (user is in the process of typing an escape)
+        # Strip trailing backslash if present (user is typing an escape)
         unescaped_fragment = unescaped_fragment.removesuffix("\\")
 
         # Create temporary document for the unescaped path fragment
-        temp_doc = Document(text=unescaped_fragment, cursor_position=len(unescaped_fragment))
+        temp_doc = Document(
+            text=unescaped_fragment, cursor_position=len(unescaped_fragment)
+        )
 
         # Get completions from PathCompleter and use its start_position
         # PathCompleter returns suffix text with start_position=0 (insert at cursor)
@@ -103,7 +127,7 @@ class FilePathCompleter(Completer):
 
             yield Completion(
                 text=completion_text,
-                start_position=comp.start_position,  # Use PathCompleter's position (usually 0)
+                start_position=comp.start_position,  # PathCompleter's position
                 display=comp.display,
                 display_meta=comp.display_meta,
             )
@@ -112,8 +136,14 @@ class FilePathCompleter(Completer):
 class CommandCompleter(Completer):
     """Activate command completion only when line starts with '/'."""
 
-    def get_completions(self, document, _complete_event):
-        """Get command completions when / is at the start."""
+    def get_completions(
+        self, document: Document, _complete_event: CompleteEvent
+    ) -> Iterable[Completion]:
+        """Get command completions when / is at the start.
+
+        Yields:
+            Completion objects for matching commands.
+        """
         text = document.text_before_cursor
 
         # Use regex to detect /command pattern at start of line
@@ -128,14 +158,20 @@ class CommandCompleter(Completer):
             if cmd_name.startswith(command_fragment.lower()):
                 yield Completion(
                     text=cmd_name,
-                    start_position=-len(command_fragment),  # Fixed position for original document
+                    start_position=-len(
+                        command_fragment
+                    ),  # Fixed position for original document
                     display=cmd_name,
                     display_meta=cmd_desc,
                 )
 
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
-    """Extract @file mentions and return cleaned text with resolved file paths."""
+    """Extract @file mentions and return cleaned text with resolved file paths.
+
+    Returns:
+        Tuple of (original text, list of resolved file paths).
+    """
     pattern = r"@((?:[^\s@]|(?<=\\)\s)+)"  # Match @filename, allowing escaped spaces
     matches = re.findall(pattern, text)
 
@@ -190,8 +226,9 @@ def get_bottom_toolbar(
             if session:
                 current_text = session.default_buffer.text
                 if current_text.startswith("!"):
-                    parts.append(("bg:#ff1493 fg:#ffffff bold", " BASH MODE "))
-                    parts.append(("", " | "))
+                    parts.extend(
+                        [("bg:#ff1493 fg:#ffffff bold", " BASH MODE "), ("", " | ")]
+                    )
         except (AttributeError, TypeError):
             # Silently ignore - toolbar is non-critical and called frequently
             pass
@@ -211,8 +248,9 @@ def get_bottom_toolbar(
         if hint_until is not None:
             now = time.monotonic()
             if now < hint_until:
-                parts.append(("", " | "))
-                parts.append(("class:toolbar-exit", " Ctrl+C again to exit "))
+                parts.extend(
+                    [("", " | "), ("class:toolbar-exit", " Ctrl+C again to exit ")]
+                )
             else:
                 session_state.exit_hint_until = None
 
@@ -222,9 +260,15 @@ def get_bottom_toolbar(
 
 
 def create_prompt_session(
-    _assistant_id: str, session_state: SessionState, image_tracker: ImageTracker | None = None
+    _assistant_id: str,
+    session_state: SessionState,
+    image_tracker: ImageTracker | None = None,
 ) -> PromptSession:
-    """Create a configured PromptSession with all features."""
+    """Create a configured PromptSession with all features.
+
+    Returns:
+        Configured PromptSession instance.
+    """
     # Set default editor if not already set
     if "EDITOR" not in os.environ:
         os.environ["EDITOR"] = "nano"
@@ -233,12 +277,15 @@ def create_prompt_session(
     kb = KeyBindings()
 
     @kb.add("c-c")
-    def _(event) -> None:
+    def _(event: KeyPressEvent) -> None:
         """Require double Ctrl+C within a short window to exit."""
         app = event.app
         now = time.monotonic()
 
-        if session_state.exit_hint_until is not None and now < session_state.exit_hint_until:
+        if (
+            session_state.exit_hint_until is not None
+            and now < session_state.exit_hint_until
+        ):
             handle = session_state.exit_hint_handle
             if handle:
                 handle.cancel()
@@ -266,13 +313,15 @@ def create_prompt_session(
                 session_state.exit_hint_handle = None
                 app_ref.invalidate()
 
-        session_state.exit_hint_handle = loop.call_later(EXIT_CONFIRM_WINDOW, clear_hint)
+        session_state.exit_hint_handle = loop.call_later(
+            EXIT_CONFIRM_WINDOW, clear_hint
+        )
 
         app.invalidate()
 
     # Bind Ctrl+T to toggle auto-approve
     @kb.add("c-t")
-    def _(event) -> None:
+    def _(event: KeyPressEvent) -> None:
         """Toggle auto-approve mode."""
         session_state.toggle_auto_approve()
         # Force UI refresh to update toolbar
@@ -282,7 +331,9 @@ def create_prompt_session(
     if image_tracker:
         from prompt_toolkit.keys import Keys
 
-        def _handle_paste_with_image_check(event, pasted_text: str = "") -> None:
+        def _handle_paste_with_image_check(
+            event: KeyPressEvent, pasted_text: str = ""
+        ) -> None:
             """Check clipboard for image, otherwise insert pasted text."""
             # Try to get an image from clipboard
             clipboard_image = get_clipboard_image()
@@ -302,20 +353,20 @@ def create_prompt_session(
                     event.current_buffer.insert_text(clipboard_data.text)
 
         @kb.add(Keys.BracketedPaste)
-        def _(event) -> None:
+        def _(event: KeyPressEvent) -> None:
             """Handle bracketed paste (Cmd+V on macOS) - check for images first."""
             # Bracketed paste provides the pasted text in event.data
             pasted_text = event.data if hasattr(event, "data") else ""
             _handle_paste_with_image_check(event, pasted_text)
 
         @kb.add("c-v")
-        def _(event) -> None:
+        def _(event: KeyPressEvent) -> None:
             """Handle Ctrl+V paste - check for images first."""
             _handle_paste_with_image_check(event)
 
     # Bind regular Enter to submit (intuitive behavior)
     @kb.add("enter")
-    def _(event) -> None:
+    def _(event: KeyPressEvent) -> None:
         """Enter submits the input, unless completion menu is active."""
         buffer = event.current_buffer
 
@@ -324,7 +375,7 @@ def create_prompt_session(
             # Get the current completion (the highlighted one)
             current_completion = buffer.complete_state.current_completion
 
-            # If no completion is selected (user hasn't navigated), select and apply the first one
+            # If no completion selected (user hasn't navigated), apply first one
             if not current_completion and buffer.complete_state.completions:
                 # Move to the first completion
                 buffer.complete_next()
@@ -344,19 +395,19 @@ def create_prompt_session(
 
     # Alt+Enter for newlines (press ESC then Enter, or Option+Enter on Mac)
     @kb.add("escape", "enter")
-    def _(event) -> None:
+    def _(event: KeyPressEvent) -> None:
         """Alt+Enter inserts a newline for multi-line input."""
         event.current_buffer.insert_text("\n")
 
     # Ctrl+E to open in external editor
     @kb.add("c-e")
-    def _(event) -> None:
+    def _(event: KeyPressEvent) -> None:
         """Open the current input in an external editor (nano by default)."""
         event.current_buffer.open_in_editor()
 
     # Backspace handler to retrigger completions and delete image tags as units
     @kb.add("backspace")
-    def _(event) -> None:
+    def _(event: KeyPressEvent) -> None:
         """Handle backspace: delete image tags as single unit, retrigger completion."""
         buffer = event.current_buffer
         text_before = buffer.document.text_before_cursor
@@ -420,7 +471,7 @@ def create_prompt_session(
             session_state, session_ref
         ),  # Persistent status bar at bottom
         style=toolbar_style,  # Apply toolbar styling
-        reserve_space_for_menu=7,  # Reserve space for completion menu to show 5-6 results
+        reserve_space_for_menu=7,  # Space for completion menu (5-6 results)
     )
 
     # Store session reference for toolbar to access

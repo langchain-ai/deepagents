@@ -33,13 +33,21 @@ class BrailleSpinner:
         self._position = 0
 
     def next_frame(self) -> str:
-        """Get next animation frame."""
+        """Get next animation frame.
+
+        Returns:
+            The next spinner character in the animation sequence.
+        """
         frame = self.FRAMES[self._position]
         self._position = (self._position + 1) % len(self.FRAMES)
         return frame
 
     def current_frame(self) -> str:
-        """Get current frame without advancing."""
+        """Get current frame without advancing.
+
+        Returns:
+            The current spinner character.
+        """
         return self.FRAMES[self._position]
 
 
@@ -53,6 +61,7 @@ class LoadingWidget(Static):
     LoadingWidget {
         height: auto;
         padding: 0 1;
+        margin-top: 1;
     }
 
     LoadingWidget .loading-container {
@@ -94,12 +103,20 @@ class LoadingWidget(Static):
         self._paused_elapsed: int = 0
 
     def compose(self) -> ComposeResult:
-        """Compose the loading widget layout."""
+        """Compose the loading widget layout.
+
+        Yields:
+            Widgets for spinner, status text, and hint.
+        """
         with Horizontal(classes="loading-container"):
-            self._spinner_widget = Static(self._spinner.current_frame(), classes="loading-spinner")
+            self._spinner_widget = Static(
+                self._spinner.current_frame(), classes="loading-spinner"
+            )
             yield self._spinner_widget
 
-            self._status_widget = Static(f" {self._status}... ", classes="loading-status")
+            self._status_widget = Static(
+                f" {self._status}... ", classes="loading-status"
+            )
             yield self._status_widget
 
             self._hint_widget = Static("(0s, esc to interrupt)", classes="loading-hint")

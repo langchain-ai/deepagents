@@ -241,13 +241,13 @@ class CompositeBackend(BackendProtocol):
         *,
         _ctx: BackendContext | None = None,
     ) -> list[GrepMatch] | str:
-        """Search files for regex pattern.
+        """Search files for literal text pattern.
 
         Routes to backends based on path: specific route searches one backend,
         "/" or None searches all backends, otherwise searches default backend.
 
         Args:
-            pattern: Regex pattern to search for.
+            pattern: Literal text to search for (NOT regex).
             path: Directory to search. None searches all backends.
             glob: Glob pattern to filter files (e.g., "*.py", "**/*.txt").
                 Filters by filename, not content.

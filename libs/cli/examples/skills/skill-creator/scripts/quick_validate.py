@@ -5,7 +5,9 @@ For deepagents CLI, skills are located at:
 ~/.deepagents/<agent>/skills/<skill-name>/
 
 Example:
- python quick_validate.py ~/.deepagents/agent/skills/my-skill
+```python
+python quick_validate.py ~/.deepagents/agent/skills/my-skill
+```
 """
 
 import re
@@ -16,7 +18,12 @@ import yaml
 
 
 def validate_skill(skill_path):
-    """Basic validation of a skill"""
+    """Basic validation of a skill.
+
+    Returns:
+        Tuple of (is_valid, message) where is_valid is bool and message
+            describes result.
+    """
     skill_path = Path(skill_path)
 
     # Check SKILL.md exists
@@ -50,9 +57,11 @@ def validate_skill(skill_path):
     # Check for unexpected properties (excluding nested keys under metadata)
     unexpected_keys = set(frontmatter.keys()) - ALLOWED_PROPERTIES
     if unexpected_keys:
+        unexpected_str = ", ".join(sorted(unexpected_keys))
+        allowed_str = ", ".join(sorted(ALLOWED_PROPERTIES))
         return False, (
-            f"Unexpected key(s) in SKILL.md frontmatter: {', '.join(sorted(unexpected_keys))}. "
-            f"Allowed properties are: {', '.join(sorted(ALLOWED_PROPERTIES))}"
+            f"Unexpected key(s) in SKILL.md frontmatter: {unexpected_str}. "
+            f"Allowed properties are: {allowed_str}"
         )
 
     # Check required fields
@@ -71,16 +80,25 @@ def validate_skill(skill_path):
         if not re.match(r"^[a-z0-9-]+$", name):
             return (
                 False,
-                f"Name '{name}' should be hyphen-case (lowercase letters, digits, and hyphens only)",
+                (
+                    f"Name '{name}' should be hyphen-case "
+                    "(lowercase letters, digits, and hyphens only)"
+                ),
             )
         if name.startswith("-") or name.endswith("-") or "--" in name:
             return (
                 False,
-                f"Name '{name}' cannot start/end with hyphen or contain consecutive hyphens",
+                (
+                    f"Name '{name}' cannot start/end with hyphen "
+                    "or contain consecutive hyphens"
+                ),
             )
         # Check name length (max 64 characters per spec)
         if len(name) > 64:
-            return False, f"Name is too long ({len(name)} characters). Maximum is 64 characters."
+            return (
+                False,
+                f"Name is too long ({len(name)} characters). Maximum is 64 characters.",
+            )
 
     # Extract and validate description
     description = frontmatter.get("description", "")
@@ -95,7 +113,10 @@ def validate_skill(skill_path):
         if len(description) > 1024:
             return (
                 False,
-                f"Description is too long ({len(description)} characters). Maximum is 1024 characters.",
+                (
+                    f"Description is too long ({len(description)} characters). "
+                    "Maximum is 1024 characters."
+                ),
             )
 
     return True, "Skill is valid!"

@@ -378,3 +378,43 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         # Idempotent - ignore errors if sandbox doesn't exist
         with contextlib.suppress(Exception):
             self._client.delete_sandbox(sandbox_id)
+
+
+# Public exports for helper functions (used by async sandbox creation)
+def verify_sandbox_ready(sb: Sandbox, client: SandboxClient) -> None:
+    """Verify that a sandbox is ready for use.
+
+    Args:
+        sb: Sandbox instance to verify
+        client: SandboxClient instance
+
+    Raises:
+        RuntimeError: If sandbox fails to become ready
+    """
+    return _verify_sandbox_ready(sb, client)
+
+
+def create_sandbox_instance(client: SandboxClient, template: str = DEFAULT_TEMPLATE_NAME) -> Sandbox:
+    """Create a new sandbox instance from template.
+
+    Args:
+        client: SandboxClient instance
+        template: Template name to use
+
+    Returns:
+        Created Sandbox instance
+
+    Raises:
+        RuntimeError: If sandbox creation fails
+    """
+    return _create_sandbox_instance(client, template)
+
+
+def ensure_template(client: SandboxClient, template: str = DEFAULT_TEMPLATE_NAME) -> None:
+    """Ensure sandbox template exists, creating if needed.
+
+    Args:
+        client: SandboxClient instance
+        template: Template name to ensure exists
+    """
+    return _ensure_template(client, template)

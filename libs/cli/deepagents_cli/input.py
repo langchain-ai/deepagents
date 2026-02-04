@@ -24,12 +24,10 @@ from prompt_toolkit.lexers import Lexer
 from deepagents_cli.config import COLORS, COMMANDS, SessionState, console
 from deepagents_cli.image_utils import ImageData, get_clipboard_image
 
-# contains many punctuation used as natural sentence delimiters in multiple languages
-MULTILINGUAL_PATH_TERMINATORS = (
-    ",，。．！？!?、；;：:（）()【】［］[]{}<>「」『』''\"'`~·…"  # noqa: RUF001
-)
-TERMINATOR_CLASS = re.escape(MULTILINGUAL_PATH_TERMINATORS)
 PATH_CHAR_CLASS = r"A-Za-z0-9._~/\\:-"
+"""Characters allowed in file paths: alphanumeric, period, underscore, tilde (home),
+forward/back slashes (path separators), colon (Windows drive letters), and hyphen.
+"""
 
 # Regex patterns for context-aware completion
 AT_MENTION_RE = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])*)$")
@@ -180,7 +178,13 @@ class CommandCompleter(Completer):
 
 
 class MentionHighlightLexer(Lexer):
-    """Highlight slash commands and @file mentions in the prompt."""
+    """Syntax highlighter for slash commands and @file mentions in CLI input.
+
+    Applies distinct styling to:
+    - Slash commands (e.g., /help, /clear) - only highlighted when they appear
+        at the very start of the first line
+    - File mentions (e.g., @README.md) - highlighted anywhere in the input
+    """
 
     def lex_document(
         self, document: Document
@@ -229,10 +233,17 @@ class MentionHighlightLexer(Lexer):
 
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
-    """Extract @file mentions and return cleaned text with resolved file paths.
+    """Extract @file mentions and return the text with resolved file paths.
+
+    Parses @file mentions from the input text and resolves them to absolute
+    file paths. Files that do not exist or cannot be resolved are excluded
+    with a warning printed to the console.
+
+    Args:
+        text: Input text potentially containing @file mentions.
 
     Returns:
-        Tuple of (original text, list of resolved file paths).
+        Tuple of (original text unchanged, list of resolved file paths that exist).
     """
     matches = re.finditer(FILE_MENTION_PATTERN, text)
 
@@ -251,7 +262,7 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
                 files.append(resolved)
             else:
                 console.print(f"[yellow]Warning: File not found: {raw_path}[/yellow]")
-        except Exception as e:
+        except OSError as e:
             console.print(f"[yellow]Warning: Invalid path {raw_path}: {e}[/yellow]")
 
     return text, files

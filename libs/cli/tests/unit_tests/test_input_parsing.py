@@ -58,3 +58,42 @@ def test_highlighter_marks_slash_only_on_first_line():
 
     assert first_line[0] == (command_style, "/help")
     assert second_line[0] == (default_style, "/ignore")
+
+
+def test_parse_file_mentions_with_escaped_spaces(tmp_path, monkeypatch):
+    """Ensure escaped spaces in paths are handled correctly."""
+    spaced_dir = tmp_path / "my folder"
+    spaced_dir.mkdir()
+    file_path = spaced_dir / "test.py"
+    file_path.write_text("content")
+    monkeypatch.chdir(tmp_path)
+
+    _, files = parse_file_mentions("@my\\ folder/test.py")
+
+    assert files == [file_path.resolve()]
+
+
+def test_parse_file_mentions_warns_for_nonexistent_file(tmp_path, monkeypatch):
+    """Ensure non-existent files are excluded from results."""
+    monkeypatch.chdir(tmp_path)
+
+    _, files = parse_file_mentions("@nonexistent.py")
+
+    assert files == []
+
+
+def test_parse_file_mentions_ignores_directories(tmp_path, monkeypatch):
+    """Ensure directories are not included in file list."""
+    dir_path = tmp_path / "mydir"
+    dir_path.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    _, files = parse_file_mentions("@mydir")
+
+    assert files == []
+
+
+def test_parse_file_mentions_with_no_mentions():
+    """Ensure text without mentions returns empty file list."""
+    _, files = parse_file_mentions("just some text without mentions")
+    assert files == []

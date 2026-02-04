@@ -83,10 +83,14 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     parser = argparse.ArgumentParser(
-        description="Deep Agents - AI Coding Assistant",
+        description=(
+            "Deep Agents - AI Coding Assistant\n\n"
+            "Docs: https://docs.langchain.com/oss/python/deepagents/cli"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
+
     parser.add_argument(
         "--version",
         action="version",

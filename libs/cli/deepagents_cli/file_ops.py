@@ -39,7 +39,8 @@ def _safe_read(path: Path) -> str | None:
     """
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as e:
+        logger.debug("Failed to read file %s: %s", path, e)
         return None
 
 

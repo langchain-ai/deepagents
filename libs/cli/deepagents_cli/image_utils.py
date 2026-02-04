@@ -11,7 +11,6 @@ import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
-from contextlib import suppress
 from dataclasses import dataclass
 
 from PIL import Image, UnidentifiedImageError
@@ -103,7 +102,8 @@ def _get_macos_clipboard_image() -> ImageData | None:
                         "Invalid image data from pngpaste: %s", e, exc_info=True
                     )
         except FileNotFoundError:
-            pass  # pngpaste not installed or times out - expected on systems without it
+            # pngpaste not installed - expected on systems without it
+            logger.debug("pngpaste not found, falling back to osascript")
         except subprocess.TimeoutExpired:
             logger.debug("pngpaste timed out after 2 seconds")
 
@@ -219,8 +219,10 @@ def _get_clipboard_via_osascript() -> ImageData | None:
         return None
     finally:
         # Clean up temp file
-        with suppress(OSError):
+        try:
             pathlib.Path(temp_path).unlink()
+        except OSError as e:
+            logger.debug("Failed to clean up temp file %s: %s", temp_path, e)
 
 
 def encode_image_to_base64(image_bytes: bytes) -> str:

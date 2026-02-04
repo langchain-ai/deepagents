@@ -4,7 +4,14 @@ from typing import Any, Literal
 
 import requests
 from markdownify import markdownify
-from tavily import TavilyClient
+from tavily import (
+    BadRequestError,
+    InvalidAPIKeyError,
+    MissingAPIKeyError,
+    TavilyClient,
+    UsageLimitExceededError,
+)
+from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
 
 from deepagents_cli.config import settings
 
@@ -128,7 +135,18 @@ def web_search(
             include_raw_content=include_raw_content,
             topic=topic,
         )
-    except (requests.exceptions.RequestException, ValueError, TypeError) as e:
+    except (
+        requests.exceptions.RequestException,
+        ValueError,
+        TypeError,
+        # Tavily-specific exceptions
+        BadRequestError,
+        ForbiddenError,
+        InvalidAPIKeyError,
+        MissingAPIKeyError,
+        TavilyTimeoutError,
+        UsageLimitExceededError,
+    ) as e:
         return {"error": f"Web search error: {e!s}", "query": query}
 
 

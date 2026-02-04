@@ -1,6 +1,8 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
-from typing import Any
+import warnings
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
@@ -15,7 +17,6 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    NamespaceTemplate,
     _glob_search_files,
     create_file_data,
     file_data_to_string,
@@ -24,6 +25,24 @@ from deepagents.backends.utils import (
     perform_string_replacement,
     update_file_data,
 )
+
+if TYPE_CHECKING:
+    from langchain.tools import Runtime, ToolRuntime
+
+StateT = TypeVar("StateT")
+ContextT = TypeVar("ContextT")
+
+
+@dataclass
+class BackendContext(Generic[StateT, ContextT]):
+    """Context passed to namespace factory functions."""
+
+    state: StateT
+    runtime: "Runtime[ContextT]"
+
+
+# Type alias for namespace factory functions
+NamespaceFactory = Callable[[BackendContext[Any, Any]], tuple[str, ...]]
 
 
 class StoreBackend(BackendProtocol):
@@ -35,20 +54,19 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime", namespace_template: tuple[str, ...] | str | None = None):
+    def __init__(self, runtime: "ToolRuntime", *, namespace: NamespaceFactory | None = None):
         """Initialize StoreBackend with runtime.
 
         Args:
             runtime: The ToolRuntime instance providing store access and configuration.
-            namespace_template: Optional namespace template with {variable} placeholders.
-                Examples:
-                - "filesystem" - Fixed namespace
-                - ("filesystem", "{user_id}") - User-scoped
-                - ("workspace", "{workspace_id}", "user", "{user_id}") - Multi-level
-                If None, uses legacy assistant_id detection from metadata.
+            namespace: Optional callable that takes a BackendContext and returns
+                a namespace tuple. This provides full flexibility for namespace resolution.
+                Example:
+                    namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
+                If None, uses legacy assistant_id detection from metadata (deprecated).
         """
         self.runtime = runtime
-        self.namespacer = NamespaceTemplate(namespace_template) if namespace_template is not None else None
+        self._namespace = namespace
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
@@ -68,12 +86,13 @@ class StoreBackend(BackendProtocol):
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
 
-        If namespace_template was provided at init, resolves variables from config.
-        Otherwise, uses legacy assistant_id detection from metadata.
+        If namespace was provided at init, calls it with a BackendContext.
+        Otherwise, uses legacy assistant_id detection from metadata (deprecated).
         """
-        if self.namespacer is not None:
-            config = getattr(self.runtime, "config", None)
-            return self.namespacer(config)
+        if self._namespace is not None:
+            state = getattr(self.runtime, "state", None)
+            ctx = BackendContext(state=state, runtime=self.runtime)
+            return self._namespace(ctx)
 
         return self._get_namespace_legacy()
 
@@ -87,7 +106,16 @@ class StoreBackend(BackendProtocol):
 
         If an assistant_id is available in the config metadata, return
         (assistant_id, "filesystem") to provide per-assistant isolation.
+
+        .. deprecated::
+            Pass `namespace` to StoreBackend instead of relying on legacy detection.
         """
+        warnings.warn(
+            "StoreBackend without explicit `namespace` is deprecated. "
+            "Pass `namespace=lambda ctx: (...)` to StoreBackend.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         namespace = "filesystem"
 
         # Prefer the runtime-provided config when present

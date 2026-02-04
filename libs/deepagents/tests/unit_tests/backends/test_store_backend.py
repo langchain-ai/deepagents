@@ -18,7 +18,7 @@ def make_runtime():
 
 def test_store_backend_crud_and_search():
     rt = make_runtime()
-    be = StoreBackend(rt)
+    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem",))
 
     # write new file
     msg = be.write("/docs/readme.md", "hello store")
@@ -50,7 +50,7 @@ def test_store_backend_crud_and_search():
 
 def test_store_backend_ls_nested_directories():
     rt = make_runtime()
-    be = StoreBackend(rt)
+    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem",))
 
     files = {
         "/src/main.py": "main code",
@@ -93,7 +93,7 @@ def test_store_backend_ls_nested_directories():
 
 def test_store_backend_ls_trailing_slash():
     rt = make_runtime()
-    be = StoreBackend(rt)
+    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem",))
 
     files = {
         "/file.txt": "content",
@@ -120,7 +120,7 @@ def test_store_backend_intercept_large_tool_result():
     from deepagents.middleware.filesystem import FilesystemMiddleware
 
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r, namespace=lambda ctx: ("filesystem",)), tool_token_limit_before_evict=1000)
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -135,18 +135,28 @@ def test_store_backend_intercept_large_tool_result():
     assert stored_content.value["content"] == [large_content]
 
 
-def test_store_backend_namespace_template_user_scoped() -> None:
-    """Test namespace template with user_id variable."""
+from dataclasses import dataclass
+
+
+@dataclass
+class UserContext:
+    """Simple context object for testing."""
+    user_id: str
+    workspace_id: str | None = None
+
+
+def test_store_backend_namespace_user_scoped() -> None:
+    """Test namespace factory with user_id from context."""
     store = InMemoryStore()
     rt = ToolRuntime(
         state={"messages": []},
-        context=None,
+        context=UserContext(user_id="alice"),
         tool_call_id="t1",
         store=store,
         stream_writer=lambda _: None,
-        config={"configurable": {"user_id": "alice"}},
+        config={},
     )
-    be = StoreBackend(rt, namespace_template=("filesystem", "{user_id}"))
+    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id))
 
     # Write a file
     be.write("/test.txt", "hello alice")
@@ -161,18 +171,26 @@ def test_store_backend_namespace_template_user_scoped() -> None:
     assert "hello alice" in content
 
 
-def test_store_backend_namespace_template_multi_level() -> None:
-    """Test namespace template with multiple variables."""
+def test_store_backend_namespace_multi_level() -> None:
+    """Test namespace factory with multiple values from context."""
     store = InMemoryStore()
     rt = ToolRuntime(
         state={"messages": []},
-        context=None,
+        context=UserContext(user_id="bob", workspace_id="ws-123"),
         tool_call_id="t1",
         store=store,
         stream_writer=lambda _: None,
-        config={"configurable": {"workspace_id": "ws-123", "user_id": "bob"}},
+        config={},
     )
-    be = StoreBackend(rt, namespace_template=("workspace", "{workspace_id}", "user", "{user_id}"))
+    be = StoreBackend(
+        rt,
+        namespace=lambda ctx: (
+            "workspace",
+            ctx.runtime.context.workspace_id,
+            "user",
+            ctx.runtime.context.user_id,
+        ),
+    )
 
     # Write a file
     be.write("/doc.md", "workspace doc")
@@ -183,32 +201,35 @@ def test_store_backend_namespace_template_multi_level() -> None:
     assert items[0].key == "/doc.md"
 
 
-def test_store_backend_namespace_template_isolation() -> None:
+def test_store_backend_namespace_isolation() -> None:
     """Test that different users have isolated namespaces."""
     store = InMemoryStore()
+
+    def user_namespace(ctx):
+        return ("filesystem", ctx.runtime.context.user_id)
 
     # User alice
     rt_alice = ToolRuntime(
         state={"messages": []},
-        context=None,
+        context=UserContext(user_id="alice"),
         tool_call_id="t1",
         store=store,
         stream_writer=lambda _: None,
-        config={"configurable": {"user_id": "alice"}},
+        config={},
     )
-    be_alice = StoreBackend(rt_alice, namespace_template=("filesystem", "{user_id}"))
+    be_alice = StoreBackend(rt_alice, namespace=user_namespace)
     be_alice.write("/notes.txt", "alice notes")
 
     # User bob
     rt_bob = ToolRuntime(
         state={"messages": []},
-        context=None,
+        context=UserContext(user_id="bob"),
         tool_call_id="t2",
         store=store,
         stream_writer=lambda _: None,
-        config={"configurable": {"user_id": "bob"}},
+        config={},
     )
-    be_bob = StoreBackend(rt_bob, namespace_template=("filesystem", "{user_id}"))
+    be_bob = StoreBackend(rt_bob, namespace=user_namespace)
     be_bob.write("/notes.txt", "bob notes")
 
     # Verify isolation
@@ -225,9 +246,12 @@ def test_store_backend_namespace_template_isolation() -> None:
     assert len(bob_items) == 1
 
 
-def test_store_backend_namespace_template_missing_variable() -> None:
-    """Test error handling when required variable is missing from config."""
+def test_store_backend_namespace_error_handling() -> None:
+    """Test that factory errors propagate correctly."""
     import pytest
+
+    def bad_factory(ctx):
+        raise KeyError("user_id")
 
     rt = ToolRuntime(
         state={"messages": []},
@@ -235,17 +259,19 @@ def test_store_backend_namespace_template_missing_variable() -> None:
         tool_call_id="t1",
         store=InMemoryStore(),
         stream_writer=lambda _: None,
-        config={"configurable": {}},  # No user_id provided
+        config={"configurable": {}},
     )
-    be = StoreBackend(rt, namespace_template=("filesystem", "{user_id}"))
+    be = StoreBackend(rt, namespace=bad_factory)
 
-    # Should raise ValueError with helpful message
-    with pytest.raises(ValueError, match="Missing namespace variable 'user_id'"):
+    # Errors from the factory propagate
+    with pytest.raises(KeyError):
         be.write("/test.txt", "content")
 
 
-def test_store_backend_namespace_template_legacy_mode() -> None:
-    """Test that legacy mode still works when no template is provided."""
+def test_store_backend_namespace_legacy_mode() -> None:
+    """Test that legacy mode still works when no namespace is provided, but emits deprecation warning."""
+    import warnings
+
     store = InMemoryStore()
     rt = ToolRuntime(
         state={"messages": []},
@@ -255,10 +281,15 @@ def test_store_backend_namespace_template_legacy_mode() -> None:
         stream_writer=lambda _: None,
         config={"metadata": {"assistant_id": "asst-123"}},
     )
-    be = StoreBackend(rt)  # No template - uses legacy mode
+    be = StoreBackend(rt)  # No namespace - uses legacy mode
 
-    # Write a file
-    be.write("/legacy.txt", "legacy content")
+    # Should emit deprecation warning
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        be.write("/legacy.txt", "legacy content")
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "namespace" in str(w[0].message)
 
     # Should be in legacy namespace (assistant_id, filesystem)
     items = store.search(("asst-123", "filesystem"))
@@ -266,82 +297,29 @@ def test_store_backend_namespace_template_legacy_mode() -> None:
     assert items[0].key == "/legacy.txt"
 
 
-def test_store_backend_namespace_template_validation_wildcard() -> None:
-    """Test that wildcards are rejected in namespace templates."""
-    import pytest
-
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t1",
-        store=InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={"configurable": {"user_id": "alice"}},
-    )
-
-    # Should reject wildcards
-    with pytest.raises(ValueError, match="Invalid namespace template segment"):
-        StoreBackend(rt, namespace_template=("filesystem", "*"))
-
-
-def test_store_backend_namespace_template_validation_special_chars() -> None:
-    """Test that special characters are rejected in namespace templates."""
-    import pytest
-
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t1",
-        store=InMemoryStore(),
-        stream_writer=lambda _: None,
-        config={"configurable": {"user_id": "alice"}},
-    )
-
-    # Should reject paths with slashes
-    with pytest.raises(ValueError, match="Invalid namespace template segment"):
-        StoreBackend(rt, namespace_template=("filesystem", "users/{user_id}"))
-
-    # Should reject other special chars like @
-    with pytest.raises(ValueError, match="Invalid namespace template segment"):
-        StoreBackend(rt, namespace_template=("filesystem", "user@domain"))
-
-
-def test_store_backend_namespace_template_validation_valid() -> None:
-    """Test that valid templates are accepted."""
+def test_store_backend_namespace_with_state() -> None:
+    """Test that namespace factory receives state via BackendContext."""
     store = InMemoryStore()
+
+    def namespace_from_state(ctx):
+        # Use something from state to build namespace
+        thread_id = ctx.state.get("thread_id", "default")
+        return ("threads", thread_id)
+
     rt = ToolRuntime(
-        state={"messages": []},
+        state={"messages": [], "thread_id": "thread-abc"},
         context=None,
         tool_call_id="t1",
         store=store,
         stream_writer=lambda _: None,
-        config={"configurable": {"userId": "alice"}},
+        config={},
     )
+    be = StoreBackend(rt, namespace=namespace_from_state)
 
-    # Should accept valid templates
-    be = StoreBackend(rt, namespace_template=("filesystem", "{userId}"))
-    assert be is not None
+    # Write a file
+    be.write("/test.txt", "content")
 
-    # Should work with mixed case and numbers
-    rt2 = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=store,
-        stream_writer=lambda _: None,
-        config={"configurable": {"workspaceId": "ws123"}},
-    )
-    be2 = StoreBackend(rt2, namespace_template=("workspace", "{workspaceId}"))
-    assert be2 is not None
-
-    # Should accept hyphens (for UUIDs)
-    rt3 = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t3",
-        store=store,
-        stream_writer=lambda _: None,
-        config={"configurable": {"user_id": "alice", "session_id": "abc-123"}},
-    )
-    be3 = StoreBackend(rt3, namespace_template=("user-sessions", "{user_id}", "{session_id}"))
-    assert be3 is not None
+    # Verify it's stored in the correct namespace
+    items = store.search(("threads", "thread-abc"))
+    assert len(items) == 1
+    assert items[0].key == "/test.txt"

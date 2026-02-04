@@ -213,7 +213,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
                 return str(thread_id)
         except RuntimeError:
             # Not in a runnable context
-            pass
+            logger.debug("Could not get thread_id from config (RuntimeError), falling back to generated ID")
 
         # Fallback: generate session ID
         generated_id = f"session_{uuid.uuid4().hex[:8]}"

@@ -193,23 +193,28 @@ gh pr view <PR_NUMBER> --json mergeCommit --jq '.mergeCommit.oid'
 
 If these differ, release-please is confused.
 
-**To fix**, move the tag to the correct commit (the release PR's merge commit):
+**To fix**, move the tag and update the GitHub release:
 
 ```bash
-# Delete the remote tag
+# 1. Delete the remote tag
 git push origin :refs/tags/deepagents-cli==<VERSION>
 
-# Delete local tag if it exists
+# 2. Delete local tag if it exists
 git tag -d deepagents-cli==<VERSION> 2>/dev/null || true
 
-# Create tag on the correct commit (the release PR's merge commit)
+# 3. Create tag on the correct commit (the release PR's merge commit)
 git tag deepagents-cli==<VERSION> <MERGE_COMMIT_SHA>
 
-# Push the new tag
+# 4. Push the new tag
 git push origin deepagents-cli==<VERSION>
+
+# 5. Update the GitHub release's target_commitish to match
+#    (moving a tag doesn't update this field automatically)
+gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-ai/deepagents/releases --jq '.[] | select(.tag_name == "deepagents-cli==<VERSION>") | .id') \
+  -f target_commitish=<MERGE_COMMIT_SHA>
 ```
 
-The existing GitHub release will automatically update to reference the new tag location since releases are linked by tag name, not commit SHA. After fixing, the next push to master should properly create new release PRs.
+After fixing, the next push to master should properly create new release PRs.
 
 > [!NOTE]
 > Moving a tag will put the associated GitHub release back into draft state. If the package was already published to PyPI, you can safely re-publish the draft — the publish workflow uses `skip-existing: true`, so it will succeed without re-uploading.

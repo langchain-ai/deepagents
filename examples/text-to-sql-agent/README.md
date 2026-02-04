@@ -1,10 +1,10 @@
 # Text-to-SQL Deep Agent
 
-A natural language to SQL query agent powered by LangChain's **DeepAgents** framework.  This is an advanced version of a text-to-SQL agent with planning, filesystem, and subagent capabilities.
+A natural language to SQL query agent powered by LangChain's **Deep Agents** framework.  This is an advanced version of a text-to-SQL agent with planning, filesystem, and subagent capabilities.
 
-## What is DeepAgents?
+## What is Deep Agents?
 
-DeepAgents is a sophisticated agent framework built on LangGraph that provides:
+Deep Agents is a sophisticated agent framework built on LangGraph that provides:
 
 - **Planning capabilities** - Break down complex tasks with `write_todos` tool
 - **Filesystem backend** - Save and retrieve context with file operations
@@ -269,8 +269,7 @@ View your traces at: <https://smith.langchain.com/>
 
 ## Resources
 
-- [DeepAgents Documentation](https://docs.langchain.com/oss/python/deepagents/overview)
-- [DeepAgents GitHub](https://github.com/langchain-ai/deepagents)
+- [Deep Agents Documentation](https://docs.langchain.com/oss/python/deepagents/overview)
 - [LangChain](https://www.langchain.com/)
 - [Claude Sonnet 4.5](https://www.anthropic.com/claude)
 - [Chinook Database](https://github.com/lerocha/chinook-database)

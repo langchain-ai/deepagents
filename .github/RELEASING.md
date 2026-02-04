@@ -129,6 +129,29 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 
 ## Troubleshooting
 
+### Unexpected Commit Authors in Release PRs
+
+When viewing a release-please PR on GitHub, you may see commits attributed to contributors who didn't directly push to that PR. For example:
+
+```txt
+johndoe and others added 3 commits 4 minutes ago
+```
+
+This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commits to the PR branch.
+
+**What's happening:**
+
+1. release-please rebases its branch onto the latest `master`
+2. The PR branch now includes commits from `master` as parent commits
+3. GitHub's UI shows all "new" commits that appeared after the force push, including rebased parents
+
+**The actual PR commits** are only:
+
+- The release commit (e.g., `release(deepagents-cli): 0.0.18`)
+- The lockfile update commit (e.g., `chore: update lockfiles`)
+
+Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
+
 ### Yanking a Release
 
 If you need to yank (retract) a release:

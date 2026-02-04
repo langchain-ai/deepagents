@@ -65,7 +65,7 @@
       "changelog-path": "CHANGELOG.md"
     }
   },
-  "tag-separator": "==",
+  "tag-separator": "@",
   "include-component-in-tag": true,
   "include-v-in-tag": false
 }

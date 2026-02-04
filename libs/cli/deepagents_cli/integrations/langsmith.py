@@ -22,9 +22,9 @@ from deepagents.backends.sandbox import (
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox, SandboxClient, SandboxTemplate
 
-# Default template configuration - can be overridden via environment variables
-DEFAULT_TEMPLATE_NAME = os.getenv("LANGSMITH_SANDBOX_TEMPLATE_NAME", "deepagents-cli")
-DEFAULT_TEMPLATE_IMAGE = os.getenv("LANGSMITH_SANDBOX_TEMPLATE_IMAGE", "python:3")
+# Default template configuration
+DEFAULT_TEMPLATE_NAME = "deepagents-cli"
+DEFAULT_TEMPLATE_IMAGE = "python:3"
 
 
 class LangSmithBackend(BaseSandbox):
@@ -45,8 +45,7 @@ class LangSmithBackend(BaseSandbox):
 
     @property
     def id(self) -> str:
-        """Unique identifier for the sandbox backend.
-        """
+        """Unique identifier for the sandbox backend."""
         return self._sandbox.name
 
     def execute(self, command: str) -> ExecuteResponse:
@@ -174,9 +173,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        template: SandboxTemplate | str | None = None,
-        template_image: str | None = None,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get an existing sandbox or create a new one.
 
@@ -187,13 +184,9 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             sandbox_id: Optional existing sandbox name to reuse. If provided,
                        will attempt to connect to this existing sandbox.
             timeout: Timeout in seconds for sandbox startup (default: 180).
-            template: Template to use for sandbox creation. Can be:
-                     - None: Uses DEFAULT_TEMPLATE_NAME
-                     - str: Template name/ID to use
-                     - SandboxTemplate: Template object (uses .name attribute)
-            template_image: Docker image to use when creating a new template.
-                           Only used if the template doesn't exist and needs
-                           to be created. Defaults to DEFAULT_TEMPLATE_IMAGE.
+            **kwargs: Additional LangSmith-specific parameters:
+                     - template: Template name/ID or SandboxTemplate object
+                     - template_image: Docker image for template creation
 
         Returns:
             LangSmithBackend instance wrapping the sandbox.
@@ -203,6 +196,9 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
                          if sandbox creation fails, or if sandbox doesn't become
                          ready within the timeout period.
         """
+        # Extract template parameters from kwargs
+        template = kwargs.get("template")
+        template_image = kwargs.get("template_image")
         # If sandbox_id is provided, try to connect to existing sandbox
         if sandbox_id:
             try:
@@ -212,11 +208,11 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
                 raise RuntimeError(msg) from e
             return LangSmithBackend(sandbox)
 
-        # Resolve template name from various input types
-        template_name = self._resolve_template_name(template)
+        # Resolve template name and image from various input types
+        template_name, resolved_image = self._resolve_template(template, template_image)
 
         # Ensure template exists (create if needed)
-        self._ensure_template(template_name, template_image)
+        self._ensure_template(template_name, resolved_image)
 
         # Create new sandbox from template
         try:
@@ -254,21 +250,31 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         self._client.delete_sandbox(sandbox_id)
 
     @staticmethod
-    def _resolve_template_name(template: SandboxTemplate | str | None) -> str:
-        """Resolve template name from various input types.
+    def _resolve_template(
+        template: SandboxTemplate | str | None,
+        template_image: str | None = None,
+    ) -> tuple[str, str | None]:
+        """Resolve template name and image from various input types.
 
         Args:
             template: Template specification - can be None, string name, or
                      SandboxTemplate object.
+            template_image: Explicit image override. If None and template is a
+                          SandboxTemplate, will try to use template.image.
 
         Returns:
-            String template name to use.
+            Tuple of (template_name, template_image).
         """
         if template is None:
-            return DEFAULT_TEMPLATE_NAME
+            return DEFAULT_TEMPLATE_NAME, template_image
         if isinstance(template, str):
-            return template
-        return template.name
+            return template, template_image
+        # template is a SandboxTemplate object
+        # Use explicit template_image if provided, otherwise try to get from template
+        image = template_image
+        if image is None and hasattr(template, "image"):
+            image = template.image
+        return template.name, image
 
     def _ensure_template(
         self,

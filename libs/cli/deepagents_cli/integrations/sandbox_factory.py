@@ -6,6 +6,7 @@ import string
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.backends.sandbox import SandboxProvider
@@ -68,8 +69,7 @@ def create_sandbox(
     *,
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
-    template: str | None = None,
-    template_image: str | None = None,
+    **kwargs: Any,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
@@ -79,10 +79,7 @@ def create_sandbox(
         provider: Sandbox provider ("daytona", "langsmith", "modal", "runloop")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
-        template: Optional template name/ID to use for sandbox creation.
-                 Currently only supported by langsmith provider.
-        template_image: Optional Docker image to use when creating a new template.
-                 Currently only supported by langsmith provider.
+        **kwargs: Additional provider-specific parameters
 
     Yields:
         SandboxBackendProtocol instance
@@ -95,9 +92,7 @@ def create_sandbox(
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
-    backend = provider_obj.get_or_create(
-        sandbox_id=sandbox_id, template=template, template_image=template_image
-    )
+    backend = provider_obj.get_or_create(sandbox_id=sandbox_id, **kwargs)
     console.print(
         f"[green]✓ {provider.capitalize()} sandbox ready: {backend.id}[/green]"
     )

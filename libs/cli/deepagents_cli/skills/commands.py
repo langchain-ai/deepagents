@@ -100,6 +100,8 @@ def _list(agent: str, *, project: bool = False) -> None:
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
+    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # If --project flag is used, only show project skills
     if project:
@@ -112,7 +114,17 @@ def _list(agent: str, *, project: bool = False) -> None:
             )
             return
 
-        if not project_skills_dir.exists() or not any(project_skills_dir.iterdir()):
+        # Check both project skill directories
+        has_deepagents_skills = project_skills_dir.exists() and any(
+            project_skills_dir.iterdir()
+        )
+        has_agent_skills = (
+            project_agent_skills_dir
+            and project_agent_skills_dir.exists()
+            and any(project_agent_skills_dir.iterdir())
+        )
+
+        if not has_deepagents_skills and not has_agent_skills:
             console.print("[yellow]No project skills found.[/yellow]")
             console.print(
                 f"[dim]Project skills will be created in {project_skills_dir}/ "
@@ -127,13 +139,19 @@ def _list(agent: str, *, project: bool = False) -> None:
             return
 
         skills = list_skills(
-            user_skills_dir=None, project_skills_dir=project_skills_dir
+            user_skills_dir=None,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=None,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
         console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
     else:
-        # Load both user and project skills
+        # Load skills from all directories
         skills = list_skills(
-            user_skills_dir=user_skills_dir, project_skills_dir=project_skills_dir
+            user_skills_dir=user_skills_dir,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=user_agent_skills_dir,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
 
         if not skills:
@@ -348,6 +366,8 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
+    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # Load skills based on --project flag
     if project:
@@ -355,11 +375,17 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
             console.print("[bold red]Error:[/bold red] Not in a project directory.")
             return
         skills = list_skills(
-            user_skills_dir=None, project_skills_dir=project_skills_dir
+            user_skills_dir=None,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=None,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
     else:
         skills = list_skills(
-            user_skills_dir=user_skills_dir, project_skills_dir=project_skills_dir
+            user_skills_dir=user_skills_dir,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=user_agent_skills_dir,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
 
     # Find the skill

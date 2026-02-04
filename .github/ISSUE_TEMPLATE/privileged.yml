@@ -30,3 +30,5 @@ body:
         - label: deepagents (SDK)
         - label: cli
         - label: Other / not sure / general
+footer: |
+  Please do not begin work on a PR unless explicitly assigned to this issue by a maintainer.

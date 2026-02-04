@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import aiosqlite
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from rich.table import Table
 
@@ -134,23 +135,55 @@ async def list_threads(
 
         # Fetch message counts if requested
         if include_message_count and threads:
-            writes_exists = await _table_exists(conn, "writes")
+            serde = JsonPlusSerializer()
             for thread in threads:
-                if writes_exists:
-                    count_query = """
-                        SELECT COUNT(*)
-                        FROM writes
-                        WHERE thread_id = ? AND channel = 'messages'
-                    """
-                    async with conn.execute(
-                        count_query, (thread["thread_id"],)
-                    ) as cursor:
-                        row = await cursor.fetchone()
-                        thread["message_count"] = row[0] if row else 0
-                else:
-                    thread["message_count"] = 0
+                thread["message_count"] = await _count_messages_from_checkpoint(
+                    conn, thread["thread_id"], serde
+                )
 
         return threads
+
+
+async def _count_messages_from_checkpoint(
+    conn: aiosqlite.Connection,
+    thread_id: str,
+    serde: JsonPlusSerializer,
+) -> int:
+    """Count messages from the most recent checkpoint blob.
+
+    With durability="exit", messages are stored in the checkpoint blob,
+    not in the writes table. This function deserializes the checkpoint
+    and counts the messages in channel_values.
+
+    Args:
+        conn: Database connection.
+        thread_id: The thread ID to count messages for.
+        serde: Serializer for decoding checkpoint data.
+
+    Returns:
+        Number of messages in the checkpoint, or 0 if not found.
+    """
+    query = """
+        SELECT type, checkpoint
+        FROM checkpoints
+        WHERE thread_id = ?
+        ORDER BY checkpoint_id DESC
+        LIMIT 1
+    """
+    async with conn.execute(query, (thread_id,)) as cursor:
+        row = await cursor.fetchone()
+        if not row or not row[0] or not row[1]:
+            return 0
+
+        type_str, checkpoint_blob = row
+        try:
+            data = serde.loads_typed((type_str, checkpoint_blob))
+            channel_values = data.get("channel_values", {})
+            messages = channel_values.get("messages", [])
+            return len(messages)
+        except (ValueError, TypeError, KeyError):
+            # If deserialization fails, fall back to 0
+            return 0
 
 
 async def get_most_recent(agent_name: str | None = None) -> str | None:

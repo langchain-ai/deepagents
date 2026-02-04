@@ -40,6 +40,7 @@ dependencies = [
 
   # Sandbox integrations
   "daytona>=0.113.0,<1.0.0",
+  "langsmith>=0.6.0",
   "modal>=0.65.0,<2.0.0",
   "runloop-api-client>=0.69.0",
 
@@ -98,6 +99,7 @@ packages = ["deepagents_cli"]
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+langsmith = { git = "https://github.com/langchain-ai/langsmith-sdk", subdirectory = "python", branch = "main" }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents"]

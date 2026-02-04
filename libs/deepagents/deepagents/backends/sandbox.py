@@ -3,14 +3,21 @@
 This module provides a base class that implements all SandboxBackendProtocol
 methods using shell commands executed via execute(). Concrete implementations
 only need to implement the execute() method.
+
+It also defines the SandboxProvider abstract base class for third-party SDK
+implementations to manage sandbox lifecycle (list, create, delete).
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
+from typing import Any, Generic, NotRequired, TypeVar
+
+from typing_extensions import TypedDict
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -22,6 +29,353 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
+
+# Type variable for provider-specific metadata
+MetadataT = TypeVar("MetadataT", covariant=True)
+"""Type variable for sandbox metadata.
+
+Providers can define their own TypedDict to specify the structure of sandbox metadata,
+enabling type-safe access to metadata fields.
+
+Example:
+    ```python
+    class ProviderMetadata(TypedDict, total=False):
+        status: Literal["running", "stopped"]
+        created_at: str
+        template: str
+
+    class MyProvider(SandboxProvider[ProviderMetadata]):
+        def list(
+            self, *, cursor=None, **kwargs: Any
+        ) -> SandboxListResponse[ProviderMetadata]:
+            # Extract kwargs as needed
+            status = kwargs.get("status")
+            ...
+    ```
+"""
+
+
+class SandboxInfo(TypedDict, Generic[MetadataT]):
+    """Metadata for a single sandbox instance.
+
+    This lightweight structure is returned from list operations and provides
+    basic information about a sandbox without requiring a full connection.
+
+    Type Parameters:
+        MetadataT: Type of the metadata field. Providers should define a TypedDict
+            for type-safe metadata access.
+
+    Attributes:
+        sandbox_id: Unique identifier for the sandbox instance.
+        metadata: Optional provider-specific metadata (e.g., creation time, status,
+            resource limits, template information). Structure is provider-defined.
+
+    Example:
+        ```python
+        # Using default dict[str, Any]
+        info: SandboxInfo = {
+            "sandbox_id": "sb_abc123",
+            "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z", "template": "python-3.11"},
+        }
+
+
+        # Using typed metadata
+        class MyMetadata(TypedDict, total=False):
+            status: Literal["running", "stopped"]
+            created_at: str
+
+
+        typed_info: SandboxInfo[MyMetadata] = {
+            "sandbox_id": "sb_abc123",
+            "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z"},
+        }
+        ```
+    """
+
+    sandbox_id: str
+    metadata: NotRequired[MetadataT]
+
+
+class SandboxListResponse(TypedDict, Generic[MetadataT]):
+    """Paginated response from a sandbox list operation.
+
+    This structure supports cursor-based pagination for efficiently browsing
+    large collections of sandboxes.
+
+    Type Parameters:
+        MetadataT: Type of the metadata field in SandboxInfo items.
+
+    Attributes:
+        items: List of sandbox metadata objects for the current page.
+        cursor: Opaque continuation token for retrieving the next page.
+            None indicates no more pages available. Clients should treat this
+            as an opaque string and pass it to subsequent list() calls.
+
+    Example:
+        ```python
+        response: SandboxListResponse[MyMetadata] = {
+            "items": [{"sandbox_id": "sb_001", "metadata": {"status": "running"}}, {"sandbox_id": "sb_002", "metadata": {"status": "stopped"}}],
+            "cursor": "eyJvZmZzZXQiOjEwMH0=",
+        }
+
+        # Fetch next page
+        next_response = provider.list(cursor=response["cursor"])
+        ```
+    """
+
+    items: list[SandboxInfo[MetadataT]]
+    cursor: str | None
+
+
+class SandboxProvider(ABC, Generic[MetadataT]):
+    """Abstract base class for third-party sandbox provider implementations.
+
+    Defines the lifecycle management interface for sandbox providers. Implementations
+    should integrate with their respective SDKs to provide standardized sandbox
+    lifecycle operations (list, get_or_create, delete).
+
+    Implementations can add provider-specific parameters as keyword-only arguments
+    with defaults, maintaining compatibility while providing type-safe APIs.
+
+    Sync/Async Convention: Following LangChain convention, providers should offer both
+    sync and async methods in the same namespace if possible (doesn't hurt performance)
+    (e.g., both `list()` and `alist()` in one class). The default async implementations
+    delegate to sync methods via a thread pool. Providers can override async methods to
+    provide optimized async implementations if needed.
+
+    Alternatively, if necessary for performance optimization, providers may split into
+    separate implementations (e.g., `MySyncProvider` and `MyAsyncProvider`). In this
+    case, unimplemented methods should raise NotImplementedError with clear guidance
+    (e.g., "This provider only supports async operations. Use 'await provider.alist()'
+    or switch to MySyncProvider for synchronous code").
+
+    Example Implementation:
+        ```python
+        class CustomMetadata(TypedDict, total=False):
+            status: Literal["running", "stopped"]
+            template: str
+            created_at: str
+
+
+        class CustomSandboxProvider(SandboxProvider[CustomMetadata]):
+            def list(
+                self, *, cursor=None, status: Literal["running", "stopped"] | None = None, template_id: str | None = None, **kwargs: Any
+            ) -> SandboxListResponse[CustomMetadata]:
+                # Type-safe parameters with IDE autocomplete
+                # ... query provider API
+                return {"items": [...], "cursor": None}
+
+            def get_or_create(
+                self, *, sandbox_id=None, template_id: str = "default", timeout_minutes: int | None = None, **kwargs: Any
+            ) -> SandboxBackendProtocol:
+                # Type-safe parameters with IDE autocomplete
+                return CustomSandbox(sandbox_id or self._create_new(), template_id)
+
+            def delete(self, *, sandbox_id: str, force: bool = False, **kwargs: Any) -> None:
+                # Implementation
+                self._client.delete(sandbox_id, force=force)
+        ```
+    """
+
+    @abstractmethod
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxListResponse[MetadataT]:
+        """List available sandboxes with optional filtering and pagination.
+
+        Args:
+            cursor: Optional continuation token from a previous list() call.
+                Pass None to start from the beginning. The cursor is opaque
+                and provider-specific; clients should not parse or modify it.
+            **kwargs: Provider-specific filter parameters. Implementations should
+                expose these as named keyword-only parameters with defaults for
+                type safety. Common examples include status filters, creation time
+                ranges, template filters, or owner filters.
+
+        Returns:
+            SandboxListResponse containing:
+                - items: List of sandbox metadata for the current page
+                - cursor: Token for next page, or None if this is the last page
+
+        Example:
+            ```python
+            # First page
+            response = provider.list()
+            for sandbox in response["items"]:
+                print(sandbox["sandbox_id"])
+
+            # Next page if available
+            if response["cursor"]:
+                next_response = provider.list(cursor=response["cursor"])
+
+            # With filters (if provider supports them)
+            running = provider.list(status="running")
+            ```
+        """
+
+    @abstractmethod
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get an existing sandbox or create a new one.
+
+        This method retrieves a connection to an existing sandbox if sandbox_id
+        is provided, or creates a new sandbox instance if sandbox_id is None.
+        The returned object implements SandboxBackendProtocol and can be used
+        for all sandbox operations (execute, read, write, etc.).
+
+        Important: If a sandbox_id is provided but does not exist, this method
+        should raise an error rather than creating a new sandbox. Only when
+        sandbox_id is explicitly None should a new sandbox be created.
+
+        Args:
+            sandbox_id: Unique identifier of an existing sandbox to retrieve.
+                If None, creates a new sandbox instance. The new sandbox's ID
+                can be accessed via the returned object's .id property.
+                If a non-None value is provided but the sandbox doesn't exist,
+                an error will be raised.
+            **kwargs: Provider-specific creation/connection parameters. Implementations
+                should expose these as named keyword-only parameters with defaults
+                for type safety. Common examples include template_id, resource limits,
+                environment variables, or timeout settings.
+
+        Returns:
+            An object implementing SandboxBackendProtocol that can execute
+            commands, read/write files, and perform other sandbox operations.
+
+        Raises:
+            Implementation-specific exceptions for errors such as:
+                - Sandbox not found (if sandbox_id provided but doesn't exist)
+                - Insufficient permissions
+                - Resource limits exceeded
+                - Invalid template or configuration
+
+        Example:
+            ```python
+            # Create a new sandbox
+            sandbox = provider.get_or_create(sandbox_id=None, template_id="python-3.11", timeout_minutes=60)
+            print(sandbox.id)  # "sb_new123"
+
+            # Reconnect to existing sandbox
+            existing = provider.get_or_create(sandbox_id="sb_new123")
+
+            # Use the sandbox
+            result = sandbox.execute("python --version")
+            print(result.output)
+            ```
+        """
+
+    @abstractmethod
+    def delete(
+        self,
+        *,
+        sandbox_id: str,
+        **kwargs: Any,
+    ) -> None:
+        """Delete a sandbox instance.
+
+        This permanently destroys the sandbox and all its associated data.
+        The operation is typically irreversible.
+
+        Idempotency: This method should be idempotent - calling delete on a
+        non-existent sandbox should succeed without raising an error. This makes
+        cleanup code simpler and safe to retry.
+
+        Args:
+            sandbox_id: Unique identifier of the sandbox to delete.
+            **kwargs: Provider-specific deletion options. Implementations should
+                expose these as named keyword-only parameters with defaults for
+                type safety. Common examples include force flags, grace periods,
+                or cleanup options.
+
+        Raises:
+            Implementation-specific exceptions for errors such as:
+                - Insufficient permissions
+                - Sandbox is locked or in use
+                - Network or API errors
+
+        Example:
+            ```python
+            # Simple deletion
+            provider.delete(sandbox_id="sb_123")
+
+            # Safe to call multiple times (idempotent)
+            provider.delete(sandbox_id="sb_123")  # No error even if already deleted
+
+            # With options (if provider supports them)
+            provider.delete(sandbox_id="sb_456", force=True)
+            ```
+        """
+
+    async def alist(
+        self,
+        *,
+        cursor: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxListResponse[MetadataT]:
+        """Async version of list().
+
+        By default, runs the synchronous list() method in a thread pool.
+        Providers can override this for native async implementations.
+
+        Args:
+            cursor: Optional continuation token from a previous list() call.
+            **kwargs: Provider-specific filter parameters.
+
+        Returns:
+            SandboxListResponse containing items and cursor for pagination.
+        """
+        return await asyncio.to_thread(self.list, cursor=cursor, **kwargs)
+
+    async def aget_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Async version of get_or_create().
+
+        By default, runs the synchronous get_or_create() method in a thread pool.
+        Providers can override this for native async implementations.
+
+        Important: If a sandbox_id is provided but does not exist, this method
+        should raise an error rather than creating a new sandbox. Only when
+        sandbox_id is explicitly None should a new sandbox be created.
+
+        Args:
+            sandbox_id: Unique identifier of an existing sandbox to retrieve.
+                If None, creates a new sandbox instance. If a non-None value
+                is provided but the sandbox doesn't exist, an error will be raised.
+            **kwargs: Provider-specific creation/connection parameters.
+
+        Returns:
+            An object implementing SandboxBackendProtocol.
+        """
+        return await asyncio.to_thread(self.get_or_create, sandbox_id=sandbox_id, **kwargs)
+
+    async def adelete(
+        self,
+        *,
+        sandbox_id: str,
+        **kwargs: Any,
+    ) -> None:
+        """Async version of delete().
+
+        By default, runs the synchronous delete() method in a thread pool.
+        Providers can override this for native async implementations.
+
+        Args:
+            sandbox_id: Unique identifier of the sandbox to delete.
+            **kwargs: Provider-specific deletion options.
+        """
+        await asyncio.to_thread(self.delete, sandbox_id=sandbox_id, **kwargs)
+
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob
@@ -46,39 +400,81 @@ for m in matches:
     print(json.dumps(result))
 " 2>/dev/null"""
 
+# Use heredoc to pass content via stdin to avoid ARG_MAX limits on large files.
+# ARG_MAX limits the total size of command-line arguments.
+# Previously, base64-encoded content was interpolated directly into the command
+# string, which would fail for files larger than ~100KB after base64 expansion.
+# Heredocs bypass this by passing data through stdin rather than as arguments.
+# Stdin format: first line is base64-encoded file path, second line is base64-encoded content.
 _WRITE_COMMAND_TEMPLATE = """python3 -c "
 import os
 import sys
 import base64
+import json
 
-file_path = '{file_path}'
+# Read JSON payload from stdin containing file_path and content (both base64-encoded)
+payload_b64 = sys.stdin.read().strip()
+if not payload_b64:
+    print('Error: No payload received for write operation', file=sys.stderr)
+    sys.exit(1)
+
+try:
+    payload = base64.b64decode(payload_b64).decode('utf-8')
+    data = json.loads(payload)
+    file_path = data['path']
+    content = base64.b64decode(data['content']).decode('utf-8')
+except Exception as e:
+    print(f'Error: Failed to decode write payload: {{e}}', file=sys.stderr)
+    sys.exit(1)
 
 # Check if file already exists (atomic with write)
 if os.path.exists(file_path):
-    print(f'Error: File \\'{file_path}\\' already exists', file=sys.stderr)
+    print(f'Error: File \\'{{file_path}}\\' already exists', file=sys.stderr)
     sys.exit(1)
 
 # Create parent directory if needed
 parent_dir = os.path.dirname(file_path) or '.'
 os.makedirs(parent_dir, exist_ok=True)
 
-# Decode and write content
-content = base64.b64decode('{content_b64}').decode('utf-8')
 with open(file_path, 'w') as f:
     f.write(content)
-" 2>&1"""
+" <<'__DEEPAGENTS_EOF__'
+{payload_b64}
+__DEEPAGENTS_EOF__"""
 
+# Use heredoc to pass edit parameters via stdin to avoid ARG_MAX limits.
+# Stdin format: base64-encoded JSON with {"path": str, "old": str, "new": str}.
+# JSON bundles all parameters; base64 ensures safe transport of arbitrary content
+# (special chars, newlines, etc.) through the heredoc without escaping issues.
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys
 import base64
+import json
+import os
+
+# Read and decode JSON payload from stdin
+payload_b64 = sys.stdin.read().strip()
+if not payload_b64:
+    print('Error: No payload received for edit operation', file=sys.stderr)
+    sys.exit(4)
+
+try:
+    payload = base64.b64decode(payload_b64).decode('utf-8')
+    data = json.loads(payload)
+    file_path = data['path']
+    old = data['old']
+    new = data['new']
+except Exception as e:
+    print(f'Error: Failed to decode edit payload: {{e}}', file=sys.stderr)
+    sys.exit(4)
+
+# Check if file exists
+if not os.path.isfile(file_path):
+    sys.exit(3)  # File not found
 
 # Read file content
-with open('{file_path}', 'r') as f:
+with open(file_path, 'r') as f:
     text = f.read()
-
-# Decode base64-encoded strings
-old = base64.b64decode('{old_b64}').decode('utf-8')
-new = base64.b64decode('{new_b64}').decode('utf-8')
 
 # Count occurrences
 count = text.count(old)
@@ -96,11 +492,13 @@ else:
     result = text.replace(old, new, 1)
 
 # Write back to file
-with open('{file_path}', 'w') as f:
+with open(file_path, 'w') as f:
     f.write(result)
 
 print(count)
-" 2>&1"""
+" <<'__DEEPAGENTS_EOF__'
+{payload_b64}
+__DEEPAGENTS_EOF__"""
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
 import os
@@ -172,7 +570,7 @@ try:
     with os.scandir(path) as it:
         for entry in it:
             result = {{
-                'path': entry.name,
+                'path': os.path.join(path, entry.name),
                 'is_dir': entry.is_dir(follow_symlinks=False)
             }}
             print(json.dumps(result))
@@ -221,11 +619,14 @@ except PermissionError:
         content: str,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
-        # Encode content as base64 to avoid any escaping issues
+        # Create JSON payload with file path and base64-encoded content
+        # This avoids shell injection via file_path and ARG_MAX limits on content
         content_b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        payload = json.dumps({"path": file_path, "content": content_b64})
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
         # Single atomic check + write command
-        cmd = _WRITE_COMMAND_TEMPLATE.format(file_path=file_path, content_b64=content_b64)
+        cmd = _WRITE_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
         result = self.execute(cmd)
 
         # Check for errors (exit code or error message in output)
@@ -244,23 +645,29 @@ except PermissionError:
         replace_all: bool = False,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
-        # Encode strings as base64 to avoid any escaping issues
-        old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
-        new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
+        # Create JSON payload with file path, old string, and new string
+        # This avoids shell injection via file_path and ARG_MAX limits on strings
+        payload = json.dumps({"path": file_path, "old": old_string, "new": new_string})
+        payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
         # Use template for string replacement
-        cmd = _EDIT_COMMAND_TEMPLATE.format(file_path=file_path, old_b64=old_b64, new_b64=new_b64, replace_all=replace_all)
+        cmd = _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64, replace_all=replace_all)
         result = self.execute(cmd)
 
         exit_code = result.exit_code
         output = result.output.strip()
 
-        if exit_code == 1:
-            return EditResult(error=f"Error: String not found in file: '{old_string}'")
-        if exit_code == 2:
-            return EditResult(error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.")
+        # Map exit codes to error messages
+        error_messages = {
+            1: f"Error: String not found in file: '{old_string}'",
+            2: f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
+            3: f"Error: File '{file_path}' not found",
+            4: f"Error: Failed to decode edit payload: {output}",
+        }
+        if exit_code in error_messages:
+            return EditResult(error=error_messages[exit_code])
         if exit_code != 0:
-            return EditResult(error=f"Error: File '{file_path}' not found")
+            return EditResult(error=f"Error editing file (exit code {exit_code}): {output or 'Unknown error'}")
 
         count = int(output)
         # External storage - no files_update needed

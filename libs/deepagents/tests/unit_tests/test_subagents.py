@@ -5,6 +5,7 @@ are invoked, how they return results, and how state is managed between parent
 and child agents.
 """
 
+import warnings
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -23,7 +24,7 @@ from pydantic import BaseModel, Field
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -1559,8 +1560,6 @@ class TestSubAgentMiddlewareValidation:
         This validates that deprecated_kwargs are properly validated and unknown
         kwargs like 'fooofoobar' are caught and reported.
         """
-        from deepagents.middleware.subagents import SubAgentMiddleware
-
         with pytest.raises(TypeError, match="unexpected keyword argument.*fooofoobar"):
             SubAgentMiddleware(
                 default_model="openai:gpt-4o",  # type: ignore[call-arg]
@@ -1569,8 +1568,6 @@ class TestSubAgentMiddlewareValidation:
 
     def test_multiple_unknown_kwargs_reported(self) -> None:
         """Test that multiple unknown kwargs are all reported in the error message."""
-        from deepagents.middleware.subagents import SubAgentMiddleware
-
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             SubAgentMiddleware(
                 default_model="openai:gpt-4o",  # type: ignore[call-arg]
@@ -1580,15 +1577,13 @@ class TestSubAgentMiddlewareValidation:
 
     def test_valid_deprecated_kwargs_accepted(self) -> None:
         """Test that valid deprecated kwargs don't raise TypeError."""
-        import warnings
-
-        from deepagents.middleware.subagents import SubAgentMiddleware
+        fake_model = GenericFakeChatModel(messages=iter([]))
 
         # This should not raise TypeError, only emit a deprecation warning
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             SubAgentMiddleware(
-                default_model="openai:gpt-4o",  # type: ignore[call-arg]
+                default_model=fake_model,  # type: ignore[call-arg]
                 default_tools=[],  # type: ignore[call-arg]
             )
 

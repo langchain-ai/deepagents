@@ -519,7 +519,7 @@ class SubAgentMiddleware(AgentMiddleware):
         default_interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
         subagents: list[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
-        general_purpose_agent: bool = True,
+        general_purpose_agent: bool = False,
         task_description: str | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""

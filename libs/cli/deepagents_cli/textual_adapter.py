@@ -1,17 +1,23 @@
 """Textual UI adapter for agent execution."""
-# ruff: noqa: ANN401, PLR2004, BLE001, TRY203
 # This module has complex streaming logic ported from execution.py
 
 from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
 from langchain.agents.middleware.human_in_the_loop import (
+    ApproveDecision,
+    EditDecision,
     HITLRequest,
     HITLResponse,
+    RejectDecision,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
@@ -28,8 +34,8 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
 )
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+# Type alias matching HITLResponse["decisions"] element type
+HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 
@@ -62,8 +68,8 @@ class TextualUIAdapter:
         request_approval: Callable,  # async callable returning Future
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
-        show_thinking: Callable[[], None] | None = None,
-        hide_thinking: Callable[[], None] | None = None,
+        show_thinking: Callable[[], Awaitable[None]] | None = None,
+        hide_thinking: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -106,7 +112,7 @@ def _build_interrupted_ai_message(
         current_tool_messages: Dict of tool_id -> ToolCallMessage widget
 
     Returns:
-        AIMessage with accumulated content and tool calls, or None if empty
+        AIMessage with accumulated content and tool calls, or None if empty.
     """
     main_ns_key = ()
     accumulated_text = pending_text_by_namespace.get(main_ns_key, "").strip()
@@ -127,7 +133,7 @@ def _build_interrupted_ai_message(
 
     return AIMessage(
         content=accumulated_text,
-        tool_calls=tool_calls if tool_calls else [],
+        tool_calls=tool_calls or [],
     )
 
 
@@ -153,6 +159,9 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
+
+    Raises:
+        ValidationError: If HITL request validation fails (re-raised).
     """
     # Parse file mentions and inject content if any
     prompt_text, mentioned_files = parse_file_mentions(user_input)
@@ -172,15 +181,19 @@ async def execute_task_textual(
                     context_parts.append(
                         f"\n### {file_path.name}\n"
                         f"Path: `{file_path}`\n"
-                        f"Size: {size_kb}KB (too large to embed, use read_file tool to view)"
+                        f"Size: {size_kb}KB (too large to embed, "
+                        "use read_file tool to view)"
                     )
                 else:
                     content = file_path.read_text()
                     context_parts.append(
-                        f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+                        f"\n### {file_path.name}\n"
+                        f"Path: `{file_path}`\n```\n{content}\n```"
                     )
             except Exception as e:
-                context_parts.append(f"\n### {file_path.name}\n[Error reading file: {e}]")
+                context_parts.append(
+                    f"\n### {file_path.name}\n[Error reading file: {e}]"
+                )
         final_input = "\n".join(context_parts)
     else:
         final_input = prompt_text
@@ -230,7 +243,9 @@ async def execute_task_textual(
     if image_tracker:
         image_tracker.clear()
 
-    stream_input: dict | Command = {"messages": [{"role": "user", "content": message_content}]}
+    stream_input: dict | Command = {
+        "messages": [{"role": "user", "content": message_content}]
+    }
 
     try:
         while True:
@@ -254,8 +269,9 @@ async def execute_task_textual(
                 # Convert namespace to hashable tuple for dict keys
                 ns_key = tuple(namespace) if namespace else ()
 
-                # Filter out subagent outputs - only show main agent (empty namespace)
-                # Subagents run via Task tool and should only report back to the main agent
+                # Filter out subagent outputs - only show main agent (empty
+                # namespace). Subagents run via Task tool and should only
+                # report back to the main agent
                 is_main_agent = ns_key == ()
 
                 # Handle UPDATES stream - for interrupts and todos
@@ -269,17 +285,25 @@ async def execute_task_textual(
                         if interrupts:
                             for interrupt_obj in interrupts:
                                 try:
-                                    validated_request = _HITL_REQUEST_ADAPTER.validate_python(
-                                        interrupt_obj.value
+                                    validated_request = (
+                                        _HITL_REQUEST_ADAPTER.validate_python(
+                                            interrupt_obj.value
+                                        )
                                     )
-                                    pending_interrupts[interrupt_obj.id] = validated_request
+                                    pending_interrupts[interrupt_obj.id] = (
+                                        validated_request
+                                    )
                                     interrupt_occurred = True
                                 except ValidationError:
                                     raise
 
                     # Check for todo updates (not yet implemented in Textual UI)
                     chunk_data = next(iter(data.values())) if data else None
-                    if chunk_data and isinstance(chunk_data, dict) and "todos" in chunk_data:
+                    if (
+                        chunk_data
+                        and isinstance(chunk_data, dict)
+                        and "todos" in chunk_data
+                    ):
                         pass  # Future: render todo list widget
 
                 # Handle MESSAGES stream - for content and tool calls
@@ -291,10 +315,10 @@ async def execute_task_textual(
                     if not isinstance(data, tuple) or len(data) != 2:
                         continue
 
-                    message, _metadata = data
+                    message, metadata = data
 
                     # Filter out summarization LLM output
-                    if _is_summarization_chunk(_metadata):
+                    if _is_summarization_chunk(metadata):
                         continue
 
                     if isinstance(message, HumanMessage):
@@ -303,7 +327,10 @@ async def execute_task_textual(
                         pending_text = pending_text_by_namespace.get(ns_key, "")
                         if content and pending_text:
                             await _flush_assistant_text_ns(
-                                adapter, pending_text, ns_key, assistant_message_by_namespace
+                                adapter,
+                                pending_text,
+                                ns_key,
+                                assistant_message_by_namespace,
                             )
                             pending_text_by_namespace[ns_key] = ""
                         continue
@@ -335,7 +362,10 @@ async def execute_task_textual(
                             pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
                                 await _flush_assistant_text_ns(
-                                    adapter, pending_text, ns_key, assistant_message_by_namespace
+                                    adapter,
+                                    pending_text,
+                                    ns_key,
+                                    assistant_message_by_namespace,
                                 )
                                 pending_text_by_namespace[ns_key] = ""
                             if record.diff:
@@ -344,21 +374,26 @@ async def execute_task_textual(
                                 )
                         continue
 
-                    # Extract token usage (before content_blocks check - usage may be on any chunk)
+                    # Extract token usage (before content_blocks check
+                    # - usage may be on any chunk)
                     if adapter._token_tracker and hasattr(message, "usage_metadata"):
                         usage = message.usage_metadata
                         if usage:
                             # Use total_tokens which includes input + output
                             total_toks = usage.get("total_tokens", 0)
                             if total_toks:
-                                captured_input_tokens = max(captured_input_tokens, total_toks)
+                                captured_input_tokens = max(
+                                    captured_input_tokens, total_toks
+                                )
                             else:
                                 # Fallback to input + output if total not provided
                                 input_toks = usage.get("input_tokens", 0)
                                 output_toks = usage.get("output_tokens", 0)
                                 if input_toks or output_toks:
                                     total = input_toks + output_toks
-                                    captured_input_tokens = max(captured_input_tokens, total)
+                                    captured_input_tokens = max(
+                                        captured_input_tokens, total
+                                    )
 
                     # Check if this is an AIMessageChunk with content
                     if not hasattr(message, "content_blocks"):
@@ -379,23 +414,26 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
-                                    # Hide thinking spinner when assistant starts responding
+                                    # Hide thinking spinner when assistant starts
+                                    # responding
                                     if adapter._hide_thinking:
                                         await adapter._hide_thinking()
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
 
-                                # Append just the new text chunk for smoother streaming
-                                # (uses MarkdownStream internally for better performance)
+                                # Append just the new text chunk for smoother
+                                # streaming (uses MarkdownStream internally for
+                                # better performance)
                                 await current_msg.append_content(text)
 
-                                # Sticky scroll: scroll to bottom only if user is near bottom
-                                # This lets users scroll away and stay where they are
+                                # Sticky scroll: scroll to bottom only if user is
+                                # near bottom. This lets users scroll away and
+                                # stay where they are
                                 if adapter._scroll_to_bottom:
                                     adapter._scroll_to_bottom()
 
-                        elif block_type in ("tool_call_chunk", "tool_call"):
+                        elif block_type in {"tool_call_chunk", "tool_call"}:
                             chunk_name = block.get("name")
                             chunk_args = block.get("args")
                             chunk_id = block.get("id")
@@ -411,7 +449,12 @@ async def execute_task_textual(
 
                             buffer = tool_call_buffers.setdefault(
                                 buffer_key,
-                                {"name": None, "id": None, "args": None, "args_parts": []},
+                                {
+                                    "name": None,
+                                    "id": None,
+                                    "args": None,
+                                    "args_parts": [],
+                                },
                             )
 
                             if chunk_name:
@@ -424,7 +467,9 @@ async def execute_task_textual(
                                 buffer["args_parts"] = []
                             elif isinstance(chunk_args, str):
                                 if chunk_args:
-                                    parts: list[str] = buffer.setdefault("args_parts", [])
+                                    parts: list[str] = buffer.setdefault(
+                                        "args_parts", []
+                                    )
                                     if not parts or chunk_args != parts[-1]:
                                         parts.append(chunk_args)
                                     buffer["args"] = "".join(parts)
@@ -454,14 +499,22 @@ async def execute_task_textual(
                             pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
                                 await _flush_assistant_text_ns(
-                                    adapter, pending_text, ns_key, assistant_message_by_namespace
+                                    adapter,
+                                    pending_text,
+                                    ns_key,
+                                    assistant_message_by_namespace,
                                 )
                                 pending_text_by_namespace[ns_key] = ""
                                 assistant_message_by_namespace.pop(ns_key, None)
 
-                            if buffer_id is not None and buffer_id not in displayed_tool_ids:
+                            if (
+                                buffer_id is not None
+                                and buffer_id not in displayed_tool_ids
+                            ):
                                 displayed_tool_ids.add(buffer_id)
-                                file_op_tracker.start_operation(buffer_name, parsed_args, buffer_id)
+                                file_op_tracker.start_operation(
+                                    buffer_name, parsed_args, buffer_id
+                                )
 
                                 # Hide thinking spinner before showing tool call
                                 if adapter._hide_thinking:
@@ -482,7 +535,10 @@ async def execute_task_textual(
                         pending_text = pending_text_by_namespace.get(ns_key, "")
                         if pending_text:
                             await _flush_assistant_text_ns(
-                                adapter, pending_text, ns_key, assistant_message_by_namespace
+                                adapter,
+                                pending_text,
+                                ns_key,
+                                assistant_message_by_namespace,
                             )
                             pending_text_by_namespace[ns_key] = ""
                             assistant_message_by_namespace.pop(ns_key, None)
@@ -505,14 +561,18 @@ async def execute_task_textual(
 
                     if session_state.auto_approve:
                         # Auto-approve silently - start running animation
-                        decisions = [{"type": "approve"} for _ in action_requests]
+                        decisions: list[HITLDecision] = [
+                            ApproveDecision(type="approve") for _ in action_requests
+                        ]
                         hitl_response[interrupt_id] = {"decisions": decisions}
                         # Mark all tools as running
                         for tool_msg in adapter._current_tool_messages.values():
                             tool_msg.set_running()
                     else:
                         # Batch approval - one dialog for all parallel tool calls
-                        future = await adapter._request_approval(action_requests, assistant_id)
+                        future = await adapter._request_approval(
+                            action_requests, assistant_id
+                        )
                         decision = await future
 
                         # Handle the batch decision
@@ -525,7 +585,10 @@ async def execute_task_textual(
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
                                 # Approve all
-                                decisions = [{"type": "approve"} for _ in action_requests]
+                                decisions = [
+                                    ApproveDecision(type="approve")
+                                    for _ in action_requests
+                                ]
                                 for tool_msg in adapter._current_tool_messages.values():
                                     tool_msg.set_running()
                                 # Mark file ops as approved
@@ -534,11 +597,16 @@ async def execute_task_textual(
                                     if tool_name in {"write_file", "edit_file"}:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
-                                            file_op_tracker.mark_hitl_approved(tool_name, args)
+                                            file_op_tracker.mark_hitl_approved(
+                                                tool_name, args
+                                            )
 
                             elif decision_type == "approve":
                                 # Approve all
-                                decisions = [{"type": "approve"} for _ in action_requests]
+                                decisions = [
+                                    ApproveDecision(type="approve")
+                                    for _ in action_requests
+                                ]
                                 for tool_msg in adapter._current_tool_messages.values():
                                     tool_msg.set_running()
                                 # Mark file ops as approved
@@ -547,20 +615,30 @@ async def execute_task_textual(
                                     if tool_name in {"write_file", "edit_file"}:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
-                                            file_op_tracker.mark_hitl_approved(tool_name, args)
+                                            file_op_tracker.mark_hitl_approved(
+                                                tool_name, args
+                                            )
 
                             elif decision_type == "reject":
                                 # Reject all
-                                decisions = [{"type": "reject"} for _ in action_requests]
+                                decisions = [
+                                    RejectDecision(type="reject")
+                                    for _ in action_requests
+                                ]
                                 for tool_msg in adapter._current_tool_messages.values():
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
                             else:
-                                decisions = [{"type": "reject"} for _ in action_requests]
+                                decisions = [
+                                    RejectDecision(type="reject")
+                                    for _ in action_requests
+                                ]
                                 any_rejected = True
                         else:
-                            decisions = [{"type": "reject"} for _ in action_requests]
+                            decisions = [
+                                RejectDecision(type="reject") for _ in action_requests
+                            ]
                             any_rejected = True
 
                         hitl_response[interrupt_id] = {"decisions": decisions}
@@ -573,7 +651,9 @@ async def execute_task_textual(
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:
                     await adapter._mount_message(
-                        SystemMessage("Command rejected. Tell the agent what you'd like instead.")
+                        SystemMessage(
+                            "Command rejected. Tell the agent what you'd like instead."
+                        )
                     )
                     return
 
@@ -584,8 +664,9 @@ async def execute_task_textual(
     except asyncio.CancelledError:
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
-        # Save accumulated state before marking tools as rejected
-        try:
+        # Save accumulated state before marking tools as rejected (best-effort)
+        # Suppress all errors: state update failures shouldn't prevent cleanup
+        with suppress(Exception):
             interrupted_msg = _build_interrupted_ai_message(
                 pending_text_by_namespace,
                 adapter._current_tool_messages,
@@ -594,11 +675,10 @@ async def execute_task_textual(
                 await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
             cancellation_msg = HumanMessage(
-                content="[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+                content="[SYSTEM] Task interrupted by user. "
+                "Previous operation was cancelled."
             )
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
-        except Exception:  # noqa: S110
-            pass  # State update is best-effort
 
         # Mark tools as rejected AFTER saving state
         for tool_msg in list(adapter._current_tool_messages.values()):
@@ -608,7 +688,9 @@ async def execute_task_textual(
         # Report tokens even on interrupt (or restore display if none captured)
         if adapter._token_tracker:
             if captured_input_tokens or captured_output_tokens:
-                adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+                adapter._token_tracker.add(
+                    captured_input_tokens, captured_output_tokens
+                )
             else:
                 adapter._token_tracker.show()  # Restore previous value
         return
@@ -616,8 +698,9 @@ async def execute_task_textual(
     except KeyboardInterrupt:
         await adapter._mount_message(SystemMessage("Interrupted by user"))
 
-        # Save accumulated state before marking tools as rejected
-        try:
+        # Save accumulated state before marking tools as rejected (best-effort)
+        # Suppress all errors: state update failures shouldn't prevent cleanup
+        with suppress(Exception):
             interrupted_msg = _build_interrupted_ai_message(
                 pending_text_by_namespace,
                 adapter._current_tool_messages,
@@ -626,11 +709,10 @@ async def execute_task_textual(
                 await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
             cancellation_msg = HumanMessage(
-                content="[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+                content="[SYSTEM] Task interrupted by user. "
+                "Previous operation was cancelled."
             )
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
-        except Exception:  # noqa: S110
-            pass  # State update is best-effort
 
         # Mark tools as rejected AFTER saving state
         for tool_msg in list(adapter._current_tool_messages.values()):
@@ -640,7 +722,9 @@ async def execute_task_textual(
         # Report tokens even on interrupt (or restore display if none captured)
         if adapter._token_tracker:
             if captured_input_tokens or captured_output_tokens:
-                adapter._token_tracker.add(captured_input_tokens, captured_output_tokens)
+                adapter._token_tracker.add(
+                    captured_input_tokens, captured_output_tokens
+                )
             else:
                 adapter._token_tracker.show()  # Restore previous value
         return

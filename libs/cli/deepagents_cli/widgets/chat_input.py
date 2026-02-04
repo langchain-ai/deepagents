@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
-from textual import events  # noqa: TC002 - used at runtime in _on_key
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
+from textual.widgets.text_area import Selection
 
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
@@ -23,6 +23,7 @@ from deepagents_cli.widgets.autocomplete import (
 from deepagents_cli.widgets.history import HistoryManager
 
 if TYPE_CHECKING:
+    from textual import events
     from textual.app import ComposeResult
 
 
@@ -40,7 +41,9 @@ class CompletionPopup(Static):
         super().__init__("", **kwargs)
         self.can_focus = False
 
-    def update_suggestions(self, suggestions: list[tuple[str, str]], selected_index: int) -> None:
+    def update_suggestions(
+        self, suggestions: list[tuple[str, str]], selected_index: int
+    ) -> None:
         """Update the popup with new suggestions."""
         if not suggestions:
             self.hide()
@@ -69,7 +72,9 @@ class CompletionPopup(Static):
     def hide(self) -> None:
         """Hide the popup."""
         self.update("")
-        self.styles.display = "none"
+        # Textual's styles.display accepts string literals at runtime but type
+        # stubs expect a narrower type; the assignment is valid Textual API usage
+        self.styles.display = "none"  # type: ignore[assignment]
 
     def show(self) -> None:
         """Show the popup."""
@@ -154,19 +159,19 @@ class ChatTextArea(TextArea):
         lines = self.text.split("\n")
         end_row = len(lines) - 1
         end_col = len(lines[end_row])
-        self.selection = ((0, 0), (end_row, end_col))
+        self.selection = Selection(start=(0, 0), end=(end_row, end_col))
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
         # Modifier+Enter inserts newline (Ctrl+J is most reliable across terminals)
-        if event.key in ("shift+enter", "ctrl+j", "alt+enter", "ctrl+enter"):
+        if event.key in {"shift+enter", "ctrl+j", "alt+enter", "ctrl+enter"}:
             event.prevent_default()
             event.stop()
             self.insert("\n")
             return
 
         # If completion is active, let parent handle navigation keys
-        if self._completion_active and event.key in ("up", "down", "tab", "enter"):
+        if self._completion_active and event.key in {"up", "down", "tab", "enter"}:
             # Prevent TextArea's default behavior (e.g., Enter inserting newline)
             # but let event bubble to ChatInput for completion handling
             event.prevent_default()
@@ -222,11 +227,11 @@ class ChatTextArea(TextArea):
 
 
 class ChatInput(Vertical):
-    """Chat input widget with prompt indicator, multi-line text, autocomplete, and history.
+    """Chat input widget with prompt, multi-line text, autocomplete, and history.
 
     Features:
     - Multi-line input with TextArea
-    - Enter to submit, Ctrl+J for newlines (most reliable across terminals)
+    - Enter to submit, Ctrl+J for newlines (reliable across terminals)
     - Up/Down arrows for command history on first/last line
     - Autocomplete for @ (files) and / (commands)
     """
@@ -314,7 +319,11 @@ class ChatInput(Vertical):
         self._submit_enabled = True
 
     def compose(self) -> ComposeResult:
-        """Compose the chat input layout."""
+        """Compose the chat input layout.
+
+        Yields:
+            Widgets for the input row and completion popup.
+        """
         with Horizontal(classes="input-row"):
             yield Static(">", classes="input-prompt", id="prompt")
             yield ChatTextArea(id="chat-input")
@@ -326,11 +335,13 @@ class ChatInput(Vertical):
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
 
+        # Both controllers implement the CompletionController protocol but have
+        # different concrete types; the list-item warning is a false positive
         self._completion_manager = MultiCompletionManager(
             [
                 SlashCommandController(SLASH_COMMANDS, self),
                 FuzzyFileController(self, cwd=self._cwd),
-            ]
+            ]  # type: ignore[list-item]
         )
 
         self._text_area.focus()
@@ -376,7 +387,9 @@ class ChatInput(Vertical):
                 self._text_area.clear_text()
             self.mode = "normal"
 
-    def on_chat_text_area_history_previous(self, event: ChatTextArea.HistoryPrevious) -> None:
+    def on_chat_text_area_history_previous(
+        self, event: ChatTextArea.HistoryPrevious
+    ) -> None:
         """Handle history previous request."""
         entry = self._history.get_previous(event.current_text)
         if entry is not None and self._text_area:
@@ -384,7 +397,7 @@ class ChatInput(Vertical):
 
     def on_chat_text_area_history_next(
         self,
-        event: ChatTextArea.HistoryNext,  # noqa: ARG002
+        event: ChatTextArea.HistoryNext,
     ) -> None:
         """Handle history next request."""
         entry = self._history.get_next()
@@ -427,7 +440,11 @@ class ChatInput(Vertical):
                     self.mode = "normal"
 
     def _get_cursor_offset(self) -> int:
-        """Get the cursor offset as a single integer."""
+        """Get the cursor offset as a single integer.
+
+        Returns:
+            Cursor position as character offset from start of text.
+        """
         if not self._text_area:
             return 0
 
@@ -455,7 +472,11 @@ class ChatInput(Vertical):
 
     @property
     def value(self) -> str:
-        """Get the current input value."""
+        """Get the current input value.
+
+        Returns:
+            Current text in the input field.
+        """
         if self._text_area:
             return self._text_area.text
         return ""
@@ -468,7 +489,11 @@ class ChatInput(Vertical):
 
     @property
     def input_widget(self) -> ChatTextArea | None:
-        """Get the underlying TextArea widget."""
+        """Get the underlying TextArea widget.
+
+        Returns:
+            The ChatTextArea widget or None if not mounted.
+        """
         return self._text_area
 
     def set_disabled(self, *, disabled: bool) -> None:

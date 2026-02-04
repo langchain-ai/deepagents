@@ -24,7 +24,7 @@ deepagents/
 - `uv` – Fast Python package installer and resolver (replaces pip/poetry)
 - `make` – Task runner for common development commands. Feel free to look at the `Makefile` for available commands and usage patterns.
 - `ruff` – Fast Python linter and formatter
-- `mypy` – Static type checking
+- `ty` – Static type checking
 - `pytest` – Testing framework
 
 This monorepo uses `uv` for dependency management. Local development uses editable installs: `[tool.uv.sources]`
@@ -45,9 +45,6 @@ make lint
 
 # Format code
 make format
-
-# Type checking
-uv run --group lint mypy .
 ```
 
 #### Key config files
@@ -111,6 +108,8 @@ def filter_unknown_users(users: list[str], known_users: set[str]) -> list[str]:
 - Use descriptive, self-explanatory variable names.
 - Follow existing patterns in the codebase you're modifying
 - Attempt to break up complex functions (>20 lines) into smaller, focused functions where it makes sense
+- Avoid using the `any` type
+- Prefer single word variable names where possible
 
 ### Testing requirements
 
@@ -120,6 +119,8 @@ Every new feature or bugfix MUST be covered by unit tests.
 - Integration tests: `tests/integration_tests/` (network calls permitted)
 - We use `pytest` as the testing framework; if in doubt, check other existing tests for examples.
 - The testing file structure should mirror the source code structure.
+- Avoid mocks as much as possible
+- Test actual implementation, do not duplicate logic into tests
 
 **Checklist:**
 

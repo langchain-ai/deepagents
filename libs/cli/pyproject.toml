@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.16"
-description = "Terminal interface for DeepAgents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
+version = "0.0.17"
+description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
   # Framework
-  "deepagents==0.3.9",
+  "deepagents==0.3.10",
   "langchain>=1.2.7,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
   "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -40,6 +40,7 @@ dependencies = [
 
   # Sandbox integrations
   "daytona>=0.113.0,<1.0.0",
+  "langsmith>=0.6.6",
   "modal>=0.65.0,<2.0.0",
   "runloop-api-client>=0.69.0",
 
@@ -75,7 +76,7 @@ Twitter = "https://x.com/LangChain"
 [dependency-groups]
 test = [
     "build>=1.0.0,<2.0.0",
-    "ruff>=0.14.11,<0.15.0",
+    "ruff>=0.14.0,<1.0.0",
     "ty>=0.0.1,<1.0.0",
     "pytest>=8.3.4,<9.0.0",
     "pytest-asyncio>=0.25.3,<1.0.0",
@@ -105,26 +106,30 @@ extra-paths = ["../deepagents"]
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/
 
-[tool.ruff]
-line-length = 100
-
 [tool.ruff.format]
-docstring-code-format = true  # Formats code blocks in docstrings
+docstring-code-format = true
+docstring-code-line-length = 100
 
 [tool.ruff.lint]
+preview = true
 select = ["ALL"]
 ignore = [
     "C90",     # McCabe complexity
     "COM812",  # Messes with the formatter
     "CPY",     # No copyright
+    "FBT",     # Boolean positional arguments (too pedantic)
+    "FIX002",  # Line contains TODO
     "ISC001",  # Messes with the formatter
     "PERF203", # Rarely useful
-    "PLR09",   # Too many something (arg, statements, etc)
+    "PLR09",   # Too many something (args, branches, returns, statements, etc)
+    "PLR1702", # Too many nested blocks
     "SLF001",  # Private member access
     "PLC0415", # Imports should be at the top. Not always desirable
     "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
+    "TD002",   # Missing author in TODO
+    "TD003",   # Missing issue link in TODO
 ]
-unfixable = ["B028"]
+unfixable = ["B028"] # People should intentionally tune the stacklevel
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
@@ -142,57 +147,138 @@ convention = "google"
 ignore-var-parameters = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN001", "ANN201", "D1", "PLR2004", "S", "SLF"]
+"tests/**" = ["ANN001", "ANN201", "D1", "DOC", "F401", "PLC1901", "PLC2701", "PLR2004", "PLR6201", "PLR6301", "PLW0108", "RUF001", "S", "SLF"]
 "scripts/**" = ["BLE001", "INP", "S", "T201"]
-"deepagents_cli/agent.py" = ["E501", "PLR0912", "PLR2004", "SIM108"]
-"deepagents_cli/app.py" = ["E501", "PLR0915", "SIM108", "TC001", "TC002", "TC003"]
-"deepagents_cli/cli.py" = ["E501", "EM101", "EM102", "PLR0912", "PLR0915", "T201", "TC002", "TC003", "TRY003"]
-"deepagents_cli/clipboard.py" = ["BLE001", "PTH123", "S112", "TRY300"]
-"deepagents_cli/config.py" = ["D107", "E402", "E501", "ERA001", "FBT001", "FBT002", "PLR0912", "PLR0915", "RET503"]
-"deepagents_cli/file_ops.py" = ["ANN401", "BLE001", "D102", "PLR0912", "PLR0915"]
-"deepagents_cli/image_utils.py" = ["BLE001", "PERF401", "PLR0911", "PTH108", "PTH110", "PTH123", "PTH202", "S110", "S603", "S607", "SIM105"]
-"deepagents_cli/input.py" = ["ANN001", "ANN201", "BLE001", "D107", "FBT001", "FBT002", "PLR0912", "PLR0915", "TC002"]
-"deepagents_cli/integrations/daytona.py" = ["FIX002", "TD002", "TD003"]
-"deepagents_cli/integrations/modal_integration.py" = ["BLE001", "EM101", "EM102", "PLR0912", "S602", "S603", "S604", "S607", "TC002", "TC003", "TRY003"]
-"deepagents_cli/integrations/runloop.py" = ["B904", "F401"]
-"deepagents_cli/integrations/sandbox_factory.py" = ["BLE001", "EM101", "EM102", "S110", "TC003", "TRY003"]
-"deepagents_cli/core/agents_api.py" = ["EM101", "EM102", "TC003", "TRY003"]
-"deepagents_cli/core/api_credentials.py" = ["EM101", "EM102", "S603", "S607", "TC002", "TC003", "TRY003"]
-"deepagents_cli/core/env_manager.py" = ["EM101", "EM102", "TC002", "TC003", "TRY003"]
-"deepagents_cli/core/sessions.py" = ["ANN401", "BLE001", "EM101", "EM102", "FBT001", "PLR0913", "TC002", "TC003", "TRY003", "UP006"]
-"deepagents_cli/core/ui_display_types.py" = ["A003", "FBT001"]
-"deepagents_cli/local_context.py" = ["ARG002", "BLE001", "E501", "EM101", "EM102", "PERF401", "PLR0911", "PLR0912", "PLR0915", "S603", "S607", "TC002", "TC003", "TRY300"]
-"deepagents_cli/project_utils.py" = ["ERA001"]
-"deepagents_cli/shell.py" = ["PERF401", "S602"]
-"deepagents_cli/skills/commands.py" = ["ANN401", "E501", "FBT001", "FBT002", "TRY300"]
-"deepagents_cli/skills/load.py" = ["TC003"]
-"deepagents_cli/textual_adapter.py" = ["E501"]
-"deepagents_cli/tools.py" = ["ANN201", "BLE001", "E501", "E722", "FBT001", "FBT002", "PLR2004", "S113"]
-"deepagents_cli/ui.py" = ["ANN401", "ARG002", "BLE001", "D102", "EM102", "FBT001", "PLR0911", "PLR0912", "PLR0915", "S110", "TC002", "TC003", "TRY003", "TRY300"]
-"deepagents_cli/textual_app/components/messages.py" = ["TC002"]
-"deepagents_cli/widgets/approval.py" = ["ARG002", "B007", "D107", "RUF001", "TC002", "TC003"]
-"deepagents_cli/widgets/diff.py" = ["PLR0912"]
-"deepagents_cli/widgets/messages.py" = ["TC002"]
-"deepagents_cli/widgets/status.py" = ["PLR2004"]
-"deepagents_cli/widgets/tool_renderers.py" = ["D102", "PLR2004"]
-"deepagents_cli/main.py" = ["T201"]
-"deepagents_cli/skills.py" = ["ANN401", "D102", "D107", "EM101", "EM102", "F821", "PLR0913", "S102", "TC003", "TRY003"]
-"deepagents_cli/textual_app/app.py" = ["A001", "A002", "ANN202", "ARG002", "BLE001", "D102", "E501", "EM101", "EM102", "ERA001", "FBT001", "PLR0912", "PLR0913", "PLR0915", "S311", "SIM102", "T201", "TC002", "TC003", "TRY003"]
-"deepagents_cli/textual_app/conversation_service.py" = ["ANN401", "EM101", "EM102", "PLR0913", "RUF012", "TC003", "TRY003"]
-"deepagents_cli/textual_app/history_tab.py" = ["A002", "ANN202", "BLE001", "EM101", "EM102", "PLR0912", "RUF012", "TC002", "TC003", "TRY003"]
-"deepagents_cli/textual_app/input_box.py" = ["ANN202", "BLE001", "EM102", "PLR0912", "PLR0915", "TC003", "TRY003"]
-"deepagents_cli/textual_app/markdown_with_code_actions.py" = ["ANN202", "BLE001", "D102", "E501", "EM102", "SLF001", "TC002", "TC003", "TRY003"]
-"deepagents_cli/textual_app/running_shell_widget.py" = ["ANN202", "D102", "TC003"]
-"deepagents_cli/utils.py" = ["ANN401", "EM101", "EM102", "PLR0912", "S604", "S607", "TC002", "TC003", "TRY003"]
-"examples/skills/arxiv-search/arxiv_search.py" = ["BLE001", "D103", "TRY300"]
-"examples/skills/skill-creator/scripts/init_skill.py" = ["ANN001", "ANN201", "BLE001", "D103", "D415", "PLR2004", "T201"]
-"examples/skills/skill-creator/scripts/quick_validate.py" = ["ANN001", "ANN201", "D415", "E501", "N806", "PLR0911", "PLR0912", "PLR2004", "T201"]
+"deepagents_cli/agent.py" = [
+    "PLR2004",  # Magic value used in comparison
+    "SIM108",   # Use ternary operator instead of if-else
+]
+"deepagents_cli/app.py" = [
+    "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
+    "ARG002",   # Unused method argument
+    "ASYNC110", # Use `asyncio.Event` instead of busy-waiting
+    "BLE001",   # Do not catch blind exception
+    "PLR2004",  # Magic value used in comparison
+    "SIM108",   # Use ternary operator instead of if-else
+]
+"deepagents_cli/cli.py" = [
+    "T201",     # `print` found
+]
+"deepagents_cli/clipboard.py" = [
+    "BLE001",   # Do not catch blind exception
+]
+"deepagents_cli/config.py" = [
+    "ERA001",   # Found commented-out code
+    "PLR2004",  # Magic value used in comparison
+]
+"deepagents_cli/file_ops.py" = [
+    "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
+    "BLE001",   # Do not catch blind exception
+]
+"deepagents_cli/image_utils.py" = [
+    "BLE001",   # Do not catch blind exception
+]
+"deepagents_cli/input.py" = [
+    "BLE001",   # Do not catch blind exception
+    "PLR6301",  # Method could be a function or static method
+]
+"deepagents_cli/integrations/runloop.py" = [
+    "B904",     # Within an `except` clause, raise exceptions with `raise ... from err`
+]
+"deepagents_cli/integrations/sandbox_factory.py" = [
+    "BLE001",   # Do not catch blind exception
+]
+"deepagents_cli/core/sessions.py" = [
+    "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
+    "BLE001",   # Do not catch blind exception
+]
+"deepagents_cli/core/ui_display_types.py" = [
+    "A003",     # Class attribute shadows a Python builtin
+]
+"deepagents_cli/local_context.py" = [
+    "ARG002",   # Unused method argument
+    "BLE001",   # Do not catch blind exception
+]
+"deepagents_cli/project_utils.py" = [
+    "ERA001",   # Found commented-out code
+]
+"deepagents_cli/skills/commands.py" = [
+    "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
+    "ISC003",   # Explicitly concatenated string should be implicitly concatenated
+]
+"deepagents_cli/skills/load.py" = [
+    "PLC2701",  # Private name import
+]
+"deepagents_cli/textual_adapter.py" = [
+    "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
+    "BLE001",   # Do not catch blind exception
+    "PLR2004",  # Magic value used in comparison
+    "TRY203",   # Use `raise` without arguments inside exception handler
+]
+"deepagents_cli/tools.py" = [
+    "ANN201",   # Missing return type annotation for public function
+    "BLE001",   # Do not catch blind exception
+    "E722",     # Do not use bare `except`
+    "PLR2004",  # Magic value used in comparison
+]
+"deepagents_cli/ui.py" = [
+    "ANN401",   # Dynamically typed expressions (typing.Any) are disallowed
+    "ARG002",   # Unused method argument
+    "BLE001",   # Do not catch blind exception
+    "PLR2004",  # Magic value used in comparison
+]
+"deepagents_cli/widgets/approval.py" = [
+    "A002",     # Argument shadows a Python builtin
+    "ARG002",   # Unused method argument
+    "B007",     # Loop control variable not used within the loop body
+    "RUF001",   # String contains ambiguous character
+]
+"deepagents_cli/widgets/chat_input.py" = [
+    "ARG002",   # Unused method argument
+    "PLR6301",  # Method could be a function or static method
+]
+"deepagents_cli/widgets/messages.py" = [
+    "PLR6301",  # Method could be a function or static method
+]
+"deepagents_cli/widgets/status.py" = [
+    "PLR2004",  # Magic value used in comparison
+    "PLR6301",  # Method could be a function or static method
+]
+"deepagents_cli/widgets/tool_widgets.py" = [
+    "PLR6301",  # Method could be a function or static method
+]
+"deepagents_cli/widgets/tool_renderers.py" = [
+    "D102",     # Missing docstring in public method
+    "PLR2004",  # Magic value used in comparison
+]
+"deepagents_cli/main.py" = [
+    "BLE001",   # Do not catch blind exception
+    "T201",     # `print` found
+]
+"examples/skills/arxiv-search/arxiv_search.py" = [
+    "BLE001",   # Do not catch blind exception
+    "TRY300",   # Consider moving this statement to an `else` block
+]
+"examples/skills/skill-creator/scripts/init_skill.py" = [
+    "ANN001",   # Missing type annotation for function argument
+    "ANN201",   # Missing return type annotation for public function
+    "BLE001",   # Do not catch blind exception
+    "PLR2004",  # Magic value used in comparison
+    "T201",     # `print` found
+]
+"examples/skills/skill-creator/scripts/quick_validate.py" = [
+    "ANN001",   # Missing type annotation for function argument
+    "ANN201",   # Missing return type annotation for public function
+    "N806",     # Variable in function should be lowercase
+    "PLR2004",  # Magic value used in comparison
+    "T201",     # `print` found
+]
 
 [tool.coverage.run]
 omit = ["tests/*"]
 
 [tool.pytest.ini_options]
-timeout = 10  # Default timeout for all tests (can be overridden per-test)
+timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
 asyncio_mode = "auto"

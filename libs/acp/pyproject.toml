@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "deepagents-acp"
 version = "0.0.1"
-description = "Agent Client Protocol integration for DeepAgents"
+description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -10,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from deepagents.backends.utils import perform_string_replacement
 
 from deepagents_cli.config import settings
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES
@@ -29,15 +32,24 @@ class ApprovalPreview:
 
 
 def _safe_read(path: Path) -> str | None:
-    """Read file content, returning None on failure."""
+    """Read file content, returning None on failure.
+
+    Returns:
+        File content as string, or None if reading fails.
+    """
     try:
-        return path.read_text()
-    except (OSError, UnicodeDecodeError):
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        logger.debug("Failed to read file %s: %s", path, e)
         return None
 
 
 def _count_lines(text: str) -> int:
-    """Count lines in text, treating empty strings as zero lines."""
+    """Count lines in text, treating empty strings as zero lines.
+
+    Returns:
+        Number of lines in the text.
+    """
     if not text:
         return 0
     return len(text.splitlines())
@@ -116,8 +128,14 @@ class FileOperationRecord:
     hitl_approved: bool = False
 
 
-def resolve_physical_path(path_str: str | None, assistant_id: str | None) -> Path | None:
-    """Convert a virtual/relative path to a physical filesystem path."""
+def resolve_physical_path(
+    path_str: str | None, assistant_id: str | None
+) -> Path | None:
+    """Convert a virtual/relative path to a physical filesystem path.
+
+    Returns:
+        Resolved physical Path, or None if path is empty or resolution fails.
+    """
     if not path_str:
         return None
     try:
@@ -134,7 +152,11 @@ def resolve_physical_path(path_str: str | None, assistant_id: str | None) -> Pat
 
 
 def format_display_path(path_str: str | None) -> str:
-    """Format a path for display."""
+    """Format a path for display.
+
+    Returns:
+        Formatted path string suitable for display.
+    """
     if not path_str:
         return "(unknown)"
     try:
@@ -151,14 +173,22 @@ def build_approval_preview(
     args: dict[str, Any],
     assistant_id: str | None,
 ) -> ApprovalPreview | None:
-    """Collect summary info and diff for HITL approvals."""
+    """Collect summary info and diff for HITL approvals.
+
+    Returns:
+        ApprovalPreview with diff and details, or None if tool not supported.
+    """
     path_str = str(args.get("file_path") or args.get("path") or "")
     display_path = format_display_path(path_str)
     physical_path = resolve_physical_path(path_str, assistant_id)
 
     if tool_name == "write_file":
         content = str(args.get("content", ""))
-        before = _safe_read(physical_path) if physical_path and physical_path.exists() else ""
+        before = (
+            _safe_read(physical_path)
+            if physical_path and physical_path.exists()
+            else ""
+        )
         after = content
         diff = compute_unified_diff(before or "", after, display_path, max_lines=100)
         additions = 0
@@ -171,7 +201,8 @@ def build_approval_preview(
         total_lines = _count_lines(after)
         details = [
             f"File: {path_str}",
-            "Action: Create new file" + (" (overwrites existing content)" if before else ""),
+            "Action: Create new file"
+            + (" (overwrites existing content)" if before else ""),
             f"Lines to write: {additions or total_lines}",
         ]
         return ApprovalPreview(
@@ -197,8 +228,10 @@ def build_approval_preview(
             )
         old_string = str(args.get("old_string", ""))
         new_string = str(args.get("new_string", ""))
-        replace_all = bool(args.get("replace_all", False))
-        replacement = perform_string_replacement(before, old_string, new_string, replace_all)
+        replace_all = bool(args.get("replace_all"))
+        replacement = perform_string_replacement(
+            before, old_string, new_string, replace_all
+        )
         if isinstance(replacement, str):
             return ApprovalPreview(
                 title=f"Update {display_path}",
@@ -220,9 +253,10 @@ def build_approval_preview(
                 for line in diff.splitlines()
                 if line.startswith("-") and not line.startswith("---")
             )
+        action = "all occurrences" if replace_all else "single occurrence"
         details = [
             f"File: {path_str}",
-            f"Action: Replace text ({'all occurrences' if replace_all else 'single occurrence'})",
+            f"Action: Replace text ({action})",
             f"Occurrences matched: {occurrences}",
             f"Lines changed: +{additions} / -{deletions}",
         ]
@@ -239,7 +273,9 @@ def build_approval_preview(
 class FileOpTracker:
     """Collect file operation metrics during a CLI interaction."""
 
-    def __init__(self, *, assistant_id: str | None, backend: BACKEND_TYPES | None = None) -> None:
+    def __init__(
+        self, *, assistant_id: str | None, backend: BACKEND_TYPES | None = None
+    ) -> None:
         """Initialize the tracker."""
         self.assistant_id = assistant_id
         self.backend = backend
@@ -249,6 +285,11 @@ class FileOpTracker:
     def start_operation(
         self, tool_name: str, args: dict[str, Any], tool_call_id: str | None
     ) -> None:
+        """Begin tracking a file operation.
+
+        Creates a record for the operation and, for write/edit operations,
+        captures the file's content before modification.
+        """
         if tool_name not in {"read_file", "write_file", "edit_file"}:
             return
         path_str = str(args.get("file_path") or args.get("path") or "")
@@ -272,26 +313,37 @@ class FileOpTracker:
                         record.before_content = responses[0].content.decode("utf-8")
                     else:
                         record.before_content = ""
-                except Exception:
+                except (OSError, UnicodeDecodeError, AttributeError) as e:
+                    logger.debug(
+                        "Failed to read before_content for %s: %s", path_str, e
+                    )
                     record.before_content = ""
             elif record.physical_path:
                 record.before_content = _safe_read(record.physical_path) or ""
         self.active[tool_call_id] = record
 
     def update_args(self, tool_call_id: str, args: dict[str, Any]) -> None:
-        """Update arguments for an active operation and retry capturing before_content."""
+        """Update args for an active operation and retry capturing before_content."""
         record = self.active.get(tool_call_id)
         if not record:
             return
 
         record.args.update(args)
 
-        # If we haven't captured before_content yet, try again now that we might have the path
-        if record.before_content is None and record.tool_name in {"write_file", "edit_file"}:
-            path_str = str(record.args.get("file_path") or record.args.get("path") or "")
+        # If we haven't captured before_content yet, try again now that we
+        # might have the path
+        if record.before_content is None and record.tool_name in {
+            "write_file",
+            "edit_file",
+        }:
+            path_str = str(
+                record.args.get("file_path") or record.args.get("path") or ""
+            )
             if path_str:
                 record.display_path = format_display_path(path_str)
-                record.physical_path = resolve_physical_path(path_str, self.assistant_id)
+                record.physical_path = resolve_physical_path(
+                    path_str, self.assistant_id
+                )
                 if self.backend:
                     try:
                         responses = self.backend.download_files([path_str])
@@ -303,12 +355,22 @@ class FileOpTracker:
                             record.before_content = responses[0].content.decode("utf-8")
                         else:
                             record.before_content = ""
-                    except Exception:
+                    except (OSError, UnicodeDecodeError, AttributeError) as e:
+                        logger.debug(
+                            "Failed to read before_content in update_args for %s: %s",
+                            path_str,
+                            e,
+                        )
                         record.before_content = ""
                 elif record.physical_path:
                     record.before_content = _safe_read(record.physical_path) or ""
 
     def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:
+        """Complete a file operation with the tool message result.
+
+        Returns:
+            The completed FileOperationRecord, or None if no matching operation.
+        """
         tool_call_id = getattr(tool_message, "tool_call_id", None)
         record = self.active.get(tool_call_id)
         if record is None:
@@ -384,10 +446,13 @@ class FileOpTracker:
                 )
                 record.metrics.lines_added = additions
                 record.metrics.lines_removed = deletions
-            elif record.tool_name == "write_file" and (record.before_content or "") == "":
+            elif record.tool_name == "write_file" and not (record.before_content or ""):
                 record.metrics.lines_added = record.metrics.lines_written
             record.metrics.bytes_written = len(record.after_content.encode("utf-8"))
-            if record.diff is None and (record.before_content or "") != record.after_content:
+            if (
+                record.diff is None
+                and (record.before_content or "") != record.after_content
+            ):
                 record.diff = compute_unified_diff(
                     record.before_content or "",
                     record.after_content,
@@ -395,7 +460,9 @@ class FileOpTracker:
                     max_lines=100,
                 )
             if record.diff is None and before_lines != record.metrics.lines_written:
-                record.metrics.lines_added = max(record.metrics.lines_written - before_lines, 0)
+                record.metrics.lines_added = max(
+                    record.metrics.lines_written - before_lines, 0
+                )
 
         self._finalize(record)
         return record
@@ -430,7 +497,12 @@ class FileOpTracker:
                         record.after_content = None
                 else:
                     record.after_content = None
-            except Exception:
+            except (OSError, UnicodeDecodeError, AttributeError) as e:
+                logger.debug(
+                    "Failed to read after_content for %s: %s",
+                    record.args.get("file_path") or record.args.get("path"),
+                    e,
+                )
                 record.after_content = None
         else:
             # Fallback: direct filesystem read when no backend provided

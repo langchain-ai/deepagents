@@ -31,6 +31,39 @@ class FilesystemBackend(BackendProtocol):
     Files are accessed using their actual filesystem paths. Relative paths are
     resolved relative to the current working directory. Content is read/written
     as plain text, and metadata (timestamps) are derived from filesystem stats.
+
+    !!! warning "Security Warning"
+
+        This backend grants agents direct filesystem read/write access. Use with
+        caution and only in appropriate environments.
+
+        **Appropriate use cases:**
+
+        - Local development CLIs (coding assistants, development tools)
+        - CI/CD pipelines (see security considerations below)
+
+        **Inappropriate use cases:**
+
+        - Web servers or HTTP APIs - use `StateBackend`, `StoreBackend`, or
+            `SandboxBackend` instead
+
+        **Security risks:**
+
+        - Agents can read any accessible file, including secrets (API keys,
+            credentials, `.env` files)
+        - Combined with network tools, secrets may be exfiltrated via SSRF attacks
+        - File modifications are permanent and irreversible
+
+        **Recommended safeguards:**
+
+        1. Enable Human-in-the-Loop (HITL) middleware to review sensitive operations
+        2. Exclude secrets from accessible filesystem paths (especially in CI/CD)
+        3. Use `SandboxBackend` for production environments requiring filesystem
+            interaction
+        4. **Always** use `virtual_mode=True` with `root_dir` to enable path-based
+            access restrictions (blocks `..`, `~`, and absolute paths outside root).
+            Note that the default (`virtual_mode=False`) provides no security even with
+            `root_dir` set.
     """
 
     def __init__(
@@ -44,14 +77,29 @@ class FilesystemBackend(BackendProtocol):
         Args:
             root_dir: Optional root directory for file operations.
 
-                If provided, all file paths will be resolved relative to this directory.
-                If not provided, uses the current working directory.
-            virtual_mode: Enables sandboxed operation where all paths are treated as
-                virtual paths rooted at `root_dir`.
+                - If not provided, defaults to the current working directory.
+                - When `virtual_mode=False` (default): Only affects relative path
+                    resolution. Provides **no security** - agents can access any file
+                    using absolute paths or `..` sequences.
+                - When `virtual_mode=True`: All paths are restricted to this
+                    directory with traversal protection enabled.
 
-                Path traversal (using `..` or `~`) is disallowed and all resolved paths
-                must remain within the root directory. When `False` (default), absolute
-                paths are allowed as-is and relative paths resolve under cwd.
+            virtual_mode: Enable path-based access restrictions.
+
+                When `True`, all paths are treated as virtual paths anchored to
+                `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
+                are verified to remain within `root_dir`.
+
+                When `False` (default), **no security is provided**:
+
+                - Absolute paths (e.g., `/etc/passwd`) bypass `root_dir` entirely
+                - Relative paths with `..` can escape `root_dir`
+                - Agents have unrestricted filesystem access
+
+                **Security note:** `virtual_mode=True` provides path-based access
+                control, not process isolation. It restricts which files can be
+                accessed via paths, but does not sandbox the Python process itself.
+
             max_file_size_mb: Maximum file size in megabytes for operations like
                 grep's Python fallback search.
 
@@ -340,25 +388,18 @@ class FilesystemBackend(BackendProtocol):
         path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
-        """Search for a regex pattern in files.
+        """Search for a literal text pattern in files.
 
-        Uses ripgrep if available, falling back to Python regex search.
+        Uses ripgrep if available, falling back to Python search.
 
         Args:
-            pattern: Regular expression pattern to search for.
+            pattern: Literal string to search for (NOT regex).
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
 
         Returns:
             List of GrepMatch dicts containing path, line number, and matched text.
-            Returns an error string if the regex pattern is invalid.
         """
-        # Validate regex
-        try:
-            re.compile(pattern)
-        except re.error as e:
-            return f"Invalid regex pattern: {e}"
-
         # Resolve base path
         try:
             base_full = self._resolve_path(path or ".")
@@ -368,10 +409,11 @@ class FilesystemBackend(BackendProtocol):
         if not base_full.exists():
             return []
 
-        # Try ripgrep first
+        # Try ripgrep first (with -F flag for literal search)
         results = self._ripgrep_search(pattern, base_full, glob)
         if results is None:
-            results = self._python_search(pattern, base_full, glob)
+            # Python fallback needs escaped pattern for literal search
+            results = self._python_search(re.escape(pattern), base_full, glob)
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
@@ -380,10 +422,10 @@ class FilesystemBackend(BackendProtocol):
         return matches
 
     def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:
-        """Search using ripgrep with JSON output parsing.
+        """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
-            pattern: Regex pattern to search for.
+            pattern: Literal string to search for (unescaped).
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files.
 
@@ -391,7 +433,7 @@ class FilesystemBackend(BackendProtocol):
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
                 Returns `None` if ripgrep is unavailable or times out.
         """
-        cmd = ["rg", "--json"]
+        cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
             cmd.extend(["--glob", include_glob])
         cmd.extend(["--", pattern, str(base_full)])
@@ -436,22 +478,20 @@ class FilesystemBackend(BackendProtocol):
         return results
 
     def _python_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]]:
-        """Fallback search using Python regex when ripgrep is unavailable.
+        """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit.
 
         Args:
-            pattern: Regex pattern to search for.
+            pattern: Escaped regex pattern (from re.escape) for literal search.
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
         """
-        try:
-            regex = re.compile(pattern)
-        except re.error:
-            return {}
+        # Compile escaped pattern once for efficiency (used in loop)
+        regex = re.compile(pattern)
 
         results: dict[str, list[tuple[int, str]]] = {}
         root = base_full if base_full.is_dir() else base_full.parent

@@ -40,4 +40,3 @@ Before writing on any topic:
 2. Gather at least 3 credible sources
 3. Identify the key points readers need to understand
 4. Find concrete examples or case studies to illustrate concepts
-

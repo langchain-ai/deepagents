@@ -9,9 +9,15 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
 from langchain.agents.middleware.human_in_the_loop import (
+    ApproveDecision,
+    EditDecision,
     HITLRequest,
     HITLResponse,
+    RejectDecision,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
@@ -28,8 +34,8 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
 )
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+# Type alias matching HITLResponse["decisions"] element type
+HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 
@@ -62,8 +68,8 @@ class TextualUIAdapter:
         request_approval: Callable,  # async callable returning Future
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
-        show_thinking: Callable[[], None] | None = None,
-        hide_thinking: Callable[[], None] | None = None,
+        show_thinking: Callable[[], Awaitable[None]] | None = None,
+        hide_thinking: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -555,7 +561,9 @@ async def execute_task_textual(
 
                     if session_state.auto_approve:
                         # Auto-approve silently - start running animation
-                        decisions = [{"type": "approve"} for _ in action_requests]
+                        decisions: list[HITLDecision] = [
+                            ApproveDecision(type="approve") for _ in action_requests
+                        ]
                         hitl_response[interrupt_id] = {"decisions": decisions}
                         # Mark all tools as running
                         for tool_msg in adapter._current_tool_messages.values():
@@ -578,7 +586,8 @@ async def execute_task_textual(
                                     adapter._on_auto_approve_enabled()
                                 # Approve all
                                 decisions = [
-                                    {"type": "approve"} for _ in action_requests
+                                    ApproveDecision(type="approve")
+                                    for _ in action_requests
                                 ]
                                 for tool_msg in adapter._current_tool_messages.values():
                                     tool_msg.set_running()
@@ -595,7 +604,8 @@ async def execute_task_textual(
                             elif decision_type == "approve":
                                 # Approve all
                                 decisions = [
-                                    {"type": "approve"} for _ in action_requests
+                                    ApproveDecision(type="approve")
+                                    for _ in action_requests
                                 ]
                                 for tool_msg in adapter._current_tool_messages.values():
                                     tool_msg.set_running()
@@ -612,7 +622,8 @@ async def execute_task_textual(
                             elif decision_type == "reject":
                                 # Reject all
                                 decisions = [
-                                    {"type": "reject"} for _ in action_requests
+                                    RejectDecision(type="reject")
+                                    for _ in action_requests
                                 ]
                                 for tool_msg in adapter._current_tool_messages.values():
                                     tool_msg.set_rejected()
@@ -620,11 +631,14 @@ async def execute_task_textual(
                                 any_rejected = True
                             else:
                                 decisions = [
-                                    {"type": "reject"} for _ in action_requests
+                                    RejectDecision(type="reject")
+                                    for _ in action_requests
                                 ]
                                 any_rejected = True
                         else:
-                            decisions = [{"type": "reject"} for _ in action_requests]
+                            decisions = [
+                                RejectDecision(type="reject") for _ in action_requests
+                            ]
                             any_rejected = True
 
                         hitl_response[interrupt_id] = {"decisions": decisions}

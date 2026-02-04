@@ -12,6 +12,7 @@ from deepagents.backends.sandbox import SandboxProvider
 
 from deepagents_cli.config import console
 from deepagents_cli.integrations.daytona import DaytonaProvider
+from deepagents_cli.integrations.langsmith import LangSmithProvider
 from deepagents_cli.integrations.modal import ModalProvider
 from deepagents_cli.integrations.runloop import RunloopProvider
 
@@ -54,9 +55,10 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 
 
 _PROVIDER_TO_WORKING_DIR = {
+    "daytona": "/home/daytona",
+    "langsmith": "/tmp",  # noqa: S108
     "modal": "/workspace",
     "runloop": "/home/user",
-    "daytona": "/home/daytona",
 }
 
 
@@ -72,7 +74,7 @@ def create_sandbox(
     This is the unified interface for sandbox creation using the provider abstraction.
 
     Args:
-        provider: Sandbox provider ("modal", "runloop", "daytona")
+        provider: Sandbox provider ("daytona", "langsmith", "modal", "runloop")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 
@@ -126,7 +128,7 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name ("modal", "runloop", "daytona")
+        provider: Sandbox provider name ("daytona", "langsmith", "modal", "runloop")
 
     Returns:
         Default working directory path as string
@@ -144,7 +146,7 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a SandboxProvider instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider ("modal", "runloop", "daytona")
+        provider_name: Name of the provider ("daytona", "langsmith", "modal", "runloop")
 
     Returns:
         SandboxProvider instance
@@ -152,12 +154,14 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     Raises:
         ValueError: If provider_name is unknown
     """
+    if provider_name == "daytona":
+        return DaytonaProvider()
+    if provider_name == "langsmith":
+        return LangSmithProvider()
     if provider_name == "modal":
         return ModalProvider()
     if provider_name == "runloop":
         return RunloopProvider()
-    if provider_name == "daytona":
-        return DaytonaProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "
         f"Available providers: {', '.join(_get_available_sandbox_types())}"

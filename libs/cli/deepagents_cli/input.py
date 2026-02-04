@@ -482,7 +482,7 @@ def create_prompt_session(
             if not current_completion and buffer.complete_state.completions:
                 # Move to the first completion
                 buffer.complete_next()
-                # Apply if available (defensive check as complete_state may change)
+                # Now apply it (complete_next() ensures current_completion is set)
                 completion = buffer.complete_state.current_completion
                 if completion:
                     buffer.apply_completion(completion)

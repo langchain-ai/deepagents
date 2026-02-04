@@ -23,8 +23,9 @@ if _deepagents_project:
     # Override LANGSMITH_PROJECT for agent traces
     os.environ["LANGSMITH_PROJECT"] = _deepagents_project
 
-# Now safe to import LangChain modules
+# E402: Now safe to import LangChain modules
 from langchain_core.language_models import BaseChatModel  # noqa: E402
+from langchain_core.runnables import RunnableConfig  # noqa: E402
 
 # Color scheme
 COLORS = {
@@ -70,7 +71,7 @@ COMMANDS = {
 MAX_ARG_LENGTH = 150
 
 # Agent configuration
-config = {"recursion_limit": 1000}
+config: RunnableConfig = {"recursion_limit": 1000}
 
 # Rich console instance
 console = Console(highlight=False)
@@ -422,6 +423,37 @@ class Settings:
         if not self.project_root:
             return None
         return self.project_root / ".deepagents" / "agents"
+
+    @property
+    def user_agents_dir(self) -> Path:
+        """Get the base user-level `.agents` directory (`~/.agents`).
+
+        Returns:
+            Path to `~/.agents`
+        """
+        return Path.home() / ".agents"
+
+    def get_user_agent_skills_dir(self) -> Path:
+        """Get user-level `~/.agents/skills/` directory.
+
+        This is a generic alias path for skills that is tool-agnostic.
+
+        Returns:
+            Path to `~/.agents/skills/`
+        """
+        return self.user_agents_dir / "skills"
+
+    def get_project_agent_skills_dir(self) -> Path | None:
+        """Get project-level `.agents/skills/` directory.
+
+        This is a generic alias path for skills that is tool-agnostic.
+
+        Returns:
+            Path to `{project_root}/.agents/skills/`, or `None` if not in a project
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".agents" / "skills"
 
 
 # Global settings instance (initialized once)

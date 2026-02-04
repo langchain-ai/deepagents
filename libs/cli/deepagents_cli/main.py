@@ -168,7 +168,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sandbox",
-        choices=["none", "modal", "daytona", "runloop"],
+        choices=["none", "modal", "daytona", "runloop", "langsmith"],
         default="none",
         help="Remote sandbox for code execution (default: none - local only)",
     )
@@ -199,7 +199,8 @@ async def run_textual_cli_async(
     Args:
         assistant_id: Agent identifier for memory storage
         auto_approve: Whether to auto-approve tool usage
-        sandbox_type: Type of sandbox ("none", "modal", "runloop", "daytona")
+        sandbox_type: Type of sandbox
+            ("none", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse
         model_name: Optional model name to use
         thread_id: Thread ID to use (new or resumed)

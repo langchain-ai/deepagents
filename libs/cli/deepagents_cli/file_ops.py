@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -10,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from deepagents.backends.utils import perform_string_replacement
 
 from deepagents_cli.config import settings
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES
@@ -36,7 +39,8 @@ def _safe_read(path: Path) -> str | None:
     """
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as e:
+        logger.debug("Failed to read file %s: %s", path, e)
         return None
 
 
@@ -309,7 +313,10 @@ class FileOpTracker:
                         record.before_content = responses[0].content.decode("utf-8")
                     else:
                         record.before_content = ""
-                except Exception:
+                except (OSError, UnicodeDecodeError, AttributeError) as e:
+                    logger.debug(
+                        "Failed to read before_content for %s: %s", path_str, e
+                    )
                     record.before_content = ""
             elif record.physical_path:
                 record.before_content = _safe_read(record.physical_path) or ""
@@ -348,7 +355,12 @@ class FileOpTracker:
                             record.before_content = responses[0].content.decode("utf-8")
                         else:
                             record.before_content = ""
-                    except Exception:
+                    except (OSError, UnicodeDecodeError, AttributeError) as e:
+                        logger.debug(
+                            "Failed to read before_content in update_args for %s: %s",
+                            path_str,
+                            e,
+                        )
                         record.before_content = ""
                 elif record.physical_path:
                     record.before_content = _safe_read(record.physical_path) or ""
@@ -485,7 +497,12 @@ class FileOpTracker:
                         record.after_content = None
                 else:
                     record.after_content = None
-            except Exception:
+            except (OSError, UnicodeDecodeError, AttributeError) as e:
+                logger.debug(
+                    "Failed to read after_content for %s: %s",
+                    record.args.get("file_path") or record.args.get("path"),
+                    e,
+                )
                 record.after_content = None
         else:
             # Fallback: direct filesystem read when no backend provided

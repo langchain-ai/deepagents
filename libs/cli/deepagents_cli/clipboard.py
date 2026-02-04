@@ -56,10 +56,11 @@ def copy_selection_to_clipboard(app: App) -> None:
 
         try:
             result = widget.get_selection(selection)
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
             logger.debug(
-                "Failed to get selection from widget %s",
+                "Failed to get selection from widget %s: %s",
                 type(widget).__name__,
+                e,
                 exc_info=True,
             )
             continue
@@ -102,10 +103,11 @@ def copy_selection_to_clipboard(app: App) -> None:
                 timeout=2,
                 markup=False,
             )
-        except Exception:
+        except (OSError, RuntimeError, TypeError) as e:
             logger.debug(
-                "Clipboard copy method %s failed",
+                "Clipboard copy method %s failed: %s",
                 getattr(copy_fn, "__name__", repr(copy_fn)),
+                e,
                 exc_info=True,
             )
             continue

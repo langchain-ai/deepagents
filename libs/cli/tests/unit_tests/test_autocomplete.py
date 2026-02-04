@@ -1,11 +1,13 @@
 """Tests for autocomplete fuzzy search functionality."""
 
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
 
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
+    CompletionController,
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
@@ -300,7 +302,11 @@ class TestMultiCompletionManager:
         """Create a MultiCompletionManager with both controllers."""
         slash_ctrl = SlashCommandController(SLASH_COMMANDS, mock_view)
         file_ctrl = FuzzyFileController(mock_view, cwd=tmp_path)
-        return MultiCompletionManager([slash_ctrl, file_ctrl])
+        # Cast needed: lists are invariant, so the inferred type
+        # list[SlashCommandController | FuzzyFileController] won't match
+        # list[CompletionController] even though both satisfy the protocol.
+        controllers = cast("list[CompletionController]", [slash_ctrl, file_ctrl])
+        return MultiCompletionManager(controllers)
 
     def test_activates_slash_controller_for_slash(self, manager):
         """Activates slash controller for / prefix."""

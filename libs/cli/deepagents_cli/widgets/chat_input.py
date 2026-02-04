@@ -11,6 +11,7 @@ from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
+from textual.widgets.text_area import Selection
 
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
@@ -71,7 +72,9 @@ class CompletionPopup(Static):
     def hide(self) -> None:
         """Hide the popup."""
         self.update("")
-        self.styles.display = "none"
+        # Textual's styles.display accepts string literals at runtime but type
+        # stubs expect a narrower type; the assignment is valid Textual API usage
+        self.styles.display = "none"  # type: ignore[assignment]
 
     def show(self) -> None:
         """Show the popup."""
@@ -156,7 +159,7 @@ class ChatTextArea(TextArea):
         lines = self.text.split("\n")
         end_row = len(lines) - 1
         end_col = len(lines[end_row])
-        self.selection = ((0, 0), (end_row, end_col))
+        self.selection = Selection(start=(0, 0), end=(end_row, end_col))
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
@@ -332,11 +335,13 @@ class ChatInput(Vertical):
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
 
+        # Both controllers implement the CompletionController protocol but have
+        # different concrete types; the list-item warning is a false positive
         self._completion_manager = MultiCompletionManager(
             [
                 SlashCommandController(SLASH_COMMANDS, self),
                 FuzzyFileController(self, cwd=self._cwd),
-            ]
+            ]  # type: ignore[list-item]
         )
 
         self._text_area.focus()

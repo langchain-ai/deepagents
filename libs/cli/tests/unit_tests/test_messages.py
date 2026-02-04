@@ -141,3 +141,50 @@ class TestToolCallMessageShellCommand:
 
         assert msg._output == error
         assert not msg._output.startswith("$ ")
+
+    def test_shell_error_with_none_command(self) -> None:
+        """Shell tool with None command should fall back to error-only output."""
+        msg = ToolCallMessage("shell", {"command": None})
+        error = "Some error"
+        msg.set_error(error)
+
+        assert "$ None" not in msg._output
+        assert msg._output == error
+
+    def test_shell_error_with_empty_command(self) -> None:
+        """Shell tool with empty command should fall back to error-only output."""
+        msg = ToolCallMessage("shell", {"command": ""})
+        error = "Some error"
+        msg.set_error(error)
+
+        assert msg._output == error
+        assert not msg._output.startswith("$ ")
+
+    def test_shell_error_with_whitespace_command(self) -> None:
+        """Shell tool with whitespace command should fall back to error-only output."""
+        msg = ToolCallMessage("shell", {"command": "   "})
+        error = "Some error"
+        msg.set_error(error)
+
+        assert msg._output == error
+
+    def test_shell_error_with_no_command_key(self) -> None:
+        """Shell tool with no command key should fall back to error-only output."""
+        msg = ToolCallMessage("shell", {"other_arg": "value"})
+        error = "Some error"
+        msg.set_error(error)
+
+        assert msg._output == error
+        assert not msg._output.startswith("$ ")
+
+    def test_format_shell_output_styles_command_line_dim(self) -> None:
+        """Shell output formatting should style command lines in dim."""
+        msg = ToolCallMessage("shell", {"command": "echo test"})
+        output = "$ echo test\ntest output"
+        formatted = msg._format_shell_output(output, is_preview=False)
+
+        # Command line should be wrapped in [dim] markup
+        assert "[dim]" in formatted
+        assert "$ echo test" in formatted
+        # Regular output should not be dim
+        assert "test output" in formatted

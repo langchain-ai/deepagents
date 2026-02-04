@@ -406,8 +406,12 @@ class ToolCallMessage(Vertical):
         self._stop_animation()
         self._status = "error"
         # For shell commands, prepend the full command so users can see what failed
-        if self._tool_name in {"shell", "bash", "execute"} and "command" in self._args:
-            command = str(self._args["command"])
+        command = (
+            self._args.get("command")
+            if self._tool_name in {"shell", "bash", "execute"}
+            else None
+        )
+        if command and isinstance(command, str) and command.strip():
             self._output = f"$ {command}\n\n{error}"
         else:
             self._output = error

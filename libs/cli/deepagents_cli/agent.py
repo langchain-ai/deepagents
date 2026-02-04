@@ -3,14 +3,18 @@
 import os
 import shutil
 import tempfile
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+
+if TYPE_CHECKING:
+    from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from langchain.agents.middleware import (
     InterruptOnConfig,
 )
@@ -114,6 +118,10 @@ def get_system_prompt(
 ) -> str:
     """Get the base system prompt for the agent.
 
+    This includes:
+    1. The immutable base instructions from default_agent_prompt.md
+    2. Environment-specific context (working directory, model info, etc.)
+
     Args:
         assistant_id: The agent identifier for path references
         sandbox_type: Sandbox provider type (modal/runloop/daytona/langsmith).
@@ -122,8 +130,10 @@ def get_system_prompt(
             If None, uses the sandbox provider's default.
 
     Returns:
-        The system prompt string (without AGENTS.md content)
+        The system prompt string (base instructions + environment context)
     """
+    # Always load base instructions fresh from package
+    base_instructions = get_default_coding_instructions()
     agent_dir_path = f"~/.deepagents/{assistant_id}"
 
     # Build model identity section
@@ -174,7 +184,9 @@ The filesystem backend is currently operating in: `{cwd}`
 """  # noqa: E501
 
     return (
-        model_identity_section
+        base_instructions
+        + "\n\n---\n\n"
+        + model_identity_section
         + working_dir_section
         + f"""### Skills Directory
 
@@ -402,7 +414,7 @@ def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
     *,
-    tools: list[BaseTool] | None = None,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
     system_prompt: str | None = None,
@@ -415,24 +427,27 @@ def create_cli_agent(
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
-    This is the main entry point for creating a deepagents CLI agent, usable both
-    internally and from external code (e.g., benchmarking frameworks, Harbor).
+    This is the main entry point for creating a deepagents CLI agent, usable
+    both internally and from external code (e.g., benchmarking frameworks).
 
     Args:
-        model: LLM model to use (e.g., "anthropic:claude-sonnet-4-5-20250929")
+        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-5-20250929'`)
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
         sandbox: Optional sandbox backend for remote execution.
             If None, uses local filesystem + shell.
         sandbox_type: Sandbox provider type (modal/runloop/daytona/langsmith).
             Used for system prompt generation.
-        system_prompt: Override the default system prompt. If None, generates one
-            based on sandbox_type and assistant_id.
-        auto_approve: If True, automatically approves all tool calls without human
-            confirmation. Useful for automated workflows.
-        enable_memory: Enable MemoryMiddleware for persistent memory
-        enable_skills: Enable SkillsMiddleware for custom agent skills
-        enable_shell: Enable ShellMiddleware for local shell execution
+        system_prompt: Override the default system prompt.
+
+            If `None`, generates one based on `sandbox_type` and `assistant_id`.
+        auto_approve: If `True`, automatically approves all tool calls without
+            human confirmation.
+
+            Useful for automated workflows.
+        enable_memory: Enable `MemoryMiddleware` for persistent memory
+        enable_skills: Enable `SkillsMiddleware` for custom agent skills
+        enable_shell: Enable `ShellMiddleware` for local shell execution
             (only in local mode)
         checkpointer: Optional checkpointer for session persistence. If None, uses
             InMemorySaver (no persistence across CLI invocations).
@@ -440,9 +455,11 @@ def create_cli_agent(
             If None, uses the sandbox provider's default.
 
     Returns:
-        2-tuple of (agent_graph, backend)
-        - agent_graph: Configured LangGraph Pregel instance ready for execution
-        - composite_backend: CompositeBackend for file operations
+        2-tuple of `(agent_graph, backend)`
+
+            - `agent_graph`: Configured LangGraph Pregel instance ready
+                for execution
+            - `composite_backend`: `CompositeBackend` for file operations
     """
     tools = tools or []
 
@@ -451,8 +468,9 @@ def create_cli_agent(
         agent_dir = settings.ensure_agent_dir(assistant_id)
         agent_md = agent_dir / "AGENTS.md"
         if not agent_md.exists():
-            source_content = get_default_coding_instructions()
-            agent_md.write_text(source_content)
+            # Create empty file for user customizations
+            # Base instructions are loaded fresh from get_system_prompt()
+            agent_md.touch()
 
     # Skills directories (if enabled)
     skills_dir = None
@@ -462,7 +480,7 @@ def create_cli_agent(
         project_skills_dir = settings.get_project_skills_dir()
 
     # Load custom subagents from filesystem
-    custom_subagents: list[dict] = []
+    custom_subagents: list[SubAgent | CompiledSubAgent] = []
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = settings.get_project_agents_dir()
 
@@ -470,7 +488,7 @@ def create_cli_agent(
         user_agents_dir=user_agents_dir,
         project_agents_dir=project_agents_dir,
     ):
-        subagent: dict = {
+        subagent: SubAgent = {
             "name": subagent_meta["name"],
             "description": subagent_meta["description"],
             "system_prompt": subagent_meta["system_prompt"],

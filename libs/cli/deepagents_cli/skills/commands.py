@@ -232,6 +232,11 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
             )
             return
         skills_dir = settings.ensure_project_skills_dir()
+        if skills_dir is None:
+            console.print(
+                "[bold red]Error:[/bold red] Could not create project skills directory."
+            )
+            return
     else:
         skills_dir = settings.ensure_user_skills_dir(agent)
 

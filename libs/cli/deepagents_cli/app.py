@@ -34,6 +34,9 @@ from deepagents_cli.widgets.status import StatusBar
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
@@ -44,7 +47,9 @@ class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 
     def __init__(
-        self, update_callback: callable, hide_callback: callable | None = None
+        self,
+        update_callback: Callable[[int], None],
+        hide_callback: Callable[[], None] | None = None,
     ) -> None:
         """Initialize with callbacks to update the display."""
         self._update_callback = update_callback
@@ -368,10 +373,10 @@ class DeepAgentsApp(App):
         # (but not when resuming - let user see history first)
         elif self._initial_prompt and self._initial_prompt.strip():
             # Use call_after_refresh to ensure UI is fully mounted before submitting
+            # Capture value for closure to satisfy type checker
+            prompt = self._initial_prompt
             self.call_after_refresh(
-                lambda: asyncio.create_task(
-                    self._handle_user_message(self._initial_prompt)
-                )
+                lambda: asyncio.create_task(self._handle_user_message(prompt))
             )
 
     def on_resize(self, _event: Resize) -> None:
@@ -569,9 +574,16 @@ class DeepAgentsApp(App):
                 cwd=self._cwd,
                 timeout=60,
             )
-            output = result.stdout.strip()
-            if result.stderr:
-                output += f"\n[stderr]\n{result.stderr.strip()}"
+            # text=True ensures stdout/stderr are str, not bytes
+            stdout = result.stdout
+            stderr = result.stderr
+            if not isinstance(stdout, str):
+                stdout = stdout.decode() if stdout else ""
+            output = stdout.strip()
+            if stderr:
+                if not isinstance(stderr, str):
+                    stderr = stderr.decode() if stderr else ""
+                output += f"\n[stderr]\n{stderr.strip()}"
 
             if output:
                 # Display output as assistant message (uses markdown for code blocks)
@@ -723,6 +735,9 @@ class DeepAgentsApp(App):
 
         This runs in a worker thread so the main event loop stays responsive.
         """
+        # Caller ensures _ui_adapter is set (checked in _handle_user_message)
+        if self._ui_adapter is None:
+            return
         try:
             await execute_task_textual(
                 user_input=message,
@@ -764,7 +779,7 @@ class DeepAgentsApp(App):
         if not self._agent or not self._lc_thread_id:
             return
 
-        config = {"configurable": {"thread_id": self._lc_thread_id}}
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
         try:
             # Get the state snapshot from the agent
@@ -871,7 +886,9 @@ class DeepAgentsApp(App):
             # Don't fail the app if history loading fails
             await self._mount_message(SystemMessage(f"Could not load history: {e}"))
 
-    async def _mount_message(self, widget: Static) -> None:
+    async def _mount_message(
+        self, widget: Static | AssistantMessage | ToolCallMessage
+    ) -> None:
         """Mount a message widget to the messages area.
 
         Args:

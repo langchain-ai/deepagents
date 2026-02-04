@@ -25,7 +25,10 @@ if not hasattr(aiosqlite.Connection, "is_alive"):
         """
         return self._connection is not None
 
-    aiosqlite.Connection.is_alive = _is_alive
+    # Dynamically adding a method to aiosqlite.Connection at runtime.
+    # Type checkers can't understand this monkey-patch, so we suppress the
+    # "attr-defined" error that would otherwise be raised.
+    aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
 
 
 def _format_timestamp(iso_timestamp: str | None) -> str:

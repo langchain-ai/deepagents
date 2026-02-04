@@ -137,7 +137,9 @@ class CommandCompleter(Completer):
     """Activate command completion only when line starts with '/'."""
 
     def get_completions(
-        self, document: Document, _complete_event: CompleteEvent
+        self,
+        document: Document,
+        complete_event: CompleteEvent,  # noqa: ARG002
     ) -> Iterable[Completion]:
         """Get command completions when / is at the start.
 
@@ -379,8 +381,10 @@ def create_prompt_session(
             if not current_completion and buffer.complete_state.completions:
                 # Move to the first completion
                 buffer.complete_next()
-                # Now apply it
-                buffer.apply_completion(buffer.complete_state.current_completion)
+                # Now apply it (complete_next() ensures current_completion is set)
+                completion = buffer.complete_state.current_completion
+                if completion:
+                    buffer.apply_completion(completion)
             elif current_completion:
                 # Apply the already-selected completion
                 buffer.apply_completion(current_completion)

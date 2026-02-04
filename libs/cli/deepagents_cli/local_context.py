@@ -7,7 +7,7 @@ import shutil
 # S404: subprocess is required for git commands to detect project context
 import subprocess  # noqa: S404
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -444,11 +444,18 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return None
 
-    def before_agent(
+    # override - state parameter is intentionally narrowed from
+    # AgentState to LocalContextState for type safety within this middleware.
+    # This violates strict Liskov substitution but is safe since the middleware
+    # only processes its own state schema.
+    def before_agent(  # type: ignore[override]
         self,
         state: LocalContextState,
         runtime: Runtime,
-    ) -> LocalContextStateUpdate | None:
+    ) -> dict[str, Any] | None:
+        # Return type is dict[str, Any] rather than LocalContextStateUpdate to
+        # match the base class signature. At runtime, TypedDict is just dict, so
+        # this is functionally equivalent while satisfying the type checker.
         """Load local context before agent execution.
 
         Runs once at session start to preserve prompt caching.
@@ -547,7 +554,7 @@ class LocalContextMiddleware(AgentMiddleware):
             )
 
         local_context = "\n".join(sections)
-        return LocalContextStateUpdate(local_context=local_context)
+        return {"local_context": local_context}
 
     @staticmethod
     def _get_modified_request(request: ModelRequest) -> ModelRequest | None:

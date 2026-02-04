@@ -115,6 +115,19 @@ The release workflow (`.github/workflows/release.yml`) runs when a release PR is
 
 When you publish the draft release, `.github/workflows/release-publish.yml` triggers and publishes to PyPI.
 
+### Release PR Labels
+
+Release-please uses labels to track the state of release PRs:
+
+| Label | Meaning |
+| ----- | ------- |
+| `autorelease: pending` | Release PR has been merged but not yet tagged/released |
+| `autorelease: tagged` | Release PR has been successfully tagged and released |
+
+Because `skip-github-release: true` is set in the release-please config (we create releases via our own workflow instead of release-please), our `release.yml` workflow must update these labels manually. After successfully creating the GitHub release and tag, the `mark-release` job transitions the label from `pending` to `tagged`.
+
+This label transition signals to release-please that the merged PR has been fully processed, allowing it to create new release PRs for subsequent commits.
+
 ## Manual Release
 
 For hotfixes or exceptional cases, you can trigger a release manually. Use the `hotfix` commit type so as to not trigger a further PR update/version bump.
@@ -151,6 +164,22 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 - The lockfile update commit (e.g., `chore: update lockfiles`)
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
+
+### Release PR Stuck with "autorelease: pending" Label
+
+If a release PR shows `autorelease: pending` after the release workflow completed, the label update step may have failed. This can block release-please from creating new release PRs.
+
+**To fix manually:**
+
+```bash
+# Find the PR number for the release commit
+gh pr list --state merged --search "release(deepagents-cli)" --limit 5
+
+# Update the label
+gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+```
+
+The label update is non-fatal in the workflow (`|| true`), so the release itself succeeded—only the label needs fixing.
 
 ### Yanking a Release
 

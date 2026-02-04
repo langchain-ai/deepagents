@@ -11,7 +11,7 @@ deepagents.middleware.skills.SkillsMiddleware directly.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from deepagents.backends.filesystem import FilesystemBackend
 
@@ -71,7 +71,8 @@ def list_skills(
         user_backend = FilesystemBackend(root_dir=str(user_skills_dir))
         user_skills = list_skills_from_backend(backend=user_backend, source_path=".")
         for skill in user_skills:
-            extended_skill: ExtendedSkillMetadata = {**skill, "source": "user"}
+            # cast() required: type checkers can't infer TypedDict from spread syntax
+            extended_skill = cast("ExtendedSkillMetadata", {**skill, "source": "user"})
             all_skills[skill["name"]] = extended_skill
 
     # 2. User agent skills (~/.agents/skills/) - overrides user deepagents
@@ -81,7 +82,8 @@ def list_skills(
             backend=user_agent_backend, source_path="."
         )
         for skill in user_agent_skills:
-            extended_skill: ExtendedSkillMetadata = {**skill, "source": "user"}
+            # cast() required: type checkers can't infer TypedDict from spread syntax
+            extended_skill = cast("ExtendedSkillMetadata", {**skill, "source": "user"})
             all_skills[skill["name"]] = extended_skill
 
     # 3. Project deepagents skills (.deepagents/skills/)
@@ -91,7 +93,10 @@ def list_skills(
             backend=project_backend, source_path="."
         )
         for skill in project_skills:
-            extended_skill: ExtendedSkillMetadata = {**skill, "source": "project"}
+            # cast() required: type checkers can't infer TypedDict from spread syntax
+            extended_skill = cast(
+                "ExtendedSkillMetadata", {**skill, "source": "project"}
+            )
             all_skills[skill["name"]] = extended_skill
 
     # 4. Project agent skills (.agents/skills/) - highest priority
@@ -103,7 +108,10 @@ def list_skills(
             backend=project_agent_backend, source_path="."
         )
         for skill in project_agent_skills:
-            extended_skill: ExtendedSkillMetadata = {**skill, "source": "project"}
+            # cast() required: type checkers can't infer TypedDict from spread syntax
+            extended_skill = cast(
+                "ExtendedSkillMetadata", {**skill, "source": "project"}
+            )
             all_skills[skill["name"]] = extended_skill
 
     return list(all_skills.values())

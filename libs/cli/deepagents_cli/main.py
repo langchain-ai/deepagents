@@ -90,7 +90,6 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
-
     parser.add_argument(
         "--version",
         action="version",

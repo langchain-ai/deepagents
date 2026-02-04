@@ -1,3 +1,4 @@
+import pytest
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
@@ -133,3 +134,39 @@ def test_store_backend_intercept_large_tool_result():
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
     assert stored_content.value["content"] == [large_content]
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected_file"),
+    [
+        ("def __init__(", "code.py"),  # Parentheses (not regex grouping)
+        ("str | int", "types.py"),  # Pipe (not regex OR)
+        ("[a-z]", "regex.py"),  # Brackets (not character class)
+        ("(.*)", "regex.py"),  # Multiple special chars
+        ("api.key", "config.json"),  # Dot (not "any character")
+        ("x * y", "math.py"),  # Asterisk (not "zero or more")
+        ("a^2", "math.py"),  # Caret (not line anchor)
+    ],
+)
+def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_file: str) -> None:
+    """Test that grep performs literal search with regex special characters."""
+    rt = make_runtime()
+    be = StoreBackend(rt)
+
+    # Create files with various special regex characters
+    files = {
+        "/code.py": "def __init__(self, arg):\n    pass",
+        "/types.py": "def func(x: str | int) -> None:\n    return x",
+        "/regex.py": "pattern = r'[a-z]+'\nchars = '(.*)'",
+        "/config.json": '{"api.key": "value", "url": "https://example.com"}',
+        "/math.py": "result = x * y + z\nformula = a^2 + b^2",
+    }
+
+    for path, content in files.items():
+        res = be.write(path, content)
+        assert res.error is None
+
+    # Test literal search with the pattern
+    matches = be.grep_raw(pattern, path="/")
+    assert isinstance(matches, list)
+    assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"

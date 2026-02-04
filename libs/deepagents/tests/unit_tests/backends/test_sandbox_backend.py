@@ -139,3 +139,38 @@ def test_sandbox_edit_with_special_strings() -> None:
     sandbox.edit("/test/file.txt", old_string, new_string, replace_all=True)
 
     assert sandbox.last_command is not None
+
+
+def test_sandbox_grep_literal_search() -> None:
+    """Test that grep performs literal search using grep -F flag."""
+    sandbox = MockSandbox()
+
+    # Override execute to return mock grep results
+    def mock_execute(command: str) -> ExecuteResponse:
+        sandbox.last_command = command
+        # Return mock grep output for literal search tests
+        if "grep" in command:
+            # Check that -F flag (fixed-strings/literal) is present in the flags
+            # -F can appear as standalone "-F" or combined like "-rHnF"
+            assert "-F" in command or "F" in command.split("grep")[1].split()[0], "grep should use -F flag for literal search"
+            return ExecuteResponse(
+                output="/test/code.py:1:def __init__(self):\n/test/types.py:1:str | int",
+                exit_code=0,
+                truncated=False,
+            )
+        return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+    sandbox.execute = mock_execute
+
+    # Test with parentheses (should be literal, not regex grouping)
+    matches = sandbox.grep_raw("def __init__(", path="/test")
+    assert isinstance(matches, list)
+    assert len(matches) == 2
+
+    # Test with pipe character (should be literal, not regex OR)
+    matches = sandbox.grep_raw("str | int", path="/test")
+    assert isinstance(matches, list)
+
+    # Verify the command uses grep -rHnF for literal search (combined flags)
+    assert sandbox.last_command is not None
+    assert "grep -rHnF" in sandbox.last_command

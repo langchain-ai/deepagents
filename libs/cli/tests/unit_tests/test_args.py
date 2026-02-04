@@ -29,7 +29,9 @@ class TestInitialPromptArg:
 
     def test_with_other_args(self) -> None:
         """Verify -m works alongside other arguments."""
-        with patch.object(sys, "argv", ["deepagents", "--agent", "myagent", "-m", "do something"]):
+        with patch.object(
+            sys, "argv", ["deepagents", "--agent", "myagent", "-m", "do something"]
+        ):
             args = parse_args()
         assert args.initial_prompt == "do something"
         assert args.agent == "myagent"

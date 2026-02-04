@@ -177,14 +177,15 @@ class TestToolCallMessageShellCommand:
         assert msg._output == error
         assert not msg._output.startswith("$ ")
 
-    def test_format_shell_output_styles_command_line_dim(self) -> None:
-        """Shell output formatting should style command lines in dim."""
+    def test_format_shell_output_styles_only_first_line_dim(self) -> None:
+        """Shell output formatting should only style the first command line in dim."""
         msg = ToolCallMessage("shell", {"command": "echo test"})
-        output = "$ echo test\ntest output"
+        # Include a line that looks like a command prompt in the output
+        output = "$ echo test\ntest output\n$ not a command"
         formatted = msg._format_shell_output(output, is_preview=False)
 
-        # Command line should be wrapped in [dim] markup
-        assert "[dim]" in formatted
-        assert "$ echo test" in formatted
-        # Regular output should not be dim
-        assert "test output" in formatted
+        # First line (the command) should be wrapped in [dim] markup
+        assert "[dim]$ echo test[/dim]" in formatted
+        # Subsequent lines starting with $ should NOT be dimmed
+        assert "$ not a command" in formatted
+        assert "[dim]$ not a command" not in formatted

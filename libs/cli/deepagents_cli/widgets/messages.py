@@ -717,10 +717,10 @@ class ToolCallMessage(Vertical):
         max_lines = 4 if is_preview else len(lines)  # Show all when expanded
 
         formatted_lines = []
-        for line in lines[:max_lines]:
+        for i, line in enumerate(lines[:max_lines]):
             escaped = self._escape_markup(line)
-            # Style the command line ($ prefix) in dim grey
-            if escaped.startswith("$ "):
+            # Style only the first line (the command) in dim grey
+            if i == 0 and escaped.startswith("$ "):
                 formatted_lines.append(f"[dim]{escaped}[/dim]")
             else:
                 formatted_lines.append(escaped)

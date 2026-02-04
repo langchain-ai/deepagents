@@ -23,9 +23,11 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import re
+import threading
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -123,16 +125,59 @@ def _extract_payload(mcp_output: Any) -> dict[str, Any]:
     return {}
 
 
+def _run_in_new_loop(coro):
+    """Run async coroutine in a new event loop in a separate thread.
+
+    This is necessary because MCP clients require their own clean event loop
+    and cannot be nested inside another running loop.
+    """
+    result = None
+    exception = None
+
+    def run():
+        nonlocal result, exception
+        try:
+            # Create a completely new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(coro)
+            finally:
+                # Clean up the loop
+                try:
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                finally:
+                    loop.close()
+        except Exception as e:
+            exception = e
+
+    # Run in a separate thread to avoid event loop conflicts
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout=120)  # 2 minute timeout
+
+    if thread.is_alive():
+        raise TimeoutError("MCP operation timed out after 120 seconds")
+
+    if exception is not None:
+        raise exception
+
+    return result
+
+
 def _run_async(coro):
-    """Run async coroutine in sync context."""
+    """Run async coroutine safely from sync context.
+
+    Handles the case where we might already be in an async context
+    by running the coroutine in a separate thread with its own event loop.
+    """
     try:
-        loop = asyncio.get_running_loop()
-        # If we're in an async context, create a task
-        import nest_asyncio
-        nest_asyncio.apply()
-        return asyncio.get_event_loop().run_until_complete(coro)
+        # Check if we're in an async context
+        asyncio.get_running_loop()
+        # We are in an async context - must run in separate thread
+        return _run_in_new_loop(coro)
     except RuntimeError:
-        # No running loop, create one
+        # No running loop - we can use asyncio.run directly
         return asyncio.run(coro)
 
 
@@ -147,92 +192,145 @@ async def _google_search_and_summarize_async(
     max_chars_per_page: int = 2500,
 ) -> dict[str, Any]:
     """Async implementation of Google search with web fetching."""
-    client = MultiServerMCPClient({
-        "gsearch": {
-            "transport": "stdio",
-            "command": "python",
-            "args": [GOOGLE_SEARCH_SERVER],
-        },
-        "fetcher": {
-            "transport": "stdio",
-            "command": "python",
-            "args": [WEB_FETCH_SERVER],
-        }
-    })
-
-    async with AsyncExitStack() as stack:
-        gsession = await stack.enter_async_context(client.session("gsearch"))
-        fsession = await stack.enter_async_context(client.session("fetcher"))
-
-        gtools = await load_mcp_tools(gsession)
-        ftools = await load_mcp_tools(fsession)
-
-        google_tool = next(t for t in gtools if t.name.endswith("google_search"))
-        fetch_tool = next(t for t in ftools if t.name.endswith("fetch_and_extract"))
-
-        # Step 1: Search
-        search_raw = await google_tool.ainvoke({
-            "query": query,
-            "num_results": num_results,
-            "lang": "lang_ko",
-            "country": "KR",
-            "safe": "active",
-        })
-        search_payload = _extract_payload(search_raw)
-        items = search_payload.get("items", [])[:fetch_top_n]
-
-        if not items:
-            return {
-                "success": False,
-                "query": query,
-                "error": "No search results found",
-                "sources": [],
-            }
-
-        # Step 2: Fetch pages concurrently
-        sem = asyncio.Semaphore(3)
-
-        async def fetch_one(item: dict[str, Any]) -> dict[str, Any]:
-            url = item.get("link", "")
-            if not url:
-                return {
-                    "url": "",
-                    "title": item.get("title", ""),
-                    "text": "",
-                    "error": "missing url"
-                }
-            async with sem:
-                raw = await fetch_tool.ainvoke({
-                    "url": url,
-                    "max_chars": max_chars_per_page,
-                    "timeout": 20
-                })
-            payload = _extract_payload(raw)
-            return {
-                "title": item.get("title", "") or payload.get("title", ""),
-                "url": url,
-                "snippet": item.get("snippet", ""),
-                "text": payload.get("text", ""),
-                "content_type": payload.get("content_type", ""),
-            }
-
-        results = await asyncio.gather(
-            *[fetch_one(item) for item in items],
-            return_exceptions=True
-        )
-
-        sources = []
-        for item, result in zip(items, results):
-            if isinstance(result, Exception):
-                continue
-            if isinstance(result, dict):
-                sources.append(result)
-
+    # Validate MCP server paths
+    if not os.path.exists(GOOGLE_SEARCH_SERVER):
         return {
-            "success": True,
+            "success": False,
             "query": query,
-            "num_sources": len(sources),
-            "sources": sources,
+            "error": f"Google search MCP server not found: {GOOGLE_SEARCH_SERVER}. "
+                     f"Set MCP_GOOGLE_SEARCH_SERVER environment variable.",
+            "sources": [],
+        }
+    if not os.path.exists(WEB_FETCH_SERVER):
+        return {
+            "success": False,
+            "query": query,
+            "error": f"Web fetch MCP server not found: {WEB_FETCH_SERVER}. "
+                     f"Set MCP_WEB_FETCH_SERVER environment variable.",
+            "sources": [],
+        }
+
+    try:
+        client = MultiServerMCPClient({
+            "gsearch": {
+                "transport": "stdio",
+                "command": "python",
+                "args": [GOOGLE_SEARCH_SERVER],
+            },
+            "fetcher": {
+                "transport": "stdio",
+                "command": "python",
+                "args": [WEB_FETCH_SERVER],
+            }
+        })
+
+        async with AsyncExitStack() as stack:
+            gsession = await stack.enter_async_context(client.session("gsearch"))
+            fsession = await stack.enter_async_context(client.session("fetcher"))
+
+            gtools = await load_mcp_tools(gsession)
+            ftools = await load_mcp_tools(fsession)
+
+            google_tool = next((t for t in gtools if "google" in t.name.lower() or "search" in t.name.lower()), None)
+            fetch_tool = next((t for t in ftools if "fetch" in t.name.lower() or "extract" in t.name.lower()), None)
+
+            if google_tool is None:
+                return {
+                    "success": False,
+                    "query": query,
+                    "error": f"No google search tool found. Available tools: {[t.name for t in gtools]}",
+                    "sources": [],
+                }
+
+            # Step 1: Search
+            search_raw = await google_tool.ainvoke({
+                "query": query,
+                "num_results": num_results,
+                "lang": "lang_ko",
+                "country": "KR",
+                "safe": "active",
+            })
+            search_payload = _extract_payload(search_raw)
+            items = search_payload.get("items", [])[:fetch_top_n]
+
+            if not items:
+                return {
+                    "success": False,
+                    "query": query,
+                    "error": "No search results found",
+                    "sources": [],
+                }
+
+            # Step 2: Fetch pages concurrently (only if fetch tool available)
+            if fetch_tool is None:
+                # Return search results without fetching
+                sources = [
+                    {
+                        "title": item.get("title", ""),
+                        "url": item.get("link", ""),
+                        "snippet": item.get("snippet", ""),
+                        "text": "",
+                    }
+                    for item in items
+                ]
+                return {
+                    "success": True,
+                    "query": query,
+                    "num_sources": len(sources),
+                    "sources": sources,
+                }
+
+            sem = asyncio.Semaphore(3)
+
+            async def fetch_one(item: dict[str, Any]) -> dict[str, Any]:
+                url = item.get("link", "")
+                if not url:
+                    return {
+                        "url": "",
+                        "title": item.get("title", ""),
+                        "text": "",
+                        "error": "missing url"
+                    }
+                async with sem:
+                    raw = await fetch_tool.ainvoke({
+                        "url": url,
+                        "max_chars": max_chars_per_page,
+                        "timeout": 20
+                    })
+                payload = _extract_payload(raw)
+                return {
+                    "title": item.get("title", "") or payload.get("title", ""),
+                    "url": url,
+                    "snippet": item.get("snippet", ""),
+                    "text": payload.get("text", ""),
+                    "content_type": payload.get("content_type", ""),
+                }
+
+            results = await asyncio.gather(
+                *[fetch_one(item) for item in items],
+                return_exceptions=True
+            )
+
+            sources = []
+            for item, result in zip(items, results):
+                if isinstance(result, Exception):
+                    continue
+                if isinstance(result, dict):
+                    sources.append(result)
+
+            return {
+                "success": True,
+                "query": query,
+                "num_sources": len(sources),
+                "sources": sources,
+            }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "query": query,
+            "error": f"MCP connection failed: {type(e).__name__}: {str(e)}",
+            "sources": [],
         }
 
 
@@ -290,41 +388,71 @@ async def _rag_search_async(
     vectorstore_dir: str = "vectorstore.db",
 ) -> dict[str, Any]:
     """Async implementation of RAG search."""
-    client = MultiServerMCPClient({
-        "local_rag": {
-            "transport": "stdio",
-            "command": "python",
-            "args": [RAG_SERVER],
-            "env": {"RAG_VECTORSTORE_DIR": vectorstore_dir},
+    # Validate MCP server path
+    if not os.path.exists(RAG_SERVER):
+        return {
+            "success": False,
+            "query": query,
+            "error": f"RAG MCP server not found: {RAG_SERVER}. "
+                     f"Set MCP_RAG_SERVER environment variable.",
+            "documents": [],
         }
-    })
 
-    async with client.session("local_rag") as session:
-        tools = await load_mcp_tools(session)
-        retrieve_tool = next(t for t in tools if t.name.endswith("rag_retrieve"))
-
-        raw = await retrieve_tool.ainvoke({"query": query, "k": k})
-        payload = _extract_payload(raw)
-
-    # Convert sources to standardized format
-    sources = payload.get("sources", [])
-    documents = []
-    for s in sources:
-        if not isinstance(s, dict):
-            continue
-        documents.append({
-            "content": s.get("content", ""),
-            "metadata": s.get("metadata", {}),
-            "rank": s.get("rank", 0),
+    try:
+        client = MultiServerMCPClient({
+            "local_rag": {
+                "transport": "stdio",
+                "command": "python",
+                "args": [RAG_SERVER],
+                "env": {"RAG_VECTORSTORE_DIR": vectorstore_dir},
+            }
         })
 
-    return {
-        "success": True,
-        "query": query,
-        "k": k,
-        "num_documents": len(documents),
-        "documents": documents,
-    }
+        async with client.session("local_rag") as session:
+            tools = await load_mcp_tools(session)
+            retrieve_tool = next(
+                (t for t in tools if "rag" in t.name.lower() or "retrieve" in t.name.lower()),
+                tools[0] if tools else None
+            )
+
+            if retrieve_tool is None:
+                return {
+                    "success": False,
+                    "query": query,
+                    "error": "No RAG retrieve tool found",
+                    "documents": [],
+                }
+
+            raw = await retrieve_tool.ainvoke({"query": query, "k": k})
+            payload = _extract_payload(raw)
+
+        # Convert sources to standardized format
+        sources = payload.get("sources", [])
+        documents = []
+        for s in sources:
+            if not isinstance(s, dict):
+                continue
+            documents.append({
+                "content": s.get("content", ""),
+                "metadata": s.get("metadata", {}),
+                "rank": s.get("rank", 0),
+            })
+
+        return {
+            "success": True,
+            "query": query,
+            "k": k,
+            "num_documents": len(documents),
+            "documents": documents,
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "query": query,
+            "error": f"MCP connection failed: {type(e).__name__}: {str(e)}",
+            "documents": [],
+        }
 
 
 def rag_search(
@@ -382,34 +510,75 @@ async def _weather_forecast_async(
             "success": False,
             "error": "City name is required",
             "city": city,
+            "forecast": {},
         }
 
-    client = MultiServerMCPClient({
-        "openweather": {
-            "transport": "stdio",
-            "command": "python",
-            "args": [WEATHER_SERVER],
-            "env": {"OWM_API_KEY": os.environ.get("OPENWEATHER_API_KEY", "")},
+    # Validate MCP server path
+    if not os.path.exists(WEATHER_SERVER):
+        return {
+            "success": False,
+            "city": city,
+            "error": f"Weather MCP server not found: {WEATHER_SERVER}. "
+                     f"Set MCP_WEATHER_SERVER environment variable.",
+            "forecast": {},
         }
-    })
 
-    tools = await client.get_tools()
-    weather_tool = next(t for t in tools if t.name.endswith("get_weather_5day"))
+    # Check API key
+    api_key = os.environ.get("OPENWEATHER_API_KEY", "")
+    if not api_key:
+        return {
+            "success": False,
+            "city": city,
+            "error": "OPENWEATHER_API_KEY environment variable not set.",
+            "forecast": {},
+        }
 
-    result = await weather_tool.ainvoke({
-        "city": city,
-        "units": units,
-        "lang": lang,
-    })
+    try:
+        client = MultiServerMCPClient({
+            "openweather": {
+                "transport": "stdio",
+                "command": "python",
+                "args": [WEATHER_SERVER],
+                "env": {"OWM_API_KEY": api_key},
+            }
+        })
 
-    payload = _extract_payload(result)
+        tools = await client.get_tools()
+        weather_tool = next(
+            (t for t in tools if "weather" in t.name.lower()),
+            tools[0] if tools else None
+        )
 
-    return {
-        "success": True,
-        "city": city,
-        "units": units,
-        "forecast": payload,
-    }
+        if weather_tool is None:
+            return {
+                "success": False,
+                "city": city,
+                "error": "No weather tool found in MCP server",
+                "forecast": {},
+            }
+
+        result = await weather_tool.ainvoke({
+            "city": city,
+            "units": units,
+            "lang": lang,
+        })
+
+        payload = _extract_payload(result)
+
+        return {
+            "success": True,
+            "city": city,
+            "units": units,
+            "forecast": payload,
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "city": city,
+            "error": f"MCP connection failed: {type(e).__name__}: {str(e)}",
+            "forecast": {},
+        }
 
 
 def weather_forecast(
@@ -497,54 +666,74 @@ async def _sentinel_search_async(
     cloud_cover_max: int | None = None,
 ) -> dict[str, Any]:
     """Async implementation of Sentinel satellite search."""
-    client = MultiServerMCPClient({
-        "sentinel": {
-            "transport": "stdio",
-            "command": "python",
-            "args": [SENTINEL_SERVER],
+    # Validate MCP server path
+    if not os.path.exists(SENTINEL_SERVER):
+        return {
+            "success": False,
+            "query": query,
+            "error": f"Sentinel MCP server not found: {SENTINEL_SERVER}. "
+                     f"Set MCP_SENTINEL_SERVER environment variable.",
+            "results": {},
         }
-    })
 
-    async with client.session("sentinel") as session:
-        tools = await load_mcp_tools(session)
-
-        # Find the sentinel search tool
-        search_tool = None
-        for t in tools:
-            if "sentinel" in t.name.lower() and ("search" in t.name.lower() or "query" in t.name.lower()):
-                search_tool = t
-                break
-
-        if search_tool is None:
-            # Fallback: use first available tool
-            search_tool = tools[0] if tools else None
-
-        if search_tool is None:
-            return {
-                "success": False,
-                "error": "No Sentinel search tool available",
-                "query": query,
+    try:
+        client = MultiServerMCPClient({
+            "sentinel": {
+                "transport": "stdio",
+                "command": "python",
+                "args": [SENTINEL_SERVER],
             }
+        })
 
-        # Build search parameters
-        params = {"query": query}
-        if sensor:
-            params["sensor"] = sensor
-        if aoi:
-            params["aoi"] = aoi
-        if date_range:
-            params["date_range"] = date_range
-        if cloud_cover_max is not None:
-            params["cloud_cover_max"] = cloud_cover_max
+        async with client.session("sentinel") as session:
+            tools = await load_mcp_tools(session)
 
-        raw = await search_tool.ainvoke(params)
-        payload = _extract_payload(raw)
+            # Find the sentinel search tool
+            search_tool = None
+            for t in tools:
+                if "sentinel" in t.name.lower() or "search" in t.name.lower() or "query" in t.name.lower():
+                    search_tool = t
+                    break
 
-    return {
-        "success": True,
-        "query": query,
-        "results": payload,
-    }
+            if search_tool is None:
+                # Fallback: use first available tool
+                search_tool = tools[0] if tools else None
+
+            if search_tool is None:
+                return {
+                    "success": False,
+                    "error": "No Sentinel search tool available",
+                    "query": query,
+                    "results": {},
+                }
+
+            # Build search parameters
+            params = {"query": query}
+            if sensor:
+                params["sensor"] = sensor
+            if aoi:
+                params["aoi"] = aoi
+            if date_range:
+                params["date_range"] = date_range
+            if cloud_cover_max is not None:
+                params["cloud_cover_max"] = cloud_cover_max
+
+            raw = await search_tool.ainvoke(params)
+            payload = _extract_payload(raw)
+
+        return {
+            "success": True,
+            "query": query,
+            "results": payload,
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "query": query,
+            "error": f"MCP connection failed: {type(e).__name__}: {str(e)}",
+            "results": {},
+        }
 
 
 def sentinel_search(

@@ -94,12 +94,16 @@ def _get_macos_clipboard_image() -> ImageData | None:
                         format="png",  # 'pngpaste -' always outputs PNG
                         placeholder="[image]",
                     )
-                except (UnidentifiedImageError, OSError) as e:
+                except (
+                    # UnidentifiedImageError: corrupted or non-image data
+                    UnidentifiedImageError,
+                    OSError,  # OSError: I/O errors during image processing
+                ) as e:
                     logger.debug(
                         "Invalid image data from pngpaste: %s", e, exc_info=True
                     )
         except FileNotFoundError:
-            pass  # pngpaste not installed - expected on systems without it
+            pass  # pngpaste not installed or times out - expected on systems without it
         except subprocess.TimeoutExpired:
             logger.debug("pngpaste timed out after 2 seconds")
 
@@ -197,7 +201,11 @@ def _get_clipboard_via_osascript() -> ImageData | None:
                 format="png",
                 placeholder="[image]",
             )
-        except (UnidentifiedImageError, OSError) as e:
+        except (
+            # UnidentifiedImageError: corrupted or non-image data
+            UnidentifiedImageError,
+            OSError,  # OSError: I/O errors during image processing
+        ) as e:
             logger.debug(
                 "Failed to process clipboard image via osascript: %s", e, exc_info=True
             )

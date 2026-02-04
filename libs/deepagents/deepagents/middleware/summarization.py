@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables.config import RunnableConfig
     from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         trigger: ContextSize | list[ContextSize] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,

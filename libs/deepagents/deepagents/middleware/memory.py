@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 from langchain_core.runnables import RunnableConfig
 
 if TYPE_CHECKING:
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -169,7 +169,7 @@ class MemoryMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         sources: list[str],
     ) -> None:
         """Initialize the memory middleware.

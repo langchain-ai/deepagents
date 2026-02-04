@@ -19,15 +19,15 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
-from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import (
-    BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,
     WriteResult,
+    _warn_factory_deprecated,
 )
+from deepagents.backends.state import StateBackend
 from deepagents.backends.utils import (
     format_content_with_line_numbers,
     format_grep_matches,
@@ -438,7 +438,7 @@ class FilesystemMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES | None = None,
+        backend: BackendProtocol | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
@@ -446,14 +446,14 @@ class FilesystemMiddleware(AgentMiddleware):
         """Initialize the filesystem middleware.
 
         Args:
-            backend: Backend for file storage and optional execution, or a factory callable.
+            backend: Backend for file storage and optional execution.
                 Defaults to StateBackend if not provided.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
         """
-        # Use provided backend or default to StateBackend factory
-        self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+        # Use provided backend or default to StateBackend
+        self.backend: BackendProtocol = backend if backend is not None else StateBackend()
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -471,15 +471,19 @@ class FilesystemMiddleware(AgentMiddleware):
         ]
 
     def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Get the resolved backend instance from backend or factory.
+        """Get the resolved backend instance.
 
         Args:
-            runtime: The tool runtime context.
+            runtime: The tool runtime context (unused, for backwards compat).
 
         Returns:
-            Resolved backend instance.
+            The backend instance.
+
+        Note:
+            Factory pattern support is deprecated and will be removed in 0.5.
         """
         if callable(self.backend):
+            _warn_factory_deprecated()
             return self.backend(runtime)
         return self.backend
 

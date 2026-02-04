@@ -1,8 +1,10 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
-from typing import TYPE_CHECKING
+import warnings
+from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
+    BackendContext,
     BackendProtocol,
     EditResult,
     FileDownloadResponse,
@@ -35,23 +37,67 @@ class StateBackend(BackendProtocol):
     Special handling: Since LangGraph state must be updated via Command objects
     (not direct mutation), operations return Command objects instead of None.
     This is indicated by the uses_state=True flag.
+
+    .. versionchanged:: 0.4
+        The `runtime` parameter is now optional and deprecated.
+        Pass `ctx` to individual methods instead.
     """
 
-    def __init__(self, runtime: "ToolRuntime"):
-        """Initialize StateBackend with runtime."""
-        self.runtime = runtime
+    def __init__(self, runtime: "ToolRuntime | None" = None):
+        """Initialize StateBackend.
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+        Args:
+            runtime: Optional ToolRuntime for backwards compatibility.
+                Deprecated: pass `ctx` to individual methods instead.
+
+        .. deprecated:: 0.4
+            The `runtime` parameter is deprecated and will be removed in 0.5.
+            Pass `ctx` to individual methods instead.
+        """
+        if runtime is not None:
+            warnings.warn(
+                "Passing `runtime` to StateBackend is deprecated and will be removed in 0.5. Pass `ctx` to individual methods instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self._runtime = runtime
+
+    def _get_files(self, ctx: "BackendContext | None") -> dict[str, Any]:
+        """Get files dict from context or runtime.
+
+        Args:
+            ctx: Optional backend context.
+
+        Returns:
+            Files dict from state.
+
+        Raises:
+            ValueError: If neither ctx nor runtime is available.
+        """
+        if ctx is not None:
+            return ctx.state.get("files", {})
+        if self._runtime is not None:
+            return self._runtime.state.get("files", {})
+        msg = "Either ctx must be passed to the method or runtime must be set in __init__"
+        raise ValueError(msg)
+
+    def ls_info(
+        self,
+        path: str,
+        *,
+        ctx: "BackendContext | None" = None,
+    ) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
             path: Absolute path to directory.
+            ctx: Optional backend context for accessing state.
 
         Returns:
             List of FileInfo-like dicts for files and directories directly in the directory.
             Directories have a trailing / in their path and is_dir=True.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._get_files(ctx)
         infos: list[FileInfo] = []
         subdirs: set[str] = set()
 
@@ -103,6 +149,8 @@ class StateBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> str:
         """Read file content with line numbers.
 
@@ -110,11 +158,12 @@ class StateBackend(BackendProtocol):
             file_path: Absolute file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            ctx: Optional backend context for accessing state.
 
         Returns:
             Formatted file content with line numbers, or error message.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._get_files(ctx)
         file_data = files.get(file_path)
 
         if file_data is None:
@@ -126,11 +175,20 @@ class StateBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> WriteResult:
         """Create a new file with content.
-        Returns WriteResult with files_update to update LangGraph state.
+
+        Args:
+            file_path: Absolute path where the file should be created.
+            content: String content to write to the file.
+            ctx: Optional backend context for accessing state.
+
+        Returns:
+            WriteResult with files_update to update LangGraph state.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._get_files(ctx)
 
         if file_path in files:
             return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
@@ -144,11 +202,22 @@ class StateBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
-        Returns EditResult with files_update and occurrences.
+
+        Args:
+            file_path: Absolute path to the file to edit.
+            old_string: Exact string to search for and replace.
+            new_string: String to replace old_string with.
+            replace_all: If True, replace all occurrences.
+            ctx: Optional backend context for accessing state.
+
+        Returns:
+            EditResult with files_update and occurrences.
         """
-        files = self.runtime.state.get("files", {})
+        files = self._get_files(ctx)
         file_data = files.get(file_path)
 
         if file_data is None:
@@ -167,15 +236,43 @@ class StateBackend(BackendProtocol):
     def grep_raw(
         self,
         pattern: str,
-        path: str = "/",
+        path: str | None = None,
         glob: str | None = None,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> list[GrepMatch] | str:
-        files = self.runtime.state.get("files", {})
-        return grep_matches_from_files(files, pattern, path, glob)
+        """Search for a literal text pattern in files.
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        """Get FileInfo for files matching glob pattern."""
-        files = self.runtime.state.get("files", {})
+        Args:
+            pattern: Literal string to search for.
+            path: Optional directory path to search in.
+            glob: Optional glob pattern to filter files.
+            ctx: Optional backend context for accessing state.
+
+        Returns:
+            List of GrepMatch on success, error string on failure.
+        """
+        files = self._get_files(ctx)
+        return grep_matches_from_files(files, pattern, path or "/", glob)
+
+    def glob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        ctx: "BackendContext | None" = None,
+    ) -> list[FileInfo]:
+        """Get FileInfo for files matching glob pattern.
+
+        Args:
+            pattern: Glob pattern to match files.
+            path: Base directory to search from.
+            ctx: Optional backend context for accessing state.
+
+        Returns:
+            List of FileInfo for matching files.
+        """
+        files = self._get_files(ctx)
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":
             return []
@@ -194,30 +291,45 @@ class StateBackend(BackendProtocol):
             )
         return infos
 
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+    def upload_files(
+        self,
+        files: list[tuple[str, bytes]],
+        *,
+        ctx: "BackendContext | None" = None,
+    ) -> list[FileUploadResponse]:
         """Upload multiple files to state.
 
         Args:
-            files: List of (path, content) tuples to upload
+            files: List of (path, content) tuples to upload.
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
-            List of FileUploadResponse objects, one per input file
+            List of FileUploadResponse objects, one per input file.
+
+        Raises:
+            NotImplementedError: StateBackend does not support upload_files yet.
         """
         raise NotImplementedError(
             "StateBackend does not support upload_files yet. You can upload files "
             "directly by passing them in invoke if you're storing files in the memory."
         )
 
-    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+    def download_files(
+        self,
+        paths: list[str],
+        *,
+        ctx: "BackendContext | None" = None,
+    ) -> list[FileDownloadResponse]:
         """Download multiple files from state.
 
         Args:
-            paths: List of file paths to download
+            paths: List of file paths to download.
+            ctx: Optional backend context for accessing state.
 
         Returns:
-            List of FileDownloadResponse objects, one per input path
+            List of FileDownloadResponse objects, one per input path.
         """
-        state_files = self.runtime.state.get("files", {})
+        state_files = self._get_files(ctx)
         responses: list[FileDownloadResponse] = []
 
         for path in paths:

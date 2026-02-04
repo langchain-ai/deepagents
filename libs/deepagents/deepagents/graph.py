@@ -19,7 +19,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
 from deepagents.backends import StateBackend
-from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -55,7 +55,7 @@ def create_deep_agent(
     context_schema: type[Any] | None = None,
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
-    backend: BackendProtocol | BackendFactory | None = None,
+    backend: BackendProtocol | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     debug: bool = False,
     name: str | None = None,
@@ -122,7 +122,7 @@ def create_deep_agent(
         store: Optional store for persistent storage (required if backend uses `StoreBackend`).
         backend: Optional backend for file storage and execution.
 
-            Pass either a `Backend` instance or a callable factory like `lambda rt: StateBackend(rt)`.
+            Pass a `BackendProtocol` instance. Defaults to `StateBackend()`.
             For execution support, use a backend that implements `SandboxBackendProtocol`.
         interrupt_on: Mapping of tool names to interrupt configs.
 
@@ -166,7 +166,7 @@ def create_deep_agent(
         TodoListMiddleware(),
     ]
 
-    backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+    backend = backend if backend is not None else StateBackend()
 
     if skills is not None:
         subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))

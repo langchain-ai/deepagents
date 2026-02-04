@@ -99,7 +99,7 @@ import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
 
 if TYPE_CHECKING:
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
 
 from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict
@@ -502,7 +502,7 @@ class SkillsMiddleware(AgentMiddleware):
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BACKEND_TYPES, sources: list[str]) -> None:
+    def __init__(self, *, backend: BackendProtocol, sources: list[str]) -> None:
         """Initialize the skills middleware.
 
         Args:

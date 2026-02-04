@@ -1,7 +1,10 @@
+from dataclasses import dataclass
+from typing import Never
+
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.backends.protocol import BackendContext, EditResult, WriteResult
 from deepagents.backends.store import StoreBackend
 
 
@@ -18,7 +21,7 @@ def make_runtime():
 
 def test_store_backend_crud_and_search():
     rt = make_runtime()
-    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem",))
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
 
     # write new file
     msg = be.write("/docs/readme.md", "hello store")
@@ -50,7 +53,7 @@ def test_store_backend_crud_and_search():
 
 def test_store_backend_ls_nested_directories():
     rt = make_runtime()
-    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem",))
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
 
     files = {
         "/src/main.py": "main code",
@@ -93,7 +96,7 @@ def test_store_backend_ls_nested_directories():
 
 def test_store_backend_ls_trailing_slash():
     rt = make_runtime()
-    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem",))
+    be = StoreBackend(rt, namespace=lambda _ctx: ("filesystem",))
 
     files = {
         "/file.txt": "content",
@@ -120,7 +123,7 @@ def test_store_backend_intercept_large_tool_result():
     from deepagents.middleware.filesystem import FilesystemMiddleware
 
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r, namespace=lambda ctx: ("filesystem",)), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",)), tool_token_limit_before_evict=1000)
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -135,12 +138,10 @@ def test_store_backend_intercept_large_tool_result():
     assert stored_content.value["content"] == [large_content]
 
 
-from dataclasses import dataclass
-
-
 @dataclass
 class UserContext:
     """Simple context object for testing."""
+
     user_id: str
     workspace_id: str | None = None
 
@@ -205,7 +206,7 @@ def test_store_backend_namespace_isolation() -> None:
     """Test that different users have isolated namespaces."""
     store = InMemoryStore()
 
-    def user_namespace(ctx):
+    def user_namespace(ctx: BackendContext) -> tuple[str, ...]:
         return ("filesystem", ctx.runtime.context.user_id)
 
     # User alice
@@ -250,8 +251,9 @@ def test_store_backend_namespace_error_handling() -> None:
     """Test that factory errors propagate correctly."""
     import pytest
 
-    def bad_factory(ctx):
-        raise KeyError("user_id")
+    def bad_factory(_ctx: BackendContext) -> Never:
+        msg = "user_id"
+        raise KeyError(msg)
 
     rt = ToolRuntime(
         state={"messages": []},
@@ -301,7 +303,7 @@ def test_store_backend_namespace_with_state() -> None:
     """Test that namespace factory receives state via BackendContext."""
     store = InMemoryStore()
 
-    def namespace_from_state(ctx):
+    def namespace_from_state(ctx: BackendContext) -> tuple[str, ...]:
         # Use something from state to build namespace
         thread_id = ctx.state.get("thread_id", "default")
         return ("threads", thread_id)

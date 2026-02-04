@@ -369,29 +369,6 @@ class TestSubagentMiddleware:
 
     # ========== Tests for deprecated API ==========
 
-    @pytest.mark.parametrize(
-        ("deprecated_kwarg", "extra_kwargs"),
-        [
-            ("default_model", {"default_model": "gpt-4o-mini"}),
-            ("default_tools", {"default_model": "gpt-4o-mini", "default_tools": [get_weather]}),
-            ("default_middleware", {"default_model": "gpt-4o-mini", "default_middleware": [PatchToolCallsMiddleware()]}),
-            ("general_purpose_middleware", {"default_model": "gpt-4o-mini", "general_purpose_middleware": [PatchToolCallsMiddleware()]}),
-            ("default_interrupt_on", {"default_model": "gpt-4o-mini", "default_interrupt_on": {"get_weather": True}}),
-            (
-                "general_purpose_agent",
-                {
-                    "default_model": "gpt-4o-mini",
-                    "general_purpose_agent": False,
-                    "subagents": [{"name": "custom", "description": "Custom", "system_prompt": "Custom.", "tools": []}],
-                },
-            ),
-        ],
-    )
-    def test_deprecated_api_emits_warning(self, deprecated_kwarg, extra_kwargs):
-        """Test that deprecated arguments emit deprecation warnings."""
-        with pytest.warns(DeprecationWarning, match=deprecated_kwarg):
-            SubAgentMiddleware(**extra_kwargs)
-
     def test_deprecated_api_still_works(self):
         """Test that the deprecated API still works for backward compatibility."""
         with pytest.warns(DeprecationWarning, match="default_model"):

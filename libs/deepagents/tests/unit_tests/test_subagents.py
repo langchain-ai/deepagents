@@ -1548,3 +1548,51 @@ class TestSubAgents:
         # Verify skills_metadata is NOT in the subagent state
         subagent_state = captured_subagent_states[0]
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
+
+
+class TestSubAgentMiddlewareValidation:
+    """Tests for SubAgentMiddleware initialization validation."""
+
+    def test_unknown_kwargs_raises_type_error(self) -> None:
+        """Test that passing unknown kwargs to SubAgentMiddleware raises TypeError.
+
+        This validates that deprecated_kwargs are properly validated and unknown
+        kwargs like 'fooofoobar' are caught and reported.
+        """
+        from deepagents.middleware.subagents import SubAgentMiddleware
+
+        with pytest.raises(TypeError, match="unexpected keyword argument.*fooofoobar"):
+            SubAgentMiddleware(
+                default_model="openai:gpt-4o",  # type: ignore[call-arg]
+                fooofoobar=2,  # type: ignore[call-arg]
+            )
+
+    def test_multiple_unknown_kwargs_reported(self) -> None:
+        """Test that multiple unknown kwargs are all reported in the error message."""
+        from deepagents.middleware.subagents import SubAgentMiddleware
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            SubAgentMiddleware(
+                default_model="openai:gpt-4o",  # type: ignore[call-arg]
+                unknown_arg_1=1,  # type: ignore[call-arg]
+                unknown_arg_2=2,  # type: ignore[call-arg]
+            )
+
+    def test_valid_deprecated_kwargs_accepted(self) -> None:
+        """Test that valid deprecated kwargs don't raise TypeError."""
+        import warnings
+
+        from deepagents.middleware.subagents import SubAgentMiddleware
+
+        # This should not raise TypeError, only emit a deprecation warning
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            SubAgentMiddleware(
+                default_model="openai:gpt-4o",  # type: ignore[call-arg]
+                default_tools=[],  # type: ignore[call-arg]
+            )
+
+        # Should have received deprecation warning but no TypeError
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "deprecated" in str(w[0].message).lower()

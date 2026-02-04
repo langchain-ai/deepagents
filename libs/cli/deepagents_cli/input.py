@@ -17,7 +17,7 @@ from prompt_toolkit.completion import (
 )
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.formatted_text import HTML, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.lexers import Lexer
 
@@ -176,8 +176,13 @@ class FilePathCompleter(Completer):
 class CommandCompleter(Completer):
     """Activate command completion only when line starts with '/'."""
 
+    # Parameter name must match parent class exactly for type checker
+    # compatibility, even though we don't use complete_event in this
+    # implementation.
     def get_completions(
-        self, document: Document, _complete_event: CompleteEvent
+        self,
+        document: Document,
+        complete_event: CompleteEvent,  # noqa: ARG002
     ) -> Iterable[Completion]:
         """Get command completions when / is at the start.
 
@@ -215,9 +220,7 @@ class MentionHighlightLexer(Lexer):
     - File mentions (e.g., @README.md) - highlighted anywhere in the input
     """
 
-    def lex_document(
-        self, document: Document
-    ) -> Callable[[int], list[tuple[str, str]]]:
+    def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
         """Tokenize the document for syntax highlighting.
 
         Args:
@@ -231,12 +234,12 @@ class MentionHighlightLexer(Lexer):
         path_style = f"bold fg:{COLORS['primary']}"
         command_style = f"bold fg:{COLORS['tool']}"
 
-        def get_line(i: int) -> list[tuple[str, str]]:
+        def get_line(i: int) -> StyleAndTextTuples:
             if i >= len(lines):
                 return []
 
             line = lines[i]
-            tokens: list[tuple[str, str]] = []
+            tokens: StyleAndTextTuples = []
             last_index = 0
 
             for match in INPUT_HIGHLIGHT_PATTERN.finditer(line):
@@ -479,8 +482,10 @@ def create_prompt_session(
             if not current_completion and buffer.complete_state.completions:
                 # Move to the first completion
                 buffer.complete_next()
-                # Now apply it
-                buffer.apply_completion(buffer.complete_state.current_completion)
+                # Now apply it (complete_next guarantees current_completion is set)
+                completion = buffer.complete_state.current_completion
+                if completion:
+                    buffer.apply_completion(completion)
             elif current_completion:
                 # Apply the already-selected completion
                 buffer.apply_completion(current_completion)

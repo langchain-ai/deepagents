@@ -450,36 +450,9 @@ def create_cli_agent(
         agent_dir = settings.ensure_agent_dir(assistant_id)
         agent_md = agent_dir / "AGENTS.md"
         if not agent_md.exists():
-            # Create empty user customization file with header
-            # Note: Base instructions are now always loaded fresh from the package
-            # via get_system_prompt(). This file is for USER CUSTOMIZATIONS ONLY.
-            user_memory_header = """# User Customizations
-
-Add your custom instructions, preferences, or notes below.
-These will be appended to the base agent instructions.
-
-The base instructions are loaded fresh from the deepagents-cli package,
-so you'll automatically get updates when you upgrade.
-
----
-
-"""
-            agent_md.write_text(user_memory_header)
-        else:
-            # Check for old format (full prompt was copied to AGENTS.md)
-            # and warn user to reset for cleaner setup
-            content = agent_md.read_text()
-            if content.strip().startswith("You are an AI assistant"):
-                import logging
-
-                logger = logging.getLogger(__name__)
-                logger.warning(
-                    "Your AGENTS.md contains the old prompt format. "
-                    "Base instructions are now loaded fresh from the package. "
-                    "Run 'deepagents reset --agent %s' to clean up, or keep your "
-                    "customizations (you may see some duplicate content).",
-                    assistant_id,
-                )
+            # Create empty file for user customizations
+            # Base instructions are loaded fresh from get_system_prompt()
+            agent_md.touch()
 
     # Skills directories (if enabled)
     skills_dir = None

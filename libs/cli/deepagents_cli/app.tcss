@@ -1,4 +1,4 @@
-/* DeepAgents CLI Textual Stylesheet */
+/* Deep Agents CLI Textual Stylesheet */
 
 /* Define layers for z-ordering */
 Screen {
@@ -58,6 +58,12 @@ Screen {
     text-style: bold;
     color: $warning;
     margin-bottom: 0;
+}
+
+.approval-menu .approval-command {
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
 }
 
 .approval-menu .approval-info {

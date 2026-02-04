@@ -41,8 +41,12 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     lines = diff.splitlines()
 
     # Compute stats first
-    additions = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
-    deletions = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+    additions = sum(
+        1 for ln in lines if ln.startswith("+") and not ln.startswith("+++")
+    )
+    deletions = sum(
+        1 for ln in lines if ln.startswith("-") and not ln.startswith("---")
+    )
 
     # Find max line number for width calculation
     max_line = 0
@@ -60,8 +64,7 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     if deletions:
         stats_parts.append(f"[red]-{deletions}[/red]")
     if stats_parts:
-        formatted.append(" ".join(stats_parts))
-        formatted.append("")  # Blank line after stats
+        formatted.extend([" ".join(stats_parts), ""])  # Blank line after stats
 
     old_num = new_num = 0
     line_count = 0
@@ -166,7 +169,7 @@ class EnhancedDiff(Vertical):
         """Compute additions and deletions count.
 
         Returns:
-            Tuple of (additions, deletions)
+            Tuple of (additions count, deletions count).
         """
         additions = 0
         deletions = 0
@@ -178,8 +181,14 @@ class EnhancedDiff(Vertical):
         return additions, deletions
 
     def compose(self) -> ComposeResult:
-        """Compose the diff widget layout."""
-        yield Static(f"[bold cyan]═══ {self._title} ═══[/bold cyan]", classes="diff-title")
+        """Compose the diff widget layout.
+
+        Yields:
+            Widgets for title, formatted diff content, and stats.
+        """
+        yield Static(
+            f"[bold cyan]═══ {self._title} ═══[/bold cyan]", classes="diff-title"
+        )
 
         formatted = format_diff_textual(self._diff, self._max_lines)
         yield Static(formatted, classes="diff-content")

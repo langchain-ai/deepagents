@@ -19,8 +19,8 @@ permissions:
 
 jobs:
   publish-cli:
-    # Only run for CLI releases (tag format: deepagents-cli@X.Y.Z)
-    if: startsWith(github.event.release.tag_name, 'deepagents-cli@')
+    # Only run for CLI releases (tag format: deepagents-cli==X.Y.Z)
+    if: startsWith(github.event.release.tag_name, 'deepagents-cli==')
     runs-on: ubuntu-latest
 
     steps:

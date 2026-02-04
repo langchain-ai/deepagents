@@ -164,23 +164,23 @@ jobs:
           # Determine previous tag (same logic as release-notes job)
           if [[ "$VERSION" == *"-"* ]]; then
             BASE_VERSION=${VERSION%%-*}
-            REGEX="^$PKG_NAME@$BASE_VERSION\$"
+            REGEX="^$PKG_NAME==$BASE_VERSION\$"
             PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
             if [ -z "$PREV_TAG" ]; then
-              REGEX="^$PKG_NAME@\\d+\\.\\d+\\.\\d+\$"
+              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
               PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
             fi
           else
-            PREV_TAG="$PKG_NAME@${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
+            PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
             [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
             if [ -z "$PREV_TAG" ]; then
-              REGEX="^$PKG_NAME@\\d+\\.\\d+\\.\\d+\$"
+              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
               PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
             fi
           fi
 
           # Validate prev tag exists
-          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME@0.0.0" ]; then
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
             GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
             if [ -z "$GIT_TAG_RESULT" ]; then
               PREV_TAG=""
@@ -314,7 +314,7 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          TAG="${PKG_NAME}@${VERSION}"
+          TAG="${PKG_NAME}==${VERSION}"
           echo tag="$TAG" >> $GITHUB_OUTPUT
 
       - name: Generate release body
@@ -360,23 +360,23 @@ jobs:
             # Determine previous tag
             if [[ "$VERSION" == *"-"* ]]; then
               BASE_VERSION=${VERSION%%-*}
-              REGEX="^$PKG_NAME@$BASE_VERSION\$"
+              REGEX="^$PKG_NAME==$BASE_VERSION\$"
               PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
               if [ -z "$PREV_TAG" ]; then
-                REGEX="^$PKG_NAME@\\d+\\.\\d+\\.\\d+\$"
+                REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
                 PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
               fi
             else
-              PREV_TAG="$PKG_NAME@${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
+              PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
               [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
               if [ -z "$PREV_TAG" ]; then
-                REGEX="^$PKG_NAME@\\d+\\.\\d+\\.\\d+\$"
+                REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
                 PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
               fi
             fi
 
             # Validate prev tag exists
-            if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME@0.0.0" ]; then
+            if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
               GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
               [ -z "$GIT_TAG_RESULT" ] && PREV_TAG=""
             else
@@ -621,7 +621,7 @@ jobs:
           artifacts: "${{ env.WORKING_DIR }}/dist/*"
           token: ${{ secrets.GITHUB_TOKEN }}
           generateReleaseNotes: false
-          tag: ${{ needs.build.outputs.pkg-name }}@${{ needs.build.outputs.version }}
+          tag: ${{ needs.build.outputs.pkg-name }}==${{ needs.build.outputs.version }}
           body: ${{ needs.release-notes.outputs.release-body }}
           commit: ${{ github.sha }}
           makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' }}

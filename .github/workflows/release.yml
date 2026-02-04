@@ -637,8 +637,15 @@ jobs:
           # Find the release PR that was merged (look for PR associated with this commit)
           PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
           if [ -n "$PR_NUMBER" ]; then
-            echo "Found release PR #$PR_NUMBER, updating labels..."
-            gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" || true
+            # Only update label if this is actually a release PR (has autorelease: pending label)
+            # This prevents accidentally labeling feature PRs when workflow is manually triggered
+            HAS_PENDING=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | grep -q "autorelease: pending" && echo "true" || echo "false")
+            if [ "$HAS_PENDING" = "true" ]; then
+              echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
+              gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" || true
+            else
+              echo "PR #$PR_NUMBER does not have 'autorelease: pending' label, skipping (not a release PR)"
+            fi
           else
             echo "No PR found for commit ${{ github.sha }}, skipping label update"
           fi

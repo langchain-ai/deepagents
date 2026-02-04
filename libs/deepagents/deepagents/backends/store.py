@@ -266,7 +266,7 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
-    def ls_info(
+    def ls(
         self,
         path: str,
         *,
@@ -562,9 +562,7 @@ class StoreBackend(BackendProtocol):
         await store.aput(namespace, file_path, store_value)
         return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
 
-    # Removed legacy grep() convenience to keep lean surface
-
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -594,7 +592,7 @@ class StoreBackend(BackendProtocol):
                 continue
         return grep_matches_from_files(files, pattern, path or "/", glob)
 
-    def glob_info(
+    def glob(
         self,
         pattern: str,
         path: str = "/",

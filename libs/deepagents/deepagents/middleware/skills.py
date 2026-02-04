@@ -303,7 +303,7 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
     base_path = source_path
 
     skills: list[SkillMetadata] = []
-    items = backend.ls_info(base_path)
+    items = backend.ls(base_path)
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
     for item in items:
@@ -378,7 +378,7 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     base_path = source_path
 
     skills: list[SkillMetadata] = []
-    items = await backend.als_info(base_path)
+    items = await backend.als(base_path)
     # Find all skill directories (directories containing SKILL.md)
     skill_dirs = []
     for item in items:

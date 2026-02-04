@@ -35,7 +35,7 @@ class BackendContext:
     Example:
         ```python
         ctx = BackendContext(state=state, runtime=runtime)
-        result = backend.read("/path/to/file", ctx=ctx)
+        result = backend.read("/path/to/file", _ctx=_ctx)
         ```
 
     .. versionadded:: 0.4
@@ -213,11 +213,11 @@ class BackendProtocol(abc.ABC):
         Added optional `ctx` parameter to all methods.
     """
 
-    def ls_info(
+    def ls(
         self,
         path: str,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[FileInfo]:
         """List all files in a directory with metadata.
 
@@ -232,16 +232,59 @@ class BackendProtocol(abc.ABC):
             - `is_dir` (optional): True if directory
             - `size` (optional): File size in bytes
             - `modified_at` (optional): ISO 8601 timestamp
+
+        .. versionadded:: 0.4
+            Renamed from ``ls_info``.
         """
+
+    async def als(
+        self,
+        path: str,
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileInfo]:
+        """Async version of ls.
+
+        .. versionadded:: 0.4
+            Renamed from ``als_info``.
+        """
+        return await asyncio.to_thread(self.ls, path, _ctx=_ctx)
+
+    def ls_info(
+        self,
+        path: str,
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileInfo]:
+        """List all files in a directory with metadata.
+
+        .. deprecated:: 0.4
+            Use :meth:`ls` instead. Will be removed in 0.5.
+        """
+        warnings.warn(
+            "ls_info() is deprecated, use ls() instead. Will be removed in 0.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.ls(path, _ctx=_ctx)
 
     async def als_info(
         self,
         path: str,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[FileInfo]:
-        """Async version of ls_info."""
-        return await asyncio.to_thread(self.ls_info, path, ctx=ctx)
+        """Async version of ls_info.
+
+        .. deprecated:: 0.4
+            Use :meth:`als` instead. Will be removed in 0.5.
+        """
+        warnings.warn(
+            "als_info() is deprecated, use als() instead. Will be removed in 0.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.als(path, _ctx=_ctx)
 
     def read(
         self,
@@ -249,7 +292,7 @@ class BackendProtocol(abc.ABC):
         offset: int = 0,
         limit: int = 2000,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> str:
         """Read file content with line numbers.
 
@@ -279,18 +322,18 @@ class BackendProtocol(abc.ABC):
         offset: int = 0,
         limit: int = 2000,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> str:
         """Async version of read."""
-        return await asyncio.to_thread(self.read, file_path, offset, limit, ctx=ctx)
+        return await asyncio.to_thread(self.read, file_path, offset, limit, _ctx=_ctx)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[GrepMatch] | str:
         """Search for a literal text pattern in files.
 
@@ -326,7 +369,45 @@ class BackendProtocol(abc.ABC):
                 - text: Full line content containing the match
 
             On error: str with error message (e.g., invalid path, permission denied)
+
+        .. versionadded:: 0.4
+            Renamed from ``grep_raw``.
         """
+
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[GrepMatch] | str:
+        """Async version of grep.
+
+        .. versionadded:: 0.4
+            Renamed from ``agrep_raw``.
+        """
+        return await asyncio.to_thread(self.grep, pattern, path, glob, _ctx=_ctx)
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[GrepMatch] | str:
+        """Search for a literal text pattern in files.
+
+        .. deprecated:: 0.4
+            Use :meth:`grep` instead. Will be removed in 0.5.
+        """
+        warnings.warn(
+            "grep_raw() is deprecated, use grep() instead. Will be removed in 0.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.grep(pattern, path, glob, _ctx=_ctx)
 
     async def agrep_raw(
         self,
@@ -334,17 +415,26 @@ class BackendProtocol(abc.ABC):
         path: str | None = None,
         glob: str | None = None,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[GrepMatch] | str:
-        """Async version of grep_raw."""
-        return await asyncio.to_thread(self.grep_raw, pattern, path, glob, ctx=ctx)
+        """Async version of grep_raw.
 
-    def glob_info(
+        .. deprecated:: 0.4
+            Use :meth:`agrep` instead. Will be removed in 0.5.
+        """
+        warnings.warn(
+            "agrep_raw() is deprecated, use agrep() instead. Will be removed in 0.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.agrep(pattern, path, glob, _ctx=_ctx)
+
+    def glob(
         self,
         pattern: str,
         path: str = "/",
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[FileInfo]:
         """Find files matching a glob pattern.
 
@@ -362,24 +452,69 @@ class BackendProtocol(abc.ABC):
 
         Returns:
             list of FileInfo
+
+        .. versionadded:: 0.4
+            Renamed from ``glob_info``.
         """
+
+    async def aglob(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileInfo]:
+        """Async version of glob.
+
+        .. versionadded:: 0.4
+            Renamed from ``aglob_info``.
+        """
+        return await asyncio.to_thread(self.glob, pattern, path, _ctx=_ctx)
+
+    def glob_info(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileInfo]:
+        """Find files matching a glob pattern.
+
+        .. deprecated:: 0.4
+            Use :meth:`glob` instead. Will be removed in 0.5.
+        """
+        warnings.warn(
+            "glob_info() is deprecated, use glob() instead. Will be removed in 0.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.glob(pattern, path, _ctx=_ctx)
 
     async def aglob_info(
         self,
         pattern: str,
         path: str = "/",
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[FileInfo]:
-        """Async version of glob_info."""
-        return await asyncio.to_thread(self.glob_info, pattern, path, ctx=ctx)
+        """Async version of glob_info.
+
+        .. deprecated:: 0.4
+            Use :meth:`aglob` instead. Will be removed in 0.5.
+        """
+        warnings.warn(
+            "aglob_info() is deprecated, use aglob() instead. Will be removed in 0.5.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self.aglob(pattern, path, _ctx=_ctx)
 
     def write(
         self,
         file_path: str,
         content: str,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> WriteResult:
         """Write content to a new file in the filesystem, error if file exists.
 
@@ -398,10 +533,10 @@ class BackendProtocol(abc.ABC):
         file_path: str,
         content: str,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> WriteResult:
         """Async version of write."""
-        return await asyncio.to_thread(self.write, file_path, content, ctx=ctx)
+        return await asyncio.to_thread(self.write, file_path, content, _ctx=_ctx)
 
     def edit(
         self,
@@ -410,7 +545,7 @@ class BackendProtocol(abc.ABC):
         new_string: str,
         replace_all: bool = False,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> EditResult:
         """Perform exact string replacements in an existing file.
 
@@ -435,16 +570,16 @@ class BackendProtocol(abc.ABC):
         new_string: str,
         replace_all: bool = False,
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> EditResult:
         """Async version of edit."""
-        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all, ctx=ctx)
+        return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all, _ctx=_ctx)
 
     def upload_files(
         self,
         files: list[tuple[str, bytes]],
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
@@ -475,16 +610,16 @@ class BackendProtocol(abc.ABC):
         self,
         files: list[tuple[str, bytes]],
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[FileUploadResponse]:
         """Async version of upload_files."""
-        return await asyncio.to_thread(self.upload_files, files, ctx=ctx)
+        return await asyncio.to_thread(self.upload_files, files, _ctx=_ctx)
 
     def download_files(
         self,
         paths: list[str],
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[FileDownloadResponse]:
         """Download multiple files from the sandbox.
 
@@ -505,10 +640,10 @@ class BackendProtocol(abc.ABC):
         self,
         paths: list[str],
         *,
-        ctx: BackendContext | None = None,
+        _ctx: BackendContext | None = None,
     ) -> list[FileDownloadResponse]:
         """Async version of download_files."""
-        return await asyncio.to_thread(self.download_files, paths, ctx=ctx)
+        return await asyncio.to_thread(self.download_files, paths, _ctx=_ctx)
 
 
 @dataclass

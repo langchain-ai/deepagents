@@ -13,6 +13,7 @@ import shlex
 from abc import ABC, abstractmethod
 
 from deepagents.backends.protocol import (
+    BackendContext,
     EditResult,
     ExecuteResponse,
     FileDownloadResponse,
@@ -204,7 +205,12 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         """
         ...
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(
+        self,
+        path: str,
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileInfo]:
         """Structured listing with file metadata using os.scandir."""
         cmd = f"""python3 -c "
 import os
@@ -245,6 +251,8 @@ except PermissionError:
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        _ctx: BackendContext | None = None,
     ) -> str:
         """Read file content with line numbers using a single shell command."""
         # Use template for reading file with offset and limit
@@ -263,6 +271,8 @@ except PermissionError:
         self,
         file_path: str,
         content: str,
+        *,
+        _ctx: BackendContext | None = None,
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
         # Create JSON payload with file path and base64-encoded content
@@ -289,6 +299,8 @@ except PermissionError:
         old_string: str,
         new_string: str,
         replace_all: bool = False,
+        *,
+        _ctx: BackendContext | None = None,
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
         # Create JSON payload with file path, old string, and new string
@@ -319,11 +331,13 @@ except PermissionError:
         # External storage - no files_update needed
         return EditResult(path=file_path, files_update=None, occurrences=count)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        _ctx: BackendContext | None = None,
     ) -> list[GrepMatch] | str:
         """Structured search results or error string for invalid input."""
         search_path = shlex.quote(path or ".")
@@ -362,7 +376,13 @@ except PermissionError:
 
         return matches
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileInfo]:
         """Structured glob matching returning FileInfo dicts."""
         # Encode pattern and path as base64 to avoid escaping issues
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
@@ -397,7 +417,12 @@ except PermissionError:
         """Unique identifier for the sandbox backend."""
 
     @abstractmethod
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+    def upload_files(
+        self,
+        files: list[tuple[str, bytes]],
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
         Implementations must support partial success - catch exceptions per-file
@@ -405,7 +430,12 @@ except PermissionError:
         """
 
     @abstractmethod
-    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+    def download_files(
+        self,
+        paths: list[str],
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileDownloadResponse]:
         """Download multiple files from the sandbox.
 
         Implementations must support partial success - catch exceptions per-file

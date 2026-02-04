@@ -10,6 +10,7 @@ from pathlib import Path
 import wcmatch.glob as wcglob
 
 from deepagents.backends.protocol import (
+    BackendContext,
     BackendProtocol,
     EditResult,
     FileDownloadResponse,
@@ -145,11 +146,17 @@ class FilesystemBackend(BackendProtocol):
             return path
         return (self.cwd / path).resolve()
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(
+        self,
+        path: str,
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
             path: Absolute directory path to list files from.
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
             List of `FileInfo`-like dicts for files and directories directly in the
@@ -257,6 +264,8 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        _ctx: BackendContext | None = None,
     ) -> str:
         """Read file content with line numbers.
 
@@ -264,6 +273,7 @@ class FilesystemBackend(BackendProtocol):
             file_path: Absolute or relative file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
             Formatted file content with line numbers, or error message.
@@ -299,12 +309,15 @@ class FilesystemBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        _ctx: BackendContext | None = None,
     ) -> WriteResult:
         """Create a new file with content.
 
         Args:
             file_path: Path where the new file will be created.
             content: Text content to write to the file.
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
             `WriteResult` with path on success, or error message if the file
@@ -337,6 +350,8 @@ class FilesystemBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,
+        *,
+        _ctx: BackendContext | None = None,
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
@@ -346,6 +361,7 @@ class FilesystemBackend(BackendProtocol):
             new_string: The replacement text.
             replace_all: If `True`, replace all occurrences. If `False` (default),
                 replace only if exactly one occurrence exists.
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
             `EditResult` with path and occurrence count on success, or error
@@ -382,11 +398,13 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        _ctx: BackendContext | None = None,
     ) -> list[GrepMatch] | str:
         """Search for a regex pattern in files.
 
@@ -396,6 +414,7 @@ class FilesystemBackend(BackendProtocol):
             pattern: Regular expression pattern to search for.
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
             List of GrepMatch dicts containing path, line number, and matched text.
@@ -534,12 +553,19 @@ class FilesystemBackend(BackendProtocol):
 
         return results
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileInfo]:
         """Find files matching a glob pattern.
 
         Args:
             pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
             path: Base directory to search from. Defaults to root (`/`).
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
             List of `FileInfo` dicts for matching files, sorted by path. Each dict
@@ -605,11 +631,17 @@ class FilesystemBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return results
 
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+    def upload_files(
+        self,
+        files: list[tuple[str, bytes]],
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.
 
         Args:
             files: List of (path, content) tuples where content is bytes.
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
             List of FileUploadResponse objects, one per input file.
@@ -645,11 +677,17 @@ class FilesystemBackend(BackendProtocol):
 
         return responses
 
-    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+    def download_files(
+        self,
+        paths: list[str],
+        *,
+        _ctx: BackendContext | None = None,
+    ) -> list[FileDownloadResponse]:
         """Download multiple files from the filesystem.
 
         Args:
             paths: List of file paths to download.
+            ctx: Optional backend context (unused, for API compatibility).
 
         Returns:
             List of FileDownloadResponse objects, one per input path.

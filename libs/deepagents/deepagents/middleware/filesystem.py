@@ -498,7 +498,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Synchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
             validated_path = _validate_path(path)
-            infos = resolved_backend.ls_info(validated_path)
+            infos = resolved_backend.ls(validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -510,7 +510,7 @@ class FilesystemMiddleware(AgentMiddleware):
             """Asynchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
             validated_path = _validate_path(path)
-            infos = await resolved_backend.als_info(validated_path)
+            infos = await resolved_backend.als(validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -727,7 +727,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
-            infos = resolved_backend.glob_info(pattern, path=path)
+            infos = resolved_backend.glob(pattern, path=path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -739,7 +739,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
-            infos = await resolved_backend.aglob_info(pattern, path=path)
+            infos = await resolved_backend.aglob(pattern, path=path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -767,7 +767,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
+            raw = resolved_backend.grep(pattern, path=path, glob=glob)
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
@@ -785,7 +785,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
+            raw = await resolved_backend.agrep(pattern, path=path, glob=glob)
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)

@@ -81,7 +81,7 @@ class StateBackend(BackendProtocol):
         msg = "Either ctx must be passed to the method or runtime must be set in __init__"
         raise ValueError(msg)
 
-    def ls_info(
+    def ls(
         self,
         path: str,
         *,
@@ -233,7 +233,7 @@ class StateBackend(BackendProtocol):
         new_file_data = update_file_data(file_data, new_content)
         return EditResult(path=file_path, files_update={file_path: new_file_data}, occurrences=int(occurrences))
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
@@ -255,7 +255,7 @@ class StateBackend(BackendProtocol):
         files = self._get_files(ctx)
         return grep_matches_from_files(files, pattern, path or "/", glob)
 
-    def glob_info(
+    def glob(
         self,
         pattern: str,
         path: str = "/",

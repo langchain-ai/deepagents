@@ -4,7 +4,7 @@ This example demonstrates how to integrate MCP (Model Context Protocol) tools wi
 
 ## Overview
 
-This example provides 4 custom MCP tools that can be registered with DeepAgents:
+This example provides 5 custom MCP tools that can be registered with DeepAgents:
 
 | Tool | Description | Use Case |
 |------|-------------|----------|
@@ -12,6 +12,7 @@ This example provides 4 custom MCP tools that can be registered with DeepAgents:
 | `rag_search` | RAG-based document search | Papers, technical docs |
 | `weather_forecast` | 5-day weather forecast | Weather queries, planning |
 | `sentinel_search` | Sentinel satellite imagery search | Satellite scene queries |
+| `arxiv_search` | arXiv paper search | Academic papers, research |
 
 ## Installation
 

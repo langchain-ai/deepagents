@@ -502,7 +502,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.ls(validated_path, _ctx=runtime.context)
+            infos = resolved_backend.ls(validated_path, ctx=runtime.context)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)

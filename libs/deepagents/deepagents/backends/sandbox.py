@@ -563,7 +563,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         self,
         path: str,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileInfo]:
         """Structured listing with file metadata using os.scandir."""
         cmd = f"""python3 -c "
@@ -606,7 +606,7 @@ except PermissionError:
         offset: int = 0,
         limit: int = 2000,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> str:
         """Read file content with line numbers using a single shell command."""
         # Use template for reading file with offset and limit
@@ -626,7 +626,7 @@ except PermissionError:
         file_path: str,
         content: str,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> WriteResult:
         """Create a new file. Returns WriteResult; error populated on failure."""
         # Create JSON payload with file path and base64-encoded content
@@ -654,7 +654,7 @@ except PermissionError:
         new_string: str,
         replace_all: bool = False,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> EditResult:
         """Edit a file by replacing string occurrences. Returns EditResult."""
         # Create JSON payload with file path, old string, and new string
@@ -691,7 +691,7 @@ except PermissionError:
         path: str | None = None,
         glob: str | None = None,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[GrepMatch] | str:
         """Structured search results or error string for invalid input."""
         search_path = shlex.quote(path or ".")
@@ -735,7 +735,7 @@ except PermissionError:
         pattern: str,
         path: str = "/",
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileInfo]:
         """Structured glob matching returning FileInfo dicts."""
         # Encode pattern and path as base64 to avoid escaping issues
@@ -775,7 +775,7 @@ except PermissionError:
         self,
         files: list[tuple[str, bytes]],
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,
     ) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
@@ -788,7 +788,7 @@ except PermissionError:
         self,
         paths: list[str],
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,
     ) -> list[FileDownloadResponse]:
         """Download multiple files from the sandbox.
 

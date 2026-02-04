@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Never
 
+import pytest
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
@@ -325,6 +326,7 @@ def test_store_backend_namespace_with_state() -> None:
     items = store.search(("threads", "thread-abc"))
     assert len(items) == 1
     assert items[0].key == "/test.txt"
+
 
 @pytest.mark.parametrize(
     ("pattern", "expected_file"),

@@ -150,7 +150,7 @@ class FilesystemBackend(BackendProtocol):
         self,
         path: str,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
 
@@ -265,7 +265,7 @@ class FilesystemBackend(BackendProtocol):
         offset: int = 0,
         limit: int = 2000,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> str:
         """Read file content with line numbers.
 
@@ -310,7 +310,7 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         content: str,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> WriteResult:
         """Create a new file with content.
 
@@ -351,7 +351,7 @@ class FilesystemBackend(BackendProtocol):
         new_string: str,
         replace_all: bool = False,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
@@ -404,7 +404,7 @@ class FilesystemBackend(BackendProtocol):
         path: str | None = None,
         glob: str | None = None,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[GrepMatch] | str:
         """Search for a literal text pattern in files.
 
@@ -550,7 +550,7 @@ class FilesystemBackend(BackendProtocol):
         pattern: str,
         path: str = "/",
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileInfo]:
         """Find files matching a glob pattern.
 
@@ -627,7 +627,7 @@ class FilesystemBackend(BackendProtocol):
         self,
         files: list[tuple[str, bytes]],
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.
 
@@ -673,7 +673,7 @@ class FilesystemBackend(BackendProtocol):
         self,
         paths: list[str],
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileDownloadResponse]:
         """Download multiple files from the filesystem.
 

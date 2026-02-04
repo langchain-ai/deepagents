@@ -101,7 +101,7 @@ class CompositeBackend(BackendProtocol):
         self,
         path: str,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileInfo]:
         """List directory contents (non-recursive).
 
@@ -161,7 +161,7 @@ class CompositeBackend(BackendProtocol):
         self,
         path: str,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileInfo]:
         """Async version of ls."""
         # Check if path matches a specific route
@@ -205,7 +205,7 @@ class CompositeBackend(BackendProtocol):
         offset: int = 0,
         limit: int = 2000,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> str:
         """Read file content, routing to appropriate backend.
 
@@ -227,7 +227,7 @@ class CompositeBackend(BackendProtocol):
         offset: int = 0,
         limit: int = 2000,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> str:
         """Async version of read."""
         backend, stripped_key = self._get_backend_and_key(file_path)
@@ -239,7 +239,7 @@ class CompositeBackend(BackendProtocol):
         path: str | None = None,
         glob: str | None = None,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[GrepMatch] | str:
         """Search files for literal text pattern.
 
@@ -300,7 +300,7 @@ class CompositeBackend(BackendProtocol):
         path: str | None = None,
         glob: str | None = None,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[GrepMatch] | str:
         """Async version of grep.
 
@@ -341,7 +341,7 @@ class CompositeBackend(BackendProtocol):
         pattern: str,
         path: str = "/",
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileInfo]:
         results: list[FileInfo] = []
 
@@ -368,7 +368,7 @@ class CompositeBackend(BackendProtocol):
         pattern: str,
         path: str = "/",
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileInfo]:
         """Async version of glob."""
         results: list[FileInfo] = []
@@ -396,7 +396,7 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         content: str,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> WriteResult:
         """Create a new file, routing to appropriate backend.
 
@@ -428,7 +428,7 @@ class CompositeBackend(BackendProtocol):
         file_path: str,
         content: str,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> WriteResult:
         """Async version of write."""
         backend, stripped_key = self._get_backend_and_key(file_path)
@@ -453,7 +453,7 @@ class CompositeBackend(BackendProtocol):
         new_string: str,
         replace_all: bool = False,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> EditResult:
         """Edit a file, routing to appropriate backend.
 
@@ -488,7 +488,7 @@ class CompositeBackend(BackendProtocol):
         new_string: str,
         replace_all: bool = False,
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> EditResult:
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
@@ -556,7 +556,7 @@ class CompositeBackend(BackendProtocol):
         self,
         files: list[tuple[str, bytes]],
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileUploadResponse]:
         """Upload multiple files, batching by backend for efficiency.
 
@@ -605,7 +605,7 @@ class CompositeBackend(BackendProtocol):
         self,
         files: list[tuple[str, bytes]],
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileUploadResponse]:
         """Async version of upload_files."""
         # Pre-allocate result list
@@ -640,7 +640,7 @@ class CompositeBackend(BackendProtocol):
         self,
         paths: list[str],
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileDownloadResponse]:
         """Download multiple files, batching by backend for efficiency.
 
@@ -686,7 +686,7 @@ class CompositeBackend(BackendProtocol):
         self,
         paths: list[str],
         *,
-        _ctx: BackendContext | None = None,
+        ctx: BackendContext | None = None,  # noqa: ARG002
     ) -> list[FileDownloadResponse]:
         """Async version of download_files."""
         # Pre-allocate result list

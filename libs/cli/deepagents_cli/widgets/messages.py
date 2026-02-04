@@ -835,7 +835,13 @@ class ToolCallMessage(Vertical):
 
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""
-        if not self._output or not self._preview_widget:
+        # Guard: all widgets must be initialized before updating display state
+        if (
+            not self._output
+            or not self._preview_widget
+            or not self._full_widget
+            or not self._hint_widget
+        ):
             return
 
         output_stripped = self._output.strip()

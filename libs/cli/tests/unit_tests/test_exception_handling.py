@@ -109,7 +109,7 @@ class TestToolsExceptionHandling:
         from deepagents_cli.tools import web_search
 
         with patch("deepagents_cli.tools.tavily_client") as mock_client:
-            mock_client.search.side_effect = TavilyTimeoutError("Request timed out")
+            mock_client.search.side_effect = TavilyTimeoutError(30.0)
 
             result = web_search("test query")
 

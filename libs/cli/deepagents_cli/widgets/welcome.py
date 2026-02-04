@@ -73,6 +73,8 @@ class WelcomeBanner(Static):
 
     async def _fetch_and_update(self) -> None:
         """Fetch the LangSmith URL in a thread and update the banner."""
+        if not self._project_name:
+            return
         try:
             project_url = await asyncio.wait_for(
                 asyncio.to_thread(_fetch_project_url, self._project_name),

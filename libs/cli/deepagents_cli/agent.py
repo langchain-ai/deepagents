@@ -3,14 +3,18 @@
 import os
 import shutil
 import tempfile
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+
+if TYPE_CHECKING:
+    from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from langchain.agents.middleware import (
     InterruptOnConfig,
 )
@@ -396,7 +400,7 @@ def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
     *,
-    tools: list[BaseTool] | None = None,
+    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
     system_prompt: str | None = None,
@@ -408,32 +412,43 @@ def create_cli_agent(
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
-    This is the main entry point for creating a deepagents CLI agent, usable both
-    internally and from external code (e.g., benchmarking frameworks, Harbor).
+    This is the main entry point for creating a deepagents CLI agent, usable
+    both internally and from external code (e.g., benchmarking frameworks).
 
     Args:
-        model: LLM model to use (e.g., "anthropic:claude-sonnet-4-5-20250929")
+        model: LLM model to use (e.g., `'anthropic:claude-sonnet-4-5-20250929'`)
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
-        sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
-            If None, uses local filesystem + shell.
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+        sandbox: Optional sandbox backend for remote execution
+            (e.g., `ModalBackend`).
+
+            If `None`, uses local filesystem + shell.
+        sandbox_type: Type of sandbox provider
+            (`'modal'`, `'runloop'`, `'daytona'`).
+
             Used for system prompt generation.
-        system_prompt: Override the default system prompt. If None, generates one
-            based on sandbox_type and assistant_id.
-        auto_approve: If True, automatically approves all tool calls without human
-            confirmation. Useful for automated workflows.
-        enable_memory: Enable MemoryMiddleware for persistent memory
-        enable_skills: Enable SkillsMiddleware for custom agent skills
-        enable_shell: Enable ShellMiddleware for local shell execution
+        system_prompt: Override the default system prompt.
+
+            If `None`, generates one based on `sandbox_type` and `assistant_id`.
+        auto_approve: If `True`, automatically approves all tool calls without
+            human confirmation.
+
+            Useful for automated workflows.
+        enable_memory: Enable `MemoryMiddleware` for persistent memory
+        enable_skills: Enable `SkillsMiddleware` for custom agent skills
+        enable_shell: Enable `ShellMiddleware` for local shell execution
             (only in local mode)
-        checkpointer: Optional checkpointer for session persistence. If None, uses
-            InMemorySaver (no persistence across CLI invocations).
+        checkpointer: Optional checkpointer for session persistence.
+
+            If `None`, uses `InMemorySaver` (no persistence across
+            CLI invocations).
 
     Returns:
-        2-tuple of (agent_graph, backend)
-        - agent_graph: Configured LangGraph Pregel instance ready for execution
-        - composite_backend: CompositeBackend for file operations
+        2-tuple of `(agent_graph, backend)`
+
+            - `agent_graph`: Configured LangGraph Pregel instance ready
+                for execution
+            - `composite_backend`: `CompositeBackend` for file operations
     """
     tools = tools or []
 
@@ -453,7 +468,7 @@ def create_cli_agent(
         project_skills_dir = settings.get_project_skills_dir()
 
     # Load custom subagents from filesystem
-    custom_subagents: list[dict] = []
+    custom_subagents: list[SubAgent | CompiledSubAgent] = []
     user_agents_dir = settings.get_user_agents_dir(assistant_id)
     project_agents_dir = settings.get_project_agents_dir()
 
@@ -461,7 +476,7 @@ def create_cli_agent(
         user_agents_dir=user_agents_dir,
         project_agents_dir=project_agents_dir,
     ):
-        subagent: dict = {
+        subagent: SubAgent = {
             "name": subagent_meta["name"],
             "description": subagent_meta["description"],
             "system_prompt": subagent_meta["system_prompt"],

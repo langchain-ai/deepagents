@@ -36,7 +36,6 @@ from deepagents_cli.config import (
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
 from deepagents_cli.sessions import (
     delete_thread_command,
-    export_thread_command,
     find_similar_threads,
     generate_thread_id,
     get_checkpointer,
@@ -131,23 +130,6 @@ def parse_args() -> argparse.Namespace:
     # threads delete
     threads_delete = threads_sub.add_parser("delete", help="Delete a thread")
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
-
-    # threads export
-    threads_export = threads_sub.add_parser(
-        "export",
-        help="Export conversation text (use langsmith fetch for full traces)",
-    )
-    threads_export.add_argument("thread_id", help="Thread ID to export")
-    threads_export.add_argument(
-        "-o", "--output", help="Output file (default: stdout)", default=None
-    )
-    threads_export.add_argument(
-        "-f",
-        "--format",
-        choices=["json", "markdown"],
-        default="markdown",
-        help="Output format (default: markdown)",
-    )
 
     # Default interactive mode
     parser.add_argument(
@@ -326,17 +308,9 @@ def cli_main() -> None:
                 )
             elif args.threads_command == "delete":
                 asyncio.run(delete_thread_command(args.thread_id))
-            elif args.threads_command == "export":
-                asyncio.run(
-                    export_thread_command(
-                        args.thread_id,
-                        output_path=getattr(args, "output", None),
-                        output_format=getattr(args, "format", "markdown"),
-                    )
-                )
             else:
                 console.print(
-                    "[yellow]Usage: deepagents threads <list|delete|export>[/yellow]"
+                    "[yellow]Usage: deepagents threads <list|delete>[/yellow]"
                 )
         else:
             # Interactive mode - handle thread resume

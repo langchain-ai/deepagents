@@ -8,8 +8,7 @@ from pydantic import BaseModel
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.graph import create_deep_agent
-
-from ..utils import (
+from tests.utils import (
     SAMPLE_MODEL,
     TOY_BASKETBALL_RESEARCH,
     ResearchMiddleware,

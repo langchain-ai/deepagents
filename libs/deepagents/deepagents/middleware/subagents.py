@@ -1,7 +1,7 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -34,11 +34,11 @@ class SubAgent(TypedDict):
         system_prompt: Instructions for the subagent.
 
             Include tool usage guidance and output format requirements.
-        tools: Tools the subagent can use.
-
-            Keep this minimal and include only what's needed.
 
     Optional fields:
+        tools: Tools the subagent can use.
+
+            If not specified, inherits tools from the main agent via `default_tools`.
         model: Override the main agent's model.
 
             Use the format `'provider:model-name'` (e.g., `'openai:gpt-4o'`).
@@ -57,8 +57,8 @@ class SubAgent(TypedDict):
     system_prompt: str
     """Instructions for the subagent."""
 
-    tools: Sequence[BaseTool | Callable | dict[str, Any]]
-    """Tools the subagent can use."""
+    tools: NotRequired[Sequence[BaseTool | Callable | dict[str, Any]]]
+    """Tools the subagent can use. If not specified, inherits from main agent."""
 
     model: NotRequired[str | BaseChatModel]
     """Override the main agent's model. Use `'provider:model-name'` format."""
@@ -108,9 +108,10 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 # updates from subagents.
 # When returning updates:
 # 1. The messages key is handled explicitly to ensure only the final message is included
-# 2. The todos and structured_response keys are excluded as they do not have a defined reducer
-#    and no clear meaning for returning them from a subagent to the main agent.
-_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response"}
+# 2. The todos, structured_response, and skills_metadata keys are excluded as they do not have
+#    a defined reducer and no clear meaning for returning them from a subagent to the main agent.
+#    Each agent loads its own skills independently based on its middleware configuration.
+_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata"}
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 
@@ -399,8 +400,11 @@ def _create_task_tool(
         task_description = task_description.format(available_agents=subagent_description_str)
 
     def task(
-        description: str,
-        subagent_type: str,
+        description: Annotated[
+            str,
+            "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
+        ],
+        subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
@@ -414,8 +418,11 @@ def _create_task_tool(
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
-        description: str,
-        subagent_type: str,
+        description: Annotated[
+            str,
+            "A detailed description of the task for the subagent to perform autonomously. Include all necessary context and specify the expected output format.",  # noqa: E501
+        ],
+        subagent_type: Annotated[str, "The type of subagent to use. Must be one of the available agent types listed in the tool description."],
         runtime: ToolRuntime,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
@@ -517,7 +524,20 @@ class SubAgentMiddleware(AgentMiddleware):
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
-        self.system_prompt = system_prompt
+
+        # Build list of available agents for system prompt
+        subagent_descriptions = []
+        if general_purpose_agent:
+            subagent_descriptions.append(f"- general-purpose: {DEFAULT_GENERAL_PURPOSE_DESCRIPTION}")
+        subagent_descriptions.extend(f"- {agent_['name']}: {agent_['description']}" for agent_ in subagents or [])
+
+        # Append available agents to system prompt if we have any
+        if system_prompt is not None and subagent_descriptions:
+            agents_section = "\n\nAvailable subagent types:\n" + "\n".join(subagent_descriptions)
+            self.system_prompt = system_prompt + agents_section
+        else:
+            self.system_prompt = system_prompt
+
         task_tool = _create_task_tool(
             default_model=default_model,
             default_tools=default_tools or [],

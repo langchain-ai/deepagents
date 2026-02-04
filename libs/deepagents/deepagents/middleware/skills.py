@@ -155,7 +155,7 @@ class SkillsState(AgentState):
     """State for the skills middleware."""
 
     skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
-    """List of loaded skill metadata from all configured sources."""
+    """List of loaded skill metadata from configured sources. Not propagated to parent agents."""
 
 
 class SkillsStateUpdate(TypedDict):
@@ -560,6 +560,8 @@ class SkillsMiddleware(AgentMiddleware):
         lines = []
         for skill in skills:
             lines.append(f"- **{skill['name']}**: {skill['description']}")
+            if skill["allowed_tools"]:
+                lines.append(f"  -> Allowed tools: {', '.join(skill['allowed_tools'])}")
             lines.append(f"  -> Read `{skill['path']}` for full instructions")
 
         return "\n".join(lines)

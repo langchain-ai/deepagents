@@ -68,6 +68,8 @@ def create_sandbox(
     *,
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
+    template: str | None = None,
+    template_image: str | None = None,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
@@ -77,6 +79,10 @@ def create_sandbox(
         provider: Sandbox provider ("daytona", "langsmith", "modal", "runloop")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
+        template: Optional template name/ID to use for sandbox creation.
+                 Currently only supported by langsmith provider.
+        template_image: Optional Docker image to use when creating a new template.
+                 Currently only supported by langsmith provider.
 
     Yields:
         SandboxBackendProtocol instance
@@ -89,7 +95,9 @@ def create_sandbox(
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
-    backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
+    backend = provider_obj.get_or_create(
+        sandbox_id=sandbox_id, template=template, template_image=template_image
+    )
     console.print(
         f"[green]✓ {provider.capitalize()} sandbox ready: {backend.id}[/green]"
     )

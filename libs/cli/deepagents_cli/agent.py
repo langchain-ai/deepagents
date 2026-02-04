@@ -107,13 +107,19 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
+def get_system_prompt(
+    assistant_id: str,
+    sandbox_type: str | None = None,
+    working_dir: str | None = None,
+) -> str:
     """Get the base system prompt for the agent.
 
     Args:
         assistant_id: The agent identifier for path references
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
-                     If None, agent is operating in local mode.
+        sandbox_type: Sandbox provider type (modal/runloop/daytona/langsmith).
+            If None, agent is operating in local mode.
+        working_dir: Override the default working directory.
+            If None, uses the sandbox provider's default.
 
     Returns:
         The system prompt string (without AGENTS.md content)
@@ -136,9 +142,9 @@ You are running as model `{settings.model_name}`"""
         model_identity_section += "\n"
 
     if sandbox_type:
-        # Get provider-specific working directory
-
-        working_dir = get_default_working_dir(sandbox_type)
+        # Get provider-specific working directory, or use override
+        if working_dir is None:
+            working_dir = get_default_working_dir(sandbox_type)
 
         working_dir_section = f"""### Current Working Directory
 
@@ -405,6 +411,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     checkpointer: BaseCheckpointSaver | None = None,
+    working_dir: str | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -415,9 +422,9 @@ def create_cli_agent(
         model: LLM model to use (e.g., "anthropic:claude-sonnet-4-5-20250929")
         assistant_id: Agent identifier for memory/state storage
         tools: Additional tools to provide to agent
-        sandbox: Optional sandbox backend for remote execution (e.g., ModalBackend).
+        sandbox: Optional sandbox backend for remote execution.
             If None, uses local filesystem + shell.
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
+        sandbox_type: Sandbox provider type (modal/runloop/daytona/langsmith).
             Used for system prompt generation.
         system_prompt: Override the default system prompt. If None, generates one
             based on sandbox_type and assistant_id.
@@ -429,6 +436,8 @@ def create_cli_agent(
             (only in local mode)
         checkpointer: Optional checkpointer for session persistence. If None, uses
             InMemorySaver (no persistence across CLI invocations).
+        working_dir: Override the default working directory (e.g., cloned repo path).
+            If None, uses the sandbox provider's default.
 
     Returns:
         2-tuple of (agent_graph, backend)
@@ -531,7 +540,9 @@ def create_cli_agent(
     # Get or use custom system prompt
     if system_prompt is None:
         system_prompt = get_system_prompt(
-            assistant_id=assistant_id, sandbox_type=sandbox_type
+            assistant_id=assistant_id,
+            sandbox_type=sandbox_type,
+            working_dir=working_dir,
         )
 
     # Configure interrupt_on based on auto_approve setting

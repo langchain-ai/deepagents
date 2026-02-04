@@ -228,11 +228,13 @@ Examples:
 GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
 Searches for literal text (not regex) and returns matching files or content based on output_mode.
+Special characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
 - Search Python files only: `grep(pattern="import", glob="*.py")`
-- Show matching lines: `grep(pattern="error", output_mode="content")`"""
+- Show matching lines: `grep(pattern="error", output_mode="content")`
+- Search for code with special chars: `grep(pattern="def __init__(self):")`"""
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 

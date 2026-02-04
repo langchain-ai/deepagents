@@ -5,7 +5,6 @@ from langchain_core.tools import tool
 
 from deepagents.backends.state import StateBackend
 from deepagents.graph import create_agent
-from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     TASK_SYSTEM_PROMPT,

@@ -594,7 +594,7 @@ class SubAgentMiddleware(AgentMiddleware):
 
         if using_old_api and not using_new_api:
             # Legacy API - build subagents from deprecated args
-            subagent_specs: list[_SubagentSpec] | list[SubAgent | CompiledSubAgent] = _get_subagents_legacy(
+            subagent_specs = _get_subagents_legacy(
                 default_model=default_model,
                 default_tools=default_tools or [],
                 default_middleware=default_middleware,
@@ -602,18 +602,18 @@ class SubAgentMiddleware(AgentMiddleware):
                 subagents=subagents or [],
                 general_purpose_agent=general_purpose_agent,
             )
-            task_tool = _build_task_tool(subagent_specs, task_description)
         elif using_new_api:
             if not subagents:
                 msg = "At least one subagent must be specified when using the new API"
                 raise ValueError(msg)
             self._backend = backend
             self._subagents = subagents
-            subagent_specs = subagents
-            task_tool = self._create_task_tool(task_description)
+            subagent_specs = self._get_subagents()
         else:
             msg = "SubAgentMiddleware requires either `backend` (new API) or `default_model` (deprecated API)"
             raise ValueError(msg)
+
+        task_tool = _build_task_tool(subagent_specs, task_description)
 
         # Build system prompt with available agents
         if system_prompt and subagent_specs:
@@ -650,19 +650,19 @@ class SubAgentMiddleware(AgentMiddleware):
             PatchToolCallsMiddleware(),
         ]
 
-    def _get_subagents(self) -> dict[str, Runnable]:
+    def _get_subagents(self) -> list[_SubagentSpec]:
         """Create runnable agents from specs.
 
         Returns:
-            Dict mapping subagent names to runnable agents.
+            List of subagent specs with name, description, and runnable.
         """
-        agents: dict[str, Runnable] = {}
+        specs: list[_SubagentSpec] = []
 
         for spec in self._subagents:
             if "runnable" in spec:
                 # CompiledSubAgent - use as-is
                 compiled = cast("CompiledSubAgent", spec)
-                agents[compiled["name"]] = compiled["runnable"]
+                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": compiled["runnable"]})
                 continue
 
             # SubAgent - validate required fields
@@ -695,33 +695,21 @@ class SubAgentMiddleware(AgentMiddleware):
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
 
-            agents[spec["name"]] = create_agent(
-                model,
-                system_prompt=spec["system_prompt"],
-                tools=spec["tools"],
-                middleware=middleware,
-                name=spec["name"],
+            specs.append(
+                {
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "runnable": create_agent(
+                        model,
+                        system_prompt=spec["system_prompt"],
+                        tools=spec["tools"],
+                        middleware=middleware,
+                        name=spec["name"],
+                    ),
+                }
             )
 
-        return agents
-
-    def _create_task_tool(self, task_description: str | None) -> BaseTool:
-        """Create the task tool for invoking subagents (new API).
-
-        Args:
-            task_description: Custom description for the tool, or None for default.
-
-        Returns:
-            A StructuredTool that can invoke subagents.
-        """
-        subagent_graphs = self._get_subagents()
-
-        # Build unified specs list for _build_task_tool
-        subagent_specs: list[_SubagentSpec] = [
-            {"name": spec["name"], "description": spec["description"], "runnable": subagent_graphs[spec["name"]]} for spec in self._subagents
-        ]
-
-        return _build_task_tool(subagent_specs, task_description)
+        return specs
 
     def wrap_model_call(
         self,

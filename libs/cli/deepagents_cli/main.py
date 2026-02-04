@@ -419,7 +419,6 @@ def cli_main() -> None:
             if thread_id and not is_resumed:
                 console.print()
                 console.print("[dim]Resume this session with:[/dim]")
-                console.print()
                 console.print(f"[cyan]deepagents -r {thread_id}[/cyan]")
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback

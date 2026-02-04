@@ -20,10 +20,9 @@ from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
-
-# Re-export type here for backwards compatibility
-from deepagents.backends.protocol import BACKEND_TYPES as BACKEND_TYPES
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import (
+    BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,
@@ -35,12 +34,27 @@ from deepagents.backends.utils import (
     sanitize_tool_call_id,
     truncate_if_too_long,
 )
+from deepagents.middleware._utils import append_to_system_message
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
-MAX_LINE_LENGTH = 2000
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
-DEFAULT_READ_LIMIT = 500
+DEFAULT_READ_LIMIT = 100
+
+# Template for truncation message in read_file
+# {file_path} will be filled in at runtime
+READ_FILE_TRUNCATION_MSG = (
+    "\n\n[Output was truncated due to size limits. "
+    "The file content is very large. "
+    "Consider reformatting the file to make it easier to navigate. "
+    "For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
+    "For other formats, you can use appropriate formatting tools to split long lines.]"
+)
+
+# Approximate number of characters per token for truncation calculations.
+# Using 4 chars per token as a conservative approximation (actual ratio varies by content)
+# This errs on the high side to avoid premature eviction of content that might fit
+NUM_CHARS_PER_TOKEN = 4
 
 
 class FileData(TypedDict):
@@ -156,27 +170,24 @@ class FilesystemState(AgentState):
     """Files in the filesystem."""
 
 
-LIST_FILES_TOOL_DESCRIPTION = """Lists all files in the filesystem, filtering by directory.
+LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
+
+This is useful for exploring the filesystem and finding the right file to read or edit.
+You should almost ALWAYS use this tool before using the read_file or edit_file tools."""
+
+READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
+
+Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- The path parameter must be an absolute path, not a relative path
-- The list_files tool will return a list of all files in the specified directory.
-- This is very useful for exploring the file system and finding the right file to read or edit.
-- You should almost ALWAYS use this tool before using the Read or Edit tools."""
-
-READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem. You can access any file directly by using this tool.
-Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
-
-Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- By default, it reads up to 500 lines starting from the beginning of the file
+- By default, it reads up to 100 lines starting from the beginning of the file
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
   - First scan: read_file(path, limit=100) to see file structure
   - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
   - Only omit limit (read full file) when necessary for editing
 - Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
-- Any lines longer than 2000 characters will be truncated
 - Results are returned using cat -n format, with line numbers starting at 1
+- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
 - You should ALWAYS make sure a file has been read before editing it."""
@@ -184,61 +195,48 @@ Usage:
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
 Usage:
-- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: spaces + line number + tab. Everything after that tab is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-- ALWAYS prefer editing existing files. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.
-- Use `replace_all` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance."""
+- You must read the file before editing. This tool will error if you attempt an edit without reading the file first.
+- When editing, preserve the exact indentation (tabs/spaces) from the read output. Never include line number prefixes in old_string or new_string.
+- ALWAYS prefer editing existing files over creating new ones.
+- Only use emojis if the user explicitly requests it."""
 
 
 WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
 
 Usage:
-- The file_path parameter must be an absolute path, not a relative path
-- The content parameter must be a string
 - The write_file tool will create the a new file.
-- Prefer to edit existing files over creating new ones when possible."""
-
+- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
+"""
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
-Usage:
-- The glob tool finds files by matching patterns with wildcards
-- Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character)
-- Patterns can be absolute (starting with `/`) or relative
-- Returns a list of absolute file paths that match the pattern
+Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
+Returns a list of absolute file paths that match the pattern.
 
 Examples:
 - `**/*.py` - Find all Python files
 - `*.txt` - Find all text files in root
 - `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
-GREP_TOOL_DESCRIPTION = """Search for a pattern in files.
+GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
-Usage:
-- The grep tool searches for text patterns across files
-- The pattern parameter is the text to search for (literal string, not regex)
-- The path parameter filters which directory to search in (default is the current working directory)
-- The glob parameter accepts a glob pattern to filter which files to search (e.g., `*.py`)
-- The output_mode parameter controls the output format:
-  - `files_with_matches`: List only file paths containing matches (default)
-  - `content`: Show matching lines with file path and line numbers
-  - `count`: Show count of matches per file
+Searches for literal text (not regex) and returns matching files or content based on output_mode.
+Special characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
 - Search Python files only: `grep(pattern="import", glob="*.py")`
-- Show matching lines: `grep(pattern="error", output_mode="content")`"""
+- Show matching lines: `grep(pattern="error", output_mode="content")`
+- Search for code with special chars: `grep(pattern="def __init__(self):")`"""
 
-EXECUTE_TOOL_DESCRIPTION = """Executes a given command in the sandbox environment with proper handling and security measures.
+EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
+Usage:
+Executes a given command in the sandbox environment with proper handling and security measures.
 Before executing the command, please follow these steps:
-
 1. Directory Verification:
    - If the command will create new directories or files, first use the ls tool to verify the parent directory exists and is the correct location
    - For example, before running "mkdir foo/bar", first use ls to check that "foo" exists and is the intended parent directory
-
 2. Command Execution:
    - Always quote file paths that contain spaces with double quotes (e.g., cd "path with spaces/file.txt")
    - Examples of proper quoting:
@@ -248,9 +246,7 @@ Before executing the command, please follow these steps:
      - python /path/with spaces/script.py (incorrect - will fail)
    - After ensuring proper quoting, execute the command
    - Capture the output of the command
-
 Usage notes:
-  - The command parameter is required
   - Commands run in an isolated sandbox environment
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
@@ -295,353 +291,6 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
 
-def _get_backend(backend: BACKEND_TYPES, runtime: ToolRuntime) -> BackendProtocol:
-    """Get the resolved backend instance from backend or factory.
-
-    Args:
-        backend: Backend instance or factory function.
-        runtime: The tool runtime context.
-
-    Returns:
-        Resolved backend instance.
-    """
-    if callable(backend):
-        return backend(runtime)
-    return backend
-
-
-def _ls_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
-    custom_description: str | None = None,
-) -> BaseTool:
-    """Generate the ls (list files) tool.
-
-    Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
-        custom_description: Optional custom description for the tool.
-
-    Returns:
-        Configured ls tool that lists files using the backend.
-    """
-    tool_description = custom_description or LIST_FILES_TOOL_DESCRIPTION
-
-    def sync_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
-        """Synchronous wrapper for ls tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        validated_path = _validate_path(path)
-        infos = resolved_backend.ls_info(validated_path)
-        paths = [fi.get("path", "") for fi in infos]
-        result = truncate_if_too_long(paths)
-        return str(result)
-
-    async def async_ls(runtime: ToolRuntime[None, FilesystemState], path: str) -> str:
-        """Asynchronous wrapper for ls tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        validated_path = _validate_path(path)
-        infos = await resolved_backend.als_info(validated_path)
-        paths = [fi.get("path", "") for fi in infos]
-        result = truncate_if_too_long(paths)
-        return str(result)
-
-    return StructuredTool.from_function(
-        name="ls",
-        description=tool_description,
-        func=sync_ls,
-        coroutine=async_ls,
-    )
-
-
-def _read_file_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
-    custom_description: str | None = None,
-) -> BaseTool:
-    """Generate the read_file tool.
-
-    Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
-        custom_description: Optional custom description for the tool.
-
-    Returns:
-        Configured read_file tool that reads files using the backend.
-    """
-    tool_description = custom_description or READ_FILE_TOOL_DESCRIPTION
-
-    def sync_read_file(
-        file_path: str,
-        runtime: ToolRuntime[None, FilesystemState],
-        offset: int = DEFAULT_READ_OFFSET,
-        limit: int = DEFAULT_READ_LIMIT,
-    ) -> str:
-        """Synchronous wrapper for read_file tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
-        return resolved_backend.read(file_path, offset=offset, limit=limit)
-
-    async def async_read_file(
-        file_path: str,
-        runtime: ToolRuntime[None, FilesystemState],
-        offset: int = DEFAULT_READ_OFFSET,
-        limit: int = DEFAULT_READ_LIMIT,
-    ) -> str:
-        """Asynchronous wrapper for read_file tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
-        return await resolved_backend.aread(file_path, offset=offset, limit=limit)
-
-    return StructuredTool.from_function(
-        name="read_file",
-        description=tool_description,
-        func=sync_read_file,
-        coroutine=async_read_file,
-    )
-
-
-def _write_file_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
-    custom_description: str | None = None,
-) -> BaseTool:
-    """Generate the write_file tool.
-
-    Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
-        custom_description: Optional custom description for the tool.
-
-    Returns:
-        Configured write_file tool that creates new files using the backend.
-    """
-    tool_description = custom_description or WRITE_FILE_TOOL_DESCRIPTION
-
-    def sync_write_file(
-        file_path: str,
-        content: str,
-        runtime: ToolRuntime[None, FilesystemState],
-    ) -> Command | str:
-        """Synchronous wrapper for write_file tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
-        res: WriteResult = resolved_backend.write(file_path, content)
-        if res.error:
-            return res.error
-        # If backend returns state update, wrap into Command with ToolMessage
-        if res.files_update is not None:
-            return Command(
-                update={
-                    "files": res.files_update,
-                    "messages": [
-                        ToolMessage(
-                            content=f"Updated file {res.path}",
-                            tool_call_id=runtime.tool_call_id,
-                        )
-                    ],
-                }
-            )
-        return f"Updated file {res.path}"
-
-    async def async_write_file(
-        file_path: str,
-        content: str,
-        runtime: ToolRuntime[None, FilesystemState],
-    ) -> Command | str:
-        """Asynchronous wrapper for write_file tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
-        res: WriteResult = await resolved_backend.awrite(file_path, content)
-        if res.error:
-            return res.error
-        # If backend returns state update, wrap into Command with ToolMessage
-        if res.files_update is not None:
-            return Command(
-                update={
-                    "files": res.files_update,
-                    "messages": [
-                        ToolMessage(
-                            content=f"Updated file {res.path}",
-                            tool_call_id=runtime.tool_call_id,
-                        )
-                    ],
-                }
-            )
-        return f"Updated file {res.path}"
-
-    return StructuredTool.from_function(
-        name="write_file",
-        description=tool_description,
-        func=sync_write_file,
-        coroutine=async_write_file,
-    )
-
-
-def _edit_file_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
-    custom_description: str | None = None,
-) -> BaseTool:
-    """Generate the edit_file tool.
-
-    Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
-        custom_description: Optional custom description for the tool.
-
-    Returns:
-        Configured edit_file tool that performs string replacements in files using the backend.
-    """
-    tool_description = custom_description or EDIT_FILE_TOOL_DESCRIPTION
-
-    def sync_edit_file(
-        file_path: str,
-        old_string: str,
-        new_string: str,
-        runtime: ToolRuntime[None, FilesystemState],
-        *,
-        replace_all: bool = False,
-    ) -> Command | str:
-        """Synchronous wrapper for edit_file tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
-        res: EditResult = resolved_backend.edit(file_path, old_string, new_string, replace_all=replace_all)
-        if res.error:
-            return res.error
-        if res.files_update is not None:
-            return Command(
-                update={
-                    "files": res.files_update,
-                    "messages": [
-                        ToolMessage(
-                            content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                            tool_call_id=runtime.tool_call_id,
-                        )
-                    ],
-                }
-            )
-        return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
-
-    async def async_edit_file(
-        file_path: str,
-        old_string: str,
-        new_string: str,
-        runtime: ToolRuntime[None, FilesystemState],
-        *,
-        replace_all: bool = False,
-    ) -> Command | str:
-        """Asynchronous wrapper for edit_file tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        file_path = _validate_path(file_path)
-        res: EditResult = await resolved_backend.aedit(file_path, old_string, new_string, replace_all=replace_all)
-        if res.error:
-            return res.error
-        if res.files_update is not None:
-            return Command(
-                update={
-                    "files": res.files_update,
-                    "messages": [
-                        ToolMessage(
-                            content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
-                            tool_call_id=runtime.tool_call_id,
-                        )
-                    ],
-                }
-            )
-        return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
-
-    return StructuredTool.from_function(
-        name="edit_file",
-        description=tool_description,
-        func=sync_edit_file,
-        coroutine=async_edit_file,
-    )
-
-
-def _glob_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
-    custom_description: str | None = None,
-) -> BaseTool:
-    """Generate the glob tool.
-
-    Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
-        custom_description: Optional custom description for the tool.
-
-    Returns:
-        Configured glob tool that finds files by pattern using the backend.
-    """
-    tool_description = custom_description or GLOB_TOOL_DESCRIPTION
-
-    def sync_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
-        """Synchronous wrapper for glob tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        infos = resolved_backend.glob_info(pattern, path=path)
-        paths = [fi.get("path", "") for fi in infos]
-        result = truncate_if_too_long(paths)
-        return str(result)
-
-    async def async_glob(pattern: str, runtime: ToolRuntime[None, FilesystemState], path: str = "/") -> str:
-        """Asynchronous wrapper for glob tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        infos = await resolved_backend.aglob_info(pattern, path=path)
-        paths = [fi.get("path", "") for fi in infos]
-        result = truncate_if_too_long(paths)
-        return str(result)
-
-    return StructuredTool.from_function(
-        name="glob",
-        description=tool_description,
-        func=sync_glob,
-        coroutine=async_glob,
-    )
-
-
-def _grep_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
-    custom_description: str | None = None,
-) -> BaseTool:
-    """Generate the grep tool.
-
-    Args:
-        backend: Backend to use for file storage, or a factory function that takes runtime and returns a backend.
-        custom_description: Optional custom description for the tool.
-
-    Returns:
-        Configured grep tool that searches for patterns in files using the backend.
-    """
-    tool_description = custom_description or GREP_TOOL_DESCRIPTION
-
-    def sync_grep(
-        pattern: str,
-        runtime: ToolRuntime[None, FilesystemState],
-        path: str | None = None,
-        glob: str | None = None,
-        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
-    ) -> str:
-        """Synchronous wrapper for grep tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
-        if isinstance(raw, str):
-            return raw
-        formatted = format_grep_matches(raw, output_mode)
-        return truncate_if_too_long(formatted)  # type: ignore[arg-type]
-
-    async def async_grep(
-        pattern: str,
-        runtime: ToolRuntime[None, FilesystemState],
-        path: str | None = None,
-        glob: str | None = None,
-        output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
-    ) -> str:
-        """Asynchronous wrapper for grep tool."""
-        resolved_backend = _get_backend(backend, runtime)
-        raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
-        if isinstance(raw, str):
-            return raw
-        formatted = format_grep_matches(raw, output_mode)
-        return truncate_if_too_long(formatted)  # type: ignore[arg-type]
-
-    return StructuredTool.from_function(
-        name="grep",
-        description=tool_description,
-        func=sync_grep,
-        coroutine=async_grep,
-    )
-
-
 def _supports_execution(backend: BackendProtocol) -> bool:
     """Check if a backend supports command execution.
 
@@ -654,9 +303,6 @@ def _supports_execution(backend: BackendProtocol) -> bool:
     Returns:
         True if the backend supports execution, False otherwise.
     """
-    # Import here to avoid circular dependency
-    from deepagents.backends.composite import CompositeBackend
-
     # For CompositeBackend, check the default backend
     if isinstance(backend, CompositeBackend):
         return isinstance(backend.default, SandboxBackendProtocol)
@@ -665,157 +311,107 @@ def _supports_execution(backend: BackendProtocol) -> bool:
     return isinstance(backend, SandboxBackendProtocol)
 
 
-def _execute_tool_generator(
-    backend: BackendProtocol | Callable[[ToolRuntime], BackendProtocol],
-    custom_description: str | None = None,
-) -> BaseTool:
-    """Generate the execute tool for sandbox command execution.
-
-    Args:
-        backend: Backend to use for execution, or a factory function that takes runtime and returns a backend.
-        custom_description: Optional custom description for the tool.
-
-    Returns:
-        Configured execute tool that runs commands if backend supports SandboxBackendProtocol.
-    """
-    tool_description = custom_description or EXECUTE_TOOL_DESCRIPTION
-
-    def sync_execute(
-        command: str,
-        runtime: ToolRuntime[None, FilesystemState],
-    ) -> str:
-        """Synchronous wrapper for execute tool."""
-        resolved_backend = _get_backend(backend, runtime)
-
-        # Runtime check - fail gracefully if not supported
-        if not _supports_execution(resolved_backend):
-            return (
-                "Error: Execution not available. This agent's backend "
-                "does not support command execution (SandboxBackendProtocol). "
-                "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
-            )
-
-        try:
-            result = resolved_backend.execute(command)
-        except NotImplementedError as e:
-            # Handle case where execute() exists but raises NotImplementedError
-            return f"Error: Execution not available. {e}"
-
-        # Format output for LLM consumption
-        parts = [result.output]
-
-        if result.exit_code is not None:
-            status = "succeeded" if result.exit_code == 0 else "failed"
-            parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
-
-        if result.truncated:
-            parts.append("\n[Output was truncated due to size limits]")
-
-        return "".join(parts)
-
-    async def async_execute(
-        command: str,
-        runtime: ToolRuntime[None, FilesystemState],
-    ) -> str:
-        """Asynchronous wrapper for execute tool."""
-        resolved_backend = _get_backend(backend, runtime)
-
-        # Runtime check - fail gracefully if not supported
-        if not _supports_execution(resolved_backend):
-            return (
-                "Error: Execution not available. This agent's backend "
-                "does not support command execution (SandboxBackendProtocol). "
-                "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
-            )
-
-        try:
-            result = await resolved_backend.aexecute(command)
-        except NotImplementedError as e:
-            # Handle case where execute() exists but raises NotImplementedError
-            return f"Error: Execution not available. {e}"
-
-        # Format output for LLM consumption
-        parts = [result.output]
-
-        if result.exit_code is not None:
-            status = "succeeded" if result.exit_code == 0 else "failed"
-            parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
-
-        if result.truncated:
-            parts.append("\n[Output was truncated due to size limits]")
-
-        return "".join(parts)
-
-    return StructuredTool.from_function(
-        name="execute",
-        description=tool_description,
-        func=sync_execute,
-        coroutine=async_execute,
-    )
-
-
-TOOL_GENERATORS = {
-    "ls": _ls_tool_generator,
-    "read_file": _read_file_tool_generator,
-    "write_file": _write_file_tool_generator,
-    "edit_file": _edit_file_tool_generator,
-    "glob": _glob_tool_generator,
-    "grep": _grep_tool_generator,
-    "execute": _execute_tool_generator,
-}
-
-
-def _get_filesystem_tools(
-    backend: BackendProtocol,
-    custom_tool_descriptions: dict[str, str] | None = None,
-) -> list[BaseTool]:
-    """Get filesystem and execution tools.
-
-    Args:
-        backend: Backend to use for file storage and optional execution, or a factory function that takes runtime and returns a backend.
-        custom_tool_descriptions: Optional custom descriptions for tools.
-
-    Returns:
-        List of configured tools: ls, read_file, write_file, edit_file, glob, grep, execute.
-    """
-    if custom_tool_descriptions is None:
-        custom_tool_descriptions = {}
-    tools = []
-
-    for tool_name, tool_generator in TOOL_GENERATORS.items():
-        tool = tool_generator(backend, custom_tool_descriptions.get(tool_name))
-        tools.append(tool)
-    return tools
+# Tools that should be excluded from the large result eviction logic.
+#
+# This tuple contains tools that should NOT have their results evicted to the filesystem
+# when they exceed token limits. Tools are excluded for different reasons:
+#
+# 1. Tools with built-in truncation (ls, glob, grep):
+#    These tools truncate their own output when it becomes too large. When these tools
+#    produce truncated output due to many matches, it typically indicates the query
+#    needs refinement rather than full result preservation. In such cases, the truncated
+#    matches are potentially more like noise and the LLM should be prompted to narrow
+#    its search criteria instead.
+#
+# 2. Tools with problematic truncation behavior (read_file):
+#    read_file is tricky to handle as the failure mode here is single long lines
+#    (e.g., imagine a jsonl file with very long payloads on each line). If we try to
+#    truncate the result of read_file, the agent may then attempt to re-read the
+#    truncated file using read_file again, which won't help.
+#
+# 3. Tools that never exceed limits (edit_file, write_file):
+#    These tools return minimal confirmation messages and are never expected to produce
+#    output large enough to exceed token limits, so checking them would be unnecessary.
+TOOLS_EXCLUDED_FROM_EVICTION = (
+    "ls",
+    "glob",
+    "grep",
+    "read_file",
+    "edit_file",
+    "write_file",
+)
 
 
 TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
-You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-You can do this by specifying an offset and limit in the read_file tool call.
-For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
 
-Here are the first 10 lines of the result:
+You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
+
+You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
+
+Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
+
 {content_sample}
 """
+
+
+def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
+    """Create a preview of content showing head and tail with truncation marker.
+
+    Args:
+        content_str: The full content string to preview.
+        head_lines: Number of lines to show from the start.
+        tail_lines: Number of lines to show from the end.
+
+    Returns:
+        Formatted preview string with line numbers.
+    """
+    lines = content_str.splitlines()
+
+    if len(lines) <= head_lines + tail_lines:
+        # If file is small enough, show all lines
+        preview_lines = [line[:1000] for line in lines]
+        return format_content_with_line_numbers(preview_lines, start_line=1)
+
+    # Show head and tail with truncation marker
+    head = [line[:1000] for line in lines[:head_lines]]
+    tail = [line[:1000] for line in lines[-tail_lines:]]
+
+    head_sample = format_content_with_line_numbers(head, start_line=1)
+    truncation_notice = f"\n... [{len(lines) - head_lines - tail_lines} lines truncated] ...\n"
+    tail_sample = format_content_with_line_numbers(tail, start_line=len(lines) - tail_lines + 1)
+
+    return head_sample + truncation_notice + tail_sample
 
 
 class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
-    This middleware adds filesystem tools to the agent: ls, read_file, write_file,
-    edit_file, glob, and grep. Files can be stored using any backend that implements
-    the BackendProtocol.
+    This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
+    `edit_file`, `glob`, and `grep`.
 
-    If the backend implements SandboxBackendProtocol, an execute tool is also added
+    Files can be stored using any backend that implements the `BackendProtocol`.
+
+    If the backend implements `SandboxBackendProtocol`, an `execute` tool is also added
     for running shell commands.
 
+    This middleware also automatically evicts large tool results to the file system when
+    they exceed a token threshold, preventing context window saturation.
+
     Args:
-        backend: Backend for file storage and optional execution. If not provided, defaults to StateBackend
-            (ephemeral storage in agent state). For persistent storage or hybrid setups,
-            use CompositeBackend with custom routes. For execution support, use a backend
-            that implements SandboxBackendProtocol.
+        backend: Backend for file storage and optional execution.
+
+            If not provided, defaults to `StateBackend` (ephemeral storage in agent state).
+
+            For persistent storage or hybrid setups, use `CompositeBackend` with custom routes.
+
+            For execution support, use a backend that implements `SandboxBackendProtocol`.
         system_prompt: Optional custom system prompt override.
         custom_tool_descriptions: Optional custom tool descriptions override.
-        tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
+        tool_token_limit_before_evict: Token limit before evicting a tool result to the
+            filesystem.
+
+            When exceeded, writes the result using the configured backend and replaces it
+            with a truncated preview and file reference.
 
     Example:
         ```python
@@ -857,15 +453,23 @@ class FilesystemMiddleware(AgentMiddleware):
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
         """
-        self.tool_token_limit_before_evict = tool_token_limit_before_evict
-
         # Use provided backend or default to StateBackend factory
         self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
-        # Set system prompt (allow full override or None to generate dynamically)
+        # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
+        self._custom_tool_descriptions = custom_tool_descriptions or {}
+        self._tool_token_limit_before_evict = tool_token_limit_before_evict
 
-        self.tools = _get_filesystem_tools(self.backend, custom_tool_descriptions)
+        self.tools = [
+            self._create_ls_tool(),
+            self._create_read_file_tool(),
+            self._create_write_file_tool(),
+            self._create_edit_file_tool(),
+            self._create_glob_tool(),
+            self._create_grep_tool(),
+            self._create_execute_tool(),
+        ]
 
     def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
@@ -879,6 +483,418 @@ class FilesystemMiddleware(AgentMiddleware):
         if callable(self.backend):
             return self.backend(runtime)
         return self.backend
+
+    def _create_ls_tool(self) -> BaseTool:
+        """Create the ls (list files) tool."""
+        tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
+
+        def sync_ls(
+            runtime: ToolRuntime[None, FilesystemState],
+            path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+        ) -> str:
+            """Synchronous wrapper for ls tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = _validate_path(path)
+            except ValueError as e:
+                return f"Error: {e}"
+            infos = resolved_backend.ls_info(validated_path)
+            paths = [fi.get("path", "") for fi in infos]
+            result = truncate_if_too_long(paths)
+            return str(result)
+
+        async def async_ls(
+            runtime: ToolRuntime[None, FilesystemState],
+            path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+        ) -> str:
+            """Asynchronous wrapper for ls tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = _validate_path(path)
+            except ValueError as e:
+                return f"Error: {e}"
+            infos = await resolved_backend.als_info(validated_path)
+            paths = [fi.get("path", "") for fi in infos]
+            result = truncate_if_too_long(paths)
+            return str(result)
+
+        return StructuredTool.from_function(
+            name="ls",
+            description=tool_description,
+            func=sync_ls,
+            coroutine=async_ls,
+        )
+
+    def _create_read_file_tool(self) -> BaseTool:
+        """Create the read_file tool."""
+        tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
+        token_limit = self._tool_token_limit_before_evict
+
+        def sync_read_file(
+            file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+            offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
+            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
+        ) -> str:
+            """Synchronous wrapper for read_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+            result = resolved_backend.read(validated_path, offset=offset, limit=limit)
+
+            lines = result.splitlines(keepends=True)
+            if len(lines) > limit:
+                lines = lines[:limit]
+                result = "".join(lines)
+
+            # Check if result exceeds token threshold and truncate if necessary
+            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
+                # Calculate truncation message length to ensure final result stays under threshold
+                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
+                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
+                result = result[:max_content_length]
+                result += truncation_msg
+
+            return result
+
+        async def async_read_file(
+            file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+            offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
+            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
+        ) -> str:
+            """Asynchronous wrapper for read_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+            result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
+
+            lines = result.splitlines(keepends=True)
+            if len(lines) > limit:
+                lines = lines[:limit]
+                result = "".join(lines)
+
+            # Check if result exceeds token threshold and truncate if necessary
+            if token_limit and len(result) >= NUM_CHARS_PER_TOKEN * token_limit:
+                # Calculate truncation message length to ensure final result stays under threshold
+                truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=validated_path)
+                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
+                result = result[:max_content_length]
+                result += truncation_msg
+
+            return result
+
+        return StructuredTool.from_function(
+            name="read_file",
+            description=tool_description,
+            func=sync_read_file,
+            coroutine=async_read_file,
+        )
+
+    def _create_write_file_tool(self) -> BaseTool:
+        """Create the write_file tool."""
+        tool_description = self._custom_tool_descriptions.get("write_file") or WRITE_FILE_TOOL_DESCRIPTION
+
+        def sync_write_file(
+            file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+            content: Annotated[str, "The text content to write to the file. This parameter is required."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> Command | str:
+            """Synchronous wrapper for write_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+            res: WriteResult = resolved_backend.write(validated_path, content)
+            if res.error:
+                return res.error
+            # If backend returns state update, wrap into Command with ToolMessage
+            if res.files_update is not None:
+                return Command(
+                    update={
+                        "files": res.files_update,
+                        "messages": [
+                            ToolMessage(
+                                content=f"Updated file {res.path}",
+                                tool_call_id=runtime.tool_call_id,
+                            )
+                        ],
+                    }
+                )
+            return f"Updated file {res.path}"
+
+        async def async_write_file(
+            file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+            content: Annotated[str, "The text content to write to the file. This parameter is required."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> Command | str:
+            """Asynchronous wrapper for write_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+            res: WriteResult = await resolved_backend.awrite(validated_path, content)
+            if res.error:
+                return res.error
+            # If backend returns state update, wrap into Command with ToolMessage
+            if res.files_update is not None:
+                return Command(
+                    update={
+                        "files": res.files_update,
+                        "messages": [
+                            ToolMessage(
+                                content=f"Updated file {res.path}",
+                                tool_call_id=runtime.tool_call_id,
+                            )
+                        ],
+                    }
+                )
+            return f"Updated file {res.path}"
+
+        return StructuredTool.from_function(
+            name="write_file",
+            description=tool_description,
+            func=sync_write_file,
+            coroutine=async_write_file,
+        )
+
+    def _create_edit_file_tool(self) -> BaseTool:
+        """Create the edit_file tool."""
+        tool_description = self._custom_tool_descriptions.get("edit_file") or EDIT_FILE_TOOL_DESCRIPTION
+
+        def sync_edit_file(
+            file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
+            old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
+            new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
+            runtime: ToolRuntime[None, FilesystemState],
+            *,
+            replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
+        ) -> Command | str:
+            """Synchronous wrapper for edit_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+            res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
+            if res.error:
+                return res.error
+            if res.files_update is not None:
+                return Command(
+                    update={
+                        "files": res.files_update,
+                        "messages": [
+                            ToolMessage(
+                                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                                tool_call_id=runtime.tool_call_id,
+                            )
+                        ],
+                    }
+                )
+            return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
+
+        async def async_edit_file(
+            file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
+            old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
+            new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
+            runtime: ToolRuntime[None, FilesystemState],
+            *,
+            replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
+        ) -> Command | str:
+            """Asynchronous wrapper for edit_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+            res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
+            if res.error:
+                return res.error
+            if res.files_update is not None:
+                return Command(
+                    update={
+                        "files": res.files_update,
+                        "messages": [
+                            ToolMessage(
+                                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                                tool_call_id=runtime.tool_call_id,
+                            )
+                        ],
+                    }
+                )
+            return f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'"
+
+        return StructuredTool.from_function(
+            name="edit_file",
+            description=tool_description,
+            func=sync_edit_file,
+            coroutine=async_edit_file,
+        )
+
+    def _create_glob_tool(self) -> BaseTool:
+        """Create the glob tool."""
+        tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
+
+        def sync_glob(
+            pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
+            runtime: ToolRuntime[None, FilesystemState],
+            path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+        ) -> str:
+            """Synchronous wrapper for glob tool."""
+            resolved_backend = self._get_backend(runtime)
+            infos = resolved_backend.glob_info(pattern, path=path)
+            paths = [fi.get("path", "") for fi in infos]
+            result = truncate_if_too_long(paths)
+            return str(result)
+
+        async def async_glob(
+            pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
+            runtime: ToolRuntime[None, FilesystemState],
+            path: Annotated[str, "Base directory to search from. Defaults to root '/'."] = "/",
+        ) -> str:
+            """Asynchronous wrapper for glob tool."""
+            resolved_backend = self._get_backend(runtime)
+            infos = await resolved_backend.aglob_info(pattern, path=path)
+            paths = [fi.get("path", "") for fi in infos]
+            result = truncate_if_too_long(paths)
+            return str(result)
+
+        return StructuredTool.from_function(
+            name="glob",
+            description=tool_description,
+            func=sync_glob,
+            coroutine=async_glob,
+        )
+
+    def _create_grep_tool(self) -> BaseTool:
+        """Create the grep tool."""
+        tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
+
+        def sync_grep(
+            pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
+            runtime: ToolRuntime[None, FilesystemState],
+            path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
+            glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+            output_mode: Annotated[
+                Literal["files_with_matches", "content", "count"],
+                "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+            ] = "files_with_matches",
+        ) -> str:
+            """Synchronous wrapper for grep tool."""
+            resolved_backend = self._get_backend(runtime)
+            raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
+            if isinstance(raw, str):
+                return raw
+            formatted = format_grep_matches(raw, output_mode)
+            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+
+        async def async_grep(
+            pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
+            runtime: ToolRuntime[None, FilesystemState],
+            path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
+            glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+            output_mode: Annotated[
+                Literal["files_with_matches", "content", "count"],
+                "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+            ] = "files_with_matches",
+        ) -> str:
+            """Asynchronous wrapper for grep tool."""
+            resolved_backend = self._get_backend(runtime)
+            raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
+            if isinstance(raw, str):
+                return raw
+            formatted = format_grep_matches(raw, output_mode)
+            return truncate_if_too_long(formatted)  # type: ignore[arg-type]
+
+        return StructuredTool.from_function(
+            name="grep",
+            description=tool_description,
+            func=sync_grep,
+            coroutine=async_grep,
+        )
+
+    def _create_execute_tool(self) -> BaseTool:
+        """Create the execute tool for sandbox command execution."""
+        tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
+
+        def sync_execute(
+            command: Annotated[str, "Shell command to execute in the sandbox environment."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> str:
+            """Synchronous wrapper for execute tool."""
+            resolved_backend = self._get_backend(runtime)
+
+            # Runtime check - fail gracefully if not supported
+            if not _supports_execution(resolved_backend):
+                return (
+                    "Error: Execution not available. This agent's backend "
+                    "does not support command execution (SandboxBackendProtocol). "
+                    "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
+                )
+
+            try:
+                result = resolved_backend.execute(command)
+            except NotImplementedError as e:
+                # Handle case where execute() exists but raises NotImplementedError
+                return f"Error: Execution not available. {e}"
+
+            # Format output for LLM consumption
+            parts = [result.output]
+
+            if result.exit_code is not None:
+                status = "succeeded" if result.exit_code == 0 else "failed"
+                parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
+
+            if result.truncated:
+                parts.append("\n[Output was truncated due to size limits]")
+
+            return "".join(parts)
+
+        async def async_execute(
+            command: Annotated[str, "Shell command to execute in the sandbox environment."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> str:
+            """Asynchronous wrapper for execute tool."""
+            resolved_backend = self._get_backend(runtime)
+
+            # Runtime check - fail gracefully if not supported
+            if not _supports_execution(resolved_backend):
+                return (
+                    "Error: Execution not available. This agent's backend "
+                    "does not support command execution (SandboxBackendProtocol). "
+                    "To use the execute tool, provide a backend that implements SandboxBackendProtocol."
+                )
+
+            try:
+                result = await resolved_backend.aexecute(command)
+            except NotImplementedError as e:
+                # Handle case where execute() exists but raises NotImplementedError
+                return f"Error: Execution not available. {e}"
+
+            # Format output for LLM consumption
+            parts = [result.output]
+
+            if result.exit_code is not None:
+                status = "succeeded" if result.exit_code == 0 else "failed"
+                parts.append(f"\n[Command {status} with exit code {result.exit_code}]")
+
+            if result.truncated:
+                parts.append("\n[Output was truncated due to size limits]")
+
+            return "".join(parts)
+
+        return StructuredTool.from_function(
+            name="execute",
+            description=tool_description,
+            func=sync_execute,
+            coroutine=async_execute,
+        )
 
     def wrap_model_call(
         self,
@@ -923,7 +939,8 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
+            request = request.override(system_message=new_system_message)
 
         return handler(request)
 
@@ -970,7 +987,8 @@ class FilesystemMiddleware(AgentMiddleware):
             system_prompt = "\n\n".join(prompt_parts)
 
         if system_prompt:
-            request = request.override(system_prompt=request.system_prompt + "\n\n" + system_prompt if request.system_prompt else system_prompt)
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
+            request = request.override(system_message=new_system_message)
 
         return await handler(request)
 
@@ -979,30 +997,146 @@ class FilesystemMiddleware(AgentMiddleware):
         message: ToolMessage,
         resolved_backend: BackendProtocol,
     ) -> tuple[ToolMessage, dict[str, FileData] | None]:
-        content = message.content
-        if not isinstance(content, str) or len(content) <= 4 * self.tool_token_limit_before_evict:
+        """Process a large ToolMessage by evicting its content to filesystem.
+
+        Args:
+            message: The ToolMessage with large content to evict.
+            resolved_backend: The filesystem backend to write the content to.
+
+        Returns:
+            A tuple of (processed_message, files_update):
+            - processed_message: New ToolMessage with truncated content and file reference
+            - files_update: Dict of file updates to apply to state, or None if eviction failed
+
+        Note:
+            The entire content is converted to string, written to /large_tool_results/{tool_call_id},
+            and replaced with a truncated preview plus file reference. The replacement is always
+            returned as a plain string for consistency, regardless of original content type.
+
+            ToolMessage supports multimodal content blocks (images, audio, etc.), but these are
+            uncommon in tool results. For simplicity, all content is stringified and evicted.
+            The model can recover by reading the offloaded file from the backend.
+        """
+        # Early exit if eviction not configured
+        if not self._tool_token_limit_before_evict:
             return message, None
 
+        # Convert content to string once for both size check and eviction
+        # Special case: single text block - extract text directly for readability
+        if (
+            isinstance(message.content, list)
+            and len(message.content) == 1
+            and isinstance(message.content[0], dict)
+            and message.content[0].get("type") == "text"
+            and "text" in message.content[0]
+        ):
+            content_str = str(message.content[0]["text"])
+        elif isinstance(message.content, str):
+            content_str = message.content
+        else:
+            # Multiple blocks or non-text content - stringify entire structure
+            content_str = str(message.content)
+
+        # Check if content exceeds eviction threshold
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
+            return message, None
+
+        # Write content to filesystem
         sanitized_id = sanitize_tool_call_id(message.tool_call_id)
         file_path = f"/large_tool_results/{sanitized_id}"
-        result = resolved_backend.write(file_path, content)
+        result = resolved_backend.write(file_path, content_str)
         if result.error:
             return message, None
-        content_sample = format_content_with_line_numbers([line[:1000] for line in content.splitlines()[:10]], start_line=1)
-        processed_message = ToolMessage(
-            TOO_LARGE_TOOL_MSG.format(
-                tool_call_id=message.tool_call_id,
-                file_path=file_path,
-                content_sample=content_sample,
-            ),
+
+        # Create preview showing head and tail of the result
+        content_sample = _create_content_preview(content_str)
+        replacement_text = TOO_LARGE_TOOL_MSG.format(
             tool_call_id=message.tool_call_id,
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+
+        # Always return as plain string after eviction
+        processed_message = ToolMessage(
+            content=replacement_text,
+            tool_call_id=message.tool_call_id,
+            name=message.name,
+        )
+        return processed_message, result.files_update
+
+    async def _aprocess_large_message(
+        self,
+        message: ToolMessage,
+        resolved_backend: BackendProtocol,
+    ) -> tuple[ToolMessage, dict[str, FileData] | None]:
+        """Async version of _process_large_message.
+
+        Uses async backend methods to avoid sync calls in async context.
+        See _process_large_message for full documentation.
+        """
+        # Early exit if eviction not configured
+        if not self._tool_token_limit_before_evict:
+            return message, None
+
+        # Convert content to string once for both size check and eviction
+        # Special case: single text block - extract text directly for readability
+        if (
+            isinstance(message.content, list)
+            and len(message.content) == 1
+            and isinstance(message.content[0], dict)
+            and message.content[0].get("type") == "text"
+            and "text" in message.content[0]
+        ):
+            content_str = str(message.content[0]["text"])
+        elif isinstance(message.content, str):
+            content_str = message.content
+        else:
+            # Multiple blocks or non-text content - stringify entire structure
+            content_str = str(message.content)
+
+        if len(content_str) <= NUM_CHARS_PER_TOKEN * self._tool_token_limit_before_evict:
+            return message, None
+
+        # Write content to filesystem using async method
+        sanitized_id = sanitize_tool_call_id(message.tool_call_id)
+        file_path = f"/large_tool_results/{sanitized_id}"
+        result = await resolved_backend.awrite(file_path, content_str)
+        if result.error:
+            return message, None
+
+        # Create preview showing head and tail of the result
+        content_sample = _create_content_preview(content_str)
+        replacement_text = TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=message.tool_call_id,
+            file_path=file_path,
+            content_sample=content_sample,
+        )
+
+        # Always return as plain string after eviction
+        processed_message = ToolMessage(
+            content=replacement_text,
+            tool_call_id=message.tool_call_id,
+            name=message.name,
         )
         return processed_message, result.files_update
 
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
-        if isinstance(tool_result, ToolMessage) and isinstance(tool_result.content, str):
-            if not (self.tool_token_limit_before_evict and len(tool_result.content) > 4 * self.tool_token_limit_before_evict):
-                return tool_result
+        """Intercept and process large tool results before they're added to state.
+
+        Args:
+            tool_result: The tool result to potentially evict (ToolMessage or Command).
+            runtime: The tool runtime providing access to the filesystem backend.
+
+        Returns:
+            Either the original result (if small enough) or a Command with evicted
+            content written to filesystem and truncated message.
+
+        Note:
+            Handles both single ToolMessage results and Command objects containing
+            multiple messages. Large content is automatically offloaded to filesystem
+            to prevent context window overflow.
+        """
+        if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
             processed_message, files_update = self._process_large_message(
                 tool_result,
@@ -1028,14 +1162,10 @@ class FilesystemMiddleware(AgentMiddleware):
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
-                if not (
-                    self.tool_token_limit_before_evict
-                    and isinstance(message, ToolMessage)
-                    and isinstance(message.content, str)
-                    and len(message.content) > 4 * self.tool_token_limit_before_evict
-                ):
+                if not isinstance(message, ToolMessage):
                     processed_messages.append(message)
                     continue
+
                 processed_message, files_update = self._process_large_message(
                     message,
                     resolved_backend,
@@ -1044,8 +1174,53 @@ class FilesystemMiddleware(AgentMiddleware):
                 if files_update is not None:
                     accumulated_file_updates.update(files_update)
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+        raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
-        return tool_result
+    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+        """Async version of _intercept_large_tool_result.
+
+        Uses async backend methods to avoid sync calls in async context.
+        See _intercept_large_tool_result for full documentation.
+        """
+        if isinstance(tool_result, ToolMessage):
+            resolved_backend = self._get_backend(runtime)
+            processed_message, files_update = await self._aprocess_large_message(
+                tool_result,
+                resolved_backend,
+            )
+            return (
+                Command(
+                    update={
+                        "files": files_update,
+                        "messages": [processed_message],
+                    }
+                )
+                if files_update is not None
+                else processed_message
+            )
+
+        if isinstance(tool_result, Command):
+            update = tool_result.update
+            if update is None:
+                return tool_result
+            command_messages = update.get("messages", [])
+            accumulated_file_updates = dict(update.get("files", {}))
+            resolved_backend = self._get_backend(runtime)
+            processed_messages = []
+            for message in command_messages:
+                if not isinstance(message, ToolMessage):
+                    processed_messages.append(message)
+                    continue
+
+                processed_message, files_update = await self._aprocess_large_message(
+                    message,
+                    resolved_backend,
+                )
+                processed_messages.append(processed_message)
+                if files_update is not None:
+                    accumulated_file_updates.update(files_update)
+            return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
+        raise AssertionError(f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
     def wrap_tool_call(
         self,
@@ -1061,7 +1236,7 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return handler(request)
 
         tool_result = handler(request)
@@ -1081,8 +1256,8 @@ class FilesystemMiddleware(AgentMiddleware):
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self.tool_token_limit_before_evict is None or request.tool_call["name"] in TOOL_GENERATORS:
+        if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return await handler(request)
 
         tool_result = await handler(request)
-        return self._intercept_large_tool_result(tool_result, request.runtime)
+        return await self._aintercept_large_tool_result(tool_result, request.runtime)

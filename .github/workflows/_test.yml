@@ -18,7 +18,6 @@ permissions:
   contents: read
 
 env:
-  UV_FROZEN: "true"
   UV_NO_SYNC: "true"
 
 jobs:
@@ -43,10 +42,12 @@ jobs:
 
       - name: "📦 Install Test Dependencies"
         shell: bash
-        run: uv sync --group test
+        run: uv sync --group test --locked
 
       - name: "🧪 Run Unit Tests"
         shell: bash
+        env:
+          RUN_SANDBOX_TESTS: "true"
         run: make test
 
       - name: "🧹 Verify Clean Working Directory"

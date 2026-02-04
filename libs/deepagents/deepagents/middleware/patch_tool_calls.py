@@ -21,7 +21,7 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         # Iterate over the messages and add any dangling tool calls (or missing AI messages)
         for i, msg in enumerate(messages):
             patched_messages.append(msg)
-            
+
             # Case 1: AI message with tool_calls but no following ToolMessage
             if msg.type == "ai" and msg.tool_calls:
                 for tool_call in msg.tool_calls:
@@ -42,17 +42,15 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                                 tool_call_id=tool_call["id"],
                             )
                         )
-            
+
             # Case 2: ToolMessage without a following AI message (and not last message, or next is not AI)
             # This happens if execution was interrupted after tool output but before model response
             if msg.type == "tool":
                 # Check if this tool message is followed by an AI message
                 next_msg = messages[i + 1] if i + 1 < len(messages) else None
                 if next_msg is None or next_msg.type != "ai":
-                    # We have a ToolMessage but no AI response follow-up. 
+                    # We have a ToolMessage but no AI response follow-up.
                     # We must close the loop with a synthetic AI message.
-                    patched_messages.append(
-                        AIMessage(content="Tool execution completed.", tool_calls=[], id=f"patched_ai_{msg.id}")
-                    )
+                    patched_messages.append(AIMessage(content="Tool execution completed.", tool_calls=[], id=f"patched_ai_{msg.id}"))
 
         return {"messages": Overwrite(patched_messages)}

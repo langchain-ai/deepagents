@@ -56,14 +56,25 @@ Uses `+` (not `*`) because a bare `@` without a path is not a valid
 file reference.
 """
 
+EMAIL_PREFIX_PATTERN = re.compile(r"[a-zA-Z0-9._%+-]$")
+"""Pattern to detect email-like text preceding an `@` symbol.
+
+If the character immediately before `@` matches this pattern, the `@mention`
+is likely part of an email address (e.g., `user@example.com`) rather than
+a file reference.
+"""
+
 INPUT_HIGHLIGHT_PATTERN = re.compile(
     r"(^\/[a-zA-Z0-9_-]+|@(?:\\.|[" + PATH_CHAR_CLASS + r"])+)"
 )
 """Pattern for syntax highlighting in the input prompt.
 
 Matches either:
-- Slash commands at the start of a line (e.g., `/help`)
+- Slash commands at the start of input (the lexer only highlights on the first line)
 - `@file` mentions anywhere in the text (e.g., `@README.md`)
+
+Note: The `^` anchor matches start of string, not start of line. The lexer applies
+this pattern line-by-line and additionally checks `i == 0` for slash commands.
 """
 
 EXIT_CONFIRM_WINDOW = 3.0
@@ -244,10 +255,17 @@ class MentionHighlightLexer(Lexer):
 
             for match in INPUT_HIGHLIGHT_PATTERN.finditer(line):
                 start, end = match.span()
+                token_text = match.group()
+
+                # Skip @mentions that look like email addresses
+                if token_text.startswith("@") and start > 0:
+                    char_before = line[start - 1]
+                    if EMAIL_PREFIX_PATTERN.match(char_before):
+                        continue
+
                 if start > last_index:
                     tokens.append((default_style, line[last_index:start]))
 
-                token_text = match.group()
                 if token_text.startswith("/") and start == 0 and i == 0:
                     tokens.append((command_style, token_text))
                 elif token_text.startswith("@"):
@@ -271,6 +289,9 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     file paths. Files that do not exist or cannot be resolved are excluded with
     a warning printed to the console.
 
+    Email addresses (e.g., `user@example.com`) are automatically excluded by
+    detecting email-like characters before the `@` symbol.
+
     Args:
         text: Input text potentially containing `@file` mentions.
 
@@ -281,6 +302,11 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
 
     files = []
     for match in matches:
+        # Skip if this looks like an email address
+        text_before = text[: match.start()]
+        if text_before and EMAIL_PREFIX_PATTERN.search(text_before):
+            continue
+
         raw_path = match.group("path")
         clean_path = raw_path.replace("\\ ", " ")
         path = Path(clean_path).expanduser()

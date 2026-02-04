@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from time import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -10,16 +9,12 @@ from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Markdown, Static
 
+from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
-_USER_HIGHLIGHT_PATTERN = re.compile(
-    r"(^/[a-zA-Z0-9_-]+|@(?:\\.|[A-Za-z0-9._~/\\:-])+)"
-)
-"""Pattern for highlighting `@file` mentions and `/commands` in user messages.
-
-Matches: `/command` at start of line, or `@filepath` anywhere
-"""
+_USER_HIGHLIGHT_PATTERN = INPUT_HIGHLIGHT_PATTERN
+"""Reuse the highlight pattern from input.py to avoid duplication."""
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -94,11 +89,18 @@ class UserMessage(Static):
         last_end = 0
         for match in _USER_HIGHLIGHT_PATTERN.finditer(content):
             start, end = match.span()
+            token = match.group()
+
+            # Skip @mentions that look like email addresses
+            if token.startswith("@") and start > 0:
+                char_before = content[start - 1]
+                if EMAIL_PREFIX_PATTERN.match(char_before):
+                    continue
+
             # Add text before the match (unstyled)
             if start > last_end:
                 text.append(content[last_end:start])
 
-            token = match.group()
             if token.startswith("/") and start == 0:
                 # /command at start - yellow/gold
                 text.append(token, style="bold #fbbf24")

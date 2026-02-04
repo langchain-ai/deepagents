@@ -5,11 +5,10 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any, NotRequired, TypedDict, Unpack, cast
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.chat_models import init_chat_model
 from langchain.tools import BaseTool, ToolRuntime
-from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable
@@ -18,19 +17,14 @@ from langgraph.types import Command
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
 
 
 class SubAgent(TypedDict):
     """Specification for an agent.
 
-    When specifying custom agents, the `default_middleware` from `SubAgentMiddleware`
-    will be applied first, followed by any `middleware` specified in this spec.
-    To use only custom middleware without the defaults, pass `default_middleware=[]`
-    to `SubAgentMiddleware`.
+    When using `create_deep_agent`, subagents automatically receive a default middleware
+    stack (TodoListMiddleware, FilesystemMiddleware, SummarizationMiddleware, etc.) before
+    any custom `middleware` specified in this spec.
 
     Required fields:
         name: Unique identifier for the subagent.
@@ -624,32 +618,6 @@ class SubAgentMiddleware(AgentMiddleware):
 
         self.tools = [task_tool]
 
-    def _build_base_middleware(self, model: BaseChatModel) -> list:
-        """Construct the base middleware stack for a subagent.
-
-        Args:
-            model: The subagent's model, used for SummarizationMiddleware.
-
-        Returns:
-            List of middleware to apply to the subagent.
-        """
-        summarization_defaults = _compute_summarization_defaults(model)
-
-        return [
-            TodoListMiddleware(),
-            FilesystemMiddleware(backend=self._backend),
-            SummarizationMiddleware(
-                model=model,
-                backend=self._backend,
-                trigger=summarization_defaults["trigger"],
-                keep=summarization_defaults["keep"],
-                trim_tokens_to_summarize=None,
-                truncate_args_settings=summarization_defaults["truncate_args_settings"],
-            ),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-            PatchToolCallsMiddleware(),
-        ]
-
     def _get_subagents(self) -> list[_SubagentSpec]:
         """Create runnable agents from specs.
 
@@ -678,18 +646,8 @@ class SubAgentMiddleware(AgentMiddleware):
             if isinstance(model, str):
                 model = init_chat_model(model)
 
-            # Build middleware: base stack + skills (if specified) + user's middleware + interrupt_on
-            middleware: list[AgentMiddleware] = [
-                *self._build_base_middleware(model),
-            ]
-
-            # Add SkillsMiddleware if skills are specified
-            skills = spec.get("skills")
-            if skills:
-                middleware.append(SkillsMiddleware(backend=self._backend, sources=skills))
-
-            # Add user's middleware
-            middleware.extend(spec.get("middleware", []))
+            # Use middleware as provided (caller is responsible for building full stack)
+            middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
 
             interrupt_on = spec.get("interrupt_on")
             if interrupt_on:

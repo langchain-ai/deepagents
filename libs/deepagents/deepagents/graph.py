@@ -151,8 +151,21 @@ def create_deep_agent(
 
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
-    # Build general-purpose subagent
-    gp_middleware: list[AgentMiddleware] = []
+    # Build general-purpose subagent with default middleware stack
+    gp_middleware: list[AgentMiddleware] = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(backend=backend),
+        SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=summarization_defaults["trigger"],
+            keep=summarization_defaults["keep"],
+            trim_tokens_to_summarize=None,
+            truncate_args_settings=summarization_defaults["truncate_args_settings"],
+        ),
+        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+        PatchToolCallsMiddleware(),
+    ]
     if skills is not None:
         gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     if interrupt_on is not None:
@@ -165,18 +178,44 @@ def create_deep_agent(
         "middleware": gp_middleware,
     }
 
-    # Process user-provided subagents to fill in defaults for model and tools
+    # Process user-provided subagents to fill in defaults for model, tools, and middleware
     processed_subagents: list[SubAgent | CompiledSubAgent] = []
     for spec in subagents or []:
         if "runnable" in spec:
             # CompiledSubAgent - use as-is
             processed_subagents.append(spec)
         else:
-            # SubAgent - fill in defaults
+            # SubAgent - fill in defaults and prepend base middleware
+            subagent_model = spec.get("model", model)
+            if isinstance(subagent_model, str):
+                subagent_model = init_chat_model(subagent_model)
+
+            # Build middleware: base stack + skills (if specified) + user's middleware
+            subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
+            subagent_middleware: list[AgentMiddleware] = [
+                TodoListMiddleware(),
+                FilesystemMiddleware(backend=backend),
+                SummarizationMiddleware(
+                    model=subagent_model,
+                    backend=backend,
+                    trigger=subagent_summarization_defaults["trigger"],
+                    keep=subagent_summarization_defaults["keep"],
+                    trim_tokens_to_summarize=None,
+                    truncate_args_settings=subagent_summarization_defaults["truncate_args_settings"],
+                ),
+                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                PatchToolCallsMiddleware(),
+            ]
+            subagent_skills = spec.get("skills")
+            if subagent_skills:
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+            subagent_middleware.extend(spec.get("middleware", []))
+
             processed_spec: SubAgent = {
                 **spec,
-                "model": spec.get("model", model),
+                "model": subagent_model,
                 "tools": spec.get("tools", tools or []),
+                "middleware": subagent_middleware,
             }
             processed_subagents.append(processed_spec)
 

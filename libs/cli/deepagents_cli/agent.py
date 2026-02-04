@@ -110,14 +110,20 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
     """Get the base system prompt for the agent.
 
+    This includes:
+    1. The immutable base instructions from default_agent_prompt.md
+    2. Environment-specific context (working directory, model info, etc.)
+
     Args:
         assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
                      If None, agent is operating in local mode.
 
     Returns:
-        The system prompt string (without AGENTS.md content)
+        The system prompt string (base instructions + environment context)
     """
+    # Always load base instructions fresh from package
+    base_instructions = get_default_coding_instructions()
     agent_dir_path = f"~/.deepagents/{assistant_id}"
 
     # Build model identity section
@@ -168,7 +174,9 @@ The filesystem backend is currently operating in: `{cwd}`
 """  # noqa: E501
 
     return (
-        model_identity_section
+        base_instructions
+        + "\n\n---\n\n"
+        + model_identity_section
         + working_dir_section
         + f"""### Skills Directory
 
@@ -442,8 +450,36 @@ def create_cli_agent(
         agent_dir = settings.ensure_agent_dir(assistant_id)
         agent_md = agent_dir / "AGENTS.md"
         if not agent_md.exists():
-            source_content = get_default_coding_instructions()
-            agent_md.write_text(source_content)
+            # Create empty user customization file with header
+            # Note: Base instructions are now always loaded fresh from the package
+            # via get_system_prompt(). This file is for USER CUSTOMIZATIONS ONLY.
+            user_memory_header = """# User Customizations
+
+Add your custom instructions, preferences, or notes below.
+These will be appended to the base agent instructions.
+
+The base instructions are loaded fresh from the deepagents-cli package,
+so you'll automatically get updates when you upgrade.
+
+---
+
+"""
+            agent_md.write_text(user_memory_header)
+        else:
+            # Check for old format (full prompt was copied to AGENTS.md)
+            # and warn user to reset for cleaner setup
+            content = agent_md.read_text()
+            if content.strip().startswith("You are an AI assistant"):
+                import logging
+
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    "Your AGENTS.md contains the old prompt format. "
+                    "Base instructions are now loaded fresh from the package. "
+                    "Run 'deepagents reset --agent %s' to clean up, or keep your "
+                    "customizations (you may see some duplicate content).",
+                    assistant_id,
+                )
 
     # Skills directories (if enabled)
     skills_dir = None

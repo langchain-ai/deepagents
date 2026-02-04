@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from time import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -11,6 +12,14 @@ from textual.widgets import Markdown, Static
 
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
+
+_USER_HIGHLIGHT_PATTERN = re.compile(
+    r"(^/[a-zA-Z0-9_-]+|@(?:\\.|[A-Za-z0-9._~/\\:-])+)"
+)
+"""Pattern for highlighting `@file` mentions and `/commands` in user messages.
+
+Matches: `/command` at start of line, or `@filepath` anywhere
+"""
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -79,7 +88,31 @@ class UserMessage(Static):
         """
         text = Text()
         text.append("> ", style="bold #10b981")
-        text.append(self._content)
+
+        # Highlight @mentions and /commands in the content
+        content = self._content
+        last_end = 0
+        for match in _USER_HIGHLIGHT_PATTERN.finditer(content):
+            start, end = match.span()
+            # Add text before the match (unstyled)
+            if start > last_end:
+                text.append(content[last_end:start])
+
+            token = match.group()
+            if token.startswith("/") and start == 0:
+                # /command at start - yellow/gold
+                text.append(token, style="bold #fbbf24")
+            elif token.startswith("@"):
+                # @file mention - green
+                text.append(token, style="bold #10b981")
+            else:
+                text.append(token)
+            last_end = end
+
+        # Add remaining text after last match
+        if last_end < len(content):
+            text.append(content[last_end:])
+
         yield Static(text)
 
 

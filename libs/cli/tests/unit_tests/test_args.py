@@ -41,3 +41,55 @@ class TestInitialPromptArg:
         with patch.object(sys, "argv", ["deepagents", "-m", ""]):
             args = parse_args()
         assert args.initial_prompt == ""
+
+
+class TestThreadsExportArg:
+    """Tests for threads export subcommand arguments."""
+
+    def test_export_with_thread_id(self) -> None:
+        """Verify thread_id is parsed correctly."""
+        with patch.object(sys, "argv", ["deepagents", "threads", "export", "abc123"]):
+            args = parse_args()
+        assert args.command == "threads"
+        assert args.threads_command == "export"
+        assert args.thread_id == "abc123"
+
+    def test_export_default_format(self) -> None:
+        """Verify default format is markdown."""
+        with patch.object(sys, "argv", ["deepagents", "threads", "export", "abc123"]):
+            args = parse_args()
+        assert args.format == "markdown"
+
+    def test_export_json_format(self) -> None:
+        """Verify -f json sets format."""
+        with patch.object(
+            sys, "argv", ["deepagents", "threads", "export", "abc123", "-f", "json"]
+        ):
+            args = parse_args()
+        assert args.format == "json"
+
+    def test_export_output_file(self) -> None:
+        """Verify -o sets output path."""
+        with patch.object(
+            sys, "argv", ["deepagents", "threads", "export", "abc123", "-o", "out.md"]
+        ):
+            args = parse_args()
+        assert args.output == "out.md"
+
+    def test_export_all_options(self) -> None:
+        """Verify all export options work together."""
+        argv = [
+            "deepagents",
+            "threads",
+            "export",
+            "xyz789",
+            "-f",
+            "json",
+            "-o",
+            "out.json",
+        ]
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
+        assert args.thread_id == "xyz789"
+        assert args.format == "json"
+        assert args.output == "out.json"

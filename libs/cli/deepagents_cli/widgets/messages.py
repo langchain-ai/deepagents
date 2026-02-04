@@ -405,7 +405,12 @@ class ToolCallMessage(Vertical):
         """
         self._stop_animation()
         self._status = "error"
-        self._output = error
+        # For shell commands, prepend the full command so users can see what failed
+        if self._tool_name in {"shell", "bash", "execute"} and "command" in self._args:
+            command = str(self._args["command"])
+            self._output = f"$ {command}\n\n{error}"
+        else:
+            self._output = error
         if self._status_widget:
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("error")
@@ -707,7 +712,15 @@ class ToolCallMessage(Vertical):
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)  # Show all when expanded
 
-        formatted_lines = [self._escape_markup(line) for line in lines[:max_lines]]
+        formatted_lines = []
+        for line in lines[:max_lines]:
+            escaped = self._escape_markup(line)
+            # Style the command line ($ prefix) in dim grey
+            if escaped.startswith("$ "):
+                formatted_lines.append(f"[dim]{escaped}[/dim]")
+            else:
+                formatted_lines.append(escaped)
+
         result = "\n".join(formatted_lines)
 
         if is_preview and len(lines) > max_lines:

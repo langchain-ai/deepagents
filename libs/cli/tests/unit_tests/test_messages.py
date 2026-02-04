@@ -84,3 +84,60 @@ class TestToolCallMessageMarkupSafety:
         args = {"code": "arr[0] = val[1]", "file": "test.py"}
         msg = ToolCallMessage("write_file", args)
         assert msg._args == args
+
+
+class TestToolCallMessageShellCommand:
+    """Test ToolCallMessage shows full shell command for errors.
+
+    When a shell command fails, users need to see the full command to debug.
+    The header is truncated for display, but the full command should be
+    included in the error output for visibility.
+    """
+
+    def test_shell_error_includes_full_command(self) -> None:
+        """Error output should include the full command that was executed."""
+        long_cmd = "pip install " + " ".join(f"package{i}" for i in range(50))
+        assert len(long_cmd) > 120  # Exceeds truncation limit
+
+        msg = ToolCallMessage("shell", {"command": long_cmd})
+        msg.set_error("Command not found: pip")
+
+        # The error output should include the full command
+        assert long_cmd in msg._output
+
+    def test_shell_error_command_prefix(self) -> None:
+        """Error output should have shell prompt prefix."""
+        cmd = "echo hello"
+        msg = ToolCallMessage("shell", {"command": cmd})
+        msg.set_error("Permission denied")
+
+        # Output should have shell prompt prefix
+        assert msg._output.startswith("$ ")
+        assert cmd in msg._output
+
+    def test_bash_error_includes_full_command(self) -> None:
+        """Error output should include full command for bash tool too."""
+        cmd = "make build"
+        msg = ToolCallMessage("bash", {"command": cmd})
+        msg.set_error("make: *** No rule to make target")
+
+        assert msg._output.startswith("$ ")
+        assert cmd in msg._output
+
+    def test_execute_error_includes_full_command(self) -> None:
+        """Error output should include full command for execute tool too."""
+        cmd = "docker build ."
+        msg = ToolCallMessage("execute", {"command": cmd})
+        msg.set_error("Cannot connect to Docker daemon")
+
+        assert msg._output.startswith("$ ")
+        assert cmd in msg._output
+
+    def test_non_shell_error_unchanged(self) -> None:
+        """Non-shell tools should not have command prepended."""
+        msg = ToolCallMessage("read_file", {"path": "/etc/passwd"})
+        error = "Permission denied"
+        msg.set_error(error)
+
+        assert msg._output == error
+        assert not msg._output.startswith("$ ")

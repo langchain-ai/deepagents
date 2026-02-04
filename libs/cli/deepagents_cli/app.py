@@ -636,16 +636,16 @@ class DeepAgentsApp(App):
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
                 await self._mount_message(
-                    SystemMessage(f"Started new session: {new_thread_id}")
+                    SystemMessage(f"Started new thread: {new_thread_id}")
                 )
         elif cmd == "/threads":
             await self._mount_message(UserMessage(command))
             if self._session_state:
                 await self._mount_message(
-                    SystemMessage(f"Current session: {self._session_state.thread_id}")
+                    SystemMessage(f"Current thread: {self._session_state.thread_id}")
                 )
             else:
-                await self._mount_message(SystemMessage("No active session"))
+                await self._mount_message(SystemMessage("No active thread"))
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
@@ -854,9 +854,9 @@ class DeepAgentsApp(App):
                 if widget:
                     widget.set_rejected()  # Shows as interrupted/rejected in UI
 
-            # Show system message indicating this is a resumed session
+            # Show system message indicating this is a resumed thread
             await self._mount_message(
-                SystemMessage(f"Resumed session: {self._lc_thread_id}")
+                SystemMessage(f"Resumed thread: {self._lc_thread_id}")
             )
 
             # Scroll to bottom after UI fully renders

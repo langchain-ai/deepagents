@@ -389,10 +389,10 @@ def cli_main() -> None:
                 )
             )
 
-            # Show resume hint on exit (only for new sessions)
+            # Show resume hint on exit (only for new threads)
             if thread_id and not is_resumed:
                 console.print()
-                console.print("[dim]Resume this session with:[/dim]")
+                console.print("[dim]Resume this thread with:[/dim]")
                 console.print(f"[cyan]deepagents -r {thread_id}[/cyan]")
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback

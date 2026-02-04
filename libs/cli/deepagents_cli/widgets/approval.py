@@ -238,13 +238,13 @@ class ApprovalMenu(Container):
             options = [
                 "1. Approve (y)",
                 "2. Reject (n)",
-                "3. Auto-approve all this session (a)",
+                "3. Auto-approve for this thread (a)",
             ]
         else:
             options = [
                 f"1. Approve all {count} (y)",
                 f"2. Reject all {count} (n)",
-                "3. Auto-approve all this session (a)",
+                "3. Auto-approve for this thread (a)",
             ]
 
         for i, (text, widget) in enumerate(

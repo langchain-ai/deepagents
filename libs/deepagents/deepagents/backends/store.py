@@ -1,6 +1,5 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
-import logging
 from typing import Any
 
 from langgraph.config import get_config
@@ -24,8 +23,6 @@ from deepagents.backends.utils import (
     perform_string_replacement,
     update_file_data,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class StoreBackend(BackendProtocol):
@@ -85,14 +82,12 @@ class StoreBackend(BackendProtocol):
         # called outside of a runnable context
         try:
             cfg = get_config()
-        except (RuntimeError, LookupError) as e:
-            logger.debug("Failed to get langgraph config (outside runnable context): %s", e)
+        except Exception:
             return (namespace,)
 
         try:
             assistant_id = cfg.get("metadata", {}).get("assistant_id")  # type: ignore[assignment]
-        except (AttributeError, TypeError, KeyError) as e:
-            logger.debug("Failed to extract assistant_id from config: %s", e)
+        except Exception:
             assistant_id = None
 
         if assistant_id:

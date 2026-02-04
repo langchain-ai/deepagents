@@ -18,7 +18,6 @@ Examples:
     ```
 """
 
-import logging
 from collections import defaultdict
 
 from deepagents.backends.protocol import (
@@ -33,8 +32,6 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.state import StateBackend
-
-logger = logging.getLogger(__name__)
 
 
 class CompositeBackend(BackendProtocol):
@@ -385,8 +382,8 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except (AttributeError, KeyError, TypeError) as e:
-                logger.debug("Failed to merge state after write to %s: %s", file_path, e)
+            except Exception:
+                pass
         return res
 
     async def awrite(
@@ -406,8 +403,8 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except (AttributeError, KeyError, TypeError) as e:
-                logger.debug("Failed to merge state after async write to %s: %s", file_path, e)
+            except Exception:
+                pass
         return res
 
     def edit(
@@ -438,8 +435,8 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except (AttributeError, KeyError, TypeError) as e:
-                logger.debug("Failed to merge state after edit to %s: %s", file_path, e)
+            except Exception:
+                pass
         return res
 
     async def aedit(
@@ -460,8 +457,8 @@ class CompositeBackend(BackendProtocol):
                     files = state.get("files", {})
                     files.update(res.files_update)
                     state["files"] = files
-            except (AttributeError, KeyError, TypeError) as e:
-                logger.debug("Failed to merge state after async edit to %s: %s", file_path, e)
+            except Exception:
+                pass
         return res
 
     def execute(

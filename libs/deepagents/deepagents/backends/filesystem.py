@@ -1,7 +1,6 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
 import json
-import logging
 import os
 import re
 import subprocess
@@ -24,8 +23,6 @@ from deepagents.backends.utils import (
     format_content_with_line_numbers,
     perform_string_replacement,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class FilesystemBackend(BackendProtocol):
@@ -248,8 +245,8 @@ class FilesystemBackend(BackendProtocol):
                             )
                         except OSError:
                             results.append({"path": virt_path + "/", "is_dir": True})
-        except (OSError, PermissionError) as e:
-            logger.debug("Failed to list directory %s: %s", path, e)
+        except (OSError, PermissionError):
+            pass
 
         # Keep deterministic order by path
         results.sort(key=lambda x: x.get("path", ""))
@@ -468,8 +465,7 @@ class FilesystemBackend(BackendProtocol):
             if self.virtual_mode:
                 try:
                     virt = "/" + str(p.resolve().relative_to(self.cwd))
-                except (ValueError, OSError) as e:
-                    logger.debug("Skipping path %s in ripgrep results (outside root): %s", p, e)
+                except Exception:
                     continue
             else:
                 virt = str(p)
@@ -522,8 +518,7 @@ class FilesystemBackend(BackendProtocol):
                     if self.virtual_mode:
                         try:
                             virt_path = "/" + str(fp.resolve().relative_to(self.cwd))
-                        except (ValueError, OSError) as e:
-                            logger.debug("Skipping path %s in python search (outside root): %s", fp, e)
+                        except Exception:
                             continue
                     else:
                         virt_path = str(fp)
@@ -596,8 +591,8 @@ class FilesystemBackend(BackendProtocol):
                         )
                     except OSError:
                         results.append({"path": virt, "is_dir": False})
-        except (OSError, ValueError) as e:
-            logger.debug("Failed to glob pattern %s in path %s: %s", pattern, path, e)
+        except (OSError, ValueError):
+            pass
 
         results.sort(key=lambda x: x.get("path", ""))
         return results

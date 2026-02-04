@@ -76,13 +76,16 @@ def test_parse_file_mentions_with_escaped_spaces(tmp_path, monkeypatch):
     assert files == [file_path.resolve()]
 
 
-def test_parse_file_mentions_warns_for_nonexistent_file(tmp_path, monkeypatch):
-    """Ensure non-existent files are excluded from results."""
+def test_parse_file_mentions_warns_for_nonexistent_file(tmp_path, monkeypatch, mocker):
+    """Ensure non-existent files are excluded and warning is printed."""
     monkeypatch.chdir(tmp_path)
+    mock_console = mocker.patch("deepagents_cli.input.console")
 
     _, files = parse_file_mentions("@nonexistent.py")
 
     assert files == []
+    mock_console.print.assert_called_once()
+    assert "nonexistent.py" in mock_console.print.call_args[0][0]
 
 
 def test_parse_file_mentions_ignores_directories(tmp_path, monkeypatch):
@@ -100,3 +103,39 @@ def test_parse_file_mentions_with_no_mentions():
     """Ensure text without mentions returns empty file list."""
     _, files = parse_file_mentions("just some text without mentions")
     assert files == []
+
+
+def test_parse_file_mentions_handles_path_traversal(tmp_path, monkeypatch):
+    """Ensure path traversal sequences are resolved to actual paths."""
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("content")
+    monkeypatch.chdir(subdir)
+
+    _, files = parse_file_mentions("@../test.txt")
+
+    assert files == [file_path.resolve()]
+
+
+def test_parse_file_mentions_with_absolute_path(tmp_path):
+    """Ensure absolute paths are resolved correctly without cwd changes."""
+    file_path = tmp_path / "test.py"
+    file_path.write_text("content")
+
+    _, files = parse_file_mentions(f"@{file_path}")
+
+    assert files == [file_path.resolve()]
+
+
+def test_parse_file_mentions_handles_adjacent_mentions(tmp_path, monkeypatch):
+    """Ensure adjacent @mentions (no space) are parsed as separate files."""
+    first = tmp_path / "a.py"
+    second = tmp_path / "b.py"
+    first.write_text("1")
+    second.write_text("2")
+    monkeypatch.chdir(tmp_path)
+
+    _, files = parse_file_mentions("@a.py@b.py")
+
+    assert files == [first.resolve(), second.resolve()]

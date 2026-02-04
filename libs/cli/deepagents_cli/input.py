@@ -215,9 +215,9 @@ class MentionHighlightLexer(Lexer):
     """Syntax highlighter for slash commands and @file mentions in CLI input.
 
     Applies distinct styling to:
-    - Slash commands (e.g., /help, /clear) - only highlighted when they appear
-        at the very start of the first line
-    - File mentions (e.g., @README.md) - highlighted anywhere in the input
+    - Slash commands (e.g., `/help`, `/clear`) - only highlighted when they
+        appear at the very start of the first line
+    - File mentions (e.g., `@README.md`) - highlighted anywhere in the input
     """
 
     def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
@@ -265,19 +265,19 @@ class MentionHighlightLexer(Lexer):
 
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
-    """Extract @file mentions and return the text with resolved file paths.
+    """Extract `@file` mentions and return the text with resolved file paths.
 
-    Parses @file mentions from the input text and resolves them to absolute
-    file paths. Files that do not exist or cannot be resolved are excluded
-    with a warning printed to the console.
+    Parses `@file` mentions from the input text and resolves them to absolute
+    file paths. Files that do not exist or cannot be resolved are excluded with
+    a warning printed to the console.
 
     Args:
-        text: Input text potentially containing @file mentions.
+        text: Input text potentially containing `@file` mentions.
 
     Returns:
         Tuple of (original text unchanged, list of resolved file paths that exist).
     """
-    matches = re.finditer(FILE_MENTION_PATTERN, text)
+    matches = FILE_MENTION_PATTERN.finditer(text)
 
     files = []
     for match in matches:
@@ -482,7 +482,7 @@ def create_prompt_session(
             if not current_completion and buffer.complete_state.completions:
                 # Move to the first completion
                 buffer.complete_next()
-                # Now apply it (complete_next guarantees current_completion is set)
+                # Apply if available (defensive check as complete_state may change)
                 completion = buffer.complete_state.current_completion
                 if completion:
                     buffer.apply_completion(completion)

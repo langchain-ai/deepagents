@@ -1432,10 +1432,16 @@ def test_truncate_ignores_other_tool_calls() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result = middleware.before_model(state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
-    # Should return None since read_file is not cleaned
-    assert result is None
+    # Should return AIMessage since read_file is not cleaned (no truncation)
+    assert isinstance(result, AIMessage)
+    assert modified_request is not None
+
+    # Verify read_file args are unchanged
+    first_msg = modified_request.messages[0]
+    assert isinstance(first_msg, AIMessage)
+    assert first_msg.tool_calls[0]["args"]["content"] == large_content
 
 
 def test_truncate_respects_recent_messages() -> None:
@@ -1479,10 +1485,16 @@ def test_truncate_respects_recent_messages() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result = middleware.before_model(state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     # No truncation should happen since the tool call is in the keep window (last 4 messages)
-    assert result is None
+    assert isinstance(result, AIMessage)
+    assert modified_request is not None
+
+    # Verify the write_file content is unchanged
+    write_file_msg = modified_request.messages[2]
+    assert isinstance(write_file_msg, AIMessage)
+    assert write_file_msg.tool_calls[0]["args"]["content"] == large_content
 
 
 def test_truncate_with_token_keep_policy() -> None:
@@ -1750,10 +1762,16 @@ def test_truncate_preserves_small_arguments() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result = middleware.before_model(state, runtime)
+    result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     # No modification should happen since content is small
-    assert result is None
+    assert isinstance(result, AIMessage)
+    assert modified_request is not None
+
+    # Verify the content is unchanged
+    first_msg = modified_request.messages[0]
+    assert isinstance(first_msg, AIMessage)
+    assert first_msg.tool_calls[0]["args"]["content"] == small_content
 
 
 def test_truncate_mixed_tool_calls() -> None:

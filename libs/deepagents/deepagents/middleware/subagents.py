@@ -16,7 +16,6 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
-from deepagents.middleware._utils import append_to_system_message
 
 
 class SubAgent(TypedDict):

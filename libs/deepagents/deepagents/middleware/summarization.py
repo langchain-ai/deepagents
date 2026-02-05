@@ -36,7 +36,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -46,6 +46,7 @@ from langchain.agents.middleware.summarization import (
     SummarizationMiddleware as BaseSummarizationMiddleware,
     TokenCounter,
 )
+from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
@@ -54,7 +55,7 @@ from typing_extensions import TypedDict, override
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from langchain.agents.middleware.types import AgentState, ModelRequest, ModelResponse
+    from langchain.agents.middleware.types import ModelRequest, ModelResponse, WrapModelCallResult
     from langchain.chat_models import BaseChatModel
     from langgraph.runtime import Runtime
 
@@ -93,8 +94,20 @@ class TruncateArgsSettings(TypedDict, total=False):
     truncation_text: str
 
 
-class SummarizationMiddleware(BaseSummarizationMiddleware):  # TODO: rename, instantiate self._summarization_middleware
+class SummarizationState(AgentState):
+    """State for the summarization middleware.
+
+    Extends AgentState with a private field for tracking summarization events.
+    """
+
+    _summarization_event: Annotated[NotRequired[SummarizationEvent | None], PrivateStateAttr]
+    """Private field storing the most recent summarization event."""
+
+
+class SummarizationMiddleware(BaseSummarizationMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
+
+    state_schema = SummarizationState
 
     def __init__(
         self,
@@ -164,7 +177,6 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):  # TODO: rename, ins
         )
         self._backend = backend
         self._history_path_prefix = history_path_prefix
-        self._summarization_event: SummarizationEvent | None = None
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:
@@ -310,23 +322,25 @@ A condensed summary follows:
         messages = request.messages
         system_message = request.system_message
 
+        # Get summarization event from state
+        event = request.state.get("_summarization_event")
+
         # If no summarization event, return all messages as-is
-        if self._summarization_event is None:
+        if event is None:
             return [system_message, *messages] if system_message else messages
 
         # Apply the summarization event
         # The cutoff_index tells us: messages before cutoff are summarized, messages at/after are kept
-        event = self._summarization_event
 
         # Build effective messages: system message, summary message, then messages from cutoff onward
         result = []
         if system_message:
             result.append(system_message)
 
-        result.append(event.summary_message)
+        result.append(event["summary_message"])
 
         # Add messages from cutoff_index onward (messages at cutoff_index and after are preserved)
-        result.extend(messages[event.cutoff_index :])
+        result.extend(messages[event["cutoff_index"] :])
 
         return result
 
@@ -653,7 +667,7 @@ A condensed summary follows:
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+    ) -> ModelResponse | WrapModelCallResult:
         """Process messages before model invocation, with history offloading and arg truncation.
 
         First applies any previous summarization events to reconstruct the effective message list.
@@ -722,24 +736,33 @@ A condensed summary follows:
         # If this is a subsequent summarization, convert effective message index to state index
         # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
         # The -1 accounts for the summary message at effective[0]
-        state_cutoff_index = self._summarization_event.cutoff_index + cutoff_index - 1 if self._summarization_event is not None else cutoff_index
+        previous_event = request.state.get("_summarization_event")
+        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
 
-        # Store summarization event in middleware state (replace previous event)
-        self._summarization_event = SummarizationEvent(
-            cutoff_index=state_cutoff_index,
-            summary_message=new_messages[0],  # The HumanMessage with summary
-            file_path=file_path,
-        )
+        # Create new summarization event
+        new_event: SummarizationEvent = {
+            "cutoff_index": state_cutoff_index,
+            "summary_message": new_messages[0],  # The HumanMessage with summary
+            "file_path": file_path,
+        }
 
         # Modify request to use summarized messages (without system message)
         modified_messages = [*new_messages, *preserved_messages]
-        return handler(request.override(messages=modified_messages))
+        response = handler(request.override(messages=modified_messages))
+
+        # Return WrapModelCallResult with state update
+        from langchain.agents.middleware.types import WrapModelCallResult
+
+        return WrapModelCallResult(
+            model_response=response,
+            state_update={"_summarization_event": new_event},
+        )
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+    ) -> ModelResponse | WrapModelCallResult:
         """Process messages before model invocation, with history offloading and arg truncation (async).
 
         First applies any previous summarization events to reconstruct the effective message list.
@@ -808,15 +831,24 @@ A condensed summary follows:
         # If this is a subsequent summarization, convert effective message index to state index
         # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
         # The -1 accounts for the summary message at effective[0]
-        state_cutoff_index = self._summarization_event.cutoff_index + cutoff_index - 1 if self._summarization_event is not None else cutoff_index
+        previous_event = request.state.get("_summarization_event")
+        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
 
-        # Store summarization event in middleware state (replace previous event)
-        self._summarization_event = SummarizationEvent(
-            cutoff_index=state_cutoff_index,
-            summary_message=new_messages[0],  # The HumanMessage with summary
-            file_path=file_path,
-        )
+        # Create new summarization event
+        new_event: SummarizationEvent = {
+            "cutoff_index": state_cutoff_index,
+            "summary_message": new_messages[0],  # The HumanMessage with summary
+            "file_path": file_path,
+        }
 
         # Modify request to use summarized messages (without system message)
         modified_messages = [*new_messages, *preserved_messages]
-        return await handler(request.override(messages=modified_messages))
+        response = await handler(request.override(messages=modified_messages))
+
+        # Return WrapModelCallResult with state update
+        from langchain.agents.middleware.types import WrapModelCallResult
+
+        return WrapModelCallResult(
+            model_response=response,
+            state_update={"_summarization_event": new_event},
+        )

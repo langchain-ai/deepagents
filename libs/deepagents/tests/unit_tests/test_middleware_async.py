@@ -689,14 +689,19 @@ class TestFilesystemMiddlewareAsync:
 
         # Mock sandbox backend that returns specific output
         class FormattingMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: float | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Hello world\nLine 2",
                     exit_code=0,
                     truncated=False,
                 )
 
-            async def aexecute(self, command: str) -> ExecuteResponse:
+            async def aexecute(
+                self,
+                command: str,
+                *,
+                timeout: float | None = None,  # noqa: ASYNC109
+            ) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Async Hello world\nAsync Line 2",
                     exit_code=0,
@@ -733,14 +738,19 @@ class TestFilesystemMiddlewareAsync:
 
         # Mock sandbox backend that returns failure
         class FailureMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: float | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Error: command not found",
                     exit_code=127,
                     truncated=False,
                 )
 
-            async def aexecute(self, command: str) -> ExecuteResponse:
+            async def aexecute(
+                self,
+                command: str,
+                *,
+                timeout: float | None = None,  # noqa: ASYNC109
+            ) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Async Error: command not found",
                     exit_code=127,
@@ -777,14 +787,19 @@ class TestFilesystemMiddlewareAsync:
 
         # Mock sandbox backend that returns truncated output
         class TruncatedMockSandboxBackend(SandboxBackendProtocol, StateBackend):
-            def execute(self, command: str) -> ExecuteResponse:
+            def execute(self, command: str, *, timeout: float | None = None) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Very long output...",
                     exit_code=0,
                     truncated=True,
                 )
 
-            async def aexecute(self, command: str) -> ExecuteResponse:
+            async def aexecute(
+                self,
+                command: str,
+                *,
+                timeout: float | None = None,  # noqa: ASYNC109
+            ) -> ExecuteResponse:
                 return ExecuteResponse(
                     output="Async Very long output...",
                     exit_code=0,

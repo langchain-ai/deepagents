@@ -826,7 +826,10 @@ class FilesystemMiddleware(AgentMiddleware):
         def sync_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
-            timeout: Annotated[int | None, "Optional timeout in seconds for this command. Use for long-running commands that may exceed the default timeout (120s). Example: timeout=300 for 5 minutes."] = None,
+            timeout: Annotated[
+                int | None,
+                "Optional timeout in seconds for this command. Use for long-running commands that may exceed the default timeout (120s). Example: timeout=300 for 5 minutes.",
+            ] = None,
         ) -> str:
             """Synchronous wrapper for execute tool."""
             resolved_backend = self._get_backend(runtime)
@@ -860,7 +863,10 @@ class FilesystemMiddleware(AgentMiddleware):
         async def async_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
-            timeout: Annotated[int | None, "Optional timeout in seconds for this command. Use for long-running commands that may exceed the default timeout (120s). Example: timeout=300 for 5 minutes."] = None,
+            timeout: Annotated[  # noqa: ASYNC109
+                int | None,
+                "Optional timeout in seconds for this command. Use for long-running commands that may exceed the default timeout (120s). Example: timeout=300 for 5 minutes.",
+            ] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
             resolved_backend = self._get_backend(runtime)

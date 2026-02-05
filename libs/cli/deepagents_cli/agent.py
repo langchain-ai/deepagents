@@ -524,8 +524,8 @@ def create_cli_agent(
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-            # Use LocalShellBackend for filesystem + shell execution
-            # This provides the `execute` tool via FilesystemMiddleware in create_deep_agent
+            # Use LocalShellBackend for filesystem + shell execution.
+            # Provides `execute` tool via FilesystemMiddleware.
             backend = LocalShellBackend(
                 root_dir=Path.cwd(),
                 inherit_env=True,

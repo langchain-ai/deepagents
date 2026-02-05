@@ -65,7 +65,9 @@ class TestFormatToolDisplayExecute:
     def test_execute_with_timeout_minutes(self) -> None:
         """Test execute display formats timeout in minutes when appropriate."""
         prefix = get_glyphs().tool_prefix
-        result = format_tool_display("execute", {"command": "make test", "timeout": 300})
+        result = format_tool_display(
+            "execute", {"command": "make test", "timeout": 300}
+        )
         assert result == f'{prefix} execute("make test", timeout=5m)'
 
     def test_execute_with_timeout_seconds(self) -> None:
@@ -77,7 +79,9 @@ class TestFormatToolDisplayExecute:
     def test_execute_with_timeout_hours(self) -> None:
         """Test execute display formats timeout in hours when appropriate."""
         prefix = get_glyphs().tool_prefix
-        result = format_tool_display("execute", {"command": "make test", "timeout": 3600})
+        result = format_tool_display(
+            "execute", {"command": "make test", "timeout": 3600}
+        )
         assert result == f'{prefix} execute("make test", timeout=1h)'
 
     def test_execute_with_none_timeout(self) -> None:
@@ -91,7 +95,9 @@ class TestFormatToolDisplayExecute:
     def test_execute_with_default_timeout_hidden(self) -> None:
         """Test execute display excludes timeout when it equals the default (120s)."""
         prefix = get_glyphs().tool_prefix
-        result = format_tool_display("execute", {"command": "echo hello", "timeout": 120})
+        result = format_tool_display(
+            "execute", {"command": "echo hello", "timeout": 120}
+        )
         assert result == f'{prefix} execute("echo hello")'
 
     def test_execute_long_command_truncated(self) -> None:

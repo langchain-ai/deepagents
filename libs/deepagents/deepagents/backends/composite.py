@@ -487,7 +487,7 @@ class CompositeBackend(BackendProtocol):
             ```
         """
         if isinstance(self.default, SandboxBackendProtocol):
-            return self.default.execute(command, timeout)
+            return self.default.execute(command, timeout=timeout)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.
@@ -499,11 +499,11 @@ class CompositeBackend(BackendProtocol):
     async def aexecute(
         self,
         command: str,
-        timeout: float | None = None,
+        timeout: float | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
         if isinstance(self.default, SandboxBackendProtocol):
-            return await self.default.aexecute(command, timeout)
+            return await self.default.aexecute(command, timeout=timeout)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.

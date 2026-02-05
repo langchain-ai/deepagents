@@ -51,12 +51,7 @@ class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
             truncated=False,
         )
 
-    async def aexecute(
-        self,
-        command: str,
-        *,
-        timeout: float | None = None,  # noqa: ASYNC109
-    ) -> ExecuteResponse:
+    async def aexecute(self, command: str) -> ExecuteResponse:
         """Async mock execute that returns the command as output."""
         return ExecuteResponse(
             output=f"Async Executed: {command}",

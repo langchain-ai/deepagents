@@ -101,7 +101,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         root_dir: str | Path | None = None,
         *,
         virtual_mode: bool = False,
-        timeout: int = 120,
+        timeout: float = 120.0,
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
         inherit_env: bool = False,
@@ -135,12 +135,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 **Important:** This only affects filesystem operations. Shell commands
                 executed via `execute()` are NOT restricted and can access any path.
 
-            timeout: Default maximum time in seconds to wait for shell command
-                execution.
-
-                Commands exceeding this timeout will be terminated.
-
-                Use the optional timeout parameter in `execute()` for long-running commands.
+            timeout: Maximum time in seconds to wait for shell command execution.
+                Commands exceeding this timeout will be terminated. Defaults to 120 seconds.
 
             max_output_bytes: Maximum number of bytes to capture from command output.
                 Output exceeding this limit will be truncated. Defaults to 100,000 bytes.
@@ -159,10 +155,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             max_file_size_mb=10,
         )
 
-        # Validate and store execution parameters
-        if timeout <= 0:
-            msg = f"timeout must be positive, got {timeout}"
-            raise ValueError(msg)
+        # Store execution parameters
         self._timeout = timeout
         self._max_output_bytes = max_output_bytes
 
@@ -189,7 +182,6 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
     def execute(
         self,
         command: str,
-        timeout: int | None = None,
     ) -> ExecuteResponse:
         r"""Execute a shell command directly on the host system.
 
@@ -218,8 +210,6 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 **Security:** This string is passed directly to the shell. Agents can
                 execute arbitrary commands including pipes, redirects, command
                 substitution, etc.
-            timeout: Optional timeout in seconds for this command.
-                If None, uses the backend's default timeout.
 
         Returns:
             ExecuteResponse containing:
@@ -246,23 +236,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             # Commands run in root_dir, but can access any path
             result = backend.execute("cat /etc/passwd")  # Can read system files!
-
-            # Use custom timeout for long-running commands
-            result = backend.execute("make build", timeout=300)  # 5 minutes
             ```
         """
         if not command or not isinstance(command, str):
             return ExecuteResponse(
                 output="Error: Command must be a non-empty string.",
-                exit_code=1,
-                truncated=False,
-            )
-
-        # Use provided timeout or fall back to instance default
-        effective_timeout = timeout if timeout is not None else self._timeout
-        if effective_timeout <= 0:
-            return ExecuteResponse(
-                output=f"Error: timeout must be positive, got {effective_timeout}",
                 exit_code=1,
                 truncated=False,
             )
@@ -274,7 +252,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
                 capture_output=True,
                 text=True,
-                timeout=effective_timeout,
+                timeout=self._timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
             )
@@ -310,7 +288,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         except subprocess.TimeoutExpired:
             return ExecuteResponse(
-                output=(f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, use the timeout parameter."),
+                output=f"Error: Command timed out after {self._timeout:.1f} seconds.",
                 exit_code=124,  # Standard timeout exit code
                 truncated=False,
             )

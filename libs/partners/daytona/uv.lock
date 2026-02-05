@@ -969,14 +969,10 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
-lint = [
-    { name = "ruff" },
-]
 test = [
-    { name = "pytest" },
-]
-typing = [
     { name = "mypy" },
+    { name = "pytest" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -986,9 +982,11 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-lint = [{ name = "ruff", specifier = ">=0.13.1,<0.14.0" }]
-test = [{ name = "pytest", specifier = ">=7.3.0,<9.0.0" }]
-typing = [{ name = "mypy", specifier = ">=1.17.1,<2.0.0" }]
+test = [
+    { name = "mypy", specifier = ">=1.17.1,<2.0.0" },
+    { name = "pytest", specifier = ">=7.3.0,<9.0.0" },
+    { name = "ruff", specifier = ">=0.13.1,<0.14.0" },
+]
 
 [[package]]
 name = "langchain-google-genai"

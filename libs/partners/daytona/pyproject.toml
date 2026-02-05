@@ -37,11 +37,7 @@ Documentation = "https://github.com/langchain-ai/deepagents/tree/master/libs/par
 [dependency-groups]
 test = [
     "pytest>=7.3.0,<9.0.0",
-]
-lint = [
     "ruff>=0.13.1,<0.14.0",
-]
-typing = [
     "mypy>=1.17.1,<2.0.0",
 ]
 

@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from deepagents_cli.config import COLORS, Settings, console
+from deepagents_cli.config import COLORS, Settings, console, get_glyphs
 from deepagents_cli.skills.load import list_skills
 
 MAX_SKILL_NAME_LENGTH = 64
@@ -100,6 +100,8 @@ def _list(agent: str, *, project: bool = False) -> None:
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
+    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # If --project flag is used, only show project skills
     if project:
@@ -112,7 +114,17 @@ def _list(agent: str, *, project: bool = False) -> None:
             )
             return
 
-        if not project_skills_dir.exists() or not any(project_skills_dir.iterdir()):
+        # Check both project skill directories
+        has_deepagents_skills = project_skills_dir.exists() and any(
+            project_skills_dir.iterdir()
+        )
+        has_agent_skills = (
+            project_agent_skills_dir
+            and project_agent_skills_dir.exists()
+            and any(project_agent_skills_dir.iterdir())
+        )
+
+        if not has_deepagents_skills and not has_agent_skills:
             console.print("[yellow]No project skills found.[/yellow]")
             console.print(
                 f"[dim]Project skills will be created in {project_skills_dir}/ "
@@ -127,13 +139,19 @@ def _list(agent: str, *, project: bool = False) -> None:
             return
 
         skills = list_skills(
-            user_skills_dir=None, project_skills_dir=project_skills_dir
+            user_skills_dir=None,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=None,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
         console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
     else:
-        # Load both user and project skills
+        # Load skills from all directories
         skills = list_skills(
-            user_skills_dir=user_skills_dir, project_skills_dir=project_skills_dir
+            user_skills_dir=user_skills_dir,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=user_agent_skills_dir,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
 
         if not skills:
@@ -159,9 +177,11 @@ def _list(agent: str, *, project: bool = False) -> None:
     # Show user skills
     if user_skills and not project:
         console.print("[bold cyan]User Skills:[/bold cyan]", style=COLORS["primary"])
+        bullet = get_glyphs().bullet
         for skill in user_skills:
             skill_path = Path(skill["path"])
-            console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
+            name = skill["name"]
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
             console.print(f"    {skill['description']}", style=COLORS["dim"])
             console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
             console.print()
@@ -173,9 +193,11 @@ def _list(agent: str, *, project: bool = False) -> None:
         console.print(
             "[bold green]Project Skills:[/bold green]", style=COLORS["primary"]
         )
+        bullet = get_glyphs().bullet
         for skill in project_skills_list:
             skill_path = Path(skill["path"])
-            console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
+            name = skill["name"]
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
             console.print(f"    {skill['description']}", style=COLORS["dim"])
             console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
             console.print()
@@ -214,6 +236,11 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
             )
             return
         skills_dir = settings.ensure_project_skills_dir()
+        if skills_dir is None:
+            console.print(
+                "[bold red]Error:[/bold red] Could not create project skills directory."
+            )
+            return
     else:
         skills_dir = settings.ensure_user_skills_dir(agent)
 
@@ -315,7 +342,8 @@ This skill directory can include supporting files referenced in the instructions
     skill_md.write_text(template)
 
     console.print(
-        f"✓ Skill '{skill_name}' created successfully!", style=COLORS["primary"]
+        f"{get_glyphs().checkmark} Skill '{skill_name}' created successfully!",
+        style=COLORS["primary"],
     )
     console.print(f"Location: {skill_dir}\n", style=COLORS["dim"])
     console.print(
@@ -348,6 +376,8 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
     project_skills_dir = settings.get_project_skills_dir()
+    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    project_agent_skills_dir = settings.get_project_agent_skills_dir()
 
     # Load skills based on --project flag
     if project:
@@ -355,11 +385,17 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
             console.print("[bold red]Error:[/bold red] Not in a project directory.")
             return
         skills = list_skills(
-            user_skills_dir=None, project_skills_dir=project_skills_dir
+            user_skills_dir=None,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=None,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
     else:
         skills = list_skills(
-            user_skills_dir=user_skills_dir, project_skills_dir=project_skills_dir
+            user_skills_dir=user_skills_dir,
+            project_skills_dir=project_skills_dir,
+            user_agent_skills_dir=user_agent_skills_dir,
+            project_agent_skills_dir=project_agent_skills_dir,
         )
 
     # Find the skill

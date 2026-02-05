@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.3.10"
+version = "0.3.11"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
@@ -119,6 +119,7 @@ ignore-var-parameters = true
 "deepagents/middleware/filesystem.py" = ["EM102", "TRY003"]
 "deepagents/middleware/memory.py" = ["E501", "EM102", "G004", "PERF401", "SIM108", "T201", "TC002", "TC003", "TRY003"]
 "deepagents/middleware/skills.py" = ["EM101", "SIM108", "TC002", "TC003", "TRY003"]
+"deepagents/graph.py" = ["PLR0912"]
 "tests/integration_tests/test_deepagents.py" = ["ANN201", "C419", "E731", "PLR2004", "SIM118"]
 "tests/integration_tests/test_filesystem_middleware.py" = ["ANN001", "ANN201", "ANN202", "ARG002", "E731", "PLR2004", "SIM118", "T201"]
 "tests/integration_tests/test_hitl.py" = ["ANN201", "C419", "E501", "PLR2004"]

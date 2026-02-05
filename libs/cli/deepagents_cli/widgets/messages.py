@@ -192,7 +192,7 @@ class ToolCallMessage(Vertical):
     """Widget displaying a tool call with collapsible output.
 
     Tool outputs are shown as a 3-line preview by default.
-    Press Ctrl+O to expand/collapse the full output.
+    Press Ctrl+E to expand/collapse the full output.
     Shows an animated "Running..." indicator while the tool is executing.
     """
 
@@ -878,7 +878,9 @@ class ToolCallMessage(Vertical):
             self._full_widget.update(formatted)
             self._full_widget.display = True
             # Show collapse hint
-            self._hint_widget.update("[dim italic]click to collapse[/dim italic]")
+            self._hint_widget.update(
+                "[dim italic]click or Ctrl+E to collapse[/dim italic]"
+            )
             self._hint_widget.display = True
         else:
             # Show preview
@@ -890,7 +892,9 @@ class ToolCallMessage(Vertical):
                 self._preview_widget.display = True
 
                 # Show expand hint
-                self._hint_widget.update("[dim italic]click to expand[/dim italic]")
+                self._hint_widget.update(
+                    "[dim italic]click or Ctrl+E to expand[/dim italic]"
+                )
                 self._hint_widget.display = True
             elif output_stripped:
                 # Output fits in preview, show formatted

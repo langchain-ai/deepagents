@@ -247,7 +247,13 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
-        Binding("ctrl+o", "toggle_tool_output", "Toggle Tool Output", show=False),
+        Binding(
+            "ctrl+e",
+            "toggle_tool_output",
+            "Toggle Tool Output",
+            show=False,
+            priority=True,
+        ),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),

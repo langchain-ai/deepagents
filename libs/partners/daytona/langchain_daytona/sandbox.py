@@ -6,6 +6,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
+from daytona import Daytona, DaytonaConfig, FileDownloadRequest, FileUpload
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
@@ -30,17 +31,20 @@ class DaytonaBackend(BaseSandbox):
     """
 
     def __init__(self, sandbox: Sandbox) -> None:
+        """Create a backend wrapping an existing Daytona sandbox."""
         self._sandbox = sandbox
         self._timeout: int = 30 * 60
 
     @property
     def id(self) -> str:
+        """Return the Daytona sandbox id."""
         return self._sandbox.id
 
     def execute(
         self,
         command: str,
     ) -> ExecuteResponse:
+        """Execute a shell command inside the sandbox."""
         result = self._sandbox.process.exec(command, timeout=self._timeout)
 
         return ExecuteResponse(
@@ -50,8 +54,7 @@ class DaytonaBackend(BaseSandbox):
         )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        from daytona import FileDownloadRequest
-
+        """Download files from the sandbox."""
         download_requests = [FileDownloadRequest(source=path) for path in paths]
         daytona_responses = self._sandbox.fs.download_files(download_requests)
 
@@ -65,8 +68,7 @@ class DaytonaBackend(BaseSandbox):
         ]
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        from daytona import FileUpload
-
+        """Upload files into the sandbox."""
         upload_requests = [
             FileUpload(source=content, destination=path) for path, content in files
         ]
@@ -79,8 +81,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
     """Daytona sandbox provider implementation."""
 
     def __init__(self, api_key: str | None = None) -> None:
-        from daytona import Daytona, DaytonaConfig
-
+        """Create a provider backed by the Daytona SDK."""
         self._api_key = api_key or os.environ.get("DAYTONA_API_KEY")
         if not self._api_key:
             msg = "DAYTONA_API_KEY environment variable not set"
@@ -93,6 +94,14 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
         cursor: str | None = None,
         **kwargs: Any,
     ) -> SandboxListResponse[dict[str, Any]]:
+        """List sandboxes (not yet implemented for Daytona SDK)."""
+        if cursor is not None:
+            msg = "DaytonaProvider.list() does not support cursor"
+            raise ValueError(msg)
+        if kwargs:
+            keys = sorted(kwargs.keys())
+            msg = f"DaytonaProvider.list() got unsupported kwargs: {keys}"
+            raise ValueError(msg)
         msg = "Listing with Daytona SDK not yet implemented"
         raise NotImplementedError(msg)
 
@@ -103,6 +112,11 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
         timeout: int = 180,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
+        """Create a new sandbox and wait until it's ready."""
+        if kwargs:
+            keys = sorted(kwargs.keys())
+            msg = f"DaytonaProvider.get_or_create() got unsupported kwargs: {keys}"
+            raise ValueError(msg)
         if sandbox_id:
             msg = (
                 "Connecting to existing Daytona sandbox by ID not yet supported. "
@@ -118,7 +132,9 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
                 if result.exit_code == 0:
                     break
             except Exception:  # noqa: BLE001
-                pass
+                # Ok: startup errors vary; we retry then timeout.
+                time.sleep(2)
+                continue
             time.sleep(2)
         else:
             try:
@@ -130,5 +146,10 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
         return DaytonaBackend(sandbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:
+        """Delete a sandbox by id."""
+        if kwargs:
+            keys = sorted(kwargs.keys())
+            msg = f"DaytonaProvider.delete() got unsupported kwargs: {keys}"
+            raise ValueError(msg)
         sandbox = self._client.get(sandbox_id)
         self._client.delete(sandbox)

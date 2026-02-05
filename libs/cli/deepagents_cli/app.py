@@ -107,6 +107,7 @@ if _IS_ITERM:
     atexit.register(_restore_cursor_guide)
 
 
+
 class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 

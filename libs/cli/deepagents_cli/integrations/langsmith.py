@@ -136,16 +136,20 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         """Initialize LangSmith provider.
 
         Args:
-            api_key: LangSmith API key (defaults to LANGSMITH_API_KEY env var)
+            api_key: LangSmith API key (defaults to LANGSMITH_API_KEY or LANGSMITH_API_KEY_PROD env var)
 
         Raises:
-            ValueError: If LANGSMITH_API_KEY environment variable not set
+            ValueError: If neither LANGSMITH_API_KEY nor LANGSMITH_API_KEY_PROD environment variable is set
         """
         from langsmith import sandbox
 
-        self._api_key = api_key or os.environ.get("LANGSMITH_API_KEY")
+        self._api_key = (
+            api_key
+            or os.environ.get("LANGSMITH_API_KEY")
+            or os.environ.get("LANGSMITH_API_KEY_PROD")
+        )
         if not self._api_key:
-            msg = "LANGSMITH_API_KEY environment variable not set"
+            msg = "LANGSMITH_API_KEY or LANGSMITH_API_KEY_PROD environment variable not set"
             raise ValueError(msg)
         self._client: SandboxClient = sandbox.SandboxClient()
 

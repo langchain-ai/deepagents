@@ -15,7 +15,7 @@ import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Generic, NotRequired, TypeVar
+from typing import Any, Generic, NotRequired, TypeVar, cast
 
 from typing_extensions import TypedDict
 
@@ -29,6 +29,53 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
+
+
+class SandboxError(Exception):
+    """Base exception for sandbox provider operations.
+
+    Provider implementations may raise provider-specific exceptions, but when
+    normalizing errors for callers, prefer raising `SandboxError` (or a subclass)
+    and chain the original exception.
+
+    The recommended pattern is:
+
+    ```python
+    try:
+        ...
+    except Exception as e:
+        raise SandboxError("...") from e
+    ```
+
+    Attributes:
+        message: Optional human-readable message.
+    """
+
+    def __init__(self, message: str | None = None) -> None:
+        """Create a sandbox error.
+
+        Args:
+            message: Optional human-readable message.
+        """
+        super().__init__(message or self.__class__.__name__)
+        self.message = message
+
+    @property
+    def original_exc(self) -> BaseException | None:
+        """Original exception this error was raised from.
+
+        This is populated when raised using exception chaining:
+
+        ```python
+        raise SandboxError("...") from e
+        ```
+        """
+        return cast("BaseException | None", self.__cause__)
+
+
+class SandboxNotFoundError(SandboxError):
+    """Raised when a sandbox_id is provided but the sandbox does not exist."""
+
 
 # Type variable for provider-specific metadata
 MetadataT = TypeVar("MetadataT", covariant=True)

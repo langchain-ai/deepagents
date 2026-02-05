@@ -47,7 +47,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, StateSnapshot
 
-from deepagents_acp.utils import (
+from langchain_acp.utils import (
     convert_audio_block_to_content_blocks,
     convert_embedded_resource_block_to_content_blocks,
     convert_image_block_to_content_blocks,

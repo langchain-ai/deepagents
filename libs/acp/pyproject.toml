@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "deepagents-acp"
+name = "langchain-acp"
 version = "0.0.1"
-description = "Agent Client Protocol integration for Deep Agents"
+description = "Agent Client Protocol integration for LangChain agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -51,7 +51,7 @@ Issues = "https://github.com/langchain-ai/deepagents/issues"
 Twitter = "https://x.com/LangChain"
 
 [project.scripts]
-deepagents-acp = "deepagents_acp.__main__:main"
+langchain-acp = "langchain_acp.__main__:main"
 
 [tool.uv]
 package = true
@@ -66,7 +66,7 @@ ignore = []
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
-known-first-party = ["deepagents_acp"]
+known-first-party = ["langchain_acp"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto" # or "strict"

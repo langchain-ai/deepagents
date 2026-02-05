@@ -8,7 +8,7 @@ from acp.schema import TextContentBlock
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
-from deepagents_acp.agent import ACPDeepAgent, run_agent
+from langchain_acp.agent import ACPDeepAgent, run_agent
 
 
 @tool(description="Read a file from the filesystem")
@@ -47,8 +47,8 @@ class TestRunAgent:
     @pytest.mark.asyncio
     async def test_run_agent_initializes_in_ask_before_edits_mode(self) -> None:
         """Test that run_agent starts with ask_before_edits mode by default."""
-        with patch("deepagents_acp.agent.run_acp_agent", new_callable=AsyncMock) as mock_run:
-            with patch("deepagents_acp.agent.ACPDeepAgent") as mock_agent_class:
+        with patch("langchain_acp.agent.run_acp_agent", new_callable=AsyncMock) as mock_run:
+            with patch("langchain_acp.agent.ACPDeepAgent") as mock_agent_class:
                 mock_agent = MagicMock()
                 mock_agent_class.return_value = mock_agent
 
@@ -70,8 +70,8 @@ class TestRunAgent:
         """Test that run_agent creates a fresh MemorySaver for each invocation."""
         checkpointers = []
 
-        with patch("deepagents_acp.agent.run_acp_agent", new_callable=AsyncMock):
-            with patch("deepagents_acp.agent.ACPDeepAgent") as mock_agent_class:
+        with patch("langchain_acp.agent.run_acp_agent", new_callable=AsyncMock):
+            with patch("langchain_acp.agent.ACPDeepAgent") as mock_agent_class:
                 mock_agent_class.return_value = MagicMock()
 
                 def capture_checkpointer(**kwargs):
@@ -124,7 +124,7 @@ class TestACPDeepAgentInitialization:
 
     def test_initialization_sets_attributes(self) -> None:
         """Test that ACPDeepAgent initialization sets all required attributes."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("langchain_acp.agent.create_deep_agent") as mock_create:
             mock_create.return_value = MagicMock()
             checkpointer = MemorySaver()
 
@@ -143,8 +143,8 @@ class TestACPDeepAgentInitialization:
     @pytest.mark.skip(reason="test not working yet.")
     def test_create_deepagent_uses_filesystem_backend_with_virtual_mode(self) -> None:
         """Test that _create_deepagent creates a FilesystemBackend with virtual_mode=True."""
-        with patch("deepagents_acp.agent.FilesystemBackend") as mock_backend_class:
-            with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("langchain_acp.agent.FilesystemBackend") as mock_backend_class:
+            with patch("langchain_acp.agent.create_deep_agent") as mock_create:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
                 mock_create.return_value = MagicMock()
@@ -172,7 +172,7 @@ class TestACPDeepAgentInitialization:
 
     def test_initialization_with_auto_mode(self) -> None:
         """Test that ACPDeepAgent can be initialized with auto mode."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("langchain_acp.agent.create_deep_agent") as mock_create:
             mock_create.return_value = MagicMock()
             checkpointer = MemorySaver()
 
@@ -192,7 +192,7 @@ class TestACPDeepAgentInitialization:
 
     def test_on_connect_sets_connection(self):
         """Test that on_connect sets the client connection."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -207,7 +207,7 @@ class TestACPDeepAgentInitialization:
     @pytest.mark.asyncio
     async def test_initialize_returns_capabilities(self):
         """Test that initialize returns correct protocol version and capabilities."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -223,7 +223,7 @@ class TestACPDeepAgentInitialization:
     @pytest.mark.asyncio
     async def test_new_session_returns_available_modes(self):
         """Test that new_session returns session ID and available modes."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -249,7 +249,7 @@ class TestACPDeepAgentInitialization:
     @pytest.mark.asyncio
     async def test_set_session_mode_changes_mode(self):
         """Test that set_session_mode recreates the agent with new mode."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("langchain_acp.agent.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
             mock_create.return_value = mock_graph
 
@@ -277,7 +277,7 @@ class TestACPDeepAgentPromptHandling:
     @pytest.mark.asyncio
     async def test_prompt_with_text_content(self):
         """Test processing a simple text prompt."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("langchain_acp.agent.create_deep_agent") as mock_create:
             # Mock the deep agent graph to return a simple response
             mock_graph = MagicMock()
 
@@ -328,7 +328,7 @@ class TestACPDeepAgentToolHandling:
     @pytest.mark.asyncio
     async def test_tool_call_update_sent(self):
         """Test that tool call updates are sent to client."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("langchain_acp.agent.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
 
             # Create a mock message with tool call chunks
@@ -386,7 +386,7 @@ class TestACPDeepAgentTodoHandling:
     @pytest.mark.asyncio
     async def test_write_todos_sends_plan_update(self):
         """Test that write_todos tool sends a plan update."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("langchain_acp.agent.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
 
             # Create mock message with write_todos tool call
@@ -439,7 +439,7 @@ class TestACPDeepAgentTodoHandling:
     @pytest.mark.asyncio
     async def test_clear_plan_sends_empty_update(self):
         """Test that _clear_plan sends an empty plan update."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -464,7 +464,7 @@ class TestACPDeepAgentToolCallFormatting:
 
     def test_create_tool_call_update_for_read_file(self):
         """Test tool call update creation for read_file."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -485,7 +485,7 @@ class TestACPDeepAgentToolCallFormatting:
 
     def test_create_tool_call_update_for_edit_file(self):
         """Test tool call update creation for edit_file."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -508,7 +508,7 @@ class TestACPDeepAgentToolCallFormatting:
 
     def test_create_tool_call_update_for_write_file(self):
         """Test tool call update creation for write_file."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -528,7 +528,7 @@ class TestACPDeepAgentToolCallFormatting:
 
     def test_create_tool_call_update_for_search_tools(self):
         """Test tool call update creation for search tools."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -553,7 +553,7 @@ class TestACPDeepAgentEndToEnd:
     @pytest.mark.asyncio
     async def test_mode_switch_affects_interrupt_behavior(self):
         """Test that switching modes changes interrupt configuration."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("langchain_acp.agent.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
             mock_create.return_value = mock_graph
 
@@ -593,7 +593,7 @@ class TestACPDeepAgentPlanApproval:
     @pytest.mark.asyncio
     async def test_initial_plan_requires_approval(self):
         """Test that initial plan requires user approval and is stored after approval."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -639,7 +639,7 @@ class TestACPDeepAgentPlanApproval:
     @pytest.mark.asyncio
     async def test_plan_updates_auto_approved_when_in_progress(self):
         """Test that plan updates are auto-approved when plan is still in progress."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -690,7 +690,7 @@ class TestACPDeepAgentPlanApproval:
     @pytest.mark.asyncio
     async def test_new_plan_requires_approval_after_completion(self):
         """Test that new plans require approval after all tasks are completed."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",
@@ -741,7 +741,7 @@ class TestACPDeepAgentPlanApproval:
     @pytest.mark.asyncio
     async def test_clear_plan_removes_from_session_plans(self):
         """Test that clearing a plan removes it from session_plans."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
+        with patch("langchain_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
                 root_dir="/test",
                 mode="ask_before_edits",

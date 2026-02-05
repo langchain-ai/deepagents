@@ -1,4 +1,4 @@
-"""Pytest configuration and shared fixtures for deepagents-acp tests."""
+"""Pytest configuration and shared fixtures for langchain-acp tests."""
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver

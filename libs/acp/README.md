@@ -2,7 +2,7 @@
 
 This repo contains an [Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) connector that allows you to run a Python [DeepAgent](https://docs.langchain.com/oss/python/deepagents/overview) within a text editor that supports ACP such as [Zed](https://zed.dev/).
 
-The DeepAgent lives as code in `deepagents_acp/agent.py`, and can interact with the files of a project you have open in your ACP-compatible editor.
+The agent lives as code in `langchain_acp/agent.py`, and can interact with the files of a project you have open in your ACP-compatible editor.
 
 ![DeepAgents ACP Demo](./static/img/deepagentsacp.gif)
 
@@ -34,7 +34,7 @@ ANTHROPIC_API_KEY=""
 
 # LANGSMITH_TRACING=true
 # LANGSMITH_API_KEY=""
-# LANGSMITH_PROJECT="deepagents-acp"
+# LANGSMITH_PROJECT="langchain-acp"
 ```
 
 Finally, add this to your Zed `settings.json`:
@@ -44,7 +44,7 @@ Finally, add this to your Zed `settings.json`:
   "agent_servers": {
     "DeepAgents": {
       "type": "custom",
-      "command": "/your/absolute/path/to/deepagents-acp/run.sh"
+      "command": "/your/absolute/path/to/langchain-acp/run.sh"
     }
   }
 }

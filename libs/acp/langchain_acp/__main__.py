@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import os
 
-from deepagents_acp.agent import run_agent
+from langchain_acp.agent import run_agent
 
 
 def main():

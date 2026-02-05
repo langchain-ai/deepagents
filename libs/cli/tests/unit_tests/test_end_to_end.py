@@ -29,10 +29,10 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
 
     def bind_tools(
         self,
-        _tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
         *,
-        _tool_choice: str | None = None,
-        **_kwargs: Any,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
         return self

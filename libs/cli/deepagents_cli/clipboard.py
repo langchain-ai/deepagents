@@ -8,6 +8,8 @@ import os
 import pathlib
 from typing import TYPE_CHECKING
 
+from deepagents_cli.config import get_glyphs
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -34,9 +36,10 @@ def _shorten_preview(texts: list[str]) -> str:
     Returns:
         Shortened preview text suitable for notification display.
     """
-    dense_text = "⏎".join(texts).replace("\n", "⏎")
+    glyphs = get_glyphs()
+    dense_text = glyphs.newline.join(texts).replace("\n", glyphs.newline)
     if len(dense_text) > _PREVIEW_MAX_LENGTH:
-        return f"{dense_text[: _PREVIEW_MAX_LENGTH - 1]}…"
+        return f"{dense_text[: _PREVIEW_MAX_LENGTH - 1]}{glyphs.ellipsis}"
     return dense_text
 
 
@@ -56,10 +59,11 @@ def copy_selection_to_clipboard(app: App) -> None:
 
         try:
             result = widget.get_selection(selection)
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
             logger.debug(
-                "Failed to get selection from widget %s",
+                "Failed to get selection from widget %s: %s",
                 type(widget).__name__,
+                e,
                 exc_info=True,
             )
             continue
@@ -102,10 +106,11 @@ def copy_selection_to_clipboard(app: App) -> None:
                 timeout=2,
                 markup=False,
             )
-        except Exception:
+        except (OSError, RuntimeError, TypeError) as e:
             logger.debug(
-                "Clipboard copy method %s failed",
+                "Clipboard copy method %s failed: %s",
                 getattr(copy_fn, "__name__", repr(copy_fn)),
+                e,
                 exc_info=True,
             )
             continue

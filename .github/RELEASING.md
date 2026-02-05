@@ -115,6 +115,19 @@ The release workflow (`.github/workflows/release.yml`) runs when a release PR is
 
 When you publish the draft release, `.github/workflows/release-publish.yml` triggers and publishes to PyPI.
 
+### Release PR Labels
+
+Release-please uses labels to track the state of release PRs:
+
+| Label | Meaning |
+| ----- | ------- |
+| `autorelease: pending` | Release PR has been merged but not yet tagged/released |
+| `autorelease: tagged` | Release PR has been successfully tagged and released |
+
+Because `skip-github-release: true` is set in the release-please config (we create releases via our own workflow instead of release-please), our `release.yml` workflow must update these labels manually. After successfully creating the GitHub release and tag, the `mark-release` job transitions the label from `pending` to `tagged`.
+
+This label transition signals to release-please that the merged PR has been fully processed, allowing it to create new release PRs for subsequent commits.
+
 ## Manual Release
 
 For hotfixes or exceptional cases, you can trigger a release manually. Use the `hotfix` commit type so as to not trigger a further PR update/version bump.
@@ -128,6 +141,57 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 > Manual releases should be rare. Prefer the standard release-please flow.
 
 ## Troubleshooting
+
+### "Found release tag with component X, but not configured in manifest" Warnings
+
+You may see warnings in the release-please logs like:
+
+```txt
+⚠ Found release tag with component 'deepagents=', but not configured in manifest
+```
+
+This is **harmless**. Release-please scans existing tags in the repository and warns when it finds tags for packages that aren't in the current configuration. The `deepagents` SDK package has existing release tags (`deepagents==0.x.x`) but is not currently managed by release-please.
+
+These warnings will disappear once the SDK is added to `release-please-config.json`. Until then, they can be safely ignored—they don't affect CLI releases.
+
+### Unexpected Commit Authors in Release PRs
+
+When viewing a release-please PR on GitHub, you may see commits attributed to contributors who didn't directly push to that PR. For example:
+
+```txt
+johndoe and others added 3 commits 4 minutes ago
+```
+
+This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commits to the PR branch.
+
+**What's happening:**
+
+1. release-please rebases its branch onto the latest `master`
+2. The PR branch now includes commits from `master` as parent commits
+3. GitHub's UI shows all "new" commits that appeared after the force push, including rebased parents
+
+**The actual PR commits** are only:
+
+- The release commit (e.g., `release(deepagents-cli): 0.0.18`)
+- The lockfile update commit (e.g., `chore: update lockfiles`)
+
+Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
+
+### Release PR Stuck with "autorelease: pending" Label
+
+If a release PR shows `autorelease: pending` after the release workflow completed, the label update step may have failed. This can block release-please from creating new release PRs.
+
+**To fix manually:**
+
+```bash
+# Find the PR number for the release commit
+gh pr list --state merged --search "release(deepagents-cli)" --limit 5
+
+# Update the label
+gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+```
+
+The label update is non-fatal in the workflow (`|| true`), so the release itself succeeded—only the label needs fixing.
 
 ### Yanking a Release
 
@@ -167,6 +231,57 @@ PyPI does not allow re-uploading the same version. If a release failed partway:
 1. If already on PyPI: bump the version and release again
 2. If only on test PyPI: the workflow uses `skip-existing: true`, so re-running should work
 3. If the GitHub release exists but PyPI publish failed: delete the release/tag and re-run the workflow
+
+### "Untagged, merged release PRs outstanding" Error
+
+If release-please logs show:
+
+```txt
+⚠ There are untagged, merged release PRs outstanding - aborting
+```
+
+This means a release PR was merged but its merge commit doesn't have the expected tag. This can happen if:
+
+- The release workflow failed and the tag was manually created on a different commit (e.g., a hotfix)
+- Someone manually moved or recreated a tag
+
+**To diagnose**, compare the tag's commit with the release PR's merge commit:
+
+```bash
+# Find what commit the tag points to
+git ls-remote --tags origin | grep "deepagents-cli==<VERSION>"
+
+# Find the release PR's merge commit
+gh pr view <PR_NUMBER> --json mergeCommit --jq '.mergeCommit.oid'
+```
+
+If these differ, release-please is confused.
+
+**To fix**, move the tag and update the GitHub release:
+
+```bash
+# 1. Delete the remote tag
+git push origin :refs/tags/deepagents-cli==<VERSION>
+
+# 2. Delete local tag if it exists
+git tag -d deepagents-cli==<VERSION> 2>/dev/null || true
+
+# 3. Create tag on the correct commit (the release PR's merge commit)
+git tag deepagents-cli==<VERSION> <MERGE_COMMIT_SHA>
+
+# 4. Push the new tag
+git push origin deepagents-cli==<VERSION>
+
+# 5. Update the GitHub release's target_commitish to match
+#    (moving a tag doesn't update this field automatically)
+gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-ai/deepagents/releases --jq '.[] | select(.tag_name == "deepagents-cli==<VERSION>") | .id') \
+  -f target_commitish=<MERGE_COMMIT_SHA>
+```
+
+After fixing, the next push to master should properly create new release PRs.
+
+> [!NOTE]
+> Moving a tag will put the associated GitHub release back into draft state. If the package was already published to PyPI, you can safely re-publish the draft — the publish workflow uses `skip-existing: true`, so it will succeed without re-uploading.
 
 ## References
 

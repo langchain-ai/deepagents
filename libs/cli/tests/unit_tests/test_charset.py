@@ -12,6 +12,7 @@ from deepagents_cli.config import (
     UNICODE_GLYPHS,
     CharsetMode,
     Glyphs,
+    __version__,
     _detect_charset_mode,
     get_banner,
     get_glyphs,
@@ -324,14 +325,32 @@ class TestGetBanner:
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_get_banner_returns_unicode_for_unicode_mode(self) -> None:
         """Test get_banner returns Unicode banner for unicode mode."""
-        banner = get_banner()
+        with patch("deepagents_cli.config._is_editable_install", return_value=False):
+            banner = get_banner()
         assert banner is _UNICODE_BANNER
 
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
     def test_get_banner_returns_ascii_for_ascii_mode(self) -> None:
         """Test get_banner returns ASCII banner for ascii mode."""
-        banner = get_banner()
+        with patch("deepagents_cli.config._is_editable_install", return_value=False):
+            banner = get_banner()
         assert banner is _ASCII_BANNER
+
+    @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
+    def test_get_banner_adds_local_install_suffix_for_editable(self) -> None:
+        """Test get_banner adds (local install) suffix for editable installs."""
+        with patch("deepagents_cli.config._is_editable_install", return_value=True):
+            banner = get_banner()
+        assert "(local install)" in banner
+        assert f"v{__version__} (local install)" in banner
+
+    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
+    def test_get_banner_adds_local_install_suffix_for_editable_ascii(self) -> None:
+        """Test get_banner adds (local install) suffix in ASCII mode."""
+        with patch("deepagents_cli.config._is_editable_install", return_value=True):
+            banner = get_banner()
+        assert "(local install)" in banner
+        assert f"v{__version__} (local install)" in banner
 
     def test_unicode_banner_contains_box_drawing_chars(self) -> None:
         """Test that Unicode banner contains non-ASCII box drawing characters."""

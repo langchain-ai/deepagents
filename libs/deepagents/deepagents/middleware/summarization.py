@@ -43,14 +43,14 @@ from langchain.agents.middleware.summarization import (
     _DEFAULT_TRIM_TOKEN_LIMIT,
     DEFAULT_SUMMARY_PROMPT,
     ContextSize,
-    SummarizationMiddleware as BaseSummarizationMiddleware,
+    SummarizationMiddleware as LCSummarizationMiddleware,
     TokenCounter,
 )
-from langchain.agents.middleware.types import AgentState, PrivateStateAttr, WrapModelCallResult
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr, WrapModelCallResult
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
-from typing_extensions import TypedDict, override
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -104,7 +104,7 @@ class SummarizationState(AgentState):
     """Private field storing the most recent summarization event."""
 
 
-class SummarizationMiddleware(BaseSummarizationMiddleware):
+class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
     state_schema = SummarizationState
@@ -166,7 +166,8 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             )
             ```
         """
-        super().__init__(
+        # Initialize langchain helper for core summarization logic
+        self._lc_helper = LCSummarizationMiddleware(
             model=model,
             trigger=trigger,
             keep=keep,
@@ -175,6 +176,8 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             trim_tokens_to_summarize=trim_tokens_to_summarize,
             **deprecated_kwargs,
         )
+
+        # DeepAgents-specific attributes
         self._backend = backend
         self._history_path_prefix = history_path_prefix
 
@@ -189,6 +192,45 @@ class SummarizationMiddleware(BaseSummarizationMiddleware):
             self._truncate_args_keep = truncate_args_settings.get("keep", ("messages", 20))
             self._max_arg_length = truncate_args_settings.get("max_length", 2000)
             self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
+
+    # Delegated properties and methods from langchain helper
+    @property
+    def model(self) -> BaseChatModel:
+        """The language model used for generating summaries."""
+        return self._lc_helper.model
+
+    @property
+    def token_counter(self) -> TokenCounter:
+        """Function to count tokens in messages."""
+        return self._lc_helper.token_counter
+
+    def _get_profile_limits(self) -> int | None:
+        """Retrieve max input token limit from the model profile."""
+        return self._lc_helper._get_profile_limits()
+
+    def _should_summarize(self, messages: list[AnyMessage], total_tokens: int) -> bool:
+        """Determine whether summarization should run for the current token usage."""
+        return self._lc_helper._should_summarize(messages, total_tokens)
+
+    def _determine_cutoff_index(self, messages: list[AnyMessage]) -> int:
+        """Choose cutoff index respecting retention configuration."""
+        return self._lc_helper._determine_cutoff_index(messages)
+
+    def _partition_messages(
+        self,
+        conversation_messages: list[AnyMessage],
+        cutoff_index: int,
+    ) -> tuple[list[AnyMessage], list[AnyMessage]]:
+        """Partition messages into those to summarize and those to preserve."""
+        return self._lc_helper._partition_messages(conversation_messages, cutoff_index)
+
+    def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
+        """Generate summary for the given messages."""
+        return self._lc_helper._create_summary(messages_to_summarize)
+
+    async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
+        """Generate summary for the given messages (async)."""
+        return await self._lc_helper._acreate_summary(messages_to_summarize)
 
     def _get_backend(self, runtime: Runtime) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
@@ -640,24 +682,6 @@ A condensed summary follows:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
             return path
 
-    @override
-    def before_model(
-        self,
-        state: AgentState[Any],
-        runtime: Runtime,
-    ) -> dict[str, Any] | None:
-        """Override to disable from base class."""
-        return None
-
-    @override
-    async def abefore_model(
-        self,
-        state: AgentState[Any],
-        runtime: Runtime,
-    ) -> dict[str, Any] | None:
-        """Override to disable from base class."""
-        return None
-
     def wrap_model_call(
         self,
         request: ModelRequest,
@@ -835,3 +859,7 @@ A condensed summary follows:
             model_response=response,
             state_update={"_summarization_event": new_event},
         )
+
+
+# Public alias
+SummarizationMiddleware = _DeepAgentsSummarizationMiddleware

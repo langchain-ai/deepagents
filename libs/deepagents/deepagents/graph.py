@@ -25,7 +25,7 @@ from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
@@ -173,7 +173,7 @@ def create_deep_agent(
     subagent_middleware.extend(
         [
             FilesystemMiddleware(backend=backend),
-            SummarizationMiddleware(
+            _DeepAgentsSummarizationMiddleware(
                 model=model,
                 backend=backend,
                 trigger=trigger,
@@ -205,7 +205,7 @@ def create_deep_agent(
                 default_interrupt_on=interrupt_on,
                 general_purpose_agent=True,
             ),
-            SummarizationMiddleware(
+            _DeepAgentsSummarizationMiddleware(
                 model=model,
                 backend=backend,
                 trigger=trigger,

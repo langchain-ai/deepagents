@@ -71,9 +71,12 @@ jobs:
             deepagents-harbor)
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
+            partners/daytona)
+              echo "working-dir=partners/daytona" >> $GITHUB_OUTPUT
+              ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, partners/daytona"
               exit 1
               ;;
           esac

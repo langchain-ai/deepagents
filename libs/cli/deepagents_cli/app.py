@@ -498,7 +498,7 @@ class DeepAgentsApp(App):
 
         Args:
             status: The status text to display (e.g., "Thinking", "Summarizing"),
-                or None to hide the spinner.
+                or `None` to hide the spinner.
         """
         if status is None:
             # Hide

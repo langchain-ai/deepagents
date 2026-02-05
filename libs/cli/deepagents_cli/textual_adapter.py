@@ -61,13 +61,13 @@ class TextualUIAdapter:
     Textual UI, allowing streaming output to be rendered as widgets.
     """
 
-    _mount_message: Callable
+    _mount_message: Callable[..., Awaitable[None]]
     """Async callback to mount a message widget to the chat."""
 
     _update_status: Callable[[str], None]
     """Callback to update the status bar text."""
 
-    _request_approval: Callable
+    _request_approval: Callable[..., Awaitable[Any]]
     """Async callback that returns a Future for HITL approval."""
 
     _on_auto_approve_enabled: Callable[[], None] | None
@@ -82,23 +82,17 @@ class TextualUIAdapter:
     Pass `None` to hide, or a status string to show.
     """
 
-    _current_assistant_message: AssistantMessage | None
-    """The currently streaming assistant message widget."""
-
     _current_tool_messages: dict[str, ToolCallMessage]
     """Map of tool call IDs to their message widgets."""
-
-    _pending_text: str
-    """Buffered text waiting to be flushed to the UI."""
 
     _token_tracker: Any
     """Token usage tracker for displaying counts."""
 
     def __init__(
         self,
-        mount_message: Callable,
+        mount_message: Callable[..., Awaitable[None]],
         update_status: Callable[[str], None],
-        request_approval: Callable,
+        request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
         set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
@@ -106,12 +100,12 @@ class TextualUIAdapter:
         """Initialize the adapter.
 
         Args:
-            mount_message: Async callable to mount a message widget
-            update_status: Callable to update the status bar message
-            request_approval: Callable that returns a Future for HITL approval
-            on_auto_approve_enabled: Callback when auto-approve is enabled
-            scroll_to_bottom: Callback to scroll chat to bottom
-            set_spinner: Callback to show/hide loading spinner (pass None to hide)
+            mount_message: Async callable to mount a message widget.
+            update_status: Callable to update the status bar message.
+            request_approval: Async callable that returns a Future for HITL approval.
+            on_auto_approve_enabled: Callback when auto-approve is enabled.
+            scroll_to_bottom: Callback to scroll chat to bottom.
+            set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
         """
         self._mount_message = mount_message
         self._update_status = update_status
@@ -121,10 +115,8 @@ class TextualUIAdapter:
         self._set_spinner = set_spinner
 
         # State tracking
-        self._current_assistant_message: AssistantMessage | None = None
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
-        self._pending_text = ""
-        self._token_tracker = None
+        self._token_tracker: Any = None
 
     def set_token_tracker(self, tracker: Any) -> None:
         """Set the token tracker for usage tracking."""

@@ -36,6 +36,7 @@ from deepagents_cli.config import (
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
 from deepagents_cli.sessions import (
     delete_thread_command,
+    find_similar_threads,
     generate_thread_id,
     get_checkpointer,
     get_most_recent,
@@ -362,11 +363,24 @@ def cli_main() -> None:
                     error_msg.append(args.resume_thread)
                     error_msg.append("' not found.", style="red")
                     console.print(error_msg)
-                    hint = (
+
+                    # Check for similar thread IDs
+                    similar = asyncio.run(find_similar_threads(args.resume_thread))
+                    if similar:
+                        console.print()
+                        console.print("[yellow]Did you mean?[/yellow]")
+                        for tid in similar:
+                            console.print(f"  [cyan]deepagents -r {tid}[/cyan]")
+                        console.print()
+
+                    console.print(
                         "[dim]Use 'deepagents threads list' to see "
                         "available threads.[/dim]"
                     )
-                    console.print(hint)
+                    console.print(
+                        "[dim]Use 'deepagents -r' to resume the most "
+                        "recent thread.[/dim]"
+                    )
                     sys.exit(1)
 
             # Generate new thread ID if not resuming
@@ -386,6 +400,12 @@ def cli_main() -> None:
                     initial_prompt=getattr(args, "initial_prompt", None),
                 )
             )
+
+            # Show resume hint on exit (only for new threads)
+            if thread_id and not is_resumed:
+                console.print()
+                console.print("[dim]Resume this thread with:[/dim]")
+                console.print(f"[cyan]deepagents -r {thread_id}[/cyan]")
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

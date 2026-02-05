@@ -392,3 +392,124 @@ class TestCreateModelProfileExtraction:
             assert settings.model_context_limit is None
         finally:
             self._restore_settings(original)
+
+
+class TestResponsesApiSupport:
+    """Tests for OpenAI Responses API support with reasoning models."""
+
+    def setup_method(self) -> None:
+        """Reset settings before each test."""
+        settings.model_context_limit = None
+        settings.model_name = None
+        settings.model_provider = None
+
+    def _patch_settings_for_openai(self) -> dict[str, str | None]:
+        """Return original settings and set up for OpenAI-only."""
+        original = {
+            "anthropic_api_key": settings.anthropic_api_key,
+            "openai_api_key": settings.openai_api_key,
+            "google_api_key": settings.google_api_key,
+            "google_cloud_project": settings.google_cloud_project,
+        }
+        settings.anthropic_api_key = None
+        settings.openai_api_key = "test-key"
+        settings.google_api_key = None
+        settings.google_cloud_project = None
+        return original
+
+    def _restore_settings(self, original: dict[str, str | None]) -> None:
+        """Restore original settings."""
+        settings.anthropic_api_key = original["anthropic_api_key"]
+        settings.openai_api_key = original["openai_api_key"]
+        settings.google_api_key = original["google_api_key"]
+        settings.google_cloud_project = original["google_cloud_project"]
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_codex_model_uses_responses_api(self, mock_chat_class: Mock) -> None:
+        """Test that codex models are created with use_responses_api=True."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_openai()
+        try:
+            create_model("gpt-5.2-codex", reasoning_effort="xhigh")
+            mock_chat_class.assert_called_once_with(
+                model="gpt-5.2-codex",
+                use_responses_api=True,
+                reasoning_effort="xhigh",
+            )
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_gpt5_model_uses_responses_api(self, mock_chat_class: Mock) -> None:
+        """Test that gpt-5.x models are created with use_responses_api=True."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_openai()
+        try:
+            create_model("gpt-5.2", reasoning_effort="high")
+            mock_chat_class.assert_called_once_with(
+                model="gpt-5.2",
+                use_responses_api=True,
+                reasoning_effort="high",
+            )
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_non_reasoning_openai_model_no_responses_api(
+        self, mock_chat_class: Mock
+    ) -> None:
+        """Test that non-reasoning OpenAI models don't use Responses API."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_openai()
+        try:
+            create_model("gpt-4o")
+            mock_chat_class.assert_called_once_with(model="gpt-4o")
+        finally:
+            self._restore_settings(original)
+
+    @patch("deepagents_cli.config.console")
+    @patch("langchain_openai.ChatOpenAI")
+    def test_warning_for_reasoning_effort_on_non_reasoning_model(
+        self, mock_chat_class: Mock, mock_console: Mock
+    ) -> None:
+        """Test warning shown for reasoning_effort on non-reasoning model."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_openai()
+        try:
+            create_model("gpt-4o", reasoning_effort="xhigh")
+            mock_console.print.assert_called()
+            call_args = str(mock_console.print.call_args)
+            assert "reasoning-effort" in call_args
+        finally:
+            self._restore_settings(original)
+
+    @patch("deepagents_cli.config.console")
+    @patch("langchain_openai.ChatOpenAI")
+    def test_no_warning_for_default_reasoning_effort(
+        self, mock_chat_class: Mock, mock_console: Mock
+    ) -> None:
+        """Test that no warning is shown when using default reasoning_effort."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_openai()
+        try:
+            create_model("gpt-4o", reasoning_effort="high")
+            # Should not print warning for default value
+            for call in mock_console.print.call_args_list:
+                assert "reasoning-effort" not in str(call)
+        finally:
+            self._restore_settings(original)

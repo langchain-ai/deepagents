@@ -699,13 +699,18 @@ def _detect_provider(model_name: str) -> str | None:
     return None
 
 
-def create_model(model_name_override: str | None = None) -> BaseChatModel:
+def create_model(
+    model_name_override: str | None = None,
+    reasoning_effort: str = "high",
+) -> BaseChatModel:
     """Create the appropriate model based on available API keys.
 
     Uses the global settings instance to determine which model to create.
 
     Args:
         model_name_override: Optional model name to use instead of environment variable
+        reasoning_effort: Reasoning effort for OpenAI reasoning models
+            ("low", "medium", "high", "xhigh"). Default: "high"
 
     Returns:
         ChatModel instance (OpenAI, Anthropic, or Google)
@@ -799,8 +804,27 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        model = ChatOpenAI(model=model_name)  # type: ignore[call-arg]
+        # GPT-5.x and Codex models require the Responses API
+        model_lower = model_name.lower()
+        if "codex" in model_lower or "gpt-5" in model_lower:
+            model = ChatOpenAI(
+                model=model_name,  # type: ignore[unknown-argument]
+                use_responses_api=True,
+                reasoning_effort=reasoning_effort,
+            )
+        else:
+            if reasoning_effort != "high":
+                console.print(
+                    "[yellow]Warning:[/yellow] --reasoning-effort is only "
+                    "supported for OpenAI reasoning models (gpt-5.x, codex)"
+                )
+            model = ChatOpenAI(model=model_name)  # type: ignore[call-arg]
     elif provider == "anthropic":
+        if reasoning_effort != "high":
+            console.print(
+                "[yellow]Warning:[/yellow] --reasoning-effort is only "
+                "supported for OpenAI reasoning models (gpt-5.x, codex)"
+            )
         from langchain_anthropic import ChatAnthropic
 
         model = ChatAnthropic(
@@ -808,6 +832,11 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             max_tokens=20_000,
         )
     elif provider == "google":
+        if reasoning_effort != "high":
+            console.print(
+                "[yellow]Warning:[/yellow] --reasoning-effort is only "
+                "supported for OpenAI reasoning models (gpt-5.x, codex)"
+            )
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         model = ChatGoogleGenerativeAI(
@@ -816,6 +845,11 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             max_tokens=None,
         )
     elif provider == "vertexai":
+        if reasoning_effort != "high":
+            console.print(
+                "[yellow]Warning:[/yellow] --reasoning-effort is only "
+                "supported for OpenAI reasoning models (gpt-5.x, codex)"
+            )
         model_lower = model_name.lower()
 
         if "claude" in model_lower:

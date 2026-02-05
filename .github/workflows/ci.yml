@@ -35,6 +35,7 @@ jobs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
       cli: ${{ steps.filter.outputs.cli }}
       harbor: ${{ steps.filter.outputs.harbor }}
+      daytona: ${{ steps.filter.outputs.daytona }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -61,6 +62,12 @@ jobs:
               - '.github/actions/**'
             harbor:
               - 'libs/harbor/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            daytona:
+              - 'libs/partners/daytona/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -93,6 +100,15 @@ jobs:
     with:
       working-directory: "libs/harbor"
       python-version: "3.14"
+
+  lint-daytona:
+    name: "🧹 Lint daytona"
+    needs: changes
+    if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/daytona"
+      python-version: "3.11"
 
   # Run unit tests on changed packages
   test-deepagents:
@@ -134,6 +150,19 @@ jobs:
       working-directory: "libs/harbor"
       python-version: ${{ matrix.python-version }}
 
+  test-daytona:
+    name: "🧪 Test daytona"
+    needs: changes
+    if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/daytona"
+      python-version: ${{ matrix.python-version }}
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -142,9 +171,11 @@ jobs:
       - lint-deepagents
       - lint-cli
       - lint-harbor
+      - lint-daytona
       - test-deepagents
       - test-cli
       - test-harbor
+      - test-daytona
     if: always()
     runs-on: ubuntu-latest
     steps:

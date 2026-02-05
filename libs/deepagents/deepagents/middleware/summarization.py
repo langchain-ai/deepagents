@@ -47,7 +47,7 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentState, PrivateStateAttr
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from typing_extensions import TypedDict, override
@@ -311,33 +311,28 @@ A condensed summary follows:
         message plus messages after the cutoff index.
 
         Args:
-            request: The model request with messages from state (excluding system message).
+            request: The model request with messages from state.
 
         Returns:
-            The effective message list to use for the model call. This includes the system
-            message (if present), the most recent summary message (if we've summarized),
-            and all preserved messages from the cutoff index onward.
+            The effective message list to use for the model call. This includes the
+            most recent summary message (if we've summarized) and all preserved
+            messages from the cutoff index onward.
         """
-        # Get messages from request (these are from state["messages"], not including system)
+        # Get messages from request (these are from state["messages"])
         messages = request.messages
-        system_message = request.system_message
 
         # Get summarization event from state
         event = request.state.get("_summarization_event")
 
         # If no summarization event, return all messages as-is
         if event is None:
-            return [system_message, *messages] if system_message else messages
+            return messages
 
         # Apply the summarization event
         # The cutoff_index tells us: messages before cutoff are summarized, messages at/after are kept
 
-        # Build effective messages: system message, summary message, then messages from cutoff onward
-        result = []
-        if system_message:
-            result.append(system_message)
-
-        result.append(event["summary_message"])
+        # Build effective messages: summary message, then messages from cutoff onward
+        result = [event["summary_message"]]
 
         # Add messages from cutoff_index onward (messages at cutoff_index and after are preserved)
         result.extend(messages[event["cutoff_index"] :])
@@ -686,14 +681,10 @@ A condensed summary follows:
             The model response from the handler.
         """
         # Get effective messages based on previous summarization events
-        # This includes system message if present
         effective_messages = self._get_effective_messages(request)
 
         # Step 1: Truncate args if configured
         truncated_messages, args_were_truncated = self._truncate_args(effective_messages)
-
-        # Split system message from model messages
-        model_messages = truncated_messages[1:] if request.system_message and isinstance(truncated_messages[0], SystemMessage) else truncated_messages
 
         # Step 2: Check if summarization should happen
         total_tokens = self.token_counter(truncated_messages)
@@ -701,21 +692,21 @@ A condensed summary follows:
 
         # If only truncation happened (no summarization)
         if args_were_truncated and not should_summarize:
-            return handler(request.override(messages=model_messages))
+            return handler(request.override(messages=truncated_messages))
 
         # If no truncation and no summarization
         if not should_summarize:
-            return handler(request.override(messages=model_messages))
+            return handler(request.override(messages=truncated_messages))
 
         # Step 3: Perform summarization
-        cutoff_index = self._determine_cutoff_index(model_messages)
+        cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
             # If truncation happened but we can't summarize, still return truncated messages
             if args_were_truncated:
-                return handler(request.override(messages=model_messages))
-            return handler(request.override(messages=model_messages))
+                return handler(request.override(messages=truncated_messages))
+            return handler(request.override(messages=truncated_messages))
 
-        messages_to_summarize, preserved_messages = self._partition_messages(model_messages, cutoff_index)
+        messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first - abort summarization if this fails to prevent data loss
         backend = self._get_backend(request.runtime)
@@ -746,7 +737,7 @@ A condensed summary follows:
             "file_path": file_path,
         }
 
-        # Modify request to use summarized messages (without system message)
+        # Modify request to use summarized messages
         modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
 
@@ -781,14 +772,10 @@ A condensed summary follows:
             The model response from the handler.
         """
         # Get effective messages based on previous summarization events
-        # This includes system message if present
         effective_messages = self._get_effective_messages(request)
 
         # Step 1: Truncate args if configured
         truncated_messages, args_were_truncated = self._truncate_args(effective_messages)
-
-        # Split system message from model messages
-        model_messages = truncated_messages[1:] if request.system_message and isinstance(truncated_messages[0], SystemMessage) else truncated_messages
 
         # Step 2: Check if summarization should happen
         total_tokens = self.token_counter(truncated_messages)
@@ -796,21 +783,21 @@ A condensed summary follows:
 
         # If only truncation happened (no summarization)
         if args_were_truncated and not should_summarize:
-            return await handler(request.override(messages=model_messages))
+            return await handler(request.override(messages=truncated_messages))
 
         # If no truncation and no summarization
         if not should_summarize:
-            return await handler(request.override(messages=model_messages))
+            return await handler(request.override(messages=truncated_messages))
 
         # Step 3: Perform summarization
-        cutoff_index = self._determine_cutoff_index(model_messages)
+        cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
             # If truncation happened but we can't summarize, still return truncated messages
             if args_were_truncated:
-                return await handler(request.override(messages=model_messages))
-            return await handler(request.override(messages=model_messages))
+                return await handler(request.override(messages=truncated_messages))
+            return await handler(request.override(messages=truncated_messages))
 
-        messages_to_summarize, preserved_messages = self._partition_messages(model_messages, cutoff_index)
+        messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first - abort summarization if this fails to prevent data loss
         backend = self._get_backend(request.runtime)
@@ -841,7 +828,7 @@ A condensed summary follows:
             "file_path": file_path,
         }
 
-        # Modify request to use summarized messages (without system message)
+        # Modify request to use summarized messages
         modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
 

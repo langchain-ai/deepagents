@@ -3,8 +3,8 @@
 import pytest
 
 from deepagents_cli.widgets.messages import (
+    AppMessage,
     ErrorMessage,
-    SystemMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -53,19 +53,19 @@ class TestErrorMessageMarkupSafety:
         assert msg is not None
 
 
-class TestSystemMessageMarkupSafety:
-    """Test SystemMessage handles content with brackets safely."""
+class TestAppMessageMarkupSafety:
+    """Test AppMessage handles content with brackets safely."""
 
     @pytest.mark.parametrize("content", MARKUP_INJECTION_CASES)
-    def test_system_message_no_markup_error(self, content: str) -> None:
-        """SystemMessage should not raise MarkupError on bracket content."""
+    def test_app_message_no_markup_error(self, content: str) -> None:
+        """AppMessage should not raise MarkupError on bracket content."""
         # Instantiation should not raise - this is the key test
-        SystemMessage(content)
+        AppMessage(content)
 
-    def test_system_message_instantiates(self) -> None:
-        """SystemMessage should instantiate with bracket content."""
+    def test_app_message_instantiates(self) -> None:
+        """AppMessage should instantiate with bracket content."""
         content = "Status: processing items[0-10]"
-        msg = SystemMessage(content)
+        msg = AppMessage(content)
         assert msg is not None
 
 

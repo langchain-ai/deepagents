@@ -28,9 +28,9 @@ from deepagents_cli.image_utils import create_multimodal_content
 from deepagents_cli.input import ImageTracker, parse_file_mentions
 from deepagents_cli.ui import format_tool_message_content
 from deepagents_cli.widgets.messages import (
+    AppMessage,
     AssistantMessage,
     DiffMessage,
-    SystemMessage,
     ToolCallMessage,
 )
 
@@ -651,7 +651,7 @@ async def execute_task_textual(
             if interrupt_occurred and hitl_response:
                 if suppress_resumed_output:
                     await adapter._mount_message(
-                        SystemMessage(
+                        AppMessage(
                             "Command rejected. Tell the agent what you'd like instead."
                         )
                     )
@@ -662,7 +662,7 @@ async def execute_task_textual(
                 break
 
     except asyncio.CancelledError:
-        await adapter._mount_message(SystemMessage("Interrupted by user"))
+        await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
         # Suppress all errors: state update failures shouldn't prevent cleanup
@@ -696,7 +696,7 @@ async def execute_task_textual(
         return
 
     except KeyboardInterrupt:
-        await adapter._mount_message(SystemMessage("Interrupted by user"))
+        await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
         # Suppress all errors: state update failures shouldn't prevent cleanup

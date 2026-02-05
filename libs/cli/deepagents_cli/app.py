@@ -25,9 +25,9 @@ from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.messages import (
+    AppMessage,
     AssistantMessage,
     ErrorMessage,
-    SystemMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -602,9 +602,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(msg)
                 await msg.write_initial_content()
             else:
-                await self._mount_message(
-                    SystemMessage("Command completed (no output)")
-                )
+                await self._mount_message(AppMessage("Command completed (no output)"))
 
             if result.returncode != 0:
                 await self._mount_message(
@@ -633,7 +631,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                SystemMessage(
+                AppMessage(
                     "Commands: /quit, /clear, /remember, /tokens, /threads, /help"
                 )
             )
@@ -645,10 +643,10 @@ class DeepAgentsApp(App):
                 from deepagents_cli._version import __version__
 
                 await self._mount_message(
-                    SystemMessage(f"deepagents version: {__version__}")
+                    AppMessage(f"deepagents version: {__version__}")
                 )
             except Exception:
-                await self._mount_message(SystemMessage("deepagents version: unknown"))
+                await self._mount_message(AppMessage("deepagents version: unknown"))
         elif cmd == "/clear":
             await self._clear_messages()
             if self._token_tracker:
@@ -659,16 +657,16 @@ class DeepAgentsApp(App):
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
                 await self._mount_message(
-                    SystemMessage(f"Started new thread: {new_thread_id}")
+                    AppMessage(f"Started new thread: {new_thread_id}")
                 )
         elif cmd == "/threads":
             await self._mount_message(UserMessage(command))
             if self._session_state:
                 await self._mount_message(
-                    SystemMessage(f"Current thread: {self._session_state.thread_id}")
+                    AppMessage(f"Current thread: {self._session_state.thread_id}")
                 )
             else:
-                await self._mount_message(SystemMessage("No active thread"))
+                await self._mount_message(AppMessage("No active thread"))
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
@@ -678,10 +676,10 @@ class DeepAgentsApp(App):
                 else:
                     formatted = str(count)
                 await self._mount_message(
-                    SystemMessage(f"Current context: {formatted} tokens")
+                    AppMessage(f"Current context: {formatted} tokens")
                 )
             else:
-                await self._mount_message(SystemMessage("No token usage yet"))
+                await self._mount_message(AppMessage("No token usage yet"))
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Extract any additional context after /remember
             additional_context = ""
@@ -702,7 +700,7 @@ class DeepAgentsApp(App):
             return  # _handle_user_message already mounts the message
         else:
             await self._mount_message(UserMessage(command))
-            await self._mount_message(SystemMessage(f"Unknown command: {cmd}"))
+            await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
@@ -735,7 +733,7 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                SystemMessage(
+                AppMessage(
                     "Agent not configured. "
                     "Run with --agent flag or use standalone mode."
                 )
@@ -882,7 +880,7 @@ class DeepAgentsApp(App):
 
             # Show system message indicating this is a resumed thread
             await self._mount_message(
-                SystemMessage(f"Resumed thread: {self._lc_thread_id}")
+                AppMessage(f"Resumed thread: {self._lc_thread_id}")
             )
 
             # Scroll to bottom after UI fully renders
@@ -895,7 +893,7 @@ class DeepAgentsApp(App):
 
         except Exception as e:
             # Don't fail the app if history loading fails
-            await self._mount_message(SystemMessage(f"Could not load history: {e}"))
+            await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
     async def _mount_message(
         self, widget: Static | AssistantMessage | ToolCallMessage

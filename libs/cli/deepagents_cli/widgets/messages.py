@@ -1100,11 +1100,11 @@ class ErrorMessage(Static):
             self.styles.border_left = ("ascii", "red")
 
 
-class SystemMessage(Static):
-    """Widget displaying a system message."""
+class AppMessage(Static):
+    """Widget displaying an app message."""
 
     DEFAULT_CSS = """
-    SystemMessage {
+    AppMessage {
         height: auto;
         padding: 0 1;
         margin: 1 0;

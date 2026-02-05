@@ -46,7 +46,7 @@ from langchain.agents.middleware.summarization import (
     SummarizationMiddleware as BaseSummarizationMiddleware,
     TokenCounter,
 )
-from langchain.agents.middleware.types import AgentState, PrivateStateAttr
+from langchain.agents.middleware.types import AgentState, PrivateStateAttr, WrapModelCallResult
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
@@ -55,7 +55,7 @@ from typing_extensions import TypedDict, override
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from langchain.agents.middleware.types import ModelRequest, ModelResponse, WrapModelCallResult
+    from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
     from langgraph.runtime import Runtime
 
@@ -742,8 +742,6 @@ A condensed summary follows:
         response = handler(request.override(messages=modified_messages))
 
         # Return WrapModelCallResult with state update
-        from langchain.agents.middleware.types import WrapModelCallResult
-
         return WrapModelCallResult(
             model_response=response,
             state_update={"_summarization_event": new_event},
@@ -833,8 +831,6 @@ A condensed summary follows:
         response = await handler(request.override(messages=modified_messages))
 
         # Return WrapModelCallResult with state update
-        from langchain.agents.middleware.types import WrapModelCallResult
-
         return WrapModelCallResult(
             model_response=response,
             state_update={"_summarization_event": new_event},

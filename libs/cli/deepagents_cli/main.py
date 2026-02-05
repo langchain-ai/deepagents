@@ -201,7 +201,7 @@ async def run_textual_cli_async(
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
-) -> None:
+) -> int:
     """Run the Textual CLI interface (async version).
 
     Args:
@@ -214,6 +214,9 @@ async def run_textual_cli_async(
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
+
+    Returns:
+        The app's return code (0 for success, non-zero for error).
     """
     from deepagents_cli.app import run_textual_app
 
@@ -223,7 +226,7 @@ async def run_textual_cli_async(
     if is_resumed:
         console.print(f"[green]Resuming thread:[/green] {thread_id}")
     else:
-        console.print(f"[dim]Thread: {thread_id}[/dim]")
+        console.print(f"[dim]Starting with thread: {thread_id}[/dim]")
 
     # Use async context manager for checkpointer
     async with get_checkpointer() as checkpointer:
@@ -264,8 +267,9 @@ async def run_textual_cli_async(
             sys.exit(1)
 
         # Run Textual app - errors propagate to caller
+        return_code = 0
         try:
-            await run_textual_app(
+            return_code = await run_textual_app(
                 agent=agent,
                 assistant_id=assistant_id,
                 backend=composite_backend,
@@ -279,6 +283,7 @@ async def run_textual_cli_async(
             if sandbox_cm is not None:
                 with contextlib.suppress(Exception):
                     sandbox_cm.__exit__(None, None, None)
+        return return_code
 
 
 def cli_main() -> None:
@@ -390,8 +395,9 @@ def cli_main() -> None:
                 thread_id = generate_thread_id()
 
             # Run Textual CLI
+            return_code = 0
             try:
-                asyncio.run(
+                return_code = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=args.agent,
                         auto_approve=args.auto_approve,
@@ -408,8 +414,8 @@ def cli_main() -> None:
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
                 sys.exit(1)
 
-            # Show resume hint on exit (only for new threads)
-            if thread_id and not is_resumed:
+            # Show resume hint on exit (only for new threads with successful exit)
+            if thread_id and not is_resumed and return_code == 0:
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
                 console.print(f"[cyan]deepagents -r {thread_id}[/cyan]")

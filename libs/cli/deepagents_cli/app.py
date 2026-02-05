@@ -1163,7 +1163,7 @@ async def run_textual_app(
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
-) -> None:
+) -> int:
     """Run the Textual application.
 
     Args:
@@ -1174,6 +1174,9 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
+
+    Returns:
+        The app's return code (0 for success, non-zero for error).
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -1185,6 +1188,7 @@ async def run_textual_app(
         initial_prompt=initial_prompt,
     )
     await app.run_async()
+    return app.return_code or 0
 
 
 if __name__ == "__main__":

@@ -1,11 +1,13 @@
 """Configuration, constants, and model creation for the CLI."""
 
+import json
 import os
 import re
 import sys
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 import dotenv
@@ -137,6 +139,35 @@ ASCII_GLYPHS = Glyphs(
 # Module-level cache for detected glyphs
 _glyphs_cache: Glyphs | None = None
 
+# Module-level cache for editable install detection
+_editable_cache: bool | None = None
+
+
+def _is_editable_install() -> bool:
+    """Check if deepagents-cli is installed in editable mode.
+
+    Uses PEP 610 direct_url.json metadata to detect editable installs.
+
+    Returns:
+        True if installed in editable mode, False otherwise.
+    """
+    global _editable_cache  # noqa: PLW0603
+    if _editable_cache is not None:
+        return _editable_cache
+
+    try:
+        dist = distribution("deepagents-cli")
+        direct_url = dist.read_text("direct_url.json")
+        if direct_url:
+            data = json.loads(direct_url)
+            _editable_cache = data.get("dir_info", {}).get("editable", False)
+        else:
+            _editable_cache = False
+    except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
+        _editable_cache = False
+
+    return _editable_cache
+
 
 def _detect_charset_mode() -> CharsetMode:
     """Auto-detect terminal charset capabilities.
@@ -221,10 +252,17 @@ def get_banner() -> str:
 
     Returns:
         The text art banner string (Unicode or ASCII based on charset mode).
+        Includes "(local install)" suffix when installed in editable mode.
     """
     if _detect_charset_mode() == CharsetMode.ASCII:
-        return _ASCII_BANNER
-    return _UNICODE_BANNER
+        banner = _ASCII_BANNER
+    else:
+        banner = _UNICODE_BANNER
+
+    if _is_editable_install():
+        banner = banner.replace(f"v{__version__}", f"v{__version__} (local install)")
+
+    return banner
 
 
 # Legacy alias for backwards compatibility

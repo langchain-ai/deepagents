@@ -10,7 +10,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.widgets import Static
 
-from deepagents_cli.config import get_banner, get_glyphs, settings
+from deepagents_cli.config import _is_editable_install, get_banner, get_glyphs, settings
 
 
 def _fetch_project_url(project_name: str) -> str | None:
@@ -92,7 +92,9 @@ class WelcomeBanner(Static):
             Rich Text object containing the formatted banner.
         """
         banner = Text()
-        banner.append(get_banner() + "\n", style=Style(bold=True, color="#10b981"))
+        # Use orange for local install, green for production
+        banner_color = "#f97316" if _is_editable_install() else "#10b981"
+        banner.append(get_banner() + "\n", style=Style(bold=True, color=banner_color))
 
         if self._project_name:
             banner.append(f"{get_glyphs().checkmark} ", style="green")

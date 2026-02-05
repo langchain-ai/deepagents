@@ -610,7 +610,10 @@ async def execute_task_textual(
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in list(adapter._current_tool_messages.values()):
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_running()
                                 # Mark file ops as approved
                                 for action_request in action_requests:
@@ -628,7 +631,10 @@ async def execute_task_textual(
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in list(adapter._current_tool_messages.values()):
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_running()
                                 # Mark file ops as approved
                                 for action_request in action_requests:
@@ -646,7 +652,10 @@ async def execute_task_textual(
                                     RejectDecision(type="reject")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in list(adapter._current_tool_messages.values()):
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True

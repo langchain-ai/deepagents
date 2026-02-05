@@ -15,7 +15,7 @@ import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Generic, NotRequired, TypeVar, cast
+from typing import Any, Generic, NotRequired, TypeVar
 
 from typing_extensions import TypedDict
 

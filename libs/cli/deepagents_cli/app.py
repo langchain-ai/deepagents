@@ -1060,7 +1060,7 @@ class DeepAgentsApp(App):
             self.notify("Press Ctrl+C again to quit", timeout=3)
 
     def action_interrupt(self) -> None:
-        """Handle escape key - interrupt agent or reject approval.
+        """Handle escape key - interrupt agent, reject approval, or dismiss modal.
 
         This is the primary way to stop a running agent.
         """

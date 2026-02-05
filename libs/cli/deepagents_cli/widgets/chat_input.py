@@ -13,6 +13,7 @@ from textual.reactive import reactive
 from textual.widgets import Static, TextArea
 from textual.widgets.text_area import Selection
 
+from deepagents_cli.config import CharsetMode, _detect_charset_mode
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionResult,
@@ -332,6 +333,9 @@ class ChatInput(Vertical):
 
     def on_mount(self) -> None:
         """Initialize components after mount."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border = ("ascii", "cyan")
+
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
 

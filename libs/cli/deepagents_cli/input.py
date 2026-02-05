@@ -1,4 +1,4 @@
-"""Input handling utilities for the CLI."""
+"""Input handling utilities including image tracking and file mention parsing."""
 
 import re
 from pathlib import Path

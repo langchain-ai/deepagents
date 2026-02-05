@@ -19,6 +19,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
+from deepagents_cli.config import CharsetMode, _detect_charset_mode
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -333,6 +334,10 @@ class DeepAgentsApp(App):
 
     async def on_mount(self) -> None:
         """Initialize components after mount."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.styles.scrollbar_size_vertical = 0
+
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
 

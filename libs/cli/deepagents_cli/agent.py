@@ -32,6 +32,7 @@ from deepagents_cli.config import (
     config,
     console,
     get_default_coding_instructions,
+    get_glyphs,
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
@@ -60,12 +61,15 @@ def list_agents() -> None:
             agent_name = agent_path.name
             agent_md = agent_path / "AGENTS.md"
 
+            bullet = get_glyphs().bullet
             if agent_md.exists():
-                console.print(f"  • [bold]{agent_name}[/bold]", style=COLORS["primary"])
+                console.print(
+                    f"  {bullet} [bold]{agent_name}[/bold]", style=COLORS["primary"]
+                )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
             else:
                 console.print(
-                    f"  • [bold]{agent_name}[/bold] [dim](incomplete)[/dim]",
+                    f"  {bullet} [bold]{agent_name}[/bold] [dim](incomplete)[/dim]",
                     style=COLORS["tool"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
@@ -106,7 +110,8 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     agent_md.write_text(source_content)
 
     console.print(
-        f"✓ Agent '{agent_name}' reset to {action_desc}", style=COLORS["primary"]
+        f"{get_glyphs().checkmark} Agent '{agent_name}' reset to {action_desc}",
+        style=COLORS["primary"],
     )
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
@@ -120,8 +125,10 @@ def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str
 
     Args:
         assistant_id: The agent identifier for path references
-        sandbox_type: Type of sandbox provider ("modal", "runloop", "daytona").
-                     If None, agent is operating in local mode.
+        sandbox_type: Type of sandbox provider
+            ("daytona", "langsmith", "modal", "runloop").
+
+            If None, agent is operating in local mode.
 
     Returns:
         The system prompt string (base instructions + environment context)
@@ -275,7 +282,7 @@ def _format_web_search_description(
 
     return (
         f"Query: {query}\nMax results: {max_results}\n\n"
-        "⚠️  This will use Tavily API credits"
+        f"{get_glyphs().warning}  This will use Tavily API credits"
     )
 
 
@@ -293,7 +300,7 @@ def _format_fetch_url_description(
 
     return (
         f"URL: {url}\nTimeout: {timeout}s\n\n"
-        "⚠️  Will fetch and convert web content to markdown"
+        f"{get_glyphs().warning}  Will fetch and convert web content to markdown"
     )
 
 
@@ -317,13 +324,16 @@ def _format_task_description(
     if len(description) > 500:
         description_preview = description[:500] + "..."
 
+    glyphs = get_glyphs()
+    separator = glyphs.box_horizontal * 40
+    warning_msg = "Subagent will have access to file operations and shell commands"
     return (
         f"Subagent Type: {subagent_type}\n\n"
         f"Task Instructions:\n"
-        f"{'─' * 40}\n"
+        f"{separator}\n"
         f"{description_preview}\n"
-        f"{'─' * 40}\n\n"
-        f"⚠️  Subagent will have access to file operations and shell commands"
+        f"{separator}\n\n"
+        f"{glyphs.warning}  {warning_msg}"
     )
 
 
@@ -432,8 +442,7 @@ def create_cli_agent(
 
             If `None`, uses local filesystem + shell.
         sandbox_type: Type of sandbox provider
-            (`'modal'`, `'runloop'`, `'daytona'`).
-
+            (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
             Used for system prompt generation.
         system_prompt: Override the default system prompt.
 

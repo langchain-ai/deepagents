@@ -10,7 +10,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.widgets import Static
 
-from deepagents_cli.config import DEEP_AGENTS_ASCII, settings
+from deepagents_cli.config import get_banner, get_glyphs, settings
 
 
 def _fetch_project_url(project_name: str) -> str | None:
@@ -92,10 +92,10 @@ class WelcomeBanner(Static):
             Rich Text object containing the formatted banner.
         """
         banner = Text()
-        banner.append(DEEP_AGENTS_ASCII + "\n", style=Style(bold=True, color="#10b981"))
+        banner.append(get_banner() + "\n", style=Style(bold=True, color="#10b981"))
 
         if self._project_name:
-            banner.append("✓ ", style="green")
+            banner.append(f"{get_glyphs().checkmark} ", style="green")
             banner.append("LangSmith tracing: ")
             if project_url:
                 banner.append(
@@ -110,5 +110,9 @@ class WelcomeBanner(Static):
             banner.append(f"Thread: {self._thread_id}\n", style="dim")
 
         banner.append("Ready to code! What would you like to build?\n", style="#10b981")
-        banner.append("Enter send • Ctrl+J newline • @ files • / commands", style="dim")
+        bullet = get_glyphs().bullet
+        banner.append(
+            f"Enter send {bullet} Ctrl+J newline {bullet} @ files {bullet} / commands",
+            style="dim",
+        )
         return banner

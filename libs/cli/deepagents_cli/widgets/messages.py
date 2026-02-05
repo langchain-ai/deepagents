@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Markdown, Static
 
+from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
@@ -86,6 +87,11 @@ class UserMessage(Static):
         """
         super().__init__(**kwargs)
         self._content = content
+
+    def on_mount(self) -> None:
+        """Set border style based on charset mode."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border_left = ("ascii", "#10b981")
 
     def compose(self) -> ComposeResult:
         """Compose the user message layout.
@@ -251,19 +257,19 @@ class ToolCallMessage(Vertical):
     }
 
     ToolCallMessage .tool-output {
-        margin-left: 3;
+        margin-left: 0;
         margin-top: 0;
         padding: 0;
         height: auto;
     }
 
     ToolCallMessage .tool-output-preview {
-        margin-left: 3;
+        margin-left: 0;
         margin-top: 0;
     }
 
     ToolCallMessage .tool-output-hint {
-        margin-left: 3;
+        margin-left: 0;
         color: #6b7280;
     }
 
@@ -271,20 +277,6 @@ class ToolCallMessage(Vertical):
         border-left: wide #525252;
     }
     """
-
-    # Spinner frames for running animation
-    _SPINNER_FRAMES: ClassVar[tuple[str, ...]] = (
-        "⠋",
-        "⠙",
-        "⠹",
-        "⠸",
-        "⠼",
-        "⠴",
-        "⠦",
-        "⠧",
-        "⠇",
-        "⠏",
-    )
 
     # Max lines/chars to show in preview mode
     _PREVIEW_LINES = 6
@@ -349,6 +341,9 @@ class ToolCallMessage(Vertical):
 
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border_left = ("ascii", "#3b3b3b")
+
         self._status_widget = self.query_one("#status", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
         self._hint_widget = self.query_one("#output-hint", Static)
@@ -380,10 +375,9 @@ class ToolCallMessage(Vertical):
         if self._status != "running" or self._status_widget is None:
             return
 
-        frame = self._SPINNER_FRAMES[self._spinner_position]
-        self._spinner_position = (self._spinner_position + 1) % len(
-            self._SPINNER_FRAMES
-        )
+        spinner_frames = get_glyphs().spinner_frames
+        frame = spinner_frames[self._spinner_position]
+        self._spinner_position = (self._spinner_position + 1) % len(spinner_frames)
 
         elapsed = ""
         if self._start_time is not None:
@@ -434,7 +428,8 @@ class ToolCallMessage(Vertical):
         if self._status_widget:
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("error")
-            self._status_widget.update("[red]✗ Error[/red]")
+            error_icon = get_glyphs().error
+            self._status_widget.update(f"[red]{error_icon} Error[/red]")
             self._status_widget.display = True
         # Always show full error - errors should be visible
         self._expanded = True
@@ -447,7 +442,8 @@ class ToolCallMessage(Vertical):
         if self._status_widget:
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("rejected")
-            self._status_widget.update("[yellow]✗ Rejected[/yellow]")
+            error_icon = get_glyphs().error
+            self._status_widget.update(f"[yellow]{error_icon} Rejected[/yellow]")
             self._status_widget.display = True
 
     def set_skipped(self) -> None:
@@ -520,6 +516,24 @@ class ToolCallMessage(Vertical):
             Escaped text safe for Rich rendering.
         """
         return text.replace("[", r"\[").replace("]", r"\]")
+
+    def _prefix_output(self, content: str) -> str:
+        """Prefix output with output marker and indent continuation lines.
+
+        Args:
+            content: The output content to prefix and indent.
+
+        Returns:
+            Content with output prefix on first line and indented continuation.
+        """
+        lines = content.split("\n")
+        if not lines:
+            return ""
+        output_prefix = get_glyphs().output_prefix
+        prefixed = f"{output_prefix} {lines[0]}"
+        if len(lines) > 1:
+            prefixed += "\n" + "\n".join(f"  {line}" for line in lines[1:])
+        return prefixed
 
     def _format_todos_output(
         self, output: str, *, is_preview: bool = False
@@ -613,12 +627,13 @@ class ToolCallMessage(Vertical):
         if len(content) > _MAX_TODO_CONTENT_LEN:
             content = content[: _MAX_TODO_CONTENT_LEN - 3] + "..."
 
+        glyphs = get_glyphs()
         escaped = self._escape_markup(content)
         if status == "completed":
-            return f"    [green]✓ done[/green]   [dim]{escaped}[/dim]"
+            return f"    [green]{glyphs.checkmark} done[/green]   [dim]{escaped}[/dim]"
         if status == "in_progress":
-            return f"    [yellow]● active[/yellow] {escaped}"
-        return f"    [dim]○ todo[/dim]   {escaped}"
+            return f"    [yellow]{glyphs.circle_filled} active[/yellow] {escaped}"
+        return f"    [dim]{glyphs.circle_empty} todo[/dim]   {escaped}"
 
     def _format_ls_output(
         self, output: str, *, is_preview: bool = False
@@ -921,7 +936,8 @@ class ToolCallMessage(Vertical):
             # Show full output with formatting
             self._preview_widget.display = False
             result = self._format_output(self._output, is_preview=False)
-            self._full_widget.update(result.content)
+            prefixed = self._prefix_output(result.content)
+            self._full_widget.update(prefixed)
             self._full_widget.display = True
             # Show collapse hint underneath
             self._hint_widget.update(
@@ -933,13 +949,15 @@ class ToolCallMessage(Vertical):
             self._full_widget.display = False
             if needs_truncation:
                 result = self._format_output(self._output, is_preview=True)
-                self._preview_widget.update(result.content)
+                prefixed = self._prefix_output(result.content)
+                self._preview_widget.update(prefixed)
                 self._preview_widget.display = True
 
                 # Build hint with truncation info if available
                 if result.truncation:
+                    ellipsis = get_glyphs().ellipsis
                     hint = (
-                        f"[dim]... {result.truncation} "
+                        f"[dim]{ellipsis} {result.truncation} "
                         "— click or Ctrl+E to expand[/dim]"
                     )
                 else:
@@ -949,7 +967,8 @@ class ToolCallMessage(Vertical):
             elif output_stripped:
                 # Output fits in preview, show formatted
                 result = self._format_output(output_stripped, is_preview=False)
-                self._preview_widget.update(result.content)
+                prefixed = self._prefix_output(result.content)
+                self._preview_widget.update(prefixed)
                 self._preview_widget.display = True
                 self._hint_widget.display = False
             else:
@@ -1043,6 +1062,11 @@ class DiffMessage(Static):
         rendered = format_diff_textual(self._diff_content, max_lines=100)
         yield Static(rendered)
 
+    def on_mount(self) -> None:
+        """Set border style based on charset mode."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border = ("ascii", "cyan")
+
 
 class ErrorMessage(Static):
     """Widget displaying an error message."""
@@ -1069,6 +1093,11 @@ class ErrorMessage(Static):
         text = Text("Error: ", style="bold red")
         text.append(error)
         super().__init__(text, **kwargs)
+
+    def on_mount(self) -> None:
+        """Set border style based on charset mode."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border_left = ("ascii", "red")
 
 
 class SystemMessage(Static):

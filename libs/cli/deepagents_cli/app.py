@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 # S404: subprocess is required for user-initiated shell commands via ! prefix
 import subprocess  # noqa: S404
@@ -42,6 +43,33 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
     from textual.worker import Worker
+
+# iTerm2 detection - check both environment variables
+_IS_ITERM = (
+    os.environ.get("LC_TERMINAL", "") == "iTerm2"
+    or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
+)
+
+# iTerm2 cursor guide escape sequences (OSC 1337)
+_ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
+_ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
+
+# Disable cursor guide immediately at module load (before Textual takes over)
+# and register atexit handler to restore it on exit
+if _IS_ITERM:
+    import atexit
+    import sys as _sys
+
+    if _sys.__stderr__ is not None:
+        _sys.__stderr__.write(_ITERM_CURSOR_GUIDE_OFF)
+        _sys.__stderr__.flush()
+
+    def _restore_cursor_guide() -> None:
+        if _sys.__stderr__ is not None:
+            _sys.__stderr__.write(_ITERM_CURSOR_GUIDE_ON)
+            _sys.__stderr__.flush()
+
+    atexit.register(_restore_cursor_guide)
 
 
 class TextualTokenTracker:
@@ -964,6 +992,21 @@ class DeepAgentsApp(App):
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
         self.exit()
+
+    def exit(
+        self,
+        result: Any = None,
+        return_code: int = 0,
+        message: Any = None,
+    ) -> None:
+        """Override exit to restore iTerm2 cursor guide."""
+        if _IS_ITERM:
+            import sys
+
+            if sys.__stderr__ is not None:
+                sys.__stderr__.write(_ITERM_CURSOR_GUIDE_ON)
+                sys.__stderr__.flush()
+        super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode."""

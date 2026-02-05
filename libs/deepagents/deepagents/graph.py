@@ -48,6 +48,7 @@ def create_deep_agent(
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
+    subagent_middleware: Sequence[AgentMiddleware] = (),
     subagents: list[SubAgent | CompiledSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
@@ -93,6 +94,10 @@ def create_deep_agent(
             (`TodoListMiddleware`, `FilesystemMiddleware`, `SubAgentMiddleware`,
             `SummarizationMiddleware`, `AnthropicPromptCachingMiddleware`,
             `PatchToolCallsMiddleware`).
+        subagent_middleware: Additional middleware to apply to subagents. These are
+            added after the standard subagent middleware stack (`TodoListMiddleware`,
+            `SkillsMiddleware`, `FilesystemMiddleware`, `SummarizationMiddleware`,
+            `AnthropicPromptCachingMiddleware`, `PatchToolCallsMiddleware`).
         subagents: The subagents to use.
 
             Each subagent should be a `dict` with the following keys:
@@ -162,15 +167,15 @@ def create_deep_agent(
         }
 
     # Build middleware stack for subagents (includes skills if provided)
-    subagent_middleware: list[AgentMiddleware] = [
+    default_subagent_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
     ]
 
     backend = backend if backend is not None else (lambda rt: StateBackend(rt))
 
     if skills is not None:
-        subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    subagent_middleware.extend(
+        default_subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    default_subagent_middleware.extend(
         [
             FilesystemMiddleware(backend=backend),
             SummarizationMiddleware(
@@ -185,6 +190,9 @@ def create_deep_agent(
             PatchToolCallsMiddleware(),
         ]
     )
+    # Add any additional subagent middleware provided by caller
+    if subagent_middleware:
+        default_subagent_middleware.extend(subagent_middleware)
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware] = [
@@ -201,7 +209,7 @@ def create_deep_agent(
                 default_model=model,
                 default_tools=tools,
                 subagents=subagents if subagents is not None else [],
-                default_middleware=subagent_middleware,
+                default_middleware=default_subagent_middleware,
                 default_interrupt_on=interrupt_on,
                 general_purpose_agent=True,
             ),

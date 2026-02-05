@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from deepagents_cli.config import COLORS, Settings, console
+from deepagents_cli.config import COLORS, Settings, console, get_glyphs
 from deepagents_cli.skills.load import list_skills
 
 MAX_SKILL_NAME_LENGTH = 64
@@ -177,9 +177,11 @@ def _list(agent: str, *, project: bool = False) -> None:
     # Show user skills
     if user_skills and not project:
         console.print("[bold cyan]User Skills:[/bold cyan]", style=COLORS["primary"])
+        bullet = get_glyphs().bullet
         for skill in user_skills:
             skill_path = Path(skill["path"])
-            console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
+            name = skill["name"]
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
             console.print(f"    {skill['description']}", style=COLORS["dim"])
             console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
             console.print()
@@ -191,9 +193,11 @@ def _list(agent: str, *, project: bool = False) -> None:
         console.print(
             "[bold green]Project Skills:[/bold green]", style=COLORS["primary"]
         )
+        bullet = get_glyphs().bullet
         for skill in project_skills_list:
             skill_path = Path(skill["path"])
-            console.print(f"  • [bold]{skill['name']}[/bold]", style=COLORS["primary"])
+            name = skill["name"]
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
             console.print(f"    {skill['description']}", style=COLORS["dim"])
             console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
             console.print()
@@ -338,7 +342,8 @@ This skill directory can include supporting files referenced in the instructions
     skill_md.write_text(template)
 
     console.print(
-        f"✓ Skill '{skill_name}' created successfully!", style=COLORS["primary"]
+        f"{get_glyphs().checkmark} Skill '{skill_name}' created successfully!",
+        style=COLORS["primary"],
     )
     console.print(f"Location: {skill_dir}\n", style=COLORS["dim"])
     console.print(

@@ -19,6 +19,7 @@ from deepagents_cli.agent import (
     _format_write_file_description,
     get_system_prompt,
 )
+from deepagents_cli.config import get_glyphs
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -139,7 +140,7 @@ def test_format_web_search_description():
 
     assert "Query: python async programming" in description
     assert "Max results: 10" in description
-    assert "⚠️  This will use Tavily API credits" in description
+    assert f"{get_glyphs().warning}  This will use Tavily API credits" in description
 
 
 def test_format_web_search_description_default_max_results():
@@ -183,7 +184,8 @@ def test_format_fetch_url_description():
 
     assert "URL: https://example.com/docs" in description
     assert "Timeout: 60s" in description
-    assert "⚠️  Will fetch and convert web content to markdown" in description
+    warning = get_glyphs().warning
+    assert f"{warning}  Will fetch and convert web content to markdown" in description
 
 
 def test_format_fetch_url_description_default_timeout():
@@ -228,8 +230,9 @@ def test_format_task_description():
     assert "Subagent Type: general-purpose" in description
     assert "Task Instructions:" in description
     assert "Analyze code structure and identify main components." in description
+    warning = get_glyphs().warning
     assert (
-        "⚠️  Subagent will have access to file operations and shell commands"
+        f"{warning}  Subagent will have access to file operations and shell commands"
         in description
     )
 

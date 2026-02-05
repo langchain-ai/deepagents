@@ -200,7 +200,7 @@ class ApprovalMenu(Container):
         glyphs = get_glyphs()
         help_text = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} y/n/a quick keys"
+            f"Enter select {glyphs.bullet} y/n/a quick keys {glyphs.bullet} Esc reject"
         )
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"

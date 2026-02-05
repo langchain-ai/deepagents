@@ -10,16 +10,99 @@ allowing explicit provider selection (e.g., "anthropic:claude-sonnet-4-5").
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
 
+import tomli_w
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """A model specification in provider:model format.
+
+    This is a value type that encapsulates the provider:model syntax used
+    throughout the CLI. It validates the format at construction time and
+    provides convenient access to both parts.
+
+    Attributes:
+        provider: The provider name (e.g., "anthropic", "openai").
+        model: The model identifier (e.g., "claude-sonnet-4-5", "gpt-4o").
+
+    Examples:
+        >>> spec = ModelSpec.parse("anthropic:claude-sonnet-4-5")
+        >>> spec.provider
+        'anthropic'
+        >>> spec.model
+        'claude-sonnet-4-5'
+        >>> str(spec)
+        'anthropic:claude-sonnet-4-5'
+    """
+
+    provider: str
+    model: str
+
+    def __post_init__(self) -> None:
+        """Validate the model spec after initialization.
+
+        Raises:
+            ValueError: If provider or model is empty.
+        """
+        if not self.provider:
+            msg = "Provider cannot be empty"
+            raise ValueError(msg)
+        if not self.model:
+            msg = "Model cannot be empty"
+            raise ValueError(msg)
+
+    @classmethod
+    def parse(cls, spec: str) -> ModelSpec:
+        """Parse a model specification string.
+
+        Args:
+            spec: Model specification in "provider:model" format.
+
+        Returns:
+            Parsed ModelSpec instance.
+
+        Raises:
+            ValueError: If the spec is not in valid provider:model format.
+        """
+        if ":" not in spec:
+            msg = (
+                f"Invalid model spec '{spec}': must be in provider:model format "
+                "(e.g., 'anthropic:claude-sonnet-4-5')"
+            )
+            raise ValueError(msg)
+        provider, model = spec.split(":", 1)
+        return cls(provider=provider, model=model)
+
+    @classmethod
+    def try_parse(cls, spec: str) -> ModelSpec | None:
+        """Try to parse a model specification, returning None on failure.
+
+        Args:
+            spec: Model specification to parse.
+
+        Returns:
+            Parsed ModelSpec if valid, None otherwise.
+        """
+        try:
+            return cls.parse(spec)
+        except ValueError:
+            return None
+
+    def __str__(self) -> str:
+        """Return the model spec as a string in provider:model format."""
+        return f"{self.provider}:{self.model}"
+
 
 class ProviderConfig(TypedDict, total=False):
     """Configuration for a model provider.
 
-    Attributes:
+    Keys:
         models: List of model identifiers available from this provider.
         api_key_env: Environment variable name containing the API key.
         base_url: Custom base URL for OpenAI-compatible APIs.
@@ -184,27 +267,65 @@ class ModelConfig:
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> ModelConfig:
-        """Load config from file, returning empty config if not found.
+        """Load config from file, returning empty config if not found or invalid.
 
         Args:
             config_path: Path to config file. Defaults to ~/.deepagents/config.toml.
 
         Returns:
-            Parsed ModelConfig instance.
+            Parsed ModelConfig instance. Returns empty config if file is missing,
+            unreadable, or contains invalid TOML syntax.
         """
+        import sys
+
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
         if not config_path.exists():
             return cls()
 
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        try:
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            print(
+                f"Warning: Config file {config_path} has invalid TOML syntax: {e}\n"
+                "Using default configuration. Fix the file or delete it to reset.",
+                file=sys.stderr,
+            )
+            return cls()
+        except (PermissionError, OSError) as e:
+            print(
+                f"Warning: Could not read config file {config_path}: {e}",
+                file=sys.stderr,
+            )
+            return cls()
 
-        return cls(
+        config = cls(
             default_model=data.get("default", {}).get("model"),
             providers=data.get("providers", {}),
         )
+
+        # Validate config consistency
+        config._validate()
+
+        return config
+
+    def _validate(self) -> None:
+        """Validate internal consistency of the config.
+
+        Issues warnings for invalid configurations but does not raise exceptions,
+        allowing the app to continue with potentially degraded functionality.
+        """
+        import sys
+
+        # Warn if default_model is set but doesn't use provider:model format
+        if self.default_model and ":" not in self.default_model:
+            print(
+                f"Warning: default_model '{self.default_model}' should use "
+                "provider:model format (e.g., 'anthropic:claude-sonnet-4-5')",
+                file=sys.stderr,
+            )
 
     def get_all_models(self) -> list[tuple[str, str]]:
         """Get all models as (model_name, provider_name) tuples.
@@ -274,47 +395,48 @@ class ModelConfig:
         return provider.get("api_key_env") if provider else None
 
 
-def save_default_model(model_name: str, config_path: Path | None = None) -> None:
+def save_default_model(model_name: str, config_path: Path | None = None) -> bool:
     """Update the default model in config file.
 
-    If the config file doesn't exist, this creates a minimal config.
-    If it exists, only the default.model value is updated.
+    Reads existing config (if any), updates the default.model value,
+    and writes back using proper TOML serialization.
 
     Args:
-        model_name: The model to set as default.
+        model_name: The model to set as default (provider:model format recommended).
         config_path: Path to config file. Defaults to ~/.deepagents/config.toml.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+
+    Note:
+        This function does not preserve comments in the config file.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
-    # Ensure directory exists
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if config_path.exists():
-        # Read existing content and update default.model
-        content = config_path.read_text()
-
-        # Check if [default] section exists
-        if "[default]" in content:
-            # Update existing model line
-            import re
-
-            pattern = r'(\[default\][^\[]*model\s*=\s*)["\']?[^"\'\n]*["\']?'
-            replacement = rf'\1"{model_name}"'
-            new_content, count = re.subn(pattern, replacement, content)
-            if count == 0:
-                # [default] exists but no model line, add it
-                new_content = content.replace(
-                    "[default]", f'[default]\nmodel = "{model_name}"'
-                )
+        # Read existing config or start fresh
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
         else:
-            # Add [default] section at the beginning
-            new_content = f'[default]\nmodel = "{model_name}"\n\n{content}'
+            data = {}
 
-        config_path.write_text(new_content)
+        # Update the default model
+        if "default" not in data:
+            data["default"] = {}
+        data["default"]["model"] = model_name
+
+        # Write back with proper TOML formatting
+        with config_path.open("wb") as f:
+            tomli_w.dump(data, f)
+    except (OSError, PermissionError, tomllib.TOMLDecodeError) as e:
+        print(f"Warning: Could not save model preference: {e}", file=sys.stderr)
+        return False
     else:
-        # Create minimal config with just the default
-        config_path.write_text(f'[default]\nmodel = "{model_name}"\n')
+        return True
 
 
 def run_first_run_wizard() -> ModelConfig | None:
@@ -367,15 +489,19 @@ def run_first_run_wizard() -> ModelConfig | None:
     curated = get_curated_models().get(provider_name, [])
     models_list = curated or [default_model_spec.split(":", 1)[1]]
 
-    config_content = f"""[default]
-model = "{default_model_spec}"
+    # Build config data structure and serialize with tomli_w
+    config_data = {
+        "default": {"model": default_model_spec},
+        "providers": {
+            provider_name: {
+                "models": models_list,
+                "api_key_env": env_var,
+            }
+        },
+    }
 
-[providers.{provider_name}]
-models = {models_list}
-api_key_env = "{env_var}"
-"""
-
-    config_path.write_text(config_content)
+    with config_path.open("wb") as f:
+        tomli_w.dump(config_data, f)
     print(f"\nConfiguration saved to {config_path}")
 
     return ModelConfig.load(config_path)

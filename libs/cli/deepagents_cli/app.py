@@ -1247,13 +1247,20 @@ class DeepAgentsApp(App):
         if not self._checkpointer:
             # No checkpointer means we can't hot-swap
             # Save the preference and notify user
-            save_default_model(model_spec)
-            await self._mount_message(
-                AppMessage(
-                    f"Default model set to {model_spec}. "
-                    "Restart the CLI for the change to take effect."
+            if save_default_model(model_spec):
+                await self._mount_message(
+                    AppMessage(
+                        f"Default model set to {model_spec}. "
+                        "Restart the CLI for the change to take effect."
+                    )
                 )
-            )
+            else:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Could not save model preference. "
+                        "Check permissions for ~/.deepagents/"
+                    )
+                )
             return
 
         # Try to create the new model
@@ -1285,21 +1292,27 @@ class DeepAgentsApp(App):
             self._agent = new_agent
             self._backend = new_backend
 
-            # Update UI adapter with new callback (it doesn't hold agent directly)
-            if self._ui_adapter:
-                # UI adapter uses callbacks, doesn't need to be recreated
-                pass
+            # Note: UI adapter uses callbacks and doesn't hold agent directly,
+            # so it doesn't need recreation on model switch.
 
             # Update status bar with provider:model format
             if self._status_bar:
                 display_spec = f"{settings.model_provider}:{settings.model_name}"
                 self._status_bar.set_model(display_spec)
 
-            # Save to config
-            save_default_model(model_spec)
+            # Save to config (non-fatal if this fails - model is already switched)
+            config_saved = save_default_model(model_spec)
 
             display = f"{settings.model_provider}:{settings.model_name}"
-            await self._mount_message(AppMessage(f"Switched to {display}"))
+            if config_saved:
+                await self._mount_message(AppMessage(f"Switched to {display}"))
+            else:
+                await self._mount_message(
+                    AppMessage(
+                        f"Switched to {display} (preference not saved - "
+                        "check ~/.deepagents/ permissions)"
+                    )
+                )
 
         except Exception as e:
             await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))

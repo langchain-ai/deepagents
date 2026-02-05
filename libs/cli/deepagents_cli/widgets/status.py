@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -263,25 +264,20 @@ class StatusBar(Horizontal):
 
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
-        self.query_one("#tokens-display", Static).update("")
+        with suppress(NoMatches):
+            self.query_one("#tokens-display", Static).update("")
 
     def set_model(self, model_spec: str) -> None:
-        """Set the model display.
+        """Update the model display text.
 
         Args:
-            model_spec: Model specification to display. Can be in provider:model
-                format (e.g., "anthropic:claude-sonnet-4-5") or just the model
-                name (e.g., "claude-sonnet-4-5").
+            model_spec: Model specification to display (e.g.,
+                "anthropic:claude-sonnet-4-5").
+
+        Note:
+            This method only updates the UI display. Global settings
+            (`settings.model_name`, `settings.model_provider`) should be updated
+            by the caller via `create_model()` before calling this method.
         """
-        try:
-            display = self.query_one("#model-display", Static)
-            display.update(model_spec)
-            # Also update settings for consistency
-            if ":" in model_spec:
-                provider, model_name = model_spec.split(":", 1)
-                settings.model_provider = provider
-                settings.model_name = model_name
-            else:
-                settings.model_name = model_spec
-        except NoMatches:
-            pass
+        with suppress(NoMatches):
+            self.query_one("#model-display", Static).update(model_spec)

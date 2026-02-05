@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
+from typing import Any
 
 import dotenv
 from rich.console import Console
@@ -781,7 +782,7 @@ def _get_default_model_spec() -> str:
     sys.exit(1)
 
 
-def _get_provider_kwargs(provider: str) -> dict:
+def _get_provider_kwargs(provider: str) -> dict[str, Any]:
     """Get provider-specific kwargs for init_chat_model.
 
     Args:
@@ -819,6 +820,10 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
 
     Returns:
         Configured BaseChatModel instance ready for use.
+
+    Note:
+        The parameter was renamed from `model_name_override` to `model_spec` to
+        better reflect its purpose of accepting the provider:model format.
 
     Examples:
         >>> model = create_model("anthropic:claude-sonnet-4-5")

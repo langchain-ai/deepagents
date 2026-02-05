@@ -9,10 +9,76 @@ from deepagents_cli import model_config
 from deepagents_cli.model_config import (
     PROVIDER_API_KEY_ENV,
     ModelConfig,
+    ModelSpec,
     get_curated_models,
     get_default_models,
     has_provider_credentials,
 )
+
+
+class TestModelSpec:
+    """Tests for ModelSpec value type."""
+
+    def test_parse_valid_spec(self) -> None:
+        """parse() correctly splits provider:model format."""
+        spec = ModelSpec.parse("anthropic:claude-sonnet-4-5")
+        assert spec.provider == "anthropic"
+        assert spec.model == "claude-sonnet-4-5"
+
+    def test_parse_with_colons_in_model_name(self) -> None:
+        """parse() handles model names that contain colons."""
+        spec = ModelSpec.parse("custom:model:with:colons")
+        assert spec.provider == "custom"
+        assert spec.model == "model:with:colons"
+
+    def test_parse_raises_on_invalid_format(self) -> None:
+        """parse() raises ValueError when spec lacks colon."""
+        with pytest.raises(ValueError, match="must be in provider:model format"):
+            ModelSpec.parse("invalid-spec")
+
+    def test_parse_raises_on_empty_string(self) -> None:
+        """parse() raises ValueError on empty string."""
+        with pytest.raises(ValueError, match="must be in provider:model format"):
+            ModelSpec.parse("")
+
+    def test_try_parse_returns_spec_on_success(self) -> None:
+        """try_parse() returns ModelSpec for valid input."""
+        spec = ModelSpec.try_parse("openai:gpt-4o")
+        assert spec is not None
+        assert spec.provider == "openai"
+        assert spec.model == "gpt-4o"
+
+    def test_try_parse_returns_none_on_failure(self) -> None:
+        """try_parse() returns None for invalid input."""
+        spec = ModelSpec.try_parse("invalid")
+        assert spec is None
+
+    def test_str_returns_provider_model_format(self) -> None:
+        """str() returns the spec in provider:model format."""
+        spec = ModelSpec(provider="anthropic", model="claude-sonnet-4-5")
+        assert str(spec) == "anthropic:claude-sonnet-4-5"
+
+    def test_equality(self) -> None:
+        """ModelSpec instances with same values are equal."""
+        spec1 = ModelSpec(provider="openai", model="gpt-4o")
+        spec2 = ModelSpec.parse("openai:gpt-4o")
+        assert spec1 == spec2
+
+    def test_immutable(self) -> None:
+        """ModelSpec is immutable (frozen dataclass)."""
+        spec = ModelSpec(provider="openai", model="gpt-4o")
+        with pytest.raises(AttributeError):
+            spec.provider = "anthropic"  # type: ignore[misc]
+
+    def test_validates_empty_provider(self) -> None:
+        """ModelSpec raises on empty provider."""
+        with pytest.raises(ValueError, match="Provider cannot be empty"):
+            ModelSpec(provider="", model="gpt-4o")
+
+    def test_validates_empty_model(self) -> None:
+        """ModelSpec raises on empty model."""
+        with pytest.raises(ValueError, match="Model cannot be empty"):
+            ModelSpec(provider="openai", model="")
 
 
 class TestGetCuratedModels:

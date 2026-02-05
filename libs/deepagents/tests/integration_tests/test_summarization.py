@@ -91,12 +91,13 @@ def test_summarize_continues_task(tmp_path: Path, model_name: str) -> None:
 
     input_message = {
         "role": "user",
-        "content": "Can you read the entirety of base.py and summarize it?",
+        "content": "Can you read the entirety of base.py, 500 lines at a time, and summarize it?",
     }
     result = agent.invoke({"messages": [input_message]}, config)
 
     # Check we summarized
-    assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+    state = agent.get_state(config)
+    assert state.values["_summarization_event"]
 
     # Verify the agent made substantial progress reading the file after summarization.
     # We check the highest line number seen across all tool messages to confirm

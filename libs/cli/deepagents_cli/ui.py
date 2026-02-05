@@ -210,6 +210,11 @@ def show_help() -> None:
     console.print()
     console.print(DEEP_AGENTS_ASCII, style=f"bold {COLORS['primary']}")
     console.print()
+    console.print(
+        "Docs: https://docs.langchain.com/oss/python/deepagents/cli",
+        style=COLORS["dim"],
+    )
+    console.print()
 
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
     console.print(

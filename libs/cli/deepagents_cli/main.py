@@ -84,8 +84,7 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description=(
-            "Deep Agents - AI Coding Assistant\n\n"
-            "Docs: https://docs.langchain.com/oss/python/deepagents/cli"
+            "Deep Agents - AI Coding Assistant"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,

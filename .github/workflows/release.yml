@@ -72,7 +72,7 @@ jobs:
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
             partners/daytona)
-              echo "working-dir=partners/daytona" >> $GITHUB_OUTPUT
+              echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"

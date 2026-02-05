@@ -182,10 +182,10 @@ class TestToolCallMessageShellCommand:
         msg = ToolCallMessage("shell", {"command": "echo test"})
         # Include a line that looks like a command prompt in the output
         output = "$ echo test\ntest output\n$ not a command"
-        formatted = msg._format_shell_output(output, is_preview=False)
+        result = msg._format_shell_output(output, is_preview=False)
 
         # First line (the command) should be wrapped in [dim] markup
-        assert "[dim]$ echo test[/dim]" in formatted
+        assert "[dim]$ echo test[/dim]" in result.content
         # Subsequent lines starting with $ should NOT be dimmed
-        assert "$ not a command" in formatted
-        assert "[dim]$ not a command" not in formatted
+        assert "$ not a command" in result.content
+        assert "[dim]$ not a command" not in result.content

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from time import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -17,6 +18,21 @@ if TYPE_CHECKING:
     from textual.events import Click
     from textual.timer import Timer
     from textual.widgets._markdown import MarkdownStream
+
+
+@dataclass(frozen=True, slots=True)
+class FormattedOutput:
+    """Result of formatting tool output for display.
+
+    Attributes:
+        content: The formatted output content with Rich markup.
+        truncation: Description of truncated content (e.g., "10 more lines"),
+            or None if no truncation occurred.
+    """
+
+    content: str
+    truncation: str | None = None
+
 
 # Maximum number of tool arguments to display inline
 _MAX_INLINE_ARGS = 3
@@ -328,8 +344,8 @@ class ToolCallMessage(Vertical):
         yield Static("", classes="tool-status", id="status")
         # Output area - hidden initially, shown when output is set
         yield Static("", classes="tool-output-preview", id="output-preview")
-        yield Static("", classes="tool-output-hint", id="output-hint")
         yield Static("", classes="tool-output", id="output-full")
+        yield Static("", classes="tool-output-hint", id="output-hint")
 
     def on_mount(self) -> None:
         """Cache widget references and hide all status/output areas initially."""
@@ -456,7 +472,9 @@ class ToolCallMessage(Vertical):
         event.stop()  # Prevent click from bubbling up and scrolling
         self.toggle_output()
 
-    def _format_output(self, output: str, *, is_preview: bool = False) -> str:
+    def _format_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
         """Format tool output based on tool type for nicer display.
 
         Args:
@@ -464,11 +482,11 @@ class ToolCallMessage(Vertical):
             is_preview: Whether this is for preview (truncated) display
 
         Returns:
-            Formatted output string with Rich markup.
+            FormattedOutput with content and optional truncation info.
         """
         output = output.strip()
         if not output:
-            return ""
+            return FormattedOutput(content="")
 
         # Tool-specific formatting using dispatch table
         formatters = {
@@ -493,7 +511,7 @@ class ToolCallMessage(Vertical):
             return formatter(output, is_preview=is_preview)
 
         # Default: return as-is but escape markup
-        return self._escape_markup(output)
+        return FormattedOutput(content=self._escape_markup(output))
 
     def _escape_markup(self, text: str) -> str:
         """Escape Rich markup characters.
@@ -503,18 +521,20 @@ class ToolCallMessage(Vertical):
         """
         return text.replace("[", r"\[").replace("]", r"\]")
 
-    def _format_todos_output(self, output: str, *, is_preview: bool = False) -> str:
+    def _format_todos_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
         """Format write_todos output as a checklist.
 
         Returns:
-            Formatted checklist string with Rich styling.
+            FormattedOutput with checklist content and optional truncation info.
         """
         items = self._parse_todo_items(output)
         if items is None:
-            return self._escape_markup(output)
+            return FormattedOutput(content=self._escape_markup(output))
 
         if not items:
-            return "    [dim]No todos[/dim]"
+            return FormattedOutput(content="    [dim]No todos[/dim]")
 
         lines: list[str] = []
         max_items = 4 if is_preview else len(items)
@@ -527,10 +547,11 @@ class ToolCallMessage(Vertical):
         # Format each item
         lines.extend(self._format_single_todo(item) for item in items[:max_items])
 
+        truncation = None
         if is_preview and len(items) > max_items:
-            lines.append(f"    [dim]... {len(items) - max_items} more[/dim]")
+            truncation = f"{len(items) - max_items} more"
 
-        return "\n".join(lines)
+        return FormattedOutput(content="\n".join(lines), truncation=truncation)
 
     def _parse_todo_items(self, output: str) -> list | None:
         """Parse todo items from output.
@@ -599,11 +620,13 @@ class ToolCallMessage(Vertical):
             return f"    [yellow]● active[/yellow] {escaped}"
         return f"    [dim]○ todo[/dim]   {escaped}"
 
-    def _format_ls_output(self, output: str, *, is_preview: bool = False) -> str:
+    def _format_ls_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
         """Format ls output as a clean directory listing.
 
         Returns:
-            Formatted directory listing with file type coloring.
+            FormattedOutput with directory listing and optional truncation info.
         """
         import ast
         from pathlib import Path
@@ -630,38 +653,44 @@ class ToolCallMessage(Vertical):
                     else:
                         lines.append(f"    {name}")
 
+                truncation = None
                 if is_preview and len(items) > max_items:
-                    lines.append(f"    [dim]... {len(items) - max_items} more[/dim]")
+                    truncation = f"{len(items) - max_items} more"
 
-                return "\n".join(lines)
+                return FormattedOutput(content="\n".join(lines), truncation=truncation)
         except (ValueError, SyntaxError):
             pass
 
         # Fallback: just escape and return
-        return self._escape_markup(output)
+        return FormattedOutput(content=self._escape_markup(output))
 
-    def _format_file_output(self, output: str, *, is_preview: bool = False) -> str:
+    def _format_file_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
         """Format file read/write output.
 
         Returns:
-            Escaped and optionally truncated file content.
+            FormattedOutput with file content and optional truncation info.
         """
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
         formatted_lines = [self._escape_markup(line) for line in lines[:max_lines]]
-        result = "\n".join(formatted_lines)
+        content = "\n".join(formatted_lines)
 
+        truncation = None
         if is_preview and len(lines) > max_lines:
-            result += f"\n[dim]... {len(lines) - max_lines} more lines[/dim]"
+            truncation = f"{len(lines) - max_lines} more lines"
 
-        return result
+        return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_search_output(self, output: str, *, is_preview: bool = False) -> str:
+    def _format_search_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
         """Format grep/glob search output.
 
         Returns:
-            Formatted list of matching files or search results.
+            FormattedOutput with search results and optional truncation info.
         """
         import ast
         from pathlib import Path
@@ -682,12 +711,11 @@ class ToolCallMessage(Vertical):
                         display = path.name
                     lines.append(f"    {display}")
 
+                truncation = None
                 if is_preview and len(items) > max_items:
-                    lines.append(
-                        f"    [dim]... {len(items) - max_items} more files[/dim]"
-                    )
+                    truncation = f"{len(items) - max_items} more files"
 
-                return "\n".join(lines)
+                return FormattedOutput(content="\n".join(lines), truncation=truncation)
         except (ValueError, SyntaxError):
             pass
 
@@ -701,17 +729,20 @@ class ToolCallMessage(Vertical):
             if raw_line.strip()
         ]
 
-        result = "\n".join(formatted_lines)
+        content = "\n".join(formatted_lines)
+        truncation = None
         if is_preview and len(lines) > max_lines:
-            result += f"\n    [dim]... {len(lines) - max_lines} more[/dim]"
+            truncation = f"{len(lines) - max_lines} more"
 
-        return result
+        return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_shell_output(self, output: str, *, is_preview: bool = False) -> str:
+    def _format_shell_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
         """Format shell command output.
 
         Returns:
-            Escaped and optionally truncated shell output.
+            FormattedOutput with shell output and optional truncation info.
         """
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)  # Show all when expanded
@@ -725,18 +756,21 @@ class ToolCallMessage(Vertical):
             else:
                 formatted_lines.append(escaped)
 
-        result = "\n".join(formatted_lines)
+        content = "\n".join(formatted_lines)
 
+        truncation = None
         if is_preview and len(lines) > max_lines:
-            result += f"\n[dim]... {len(lines) - max_lines} more lines[/dim]"
+            truncation = f"{len(lines) - max_lines} more lines"
 
-        return result
+        return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_web_output(self, output: str, *, is_preview: bool = False) -> str:
+    def _format_web_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
         """Format web_search/fetch_url/http_request output.
 
         Returns:
-            Formatted web response with search results or content.
+            FormattedOutput with web response and optional truncation info.
         """
         data = self._try_parse_web_data(output)
         if isinstance(data, dict):
@@ -762,11 +796,11 @@ class ToolCallMessage(Vertical):
         except (ValueError, SyntaxError, json.JSONDecodeError):
             return None
 
-    def _format_web_dict(self, data: dict, *, is_preview: bool) -> str:
+    def _format_web_dict(self, data: dict, *, is_preview: bool) -> FormattedOutput:
         """Format a parsed web response dict.
 
         Returns:
-            Rich-formatted string with web response content.
+            FormattedOutput with web response content and optional truncation info.
         """
         # Handle web_search results
         if "results" in data:
@@ -782,11 +816,11 @@ class ToolCallMessage(Vertical):
         if "content" in data:
             content = str(data["content"])
             if is_preview and len(content) > _MAX_WEB_PREVIEW_LEN:
-                return (
-                    self._escape_markup(content[:_MAX_WEB_PREVIEW_LEN])
-                    + "\n[dim]...[/dim]"
+                return FormattedOutput(
+                    content=self._escape_markup(content[:_MAX_WEB_PREVIEW_LEN]),
+                    truncation="more",
                 )
-            return self._escape_markup(content)
+            return FormattedOutput(content=self._escape_markup(content))
 
         # Generic dict - show key fields
         lines = []
@@ -796,16 +830,21 @@ class ToolCallMessage(Vertical):
             if is_preview and len(v_str) > _MAX_WEB_CONTENT_LEN:
                 v_str = v_str[:_MAX_WEB_CONTENT_LEN] + "..."
             lines.append(f"  {k}: {self._escape_markup(v_str)}")
-        return "\n".join(lines)
+        truncation = None
+        if is_preview and len(data) > max_keys:
+            truncation = f"{len(data) - max_keys} more"
+        return FormattedOutput(content="\n".join(lines), truncation=truncation)
 
-    def _format_web_search_results(self, results: list, *, is_preview: bool) -> str:
+    def _format_web_search_results(
+        self, results: list, *, is_preview: bool
+    ) -> FormattedOutput:
         """Format web search results.
 
         Returns:
-            Formatted list of search results with titles and URLs.
+            FormattedOutput with search results and optional truncation info.
         """
         if not results:
-            return "[dim]No results[/dim]"
+            return FormattedOutput(content="[dim]No results[/dim]")
         lines = []
         max_results = 3 if is_preview else len(results)
         for r in results[:max_results]:
@@ -817,38 +856,45 @@ class ToolCallMessage(Vertical):
                     f"  [dim]{self._escape_markup(url)}[/dim]",
                 ]
             )
+        truncation = None
         if is_preview and len(results) > max_results:
-            lines.append(f"  [dim]... {len(results) - max_results} more results[/dim]")
-        return "\n".join(lines)
+            truncation = f"{len(results) - max_results} more results"
+        return FormattedOutput(content="\n".join(lines), truncation=truncation)
 
-    def _format_lines_output(self, lines: list[str], *, is_preview: bool) -> str:
+    def _format_lines_output(
+        self, lines: list[str], *, is_preview: bool
+    ) -> FormattedOutput:
         """Format a list of lines with optional preview truncation.
 
         Returns:
-            Escaped and joined lines, optionally truncated for preview.
+            FormattedOutput with lines content and optional truncation info.
         """
         max_lines = 4 if is_preview else len(lines)
-        result = "\n".join(self._escape_markup(line) for line in lines[:max_lines])
+        content = "\n".join(self._escape_markup(line) for line in lines[:max_lines])
+        truncation = None
         if is_preview and len(lines) > max_lines:
-            result += f"\n[dim]... {len(lines) - max_lines} more lines[/dim]"
-        return result
+            truncation = f"{len(lines) - max_lines} more lines"
+        return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_task_output(self, output: str, *, is_preview: bool = False) -> str:
+    def _format_task_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
         """Format task (subagent) output.
 
         Returns:
-            Escaped and optionally truncated task output.
+            FormattedOutput with task output and optional truncation info.
         """
         lines = output.split("\n")
         max_lines = 4 if is_preview else len(lines)
 
         formatted_lines = [self._escape_markup(line) for line in lines[:max_lines]]
-        result = "\n".join(formatted_lines)
+        content = "\n".join(formatted_lines)
 
+        truncation = None
         if is_preview and len(lines) > max_lines:
-            result += f"\n[dim]... {len(lines) - max_lines} more lines[/dim]"
+            truncation = f"{len(lines) - max_lines} more lines"
 
-        return result
+        return FormattedOutput(content=content, truncation=truncation)
 
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""
@@ -874,10 +920,10 @@ class ToolCallMessage(Vertical):
         if self._expanded:
             # Show full output with formatting
             self._preview_widget.display = False
-            formatted = self._format_output(self._output, is_preview=False)
-            self._full_widget.update(formatted)
+            result = self._format_output(self._output, is_preview=False)
+            self._full_widget.update(result.content)
             self._full_widget.display = True
-            # Show collapse hint
+            # Show collapse hint underneath
             self._hint_widget.update(
                 "[dim italic]click or Ctrl+E to collapse[/dim italic]"
             )
@@ -886,20 +932,24 @@ class ToolCallMessage(Vertical):
             # Show preview
             self._full_widget.display = False
             if needs_truncation:
-                # Show formatted preview
-                formatted_preview = self._format_output(self._output, is_preview=True)
-                self._preview_widget.update(formatted_preview)
+                result = self._format_output(self._output, is_preview=True)
+                self._preview_widget.update(result.content)
                 self._preview_widget.display = True
 
-                # Show expand hint
-                self._hint_widget.update(
-                    "[dim italic]click or Ctrl+E to expand[/dim italic]"
-                )
+                # Build hint with truncation info if available
+                if result.truncation:
+                    hint = (
+                        f"[dim]... {result.truncation} "
+                        "— click or Ctrl+E to expand[/dim]"
+                    )
+                else:
+                    hint = "[dim italic]click or Ctrl+E to expand[/dim italic]"
+                self._hint_widget.update(hint)
                 self._hint_widget.display = True
             elif output_stripped:
                 # Output fits in preview, show formatted
-                formatted = self._format_output(output_stripped, is_preview=False)
-                self._preview_widget.update(formatted)
+                result = self._format_output(output_stripped, is_preview=False)
+                self._preview_widget.update(result.content)
                 self._preview_widget.display = True
                 self._hint_widget.display = False
             else:

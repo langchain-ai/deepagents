@@ -1,5 +1,6 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
+import logging
 from typing import Any
 
 from langgraph.config import get_config
@@ -23,6 +24,8 @@ from deepagents.backends.utils import (
     perform_string_replacement,
     update_file_data,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class StoreBackend(BackendProtocol):
@@ -82,7 +85,8 @@ class StoreBackend(BackendProtocol):
         # called outside of a runnable context
         try:
             cfg = get_config()
-        except Exception:
+        except (RuntimeError, Exception) as e:
+            logger.debug("Could not get namespace from config (likely outside runnable context), using default: %s", e)
             return (namespace,)
 
         try:
@@ -223,7 +227,8 @@ class StoreBackend(BackendProtocol):
             # This is a file directly in the current directory
             try:
                 fd = self._convert_store_item_to_file_data(item)
-            except ValueError:
+            except ValueError as e:
+                logger.debug("Skipping invalid store item %s: %s", item.key, e)
                 continue
             size = len("\n".join(fd.get("content", [])))
             infos.append(
@@ -438,7 +443,8 @@ class StoreBackend(BackendProtocol):
         for item in items:
             try:
                 files[item.key] = self._convert_store_item_to_file_data(item)
-            except ValueError:
+            except ValueError as e:
+                logger.debug("Skipping invalid store item %s during grep: %s", item.key, e)
                 continue
         return grep_matches_from_files(files, pattern, path, glob)
 
@@ -450,7 +456,8 @@ class StoreBackend(BackendProtocol):
         for item in items:
             try:
                 files[item.key] = self._convert_store_item_to_file_data(item)
-            except ValueError:
+            except ValueError as e:
+                logger.debug("Skipping invalid store item %s during glob: %s", item.key, e)
                 continue
         result = _glob_search_files(files, pattern, path)
         if result == "No files found":

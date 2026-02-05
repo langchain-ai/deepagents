@@ -7,6 +7,7 @@ on the host machine with full system access.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import uuid
@@ -17,6 +18,9 @@ from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -295,6 +299,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         except Exception as e:  # noqa: BLE001
             # Broad exception catch is intentional: we want to catch all execution errors
             # and return a consistent ExecuteResponse rather than propagating exceptions
+            logger.debug("Local shell execution failed: %s", e, exc_info=True)
             return ExecuteResponse(
                 output=f"Error executing command: {e}",
                 exit_code=1,

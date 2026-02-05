@@ -57,19 +57,51 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
 class TextualUIAdapter:
     """Adapter for rendering agent output to Textual widgets.
 
-    This adapter provides an abstraction layer between the agent execution
-    and the Textual UI, allowing streaming output to be rendered as widgets.
+    This adapter provides an abstraction layer between the agent execution and the
+    Textual UI, allowing streaming output to be rendered as widgets.
     """
+
+    _mount_message: Callable
+    """Async callback to mount a message widget to the chat."""
+
+    _update_status: Callable[[str], None]
+    """Callback to update the status bar text."""
+
+    _request_approval: Callable
+    """Async callback that returns a Future for HITL approval."""
+
+    _on_auto_approve_enabled: Callable[[], None] | None
+    """Callback invoked when auto-approve is enabled."""
+
+    _scroll_to_bottom: Callable[[], None] | None
+    """Callback to scroll chat to bottom."""
+
+    _set_spinner: Callable[[str | None], Awaitable[None]] | None
+    """Callback to show/hide loading spinner.
+
+    Pass `None` to hide, or a status string to show.
+    """
+
+    _current_assistant_message: AssistantMessage | None
+    """The currently streaming assistant message widget."""
+
+    _current_tool_messages: dict[str, ToolCallMessage]
+    """Map of tool call IDs to their message widgets."""
+
+    _pending_text: str
+    """Buffered text waiting to be flushed to the UI."""
+
+    _token_tracker: Any
+    """Token usage tracker for displaying counts."""
 
     def __init__(
         self,
         mount_message: Callable,
         update_status: Callable[[str], None],
-        request_approval: Callable,  # async callable returning Future
+        request_approval: Callable,
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
-        show_thinking: Callable[[], Awaitable[None]] | None = None,
-        hide_thinking: Callable[[], Awaitable[None]] | None = None,
+        set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -79,22 +111,20 @@ class TextualUIAdapter:
             request_approval: Callable that returns a Future for HITL approval
             on_auto_approve_enabled: Callback when auto-approve is enabled
             scroll_to_bottom: Callback to scroll chat to bottom
-            show_thinking: Callback to show/reposition thinking spinner
-            hide_thinking: Callback to hide thinking spinner
+            set_spinner: Callback to show/hide loading spinner (pass None to hide)
         """
         self._mount_message = mount_message
         self._update_status = update_status
         self._request_approval = request_approval
         self._on_auto_approve_enabled = on_auto_approve_enabled
         self._scroll_to_bottom = scroll_to_bottom
-        self._show_thinking = show_thinking
-        self._hide_thinking = hide_thinking
+        self._set_spinner = set_spinner
 
         # State tracking
         self._current_assistant_message: AssistantMessage | None = None
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         self._pending_text = ""
-        self._token_tracker: Any = None
+        self._token_tracker = None
 
     def set_token_tracker(self, tracker: Any) -> None:
         """Set the token tracker for usage tracking."""
@@ -222,9 +252,9 @@ async def execute_task_textual(
     captured_input_tokens = 0
     captured_output_tokens = 0
 
-    # Show thinking spinner
-    if adapter._show_thinking:
-        await adapter._show_thinking()
+    # Show spinner
+    if adapter._set_spinner:
+        await adapter._set_spinner("Thinking")
 
     # Hide token display during streaming (will be shown with accurate count at end)
     if adapter._token_tracker:
@@ -341,9 +371,9 @@ async def execute_task_textual(
                         tool_content = format_tool_message_content(message.content)
                         record = file_op_tracker.complete_with_message(message)
 
-                        # Reshow thinking spinner after tool result
-                        if adapter._show_thinking:
-                            await adapter._show_thinking()
+                        # Reshow spinner after tool result
+                        if adapter._set_spinner:
+                            await adapter._set_spinner("Thinking")
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
@@ -414,10 +444,9 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
-                                    # Hide thinking spinner when assistant starts
-                                    # responding
-                                    if adapter._hide_thinking:
-                                        await adapter._hide_thinking()
+                                    # Hide spinner when assistant starts responding
+                                    if adapter._set_spinner:
+                                        await adapter._set_spinner(None)
                                     current_msg = AssistantMessage()
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
@@ -516,9 +545,9 @@ async def execute_task_textual(
                                     buffer_name, parsed_args, buffer_id
                                 )
 
-                                # Hide thinking spinner before showing tool call
-                                if adapter._hide_thinking:
-                                    await adapter._hide_thinking()
+                                # Hide spinner before showing tool call
+                                if adapter._set_spinner:
+                                    await adapter._set_spinner(None)
 
                                 # Mount tool call message
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)

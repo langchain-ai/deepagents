@@ -426,8 +426,7 @@ class DeepAgentsApp(App):
                 request_approval=self._request_approval,
                 on_auto_approve_enabled=self._on_auto_approve_enabled,
                 scroll_to_bottom=self._scroll_chat_to_bottom,
-                show_thinking=self._show_thinking,
-                hide_thinking=self._hide_thinking,
+                set_spinner=self._set_spinner,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -494,23 +493,36 @@ class DeepAgentsApp(App):
         if distance_from_bottom < 100:
             chat.scroll_end(animate=False)
 
-    async def _show_thinking(self) -> None:
-        """Show or reposition the thinking spinner at the bottom of messages."""
-        if self._loading_widget:
-            await self._loading_widget.remove()
-            self._loading_widget = None
+    async def _set_spinner(self, status: str | None) -> None:
+        """Show, update, or hide the loading spinner.
 
-        self._loading_widget = LoadingWidget("Thinking")
+        Args:
+            status: The status text to display (e.g., "Thinking", "Summarizing"),
+                or None to hide the spinner.
+        """
+        if status is None:
+            # Hide
+            if self._loading_widget:
+                await self._loading_widget.remove()
+                self._loading_widget = None
+            return
+
         messages = self.query_one("#messages", Container)
-        await messages.mount(self._loading_widget)
+
+        if self._loading_widget is None:
+            # Create new
+            self._loading_widget = LoadingWidget(status)
+            await messages.mount(self._loading_widget)
+        else:
+            # Update existing
+            self._loading_widget.set_status(status)
+            # Reposition if not at the end (e.g., after tool message was added)
+            children = list(messages.children)
+            if children and children[-1] != self._loading_widget:
+                await self._loading_widget.remove()
+                await messages.mount(self._loading_widget)
         # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
         # and drag user back to bottom if they've scrolled away during streaming
-
-    async def _hide_thinking(self) -> None:
-        """Hide the thinking spinner."""
-        if self._loading_widget:
-            await self._loading_widget.remove()
-            self._loading_widget = None
 
     def _size_initial_spacer(self) -> None:
         """Size the spacer to fill remaining viewport below input."""
@@ -829,8 +841,8 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
 
-        # Remove thinking spinner if present
-        await self._hide_thinking()
+        # Remove spinner if present
+        await self._set_spinner(None)
 
         # Re-enable submission now that agent is done
         if self._chat_input:

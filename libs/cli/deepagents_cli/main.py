@@ -169,6 +169,12 @@ def parse_args() -> argparse.Namespace:
         "Provider is auto-detected from model name.",
     )
     parser.add_argument(
+        "--reasoning-effort",
+        choices=["low", "medium", "high", "xhigh"],
+        default="high",
+        help="Reasoning effort for OpenAI reasoning models (default: high)",
+    )
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
         help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
@@ -197,6 +203,7 @@ async def run_textual_cli_async(
     sandbox_type: str = "none",
     sandbox_id: str | None = None,
     model_name: str | None = None,
+    reasoning_effort: str = "high",
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
@@ -210,13 +217,14 @@ async def run_textual_cli_async(
             ("none", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse
         model_name: Optional model name to use
+        reasoning_effort: Reasoning effort for OpenAI reasoning models
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
     """
     from deepagents_cli.app import run_textual_app
 
-    model = create_model(model_name)
+    model = create_model(model_name, reasoning_effort=reasoning_effort)
 
     # Show thread info
     if is_resumed:
@@ -395,6 +403,7 @@ def cli_main() -> None:
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     model_name=getattr(args, "model", None),
+                    reasoning_effort=getattr(args, "reasoning_effort", "high"),
                     thread_id=thread_id,
                     is_resumed=is_resumed,
                     initial_prompt=getattr(args, "initial_prompt", None),

@@ -3,6 +3,8 @@
 import sys
 from unittest.mock import patch
 
+import pytest
+
 from deepagents_cli.main import parse_args
 
 
@@ -93,3 +95,56 @@ class TestResumeArg:
             args = parse_args()
         assert args.resume_thread == "thread456"
         assert args.initial_prompt == "continue work"
+
+
+class TestReasoningEffortArg:
+    """Tests for --reasoning-effort argument."""
+
+    def test_default_value(self) -> None:
+        """Verify default reasoning_effort is 'high'."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.reasoning_effort == "high"
+
+    def test_low_value(self) -> None:
+        """Verify --reasoning-effort low is accepted."""
+        with patch.object(sys, "argv", ["deepagents", "--reasoning-effort", "low"]):
+            args = parse_args()
+        assert args.reasoning_effort == "low"
+
+    def test_medium_value(self) -> None:
+        """Verify --reasoning-effort medium is accepted."""
+        with patch.object(sys, "argv", ["deepagents", "--reasoning-effort", "medium"]):
+            args = parse_args()
+        assert args.reasoning_effort == "medium"
+
+    def test_high_value(self) -> None:
+        """Verify --reasoning-effort high is accepted."""
+        with patch.object(sys, "argv", ["deepagents", "--reasoning-effort", "high"]):
+            args = parse_args()
+        assert args.reasoning_effort == "high"
+
+    def test_xhigh_value(self) -> None:
+        """Verify --reasoning-effort xhigh is accepted."""
+        with patch.object(sys, "argv", ["deepagents", "--reasoning-effort", "xhigh"]):
+            args = parse_args()
+        assert args.reasoning_effort == "xhigh"
+
+    def test_with_model_arg(self) -> None:
+        """Verify --reasoning-effort works with --model."""
+        with patch.object(
+            sys,
+            "argv",
+            ["deepagents", "--model", "gpt-5.2-codex", "--reasoning-effort", "xhigh"],
+        ):
+            args = parse_args()
+        assert args.model == "gpt-5.2-codex"
+        assert args.reasoning_effort == "xhigh"
+
+    def test_invalid_value_rejected(self) -> None:
+        """Verify invalid reasoning_effort values are rejected."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--reasoning-effort", "invalid"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()

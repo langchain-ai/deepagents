@@ -92,7 +92,7 @@ class TestModelSelectorKeyboardNavigation:
 
     @pytest.mark.asyncio
     async def test_up_arrow_moves_selection(self) -> None:
-        """Up arrow should move selection up (wrapping to end)."""
+        """Up arrow should move selection up (wrapping to end if at 0)."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -100,13 +100,14 @@ class TestModelSelectorKeyboardNavigation:
 
             screen = app.screen
             assert isinstance(screen, ModelSelectorScreen)
-            assert screen._selected_index == 0
+            initial_index = screen._selected_index
+            count = len(screen._filtered_models)
 
             await pilot.press("up")
             await pilot.pause()
 
-            # Should wrap to last item
-            expected = len(screen._filtered_models) - 1
+            # Should move up by one, wrapping if at 0
+            expected = (initial_index - 1) % count
             assert screen._selected_index == expected
 
     @pytest.mark.asyncio
@@ -165,3 +166,67 @@ class TestModelSelectorFiltering:
 
             assert app.dismissed is True
             assert app.result == ("custom:my-model", "custom")
+
+
+class TestModelSelectorCurrentModelPreselection:
+    """Tests for pre-selecting the current model when opening the selector."""
+
+    @pytest.mark.asyncio
+    async def test_current_model_is_preselected(self) -> None:
+        """Opening the selector should pre-select the current model, not first."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # The test app sets current model to "anthropic:claude-sonnet-4-5"
+            # Find its index in the filtered models
+            current_spec = "anthropic:claude-sonnet-4-5"
+            expected_index = None
+            for i, (model_spec, _) in enumerate(screen._filtered_models):
+                if model_spec == current_spec:
+                    expected_index = i
+                    break
+
+            assert expected_index is not None, f"{current_spec} not found in models"
+            assert screen._selected_index == expected_index, (
+                f"Expected current model at index {expected_index} to be selected, "
+                f"but index {screen._selected_index} was selected instead"
+            )
+
+    @pytest.mark.asyncio
+    async def test_clearing_filter_reselects_current_model(self) -> None:
+        """Clearing the filter should re-select the current model."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Find the current model's index
+            current_spec = "anthropic:claude-sonnet-4-5"
+            current_index = None
+            for i, (model_spec, _) in enumerate(screen._filtered_models):
+                if model_spec == current_spec:
+                    current_index = i
+                    break
+            assert current_index is not None
+
+            # Type something that filters to no/few results
+            await pilot.press("x", "y", "z")
+            await pilot.pause()
+
+            # Now clear the filter by backspacing
+            await pilot.press("backspace", "backspace", "backspace")
+            await pilot.pause()
+
+            # Selection should be back to the current model
+            assert screen._selected_index == current_index, (
+                f"After clearing filter, expected index {current_index} "
+                f"but got {screen._selected_index}"
+            )

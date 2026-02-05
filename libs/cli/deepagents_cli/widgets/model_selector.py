@@ -191,9 +191,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._all_models.append((model_spec, provider))
 
         self._filtered_models: list[tuple[str, str]] = list(self._all_models)
-        self._selected_index = 0
+        self._selected_index = self._find_current_model_index()
         self._options_container: Container | None = None
         self._filter_text = ""
+
+    def _find_current_model_index(self) -> int:
+        """Find the index of the current model in the filtered list.
+
+        Returns:
+            Index of the current model, or 0 if not found.
+        """
+        if not self._current_model or not self._current_provider:
+            return 0
+
+        current_spec = f"{self._current_provider}:{self._current_model}"
+        for i, (model_spec, _) in enumerate(self._filtered_models):
+            if model_spec == current_spec:
+                return i
+        return 0
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -277,16 +292,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Update the filtered models based on search text."""
         if not self._filter_text:
             self._filtered_models = list(self._all_models)
+            # Re-select current model when filter is cleared
+            self._selected_index = self._find_current_model_index()
         else:
             self._filtered_models = [
                 (model_spec, provider)
                 for model_spec, provider in self._all_models
                 if self._filter_text in model_spec.lower()
             ]
-
-        # Reset selection if out of bounds
-        if self._selected_index >= len(self._filtered_models):
-            self._selected_index = max(0, len(self._filtered_models) - 1)
+            # Reset selection if out of bounds
+            if self._selected_index >= len(self._filtered_models):
+                self._selected_index = max(0, len(self._filtered_models) - 1)
 
     async def _update_display(self) -> None:
         """Render the model list grouped by provider."""

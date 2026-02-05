@@ -88,6 +88,12 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
     )
     parser.add_argument(
+        "-h",
+        "--help",
+        action="store_true",
+        help="Show this help message and exit",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"deepagents {__version__}",
@@ -289,6 +295,11 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+
+        # Handle -h/--help flag (custom help display)
+        if getattr(args, "help", False):
+            show_help()
+            sys.exit(0)
 
         if args.command == "help":
             show_help()

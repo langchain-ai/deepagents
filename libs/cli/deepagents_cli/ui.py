@@ -233,6 +233,7 @@ def show_help() -> None:
     console.print()
 
     console.print("[bold]Options:[/bold]", style=COLORS["primary"])
+    console.print("  -h, --help                    Show this help message and exit")
     console.print("  --agent NAME                  Agent identifier (default: agent)")
     console.print(
         "  --model MODEL                 Model to use (e.g., claude-sonnet-4-5-20250929, gpt-4o)"  # noqa: E501

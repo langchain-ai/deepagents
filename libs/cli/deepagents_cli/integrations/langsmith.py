@@ -196,18 +196,22 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
                 raise RuntimeError(msg) from e
             return LangSmithBackend(sandbox)
 
-        # Resolve template name and image from kwargs
-        template_name, resolved_image = self._resolve_template(template, template_image)
+        resolved_template_name, resolved_image_name = self._resolve_template(
+            template, template_image
+        )
 
         # Create new sandbox - ensure template exists first
-        self._ensure_template(template_name, resolved_image)
+        self._ensure_template(resolved_template_name, resolved_image_name)
 
         try:
             sandbox = self._client.create_sandbox(
-                template_name=template_name, timeout=timeout
+                template_name=resolved_template_name, timeout=timeout
             )
         except Exception as e:
-            msg = f"Failed to create sandbox from template '{template_name}': {e}"
+            msg = (
+                f"Failed to create sandbox from template "
+                f"'{resolved_template_name}': {e}"
+            )
             raise RuntimeError(msg) from e
 
         # Verify sandbox is ready by polling
@@ -242,26 +246,27 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
     def _resolve_template(
         template: SandboxTemplate | str | None,
         template_image: str | None = None,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str]:
         """Resolve template name and image from kwargs.
 
         Returns:
-            Tuple of (template_name, template_image).
+            Tuple of (template_name, template_image). Always returns values,
+            using defaults if not provided.
         """
+        resolved_image = template_image or DEFAULT_TEMPLATE_IMAGE
         if template is None:
-            return DEFAULT_TEMPLATE_NAME, template_image
+            return DEFAULT_TEMPLATE_NAME, resolved_image
         if isinstance(template, str):
-            return template, template_image
+            return template, resolved_image
         # SandboxTemplate object - extract image if not provided
-        image = template_image
-        if image is None and hasattr(template, "image"):
-            image = template.image
-        return template.name, image
+        if template_image is None and hasattr(template, "image"):
+            resolved_image = template.image or DEFAULT_TEMPLATE_IMAGE
+        return template.name, resolved_image
 
     def _ensure_template(
         self,
-        template_name: str | None = None,
-        template_image: str | None = None,
+        template_name: str,
+        template_image: str,
     ) -> None:
         """Ensure template exists, creating it if needed.
 
@@ -270,21 +275,18 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         """
         from langsmith.sandbox import ResourceNotFoundError
 
-        name = template_name or DEFAULT_TEMPLATE_NAME
-        image = template_image or DEFAULT_TEMPLATE_IMAGE
-
         try:
-            self._client.get_template(name)
+            self._client.get_template(template_name)
         except ResourceNotFoundError as e:
             if e.resource_type != "template":
                 msg = f"Unexpected resource not found: {e}"
                 raise RuntimeError(msg) from e
             # Template doesn't exist, create it
             try:
-                self._client.create_template(name=name, image=image)
+                self._client.create_template(name=template_name, image=template_image)
             except Exception as create_err:
-                msg = f"Failed to create template '{name}': {create_err}"
+                msg = f"Failed to create template '{template_name}': {create_err}"
                 raise RuntimeError(msg) from create_err
         except Exception as e:
-            msg = f"Failed to check template '{name}': {e}"
+            msg = f"Failed to check template '{template_name}': {e}"
             raise RuntimeError(msg) from e

@@ -358,6 +358,8 @@ class Settings:
 
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
+        deepseek_api_key: DeepSeek API key if available
+        dashscope_api_key: Dashscope API key if available
         tavily_api_key: Tavily API key if available
         deepagents_langchain_project: LangSmith project name for deepagents
             agent tracing
@@ -369,6 +371,8 @@ class Settings:
     openai_api_key: str | None
     anthropic_api_key: str | None
     google_api_key: str | None
+    deepseek_api_key: str | None
+    dashscope_api_key: str | None
     tavily_api_key: str | None
 
     # Google Cloud configuration (for VertexAI)
@@ -400,6 +404,8 @@ class Settings:
         openai_key = os.environ.get("OPENAI_API_KEY")
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         google_key = os.environ.get("GOOGLE_API_KEY")
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
+        qwen_key = os.environ.get("DASHSCOPE_API_KEY")
         tavily_key = os.environ.get("TAVILY_API_KEY")
         google_cloud_project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
@@ -418,6 +424,8 @@ class Settings:
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
             google_api_key=google_key,
+            deepseek_api_key=deepseek_key,
+            dashscope_api_key=qwen_key,
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
             deepagents_langchain_project=deepagents_langchain_project,
@@ -439,6 +447,16 @@ class Settings:
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
         return self.google_api_key is not None
+
+    @property
+    def has_deepseek(self) -> bool:
+        """Check if DeepSeek API key is configured."""
+        return self.deepseek_api_key is not None
+
+    @property
+    def has_qwen(self) -> bool:
+        """Check if Dashscope API key is configured."""
+        return self.dashscope_api_key is not None
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -718,7 +736,7 @@ def _detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from
 
     Returns:
-        Provider name (openai, anthropic, google, vertexai) or None if can't detect
+        Provider name (openai, anthropic, google, vertexai, deepseek, qwen) or None if can't detect
     """
     model_lower = model_name.lower()
 
@@ -733,6 +751,10 @@ def _detect_provider(model_name: str) -> str | None:
         if settings.has_vertex_ai:
             return "vertexai"
         return "google"
+    if any(x in model_lower for x in ["deepseek", "deepseek-chat", "deepseek-coder"]):
+        return "deepseek"
+    if any(x in model_lower for x in ["qwen", "qwen-turbo", "qwen-plus", "qwen-max"]):
+        return "qwen"
 
     return None
 
@@ -746,7 +768,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         model_name_override: Optional model name to use instead of environment variable
 
     Returns:
-        ChatModel instance (OpenAI, Anthropic, or Google)
+        ChatModel instance (OpenAI, Anthropic, Google, DeepSeek or Qwen)
 
     Raises:
         SystemExit if no API key is configured or model provider can't be determined
@@ -764,6 +786,8 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             console.print("  - OpenAI: gpt-*, o1-*, o3-*")
             console.print("  - Anthropic: claude-*")
             console.print("  - Google: gemini-* (requires GOOGLE_API_KEY)")
+            console.print("  - DeepSeek: deepseek-*")
+            console.print("  - Qwen: qwen-*, qwen3-*")
             console.print(
                 "  - VertexAI: claude-*/gemini-* (requires GOOGLE_CLOUD_PROJECT, "
                 "uses Application Default Credentials)"
@@ -798,6 +822,18 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
             console.print("Also ensure you have authenticated with:")
             console.print("  gcloud auth application-default login")
             sys.exit(1)
+        elif provider == "deepseek" and not settings.has_deepseek:
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
+                "requires DEEPSEEK_API_KEY"
+            )
+            sys.exit(1)
+        elif provider == "qwen" and not settings.has_qwen:
+            console.print(
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
+                "requires DASHSCOPE_API_KEY"
+            )
+            sys.exit(1)
 
         model_name = model_name_override
     # Use environment variable defaults, detect provider by API key priority
@@ -813,12 +849,20 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     elif settings.has_vertex_ai:
         provider = "vertexai"
         model_name = os.environ.get("VERTEX_AI_MODEL", "gemini-3-pro-preview")
+    elif settings.has_deepseek:
+        provider = "deepseek"
+        model_name = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    elif settings.has_qwen:
+        provider = "qwen"
+        model_name = os.environ.get("QWEN_MODEL", "qwen-plus")
     else:
         console.print("[bold red]Error:[/bold red] No credentials configured.")
         console.print("\nPlease set one of the following environment variables:")
         console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5.2)")
         console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
         console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
+        console.print("  - DEEPSEEK_API_KEY   (for DeepSeek models)")
+        console.print("  - DASHSCOPE_API_KEY  (for Qwen models)")
         console.print(
             "  - GOOGLE_CLOUD_PROJECT (for VertexAI models, "
             "with Application Default Credentials)"
@@ -889,6 +933,20 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
                 temperature=0,
                 max_tokens=None,
             )
+    elif provider == "deepseek":
+        from langchain_deepseek import ChatDeepSeek
+
+        model = ChatDeepSeek(
+            model=model_name,
+            temperature=0,
+        )
+    elif provider == "qwen":
+        from langchain_qwq import ChatQwen
+        model = ChatQwen(
+            model=model_name,
+            temperature=0,
+            max_tokens=20_000,
+        )
     else:
         # Should not reach here due to earlier validation
         console.print(f"[bold red]Error:[/bold red] Unknown provider: {provider}")

@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "langchain_daytona"
-description = "Daytona sandbox integration for deepagents"
+name = "langchain-daytona"
+description = "Daytona sandbox integration for Deep Agents"
 license = { text = "MIT" }
 readme = "README.md"
 

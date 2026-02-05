@@ -430,7 +430,7 @@ class SandboxBackendProtocol(BackendProtocol):
     def execute(
         self,
         command: str,
-        timeout: float | None = None,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the process.
 
@@ -447,7 +447,7 @@ class SandboxBackendProtocol(BackendProtocol):
     async def aexecute(
         self,
         command: str,
-        timeout: float | None = None,  # noqa: ASYNC109
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
         return await asyncio.to_thread(self.execute, command, timeout)

@@ -464,7 +464,7 @@ class CompositeBackend(BackendProtocol):
     def execute(
         self,
         command: str,
-        timeout: float | None = None,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute shell command via default backend.
 
@@ -499,7 +499,7 @@ class CompositeBackend(BackendProtocol):
     async def aexecute(
         self,
         command: str,
-        timeout: float | None = None,  # noqa: ASYNC109
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
         if isinstance(self.default, SandboxBackendProtocol):

@@ -46,19 +46,7 @@ class SandboxError(Exception):
     except Exception as e:
         raise SandboxError("...") from e
     ```
-
-    Attributes:
-        message: Optional human-readable message.
     """
-
-    def __init__(self, message: str | None = None) -> None:
-        """Create a sandbox error.
-
-        Args:
-            message: Optional human-readable message.
-        """
-        super().__init__(message or self.__class__.__name__)
-        self.message = message
 
     @property
     def original_exc(self) -> BaseException | None:

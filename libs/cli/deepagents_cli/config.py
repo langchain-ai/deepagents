@@ -854,7 +854,7 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         model_name = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
     elif settings.has_qwen:
         provider = "qwen"
-        model_name = os.environ.get("QWEN_MODEL", "qwen-plus")
+        model_name = os.environ.get("QWEN_MODEL", "qwen3-max")
     else:
         console.print("[bold red]Error:[/bold red] No credentials configured.")
         console.print("\nPlease set one of the following environment variables:")

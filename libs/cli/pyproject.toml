@@ -255,6 +255,9 @@ ignore-var-parameters = true
     "BLE001",   # Do not catch blind exception
     "T201",     # `print` found
 ]
+"deepagents_cli/model_config.py" = [
+    "T201",     # `print` found - first-run setup wizard
+]
 "examples/skills/arxiv-search/arxiv_search.py" = [
     "BLE001",   # Do not catch blind exception
     "TRY300",   # Consider moving this statement to an `else` block

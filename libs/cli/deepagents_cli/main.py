@@ -273,6 +273,10 @@ async def run_textual_cli_async(
                 cwd=Path.cwd(),
                 thread_id=thread_id,
                 initial_prompt=initial_prompt,
+                checkpointer=checkpointer,
+                tools=tools,
+                sandbox=sandbox_backend,
+                sandbox_type=sandbox_type if sandbox_type != "none" else None,
             )
         finally:
             # Clean up sandbox after app exits (success or error)

@@ -122,9 +122,20 @@ class StatusBar(Horizontal):
         )
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-tokens", id="tokens-display")
-        yield Static(
-            settings.model_name or "", classes="status-model", id="model-display"
-        )
+        # Display model in provider:model format if provider is available
+        model_display = self._format_model_display()
+        yield Static(model_display, classes="status-model", id="model-display")
+
+    def _format_model_display(self) -> str:
+        """Format the model display string.
+
+        Returns:
+            Model display string in provider:model format if provider is known,
+            otherwise just the model name.
+        """
+        if settings.model_provider and settings.model_name:
+            return f"{settings.model_provider}:{settings.model_name}"
+        return settings.model_name or ""
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -253,3 +264,24 @@ class StatusBar(Horizontal):
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
         self.query_one("#tokens-display", Static).update("")
+
+    def set_model(self, model_spec: str) -> None:
+        """Set the model display.
+
+        Args:
+            model_spec: Model specification to display. Can be in provider:model
+                format (e.g., "anthropic:claude-sonnet-4-5") or just the model
+                name (e.g., "claude-sonnet-4-5").
+        """
+        try:
+            display = self.query_one("#model-display", Static)
+            display.update(model_spec)
+            # Also update settings for consistency
+            if ":" in model_spec:
+                provider, model_name = model_spec.split(":", 1)
+                settings.model_provider = provider
+                settings.model_name = model_name
+            else:
+                settings.model_name = model_spec
+        except NoMatches:
+            pass

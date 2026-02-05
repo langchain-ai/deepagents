@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11, <4.0"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -387,7 +387,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", specifier = ">=1.2.7,<2.0.0" },
+    { name = "langchain", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fwrap-model-call-improvements" },
     { name = "langchain-anthropic", specifier = ">=1.3.1,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.2.7,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.0,<5.0.0" },
@@ -744,16 +744,12 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.2.7"
-source = { registry = "https://pypi.org/simple" }
+version = "1.2.9"
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fwrap-model-call-improvements#9dac16e66a269bf8d2b516468d6c9637f824d820" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/47/f2/478ca9f3455b5d66402066d287eae7e8d6c722acfb8553937e06af708334/langchain-1.2.7.tar.gz", hash = "sha256:ba40e8d5b069a22f7085f54f405973da3d87cfdebf116282e77c692271432ecb", size = 556837, upload-time = "2026-01-23T15:22:10.817Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/c8/9ce37ae34870834c7d00bb14ff4876b700db31b928635e3307804dc41d74/langchain-1.2.7-py3-none-any.whl", hash = "sha256:1d643c8ca569bcde2470b853807f74f0768b3982d25d66d57db21a166aabda72", size = 108827, upload-time = "2026-01-23T15:22:09.771Z" },
 ]
 
 [[package]]
@@ -772,8 +768,8 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.2.7"
-source = { registry = "https://pypi.org/simple" }
+version = "1.2.9"
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fwrap-model-call-improvements#9dac16e66a269bf8d2b516468d6c9637f824d820" }
 dependencies = [
     { name = "jsonpatch" },
     { name = "langsmith" },
@@ -783,10 +779,6 @@ dependencies = [
     { name = "tenacity" },
     { name = "typing-extensions" },
     { name = "uuid-utils" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/0e/664d8d81b3493e09cbab72448d2f9d693d1fa5aa2bcc488602203a9b6da0/langchain_core-1.2.7.tar.gz", hash = "sha256:e1460639f96c352b4a41c375f25aeb8d16ffc1769499fb1c20503aad59305ced", size = 837039, upload-time = "2026-01-09T17:44:25.505Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/6f/34a9fba14d191a67f7e2ee3dbce3e9b86d2fa7310e2c7f2c713583481bd2/langchain_core-1.2.7-py3-none-any.whl", hash = "sha256:452f4fef7a3d883357b22600788d37e3d8854ef29da345b7ac7099f33c31828b", size = 490232, upload-time = "2026-01-09T17:44:24.236Z" },
 ]
 
 [[package]]

@@ -430,6 +430,7 @@ class SandboxBackendProtocol(BackendProtocol):
     def execute(
         self,
         command: str,
+        timeout: float | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the process.
 
@@ -437,6 +438,7 @@ class SandboxBackendProtocol(BackendProtocol):
 
         Args:
             command: Full shell command string to execute.
+            timeout: Optional timeout in seconds. If None, uses backend default.
 
         Returns:
             ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
@@ -445,9 +447,10 @@ class SandboxBackendProtocol(BackendProtocol):
     async def aexecute(
         self,
         command: str,
+        timeout: float | None = None,
     ) -> ExecuteResponse:
         """Async version of execute."""
-        return await asyncio.to_thread(self.execute, command)
+        return await asyncio.to_thread(self.execute, command, timeout)
 
     @property
     def id(self) -> str:

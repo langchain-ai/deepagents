@@ -182,6 +182,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
     def execute(
         self,
         command: str,
+        timeout: float | None = None,
     ) -> ExecuteResponse:
         r"""Execute a shell command directly on the host system.
 
@@ -210,6 +211,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 **Security:** This string is passed directly to the shell. Agents can
                 execute arbitrary commands including pipes, redirects, command
                 substitution, etc.
+            timeout: Optional timeout in seconds for this command.
+                If None, uses the backend's default timeout.
 
         Returns:
             ExecuteResponse containing:
@@ -236,6 +239,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             # Commands run in root_dir, but can access any path
             result = backend.execute("cat /etc/passwd")  # Can read system files!
+
+            # Use custom timeout for long-running commands
+            result = backend.execute("make build", timeout=300)  # 5 minutes
             ```
         """
         if not command or not isinstance(command, str):
@@ -245,6 +251,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 truncated=False,
             )
 
+        # Use provided timeout or fall back to instance default
+        effective_timeout = timeout if timeout is not None else self._timeout
+
         try:
             result = subprocess.run(  # noqa: S602
                 command,
@@ -252,7 +261,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
                 capture_output=True,
                 text=True,
-                timeout=self._timeout,
+                timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
             )
@@ -288,7 +297,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         except subprocess.TimeoutExpired:
             return ExecuteResponse(
-                output=f"Error: Command timed out after {self._timeout:.1f} seconds.",
+                output=f"Error: Command timed out after {effective_timeout:.1f} seconds.",
                 exit_code=124,  # Standard timeout exit code
                 truncated=False,
             )

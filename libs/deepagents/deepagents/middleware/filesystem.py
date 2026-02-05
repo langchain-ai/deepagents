@@ -826,6 +826,7 @@ class FilesystemMiddleware(AgentMiddleware):
         def sync_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            timeout: Annotated[int | None, "Optional timeout in seconds for this command. Use for long-running commands that may exceed the default timeout (120s). Example: timeout=300 for 5 minutes."] = None,
         ) -> str:
             """Synchronous wrapper for execute tool."""
             resolved_backend = self._get_backend(runtime)
@@ -839,7 +840,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 )
 
             try:
-                result = resolved_backend.execute(command)
+                result = resolved_backend.execute(command, timeout=timeout)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -859,6 +860,7 @@ class FilesystemMiddleware(AgentMiddleware):
         async def async_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            timeout: Annotated[int | None, "Optional timeout in seconds for this command. Use for long-running commands that may exceed the default timeout (120s). Example: timeout=300 for 5 minutes."] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
             resolved_backend = self._get_backend(runtime)
@@ -872,7 +874,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 )
 
             try:
-                result = await resolved_backend.aexecute(command)
+                result = await resolved_backend.aexecute(command, timeout=timeout)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 
@@ -37,7 +38,6 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
-from deepagents_cli.shell import ShellMiddleware
 from deepagents_cli.subagents import list_subagents
 
 
@@ -337,19 +337,6 @@ def _format_task_description(
     )
 
 
-def _format_shell_description(
-    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
-) -> str:
-    """Format shell tool call for approval prompt.
-
-    Returns:
-        Formatted description string for the shell tool call.
-    """
-    args = tool_call["args"]
-    command = args.get("command", "N/A")
-    return f"Shell Command: {command}\nWorking Directory: {Path.cwd()}"
-
-
 def _format_execute_description(
     tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
 ) -> str:
@@ -360,7 +347,7 @@ def _format_execute_description(
     """
     args = tool_call["args"]
     command = args.get("command", "N/A")
-    return f"Execute Command: {command}\nLocation: Remote Sandbox"
+    return f"Execute Command: {command}\nWorking Directory: {Path.cwd()}"
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
@@ -369,11 +356,6 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
     """
-    shell_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_shell_description,  # type: ignore[typeddict-item]
-    }
-
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_execute_description,  # type: ignore[typeddict-item]
@@ -404,7 +386,6 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "description": _format_task_description,  # type: ignore[typeddict-item]
     }
     return {
-        "shell": shell_interrupt_config,
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
@@ -453,8 +434,8 @@ def create_cli_agent(
             Useful for automated workflows.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
-        enable_shell: Enable `ShellMiddleware` for local shell execution
-            (only in local mode)
+        enable_shell: Enable shell execution via `LocalShellBackend`
+            (only in local mode). When enabled, the `execute` tool is available.
         checkpointer: Optional checkpointer for session persistence.
 
             If `None`, uses `InMemorySaver` (no persistence across
@@ -536,12 +517,6 @@ def create_cli_agent(
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
-        backend = FilesystemBackend()
-
-        # Local context middleware (git info, directory tree, etc.)
-        agent_middleware.append(LocalContextMiddleware())
-
-        # Add shell middleware (only in local mode)
         if enable_shell:
             # Create environment for shell commands
             # Restore user's original LANGSMITH_PROJECT so their code traces separately
@@ -549,12 +524,19 @@ def create_cli_agent(
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-            agent_middleware.append(
-                ShellMiddleware(
-                    workspace_root=str(Path.cwd()),
-                    env=shell_env,
-                )
+            # Use LocalShellBackend for filesystem + shell execution
+            # This provides the `execute` tool via FilesystemMiddleware in create_deep_agent
+            backend = LocalShellBackend(
+                root_dir=Path.cwd(),
+                inherit_env=True,
+                env=shell_env,
             )
+        else:
+            # No shell access - use plain FilesystemBackend
+            backend = FilesystemBackend()
+
+        # Local context middleware (git info, directory tree, etc.)
+        agent_middleware.append(LocalContextMiddleware())
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)

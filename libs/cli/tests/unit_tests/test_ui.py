@@ -53,51 +53,51 @@ class TestTruncateValue:
         assert result == "hello"
 
 
-class TestFormatToolDisplayShell:
-    """Tests for `format_tool_display` with shell tool."""
+class TestFormatToolDisplayExecute:
+    """Tests for `format_tool_display` with execute tool."""
 
-    def test_shell_command_only(self) -> None:
-        """Test shell display with command only."""
+    def test_execute_command_only(self) -> None:
+        """Test execute display with command only."""
         prefix = get_glyphs().tool_prefix
-        result = format_tool_display("shell", {"command": "echo hello"})
-        assert result == f'{prefix} shell("echo hello")'
+        result = format_tool_display("execute", {"command": "echo hello"})
+        assert result == f'{prefix} execute("echo hello")'
 
-    def test_shell_with_timeout_minutes(self) -> None:
-        """Test shell display formats timeout in minutes when appropriate."""
+    def test_execute_with_timeout_minutes(self) -> None:
+        """Test execute display formats timeout in minutes when appropriate."""
         prefix = get_glyphs().tool_prefix
-        result = format_tool_display("shell", {"command": "make test", "timeout": 300})
-        assert result == f'{prefix} shell("make test", timeout=5m)'
+        result = format_tool_display("execute", {"command": "make test", "timeout": 300})
+        assert result == f'{prefix} execute("make test", timeout=5m)'
 
-    def test_shell_with_timeout_seconds(self) -> None:
-        """Test shell display formats timeout in seconds for small values."""
+    def test_execute_with_timeout_seconds(self) -> None:
+        """Test execute display formats timeout in seconds for small values."""
         prefix = get_glyphs().tool_prefix
-        result = format_tool_display("shell", {"command": "make test", "timeout": 30})
-        assert result == f'{prefix} shell("make test", timeout=30s)'
+        result = format_tool_display("execute", {"command": "make test", "timeout": 30})
+        assert result == f'{prefix} execute("make test", timeout=30s)'
 
-    def test_shell_with_timeout_hours(self) -> None:
-        """Test shell display formats timeout in hours when appropriate."""
+    def test_execute_with_timeout_hours(self) -> None:
+        """Test execute display formats timeout in hours when appropriate."""
         prefix = get_glyphs().tool_prefix
-        result = format_tool_display("shell", {"command": "make test", "timeout": 3600})
-        assert result == f'{prefix} shell("make test", timeout=1h)'
+        result = format_tool_display("execute", {"command": "make test", "timeout": 3600})
+        assert result == f'{prefix} execute("make test", timeout=1h)'
 
-    def test_shell_with_none_timeout(self) -> None:
-        """Test shell display excludes timeout when `None`."""
+    def test_execute_with_none_timeout(self) -> None:
+        """Test execute display excludes timeout when `None`."""
         prefix = get_glyphs().tool_prefix
         result = format_tool_display(
-            "shell", {"command": "echo hello", "timeout": None}
+            "execute", {"command": "echo hello", "timeout": None}
         )
-        assert result == f'{prefix} shell("echo hello")'
+        assert result == f'{prefix} execute("echo hello")'
 
-    def test_shell_with_default_timeout_hidden(self) -> None:
-        """Test shell display excludes timeout when it equals the default (120s)."""
+    def test_execute_with_default_timeout_hidden(self) -> None:
+        """Test execute display excludes timeout when it equals the default (120s)."""
         prefix = get_glyphs().tool_prefix
-        result = format_tool_display("shell", {"command": "echo hello", "timeout": 120})
-        assert result == f'{prefix} shell("echo hello")'
+        result = format_tool_display("execute", {"command": "echo hello", "timeout": 120})
+        assert result == f'{prefix} execute("echo hello")'
 
-    def test_shell_long_command_truncated(self) -> None:
-        """Test that long shell commands are truncated."""
+    def test_execute_long_command_truncated(self) -> None:
+        """Test that long execute commands are truncated."""
         long_cmd = "x" * 200
-        result = format_tool_display("shell", {"command": long_cmd})
+        result = format_tool_display("execute", {"command": long_cmd})
         assert get_glyphs().ellipsis in result
         assert len(result) < 200
 

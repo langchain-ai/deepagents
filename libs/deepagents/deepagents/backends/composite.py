@@ -464,11 +464,13 @@ class CompositeBackend(BackendProtocol):
     def execute(
         self,
         command: str,
+        timeout: float | None = None,
     ) -> ExecuteResponse:
         """Execute shell command via default backend.
 
         Args:
             command: Shell command to execute.
+            timeout: Optional timeout in seconds. If None, uses backend default.
 
         Returns:
             ExecuteResponse with output, exit code, and truncation flag.
@@ -481,10 +483,11 @@ class CompositeBackend(BackendProtocol):
             composite = CompositeBackend(default=FilesystemBackend(root_dir="/tmp"), routes={"/memories/": StoreBackend(runtime)})
 
             result = composite.execute("ls -la")
+            result = composite.execute("make build", timeout=300)  # 5 minute timeout
             ```
         """
         if isinstance(self.default, SandboxBackendProtocol):
-            return self.default.execute(command)
+            return self.default.execute(command, timeout)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.
@@ -496,10 +499,11 @@ class CompositeBackend(BackendProtocol):
     async def aexecute(
         self,
         command: str,
+        timeout: float | None = None,
     ) -> ExecuteResponse:
         """Async version of execute."""
         if isinstance(self.default, SandboxBackendProtocol):
-            return await self.default.aexecute(command)
+            return await self.default.aexecute(command, timeout)
 
         # This shouldn't be reached if the runtime check in the execute tool works correctly,
         # but we include it as a safety fallback.

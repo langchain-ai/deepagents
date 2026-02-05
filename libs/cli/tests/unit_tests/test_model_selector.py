@@ -1,8 +1,12 @@
 """Tests for ModelSelectorScreen."""
 
+from typing import ClassVar
+
 import pytest
 from textual.app import App, ComposeResult
+from textual.binding import Binding, BindingType
 from textual.containers import Container
+from textual.screen import ModalScreen
 
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
@@ -17,6 +21,47 @@ class ModelSelectorTestApp(App):
 
     def compose(self) -> ComposeResult:
         yield Container(id="main")
+
+    def show_selector(self) -> None:
+        """Show the model selector screen."""
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            self.result = result
+            self.dismissed = True
+
+        screen = ModelSelectorScreen(
+            current_model="claude-sonnet-4-5",
+            current_provider="anthropic",
+        )
+        self.push_screen(screen, handle_result)
+
+
+class AppWithEscapeBinding(App):
+    """Test app that has a conflicting escape binding like DeepAgentsApp.
+
+    This reproduces the real-world scenario where the app binds escape
+    to action_interrupt, which would intercept escape before the modal.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.result: tuple[str, str] | None = None
+        self.dismissed = False
+        self.interrupt_called = False
+
+    def compose(self) -> ComposeResult:
+        yield Container(id="main")
+
+    def action_interrupt(self) -> None:
+        """Handle escape - dismiss modal if present, otherwise mark as called."""
+        if isinstance(self.screen, ModalScreen):
+            self.screen.dismiss(None)
+            return
+        self.interrupt_called = True
 
     def show_selector(self) -> None:
         """Show the model selector screen."""
@@ -68,6 +113,28 @@ class TestModelSelectorEscapeKey:
 
             assert app.dismissed is True
             assert app.result is None
+
+    @pytest.mark.asyncio
+    async def test_escape_with_conflicting_app_binding(self) -> None:
+        """ESC should dismiss modal even when app has its own escape binding.
+
+        This test reproduces the bug where DeepAgentsApp's escape binding
+        for action_interrupt would intercept escape before the modal could
+        handle it, causing the modal to not close.
+        """
+        app = AppWithEscapeBinding()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            # Press ESC - this should dismiss the modal, not call action_interrupt
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app.dismissed is True
+            assert app.result is None
+            # The interrupt action should NOT have been called because modal was open
+            assert app.interrupt_called is False
 
 
 class TestModelSelectorKeyboardNavigation:

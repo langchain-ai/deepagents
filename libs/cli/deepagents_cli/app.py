@@ -17,6 +17,7 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
+from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_cli.agent import create_cli_agent
@@ -1063,6 +1064,11 @@ class DeepAgentsApp(App):
 
         This is the primary way to stop a running agent.
         """
+        # If a modal screen is active, dismiss it
+        if isinstance(self.screen, ModalScreen):
+            self.screen.dismiss(None)
+            return
+
         # If agent is running, interrupt it
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()

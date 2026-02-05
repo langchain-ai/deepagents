@@ -14,6 +14,7 @@ import contextlib
 import importlib.util
 import os
 import sys
+import traceback
 import warnings
 from pathlib import Path
 
@@ -261,22 +262,23 @@ async def run_textual_cli_async(
             error_text.append(str(e))
             console.print(error_text)
             sys.exit(1)
+
+        # Run Textual app - errors propagate to caller
+        try:
+            await run_textual_app(
+                agent=agent,
+                assistant_id=assistant_id,
+                backend=composite_backend,
+                auto_approve=auto_approve,
+                cwd=Path.cwd(),
+                thread_id=thread_id,
+                initial_prompt=initial_prompt,
+            )
         finally:
-            # Clean up sandbox if we created one
+            # Clean up sandbox after app exits (success or error)
             if sandbox_cm is not None:
                 with contextlib.suppress(Exception):
                     sandbox_cm.__exit__(None, None, None)
-
-        # Run Textual app - errors here should propagate
-        await run_textual_app(
-            agent=agent,
-            assistant_id=assistant_id,
-            backend=composite_backend,
-            auto_approve=auto_approve,
-            cwd=Path.cwd(),
-            thread_id=thread_id,
-            initial_prompt=initial_prompt,
-        )
 
 
 def cli_main() -> None:
@@ -387,8 +389,7 @@ def cli_main() -> None:
             if thread_id is None:
                 thread_id = generate_thread_id()
 
-            # Run Textual CLI - track success for resume message
-            app_success = False
+            # Run Textual CLI
             try:
                 asyncio.run(
                     run_textual_cli_async(
@@ -402,15 +403,13 @@ def cli_main() -> None:
                         initial_prompt=getattr(args, "initial_prompt", None),
                     )
                 )
-                app_success = True
             except Exception as e:
-                # Re-raise to be handled by outer exception handler
-                # but don't show resume message
                 console.print(f"\n[red]Application error:[/red] {e}")
+                console.print(f"[dim]{traceback.format_exc()}[/dim]")
                 sys.exit(1)
 
-            # Show resume hint on exit (only for new threads and successful exit)
-            if app_success and thread_id and not is_resumed:
+            # Show resume hint on exit (only for new threads)
+            if thread_id and not is_resumed:
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
                 console.print(f"[cyan]deepagents -r {thread_id}[/cyan]")

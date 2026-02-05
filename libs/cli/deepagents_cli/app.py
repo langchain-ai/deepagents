@@ -1331,7 +1331,7 @@ async def run_textual_app(
     tools: list[Any] | None = None,
     sandbox: Any = None,
     sandbox_type: str | None = None,
-) -> None:
+) -> int:
     """Run the Textual application.
 
     Args:
@@ -1346,6 +1346,9 @@ async def run_textual_app(
         tools: Tools used to create the agent (for hot-swap)
         sandbox: Sandbox backend (for hot-swap)
         sandbox_type: Type of sandbox provider (for hot-swap)
+
+    Returns:
+        The app's return code (0 for success, non-zero for error).
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -1361,6 +1364,7 @@ async def run_textual_app(
         sandbox_type=sandbox_type,
     )
     await app.run_async()
+    return app.return_code or 0
 
 
 if __name__ == "__main__":

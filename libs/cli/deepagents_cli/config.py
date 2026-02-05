@@ -256,7 +256,7 @@ def get_banner() -> str:
 
     Returns:
         The text art banner string (Unicode or ASCII based on charset mode).
-        Includes "(local install)" suffix when installed in editable mode.
+        Includes "(local)" suffix when installed in editable mode.
     """
     if _detect_charset_mode() == CharsetMode.ASCII:
         banner = _ASCII_BANNER
@@ -264,7 +264,7 @@ def get_banner() -> str:
         banner = _UNICODE_BANNER
 
     if _is_editable_install():
-        banner = banner.replace(f"v{__version__}", f"v{__version__} (local install)")
+        banner = banner.replace(f"v{__version__}", f"v{__version__} (local)")
 
     return banner
 

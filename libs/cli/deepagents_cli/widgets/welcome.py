@@ -92,7 +92,7 @@ class WelcomeBanner(Static):
             Rich Text object containing the formatted banner.
         """
         banner = Text()
-        # Use orange for local install, green for production
+        # Use orange for local, green for production
         banner_color = "#f97316" if _is_editable_install() else "#10b981"
         banner.append(get_banner() + "\n", style=Style(bold=True, color=banner_color))
 

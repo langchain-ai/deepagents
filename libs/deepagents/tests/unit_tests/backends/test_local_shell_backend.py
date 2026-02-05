@@ -19,6 +19,23 @@ def test_local_shell_backend_initialization() -> None:
         assert len(backend.id) == 14  # "local-" + 8 hex chars
 
 
+def test_local_shell_backend_custom_timeout() -> None:
+    """Test that custom timeout is accepted."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, timeout=300)
+        assert backend._timeout == 300
+
+
+def test_local_shell_backend_rejects_invalid_timeout() -> None:
+    """Test that zero/negative timeout raises ValueError."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(ValueError, match="positive"):
+            LocalShellBackend(root_dir=tmpdir, timeout=0)
+
+        with pytest.raises(ValueError, match="positive"):
+            LocalShellBackend(root_dir=tmpdir, timeout=-5)
+
+
 def test_local_shell_backend_execute_simple_command() -> None:
     """Test executing a simple shell command."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -74,13 +91,57 @@ def test_local_shell_backend_execute_empty_command() -> None:
 def test_local_shell_backend_execute_timeout() -> None:
     """Test that long-running commands timeout correctly."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir, timeout=1.0, inherit_env=True)
+        backend = LocalShellBackend(root_dir=tmpdir, timeout=1, inherit_env=True)
 
         # Sleep for longer than timeout
         result = backend.execute("sleep 5")
 
         assert result.exit_code == 124  # Standard timeout exit code
         assert "timed out" in result.output
+
+
+def test_local_shell_backend_per_command_timeout_override() -> None:
+    """Test that per-command timeout overrides default."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, timeout=1, inherit_env=True)
+
+        # Command should succeed with longer timeout
+        result = backend.execute("sleep 0.1 && echo done", timeout=5)
+        assert "done" in result.output
+        assert result.exit_code == 0
+
+
+def test_local_shell_backend_timeout_error_message_suggests_parameter() -> None:
+    """Test that timeout error suggests using timeout parameter."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, timeout=1, inherit_env=True)
+
+        result = backend.execute("sleep 10")
+
+        assert "timeout parameter" in result.output
+        assert "1 seconds" in result.output
+
+
+def test_local_shell_backend_zero_per_command_timeout() -> None:
+    """Test that zero per-command timeout returns error."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        result = backend.execute("echo test", timeout=0)
+
+        assert result.exit_code == 1
+        assert "positive" in result.output
+
+
+def test_local_shell_backend_negative_per_command_timeout() -> None:
+    """Test that negative per-command timeout returns error."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        result = backend.execute("echo test", timeout=-5)
+
+        assert result.exit_code == 1
+        assert "positive" in result.output
 
 
 def test_local_shell_backend_execute_output_truncation() -> None:
@@ -297,3 +358,42 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
         # Verify
         content = await backend.aread("/async_test.txt")
         assert "modified content" in content
+
+
+class TestTimeoutRetryWorkflow:
+    """Tests simulating the model retrying with increased timeout."""
+
+    def test_command_fails_with_short_timeout_succeeds_with_longer(self) -> None:
+        """Test that a command timing out can succeed with increased timeout.
+
+        This simulates the workflow where:
+
+        1. Model runs a long command with default timeout
+        2. Command times out
+        3. Model retries with a longer timeout
+        4. Command succeeds
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backend = LocalShellBackend(root_dir=tmpdir, timeout=1, inherit_env=True)
+
+            # First attempt: times out with short default
+            result1 = backend.execute("sleep 2 && echo done")
+            assert result1.exit_code == 124
+            assert "timed out" in result1.output
+
+            # Second attempt: model increases timeout, command succeeds
+            result2 = backend.execute("sleep 2 && echo done", timeout=5)
+            assert result2.exit_code == 0
+            assert "done" in result2.output
+
+    def test_timeout_error_message_guides_model_to_solution(self) -> None:
+        """Test that timeout error message tells model how to fix the issue."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backend = LocalShellBackend(root_dir=tmpdir, timeout=1, inherit_env=True)
+
+            result = backend.execute("sleep 10")
+
+            # Error message should guide model to use timeout parameter
+            assert "timeout parameter" in result.output
+            # Error message should show actual timeout used (for model to know to increase)
+            assert "1 seconds" in result.output

@@ -58,7 +58,7 @@ class SandboxError(Exception):
         raise SandboxError("...") from e
         ```
         """
-        return cast("BaseException | None", self.__cause__)
+        return self.__cause__
 
 
 class SandboxNotFoundError(SandboxError):

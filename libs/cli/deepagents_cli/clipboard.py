@@ -8,6 +8,8 @@ import os
 import pathlib
 from typing import TYPE_CHECKING
 
+from deepagents_cli.config import get_glyphs
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -34,9 +36,10 @@ def _shorten_preview(texts: list[str]) -> str:
     Returns:
         Shortened preview text suitable for notification display.
     """
-    dense_text = "⏎".join(texts).replace("\n", "⏎")
+    glyphs = get_glyphs()
+    dense_text = glyphs.newline.join(texts).replace("\n", glyphs.newline)
     if len(dense_text) > _PREVIEW_MAX_LENGTH:
-        return f"{dense_text[: _PREVIEW_MAX_LENGTH - 1]}…"
+        return f"{dense_text[: _PREVIEW_MAX_LENGTH - 1]}{glyphs.ellipsis}"
     return dense_text
 
 

@@ -7,7 +7,7 @@ import shutil
 # S404: subprocess is required for git commands to detect project context
 import subprocess  # noqa: S404
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -15,6 +15,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+
+from deepagents_cli.config import get_glyphs
 
 
 def _get_git_executable() -> str | None:
@@ -213,13 +215,14 @@ class LocalContextMiddleware(AgentMiddleware):
             except (OSError, PermissionError):
                 return
 
+            glyphs = get_glyphs()
             for i, item in enumerate(items):
                 if entry_count[0] >= max_entries:
                     lines.append(f"{prefix}... (truncated)")
                     return
 
                 is_last = i == len(items) - 1
-                connector = "└── " if is_last else "├── "
+                connector = glyphs.tree_last if is_last else glyphs.tree_branch
 
                 display_name = f"{item.name}/" if item.is_dir() else item.name
                 lines.append(f"{prefix}{connector}{display_name}")
@@ -227,7 +230,8 @@ class LocalContextMiddleware(AgentMiddleware):
 
                 # Recurse into directories
                 if item.is_dir() and depth + 1 < max_depth:
-                    extension = "    " if is_last else "│   "
+                    # Use 4 spaces when at last item, otherwise tree_vertical
+                    extension = "    " if is_last else glyphs.tree_vertical
                     _build_tree(item, prefix + extension, depth + 1)
 
         try:
@@ -444,14 +448,24 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return None
 
-    def before_agent(
+    # override - state parameter is intentionally narrowed from
+    # AgentState to LocalContextState for type safety within this middleware.
+    # This violates strict Liskov substitution but is safe since the middleware
+    # only processes its own state schema.
+    def before_agent(  # type: ignore[override]
         self,
         state: LocalContextState,
         runtime: Runtime,
-    ) -> LocalContextStateUpdate | None:
+    ) -> dict[str, Any] | None:
         """Load local context before agent execution.
 
         Runs once at session start to preserve prompt caching.
+
+        Note:
+            Return type is `dict[str, Any]` rather than
+            `LocalContextStateUpdate` to match the base class signature. At
+            runtime, TypedDict is just dict, so this is functionally equivalent
+            while satisfying the type checker.
 
         Args:
             state: Current agent state.
@@ -547,7 +561,7 @@ class LocalContextMiddleware(AgentMiddleware):
             )
 
         local_context = "\n".join(sections)
-        return LocalContextStateUpdate(local_context=local_context)
+        return {"local_context": local_context}
 
     @staticmethod
     def _get_modified_request(request: ModelRequest) -> ModelRequest | None:

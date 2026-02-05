@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 # S404: subprocess is required for user-initiated shell commands via ! prefix
 import subprocess  # noqa: S404
@@ -16,17 +17,19 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
+from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
+from deepagents_cli.config import CharsetMode, _detect_charset_mode
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.messages import (
+    AppMessage,
     AssistantMessage,
     ErrorMessage,
-    SystemMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -34,17 +37,83 @@ from deepagents_cli.widgets.status import StatusBar
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
     from textual.worker import Worker
+
+# iTerm2 Cursor Guide Workaround
+# ===============================
+# iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
+# Textual takes over the terminal in alternate screen mode. We disable it at
+# module load and restore on exit. Both atexit and exit() override are used
+# for defense-in-depth: atexit catches abnormal termination (SIGTERM, unhandled
+# exceptions), while exit() ensures restoration before Textual's cleanup.
+
+# Detection: check env vars AND that stderr is a TTY (avoids false positives
+# when env vars are inherited but running in non-TTY context like CI)
+_IS_ITERM = (
+    (
+        os.environ.get("LC_TERMINAL", "") == "iTerm2"
+        or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
+    )
+    and hasattr(os, "isatty")
+    and os.isatty(2)
+)
+
+# iTerm2 cursor guide escape sequences (OSC 1337)
+# Format: OSC 1337 ; HighlightCursorLine=<yes|no> ST
+# Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
+_ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
+_ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
+
+
+def _write_iterm_escape(sequence: str) -> None:
+    """Write an iTerm2 escape sequence to stderr.
+
+    Silently fails if the terminal is unavailable (redirected, closed, broken
+    pipe). This is a cosmetic feature, so failures should never crash the app.
+    """
+    if not _IS_ITERM:
+        return
+    try:
+        import sys
+
+        if sys.__stderr__ is not None:
+            sys.__stderr__.write(sequence)
+            sys.__stderr__.flush()
+    except OSError:
+        # Terminal may be unavailable (redirected, closed, broken pipe)
+        pass
+
+
+# Disable cursor guide at module load (before Textual takes over)
+_write_iterm_escape(_ITERM_CURSOR_GUIDE_OFF)
+
+if _IS_ITERM:
+    import atexit
+
+    def _restore_cursor_guide() -> None:
+        """Restore iTerm2 cursor guide on exit.
+
+        Registered with atexit to ensure the cursor guide is re-enabled
+        when the CLI exits, regardless of how the exit occurs.
+        """
+        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+
+    atexit.register(_restore_cursor_guide)
 
 
 class TextualTokenTracker:
     """Token tracker that updates the status bar."""
 
     def __init__(
-        self, update_callback: callable, hide_callback: callable | None = None
+        self,
+        update_callback: Callable[[int], None],
+        hide_callback: Callable[[], None] | None = None,
     ) -> None:
         """Initialize with callbacks to update the display."""
         self._update_callback = update_callback
@@ -242,7 +311,13 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
-        Binding("ctrl+o", "toggle_tool_output", "Toggle Tool Output", show=False),
+        Binding(
+            "ctrl+e",
+            "toggle_tool_output",
+            "Toggle Tool Output",
+            show=False,
+            priority=True,
+        ),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),
@@ -322,6 +397,10 @@ class DeepAgentsApp(App):
 
     async def on_mount(self) -> None:
         """Initialize components after mount."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            chat = self.query_one("#chat", VerticalScroll)
+            chat.styles.scrollbar_size_vertical = 0
+
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
 
@@ -348,8 +427,7 @@ class DeepAgentsApp(App):
                 request_approval=self._request_approval,
                 on_auto_approve_enabled=self._on_auto_approve_enabled,
                 scroll_to_bottom=self._scroll_chat_to_bottom,
-                show_thinking=self._show_thinking,
-                hide_thinking=self._hide_thinking,
+                set_spinner=self._set_spinner,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -368,10 +446,10 @@ class DeepAgentsApp(App):
         # (but not when resuming - let user see history first)
         elif self._initial_prompt and self._initial_prompt.strip():
             # Use call_after_refresh to ensure UI is fully mounted before submitting
+            # Capture value for closure to satisfy type checker
+            prompt = self._initial_prompt
             self.call_after_refresh(
-                lambda: asyncio.create_task(
-                    self._handle_user_message(self._initial_prompt)
-                )
+                lambda: asyncio.create_task(self._handle_user_message(prompt))
             )
 
     def on_resize(self, _event: Resize) -> None:
@@ -416,23 +494,36 @@ class DeepAgentsApp(App):
         if distance_from_bottom < 100:
             chat.scroll_end(animate=False)
 
-    async def _show_thinking(self) -> None:
-        """Show or reposition the thinking spinner at the bottom of messages."""
-        if self._loading_widget:
-            await self._loading_widget.remove()
-            self._loading_widget = None
+    async def _set_spinner(self, status: str | None) -> None:
+        """Show, update, or hide the loading spinner.
 
-        self._loading_widget = LoadingWidget("Thinking")
+        Args:
+            status: The status text to display (e.g., "Thinking", "Summarizing"),
+                or `None` to hide the spinner.
+        """
+        if status is None:
+            # Hide
+            if self._loading_widget:
+                await self._loading_widget.remove()
+                self._loading_widget = None
+            return
+
         messages = self.query_one("#messages", Container)
-        await messages.mount(self._loading_widget)
+
+        if self._loading_widget is None:
+            # Create new
+            self._loading_widget = LoadingWidget(status)
+            await messages.mount(self._loading_widget)
+        else:
+            # Update existing
+            self._loading_widget.set_status(status)
+            # Reposition if not at the end (e.g., after tool message was added)
+            children = list(messages.children)
+            if children and children[-1] != self._loading_widget:
+                await self._loading_widget.remove()
+                await messages.mount(self._loading_widget)
         # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
         # and drag user back to bottom if they've scrolled away during streaming
-
-    async def _hide_thinking(self) -> None:
-        """Hide the thinking spinner."""
-        if self._loading_widget:
-            await self._loading_widget.remove()
-            self._loading_widget = None
 
     def _size_initial_spacer(self) -> None:
         """Size the spacer to fill remaining viewport below input."""
@@ -569,9 +660,16 @@ class DeepAgentsApp(App):
                 cwd=self._cwd,
                 timeout=60,
             )
-            output = result.stdout.strip()
-            if result.stderr:
-                output += f"\n[stderr]\n{result.stderr.strip()}"
+            # text=True ensures stdout/stderr are str, not bytes
+            stdout = result.stdout
+            stderr = result.stderr
+            if not isinstance(stdout, str):
+                stdout = stdout.decode() if stdout else ""
+            output = stdout.strip()
+            if stderr:
+                if not isinstance(stderr, str):
+                    stderr = stderr.decode() if stderr else ""
+                output += f"\n[stderr]\n{stderr.strip()}"
 
             if output:
                 # Display output as assistant message (uses markdown for code blocks)
@@ -579,9 +677,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(msg)
                 await msg.write_initial_content()
             else:
-                await self._mount_message(
-                    SystemMessage("Command completed (no output)")
-                )
+                await self._mount_message(AppMessage("Command completed (no output)"))
 
             if result.returncode != 0:
                 await self._mount_message(
@@ -610,7 +706,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             await self._mount_message(
-                SystemMessage(
+                AppMessage(
                     "Commands: /quit, /clear, /remember, /tokens, /threads, /help"
                 )
             )
@@ -622,10 +718,10 @@ class DeepAgentsApp(App):
                 from deepagents_cli._version import __version__
 
                 await self._mount_message(
-                    SystemMessage(f"deepagents version: {__version__}")
+                    AppMessage(f"deepagents version: {__version__}")
                 )
             except Exception:
-                await self._mount_message(SystemMessage("deepagents version: unknown"))
+                await self._mount_message(AppMessage("deepagents version: unknown"))
         elif cmd == "/clear":
             await self._clear_messages()
             if self._token_tracker:
@@ -636,16 +732,16 @@ class DeepAgentsApp(App):
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
                 await self._mount_message(
-                    SystemMessage(f"Started new session: {new_thread_id}")
+                    AppMessage(f"Started new thread: {new_thread_id}")
                 )
         elif cmd == "/threads":
             await self._mount_message(UserMessage(command))
             if self._session_state:
                 await self._mount_message(
-                    SystemMessage(f"Current session: {self._session_state.thread_id}")
+                    AppMessage(f"Current thread: {self._session_state.thread_id}")
                 )
             else:
-                await self._mount_message(SystemMessage("No active session"))
+                await self._mount_message(AppMessage("No active thread"))
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
@@ -655,10 +751,10 @@ class DeepAgentsApp(App):
                 else:
                     formatted = str(count)
                 await self._mount_message(
-                    SystemMessage(f"Current context: {formatted} tokens")
+                    AppMessage(f"Current context: {formatted} tokens")
                 )
             else:
-                await self._mount_message(SystemMessage("No token usage yet"))
+                await self._mount_message(AppMessage("No token usage yet"))
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Extract any additional context after /remember
             additional_context = ""
@@ -679,7 +775,7 @@ class DeepAgentsApp(App):
             return  # _handle_user_message already mounts the message
         else:
             await self._mount_message(UserMessage(command))
-            await self._mount_message(SystemMessage(f"Unknown command: {cmd}"))
+            await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
@@ -712,7 +808,7 @@ class DeepAgentsApp(App):
             )
         else:
             await self._mount_message(
-                SystemMessage(
+                AppMessage(
                     "Agent not configured. "
                     "Run with --agent flag or use standalone mode."
                 )
@@ -723,6 +819,9 @@ class DeepAgentsApp(App):
 
         This runs in a worker thread so the main event loop stays responsive.
         """
+        # Caller ensures _ui_adapter is set (checked in _handle_user_message)
+        if self._ui_adapter is None:
+            return
         try:
             await execute_task_textual(
                 user_input=message,
@@ -743,8 +842,8 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
 
-        # Remove thinking spinner if present
-        await self._hide_thinking()
+        # Remove spinner if present
+        await self._set_spinner(None)
 
         # Re-enable submission now that agent is done
         if self._chat_input:
@@ -764,7 +863,7 @@ class DeepAgentsApp(App):
         if not self._agent or not self._lc_thread_id:
             return
 
-        config = {"configurable": {"thread_id": self._lc_thread_id}}
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
 
         try:
             # Get the state snapshot from the agent
@@ -854,9 +953,9 @@ class DeepAgentsApp(App):
                 if widget:
                     widget.set_rejected()  # Shows as interrupted/rejected in UI
 
-            # Show system message indicating this is a resumed session
+            # Show system message indicating this is a resumed thread
             await self._mount_message(
-                SystemMessage(f"Resumed session: {self._lc_thread_id}")
+                AppMessage(f"Resumed thread: {self._lc_thread_id}")
             )
 
             # Scroll to bottom after UI fully renders
@@ -869,9 +968,11 @@ class DeepAgentsApp(App):
 
         except Exception as e:
             # Don't fail the app if history loading fails
-            await self._mount_message(SystemMessage(f"Could not load history: {e}"))
+            await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
-    async def _mount_message(self, widget: Static) -> None:
+    async def _mount_message(
+        self, widget: Static | AssistantMessage | ToolCallMessage
+    ) -> None:
         """Mount a message widget to the messages area.
 
         Args:
@@ -922,10 +1023,15 @@ class DeepAgentsApp(App):
             self.notify("Press Ctrl+C again to quit", timeout=3)
 
     def action_interrupt(self) -> None:
-        """Handle escape key - interrupt agent or reject approval.
+        """Handle escape key - interrupt agent, reject approval, or dismiss modal.
 
         This is the primary way to stop a running agent.
         """
+        # If a modal screen is active, dismiss it
+        if isinstance(self.screen, ModalScreen):
+            self.screen.dismiss(None)
+            return
+
         # If agent is running, interrupt it
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
@@ -938,6 +1044,26 @@ class DeepAgentsApp(App):
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
         self.exit()
+
+    def exit(
+        self,
+        result: Any = None,
+        return_code: int = 0,
+        message: Any = None,
+    ) -> None:
+        """Exit the app, restoring iTerm2 cursor guide if applicable.
+
+        Overrides parent to restore iTerm2's cursor guide before Textual's
+        cleanup. The atexit handler serves as a fallback for abnormal
+        termination.
+
+        Args:
+            result: Return value passed to the app runner.
+            return_code: Exit code (non-zero for errors).
+            message: Optional message to display on exit.
+        """
+        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+        super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode."""
@@ -1037,7 +1163,7 @@ async def run_textual_app(
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
-) -> None:
+) -> int:
     """Run the Textual application.
 
     Args:
@@ -1048,6 +1174,9 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
+
+    Returns:
+        The app's return code (0 for success, non-zero for error).
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -1059,6 +1188,7 @@ async def run_textual_app(
         initial_prompt=initial_prompt,
     )
     await app.run_async()
+    return app.return_code or 0
 
 
 if __name__ == "__main__":

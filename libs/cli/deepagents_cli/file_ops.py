@@ -15,7 +15,7 @@ from deepagents_cli.config import settings
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from deepagents.backends.protocol import BACKEND_TYPES
+    from deepagents.backends.protocol import BackendProtocol
 
 FileOpStatus = Literal["pending", "success", "error"]
 
@@ -274,7 +274,7 @@ class FileOpTracker:
     """Collect file operation metrics during a CLI interaction."""
 
     def __init__(
-        self, *, assistant_id: str | None, backend: BACKEND_TYPES | None = None
+        self, *, assistant_id: str | None, backend: BackendProtocol | None = None
     ) -> None:
         """Initialize the tracker."""
         self.assistant_id = assistant_id

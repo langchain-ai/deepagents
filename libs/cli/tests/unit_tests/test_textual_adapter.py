@@ -1,6 +1,79 @@
 """Unit tests for textual_adapter functions."""
 
-from deepagents_cli.textual_adapter import _is_summarization_chunk
+from asyncio import Future
+
+from deepagents_cli.textual_adapter import TextualUIAdapter, _is_summarization_chunk
+
+
+async def _mock_mount(widget: object) -> None:
+    """Mock mount function for tests."""
+
+
+def _mock_approval() -> Future[object]:
+    """Mock approval function for tests."""
+    future: Future[object] = Future()
+    return future
+
+
+def _noop_status(_: str) -> None:
+    """No-op status callback for tests."""
+
+
+class TestTextualUIAdapterInit:
+    """Tests for `TextualUIAdapter` initialization."""
+
+    def test_set_spinner_callback_stored(self) -> None:
+        """Verify `set_spinner` callback is properly stored."""
+
+        async def mock_spinner(status: str | None) -> None:
+            pass
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=mock_spinner,
+        )
+        assert adapter._set_spinner is mock_spinner
+
+    def test_set_spinner_defaults_to_none(self) -> None:
+        """Verify `set_spinner` is optional and defaults to `None`."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        assert adapter._set_spinner is None
+
+    def test_current_tool_messages_initialized_empty(self) -> None:
+        """Verify `_current_tool_messages` is initialized as empty dict."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        assert adapter._current_tool_messages == {}
+
+    def test_token_tracker_initialized_none(self) -> None:
+        """Verify `_token_tracker` is initialized as `None`."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        assert adapter._token_tracker is None
+
+    def test_set_token_tracker(self) -> None:
+        """Verify `set_token_tracker` stores the tracker."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        mock_tracker = object()
+        adapter.set_token_tracker(mock_tracker)
+        assert adapter._token_tracker is mock_tracker
 
 
 class TestIsSummarizationChunk:

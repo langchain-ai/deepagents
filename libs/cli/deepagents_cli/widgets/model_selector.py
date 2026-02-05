@@ -88,6 +88,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("k", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
         Binding("j", "move_down", "Down", show=False, priority=True),
+        Binding("tab", "move_down", "Down", show=False, priority=True),
+        Binding("shift+tab", "move_up", "Up", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
@@ -124,7 +126,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-list {
-        height: 20;
+        height: 1fr;
+        min-height: 5;
+        max-height: 20;
         scrollbar-gutter: stable;
     }
 
@@ -135,6 +139,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ModelSelectorScreen .model-provider-header {
         color: $primary;
         margin-top: 1;
+    }
+
+    ModelSelectorScreen #model-options > .model-provider-header:first-child {
+        margin-top: 0;
     }
 
     ModelSelectorScreen .model-option {
@@ -242,7 +250,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
             # Help text
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
+                f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
                 f"Enter select {glyphs.bullet} Esc cancel"
             )
             yield Static(help_text, classes="model-selector-help")
@@ -370,7 +378,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Scroll the selected item into view
         if selected_widget:
-            selected_widget.scroll_visible()
+            if self._selected_index == 0:
+                # First item: scroll to top so header is visible
+                scroll_container = self.query_one(".model-list", VerticalScroll)
+                scroll_container.scroll_home(animate=False)
+            else:
+                selected_widget.scroll_visible()
 
     def action_move_up(self) -> None:
         """Move selection up."""

@@ -632,7 +632,8 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
-                    "Commands: /quit, /clear, /remember, /tokens, /threads, /help"
+                    "Commands: /quit, /clear, /model, /remember, "
+                    "/tokens, /threads, /help"
                 )
             )
 

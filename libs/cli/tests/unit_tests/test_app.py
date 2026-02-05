@@ -20,6 +20,24 @@ from deepagents_cli.app import (
 )
 
 
+class TestAppCSSValidation:
+    """Test that app CSS is valid and doesn't cause runtime errors."""
+
+    @pytest.mark.asyncio
+    async def test_app_css_validates_on_mount(self) -> None:
+        """App should mount without CSS validation errors.
+
+        This test catches invalid CSS properties like 'overflow: visible'
+        which are only validated at runtime when styles are applied.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            # Give the app time to render and apply CSS
+            await pilot.pause()
+            # If we get here without exception, CSS is valid
+            assert app.is_running
+
+
 class TestAppBindings:
     """Test app keybindings."""
 

@@ -339,8 +339,9 @@ async def execute_task_textual(
 
                     message, metadata = data
 
-                    # Filter out summarization LLM output
+                    # Filter out summarization LLM output & update status to reflect
                     if _is_summarization_chunk(metadata):
+                        adapter._update_status("Summarizing conversation...")
                         continue
 
                     if isinstance(message, HumanMessage):

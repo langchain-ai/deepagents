@@ -753,7 +753,7 @@ def _detect_provider(model_name: str) -> str | None:
         return "google"
     if any(x in model_lower for x in ["deepseek", "deepseek-chat", "deepseek-coder"]):
         return "deepseek"
-    if any(x in model_lower for x in ["qwen", "qwen-turbo", "qwen-plus", "qwen-max"]):
+    if any(x in model_lower for x in ["qwen", "qwen-turbo", "qwen-plus", "qwen-max", "qwen3-max"]):
         return "qwen"
 
     return None

@@ -1216,7 +1216,7 @@ class DeepAgentsApp(App):
         """
         # Parse provider:model syntax to check credentials early
         if ":" in model_spec:
-            provider, _ = model_spec.split(":", 1)
+            provider, model_name = model_spec.split(":", 1)
             # Check credentials for the specified provider
             if not has_provider_credentials(provider):
                 env_var = PROVIDER_API_KEY_ENV.get(provider, "API key")
@@ -1224,6 +1224,18 @@ class DeepAgentsApp(App):
                     ErrorMessage(f"Missing credentials: {env_var} not set")
                 )
                 return
+            # Check if already using this exact model
+            if (
+                provider == settings.model_provider
+                and model_name == settings.model_name
+            ):
+                await self._mount_message(AppMessage(f"Already using {model_spec}"))
+                return
+        elif model_spec == settings.model_name:
+            # Just model name - check if already using this model
+            current = f"{settings.model_provider}:{settings.model_name}"
+            await self._mount_message(AppMessage(f"Already using {current}"))
+            return
 
         # Check if we have what we need for hot-swap
         if not self._checkpointer:

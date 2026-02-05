@@ -16,7 +16,7 @@ on:
       package:
         required: true
         type: string
-        description: "Package to release (deepagents, deepagents-cli, deepagents-acp, or deepagents-harbor)"
+        description: "Package to release (deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, or partners/langchain_daytona)"
   workflow_dispatch:
     inputs:
       package:
@@ -28,6 +28,7 @@ on:
           - deepagents-cli
           - deepagents-acp
           - deepagents-harbor
+          - partners/langchain_daytona
         default: deepagents
       dangerous-nonmaster-release:
         required: false

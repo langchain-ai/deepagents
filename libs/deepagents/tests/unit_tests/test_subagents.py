@@ -878,7 +878,7 @@ class TestSubAgents:
 
     def test_parent_tool_call_id_in_streaming_metadata(self) -> None:
         """Test that parent_tool_call_id is propagated to streaming metadata.
-        
+
         When a task tool call spawns a subagent, the subagent's streaming chunks
         should include the parent's tool_call_id in metadata, allowing clients to
         correlate chunks with their originating task calls.
@@ -886,7 +886,7 @@ class TestSubAgents:
         parent_content = "PARENT_RESPONSE"
         subagent_content = "SUBAGENT_RESPONSE"
         expected_tool_call_id = "call_TEST_PARENT_ID"
-        
+
         parent_chat_model = GenericFakeChatModel(
             messages=iter(
                 [
@@ -906,7 +906,7 @@ class TestSubAgents:
             )
         )
         subagent_chat_model = GenericFakeChatModel(messages=iter([AIMessage(content=subagent_content)]))
-        
+
         compiled_subagent = create_agent(model=subagent_chat_model, name="worker")
         parent_agent = create_deep_agent(
             model=parent_chat_model,
@@ -914,11 +914,11 @@ class TestSubAgents:
             name="supervisor",
             subagents=[CompiledSubAgent(name="worker", description="Does work.", runnable=compiled_subagent)],
         )
-        
+
         found_subagent_chunk = False
         found_parent_tool_call_id = False
         actual_parent_tool_call_id = None
-        
+
         for ns, (chunk, metadata) in parent_agent.stream(
             {"messages": [HumanMessage(content="Do something")]},
             stream_mode="messages",
@@ -928,12 +928,12 @@ class TestSubAgents:
             # Check if this is from a subagent (non-empty namespace)
             if ns and subagent_content in chunk.content:
                 found_subagent_chunk = True
-                
+
                 # Check for parent_tool_call_id in metadata
                 if "parent_tool_call_id" in metadata:
                     found_parent_tool_call_id = True
                     actual_parent_tool_call_id = metadata["parent_tool_call_id"]
-        
+
         assert found_subagent_chunk, "Should have seen subagent content in streaming chunks"
         assert found_parent_tool_call_id, "parent_tool_call_id should be present in subagent streaming metadata"
         assert actual_parent_tool_call_id == expected_tool_call_id, (
@@ -943,16 +943,16 @@ class TestSubAgents:
 
     def test_parallel_subagents_streaming_correlation(self) -> None:
         """Test parent_tool_call_id correctly correlates parallel subagent streams.
-        
+
         When multiple task tool calls are made in parallel, each subagent's streaming
         chunks should have the correct parent_tool_call_id matching their originating
         task call. This allows clients to correlate interleaved chunks.
-zj        """
+        """
         adder_content = "ADDER_RESULT_12"
         multiplier_content = "MULTIPLIER_RESULT_24"
         adder_tool_call_id = "call_ADDER"
         multiplier_tool_call_id = "call_MULTIPLIER"
-        
+
         parent_chat_model = GenericFakeChatModel(
             messages=iter(
                 [
@@ -978,13 +978,13 @@ zj        """
                 ]
             )
         )
-        
+
         adder_model = GenericFakeChatModel(messages=iter([AIMessage(content=adder_content)]))
         multiplier_model = GenericFakeChatModel(messages=iter([AIMessage(content=multiplier_content)]))
-        
+
         adder_subagent = create_agent(model=adder_model, name="adder")
         multiplier_subagent = create_agent(model=multiplier_model, name="multiplier")
-        
+
         parent_agent = create_deep_agent(
             model=parent_chat_model,
             checkpointer=InMemorySaver(),
@@ -994,11 +994,11 @@ zj        """
                 CompiledSubAgent(name="multiplier", description="Multiplies numbers.", runnable=multiplier_subagent),
             ],
         )
-        
+
         # Track which parent_tool_call_id we see for each subagent's content
         adder_parent_ids: set[str] = set()
         multiplier_parent_ids: set[str] = set()
-        
+
         for ns, (chunk, metadata) in parent_agent.stream(
             {"messages": [HumanMessage(content="Calculate")]},
             stream_mode="messages",
@@ -1007,17 +1007,17 @@ zj        """
         ):
             if not ns:
                 continue
-            
+
             parent_id = metadata.get("parent_tool_call_id")
             if parent_id and adder_content in chunk.content:
                 adder_parent_ids.add(parent_id)
             if parent_id and multiplier_content in chunk.content:
                 multiplier_parent_ids.add(parent_id)
-        
+
         # Each subagent's chunks should have exactly one parent_tool_call_id
         assert len(adder_parent_ids) == 1, f"Adder should have one parent_tool_call_id, got {adder_parent_ids}"
         assert len(multiplier_parent_ids) == 1, f"Multiplier should have one parent_tool_call_id, got {multiplier_parent_ids}"
-        
+
         # And they should match the correct tool_call.id
         assert adder_tool_call_id in adder_parent_ids, (
             f"Adder chunks should have parent_tool_call_id={adder_tool_call_id}, got {adder_parent_ids}"

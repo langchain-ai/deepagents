@@ -1,11 +1,14 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
-from typing import Any
+import warnings
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
 
 from deepagents.backends.protocol import (
+    BackendContext,
     BackendProtocol,
     EditResult,
     FileDownloadResponse,
@@ -24,6 +27,12 @@ from deepagents.backends.utils import (
     update_file_data,
 )
 
+if TYPE_CHECKING:
+    from langchain.tools import ToolRuntime
+
+# Type alias for namespace factory functions
+NamespaceFactory = Callable[[BackendContext], tuple[str, ...]]
+
 
 class StoreBackend(BackendProtocol):
     """Backend that stores files in LangGraph's BaseStore (persistent).
@@ -32,46 +41,120 @@ class StoreBackend(BackendProtocol):
     Files are organized via namespaces and persist across all threads.
 
     The namespace can include an optional assistant_id for multi-agent isolation.
+
+    .. versionchanged:: 0.4
+        The `runtime` parameter is now optional and deprecated.
+        Pass `ctx` to individual methods instead.
     """
 
-    def __init__(self, runtime: "ToolRuntime"):
-        """Initialize StoreBackend with runtime.
+    def __init__(
+        self,
+        runtime: "ToolRuntime | None" = None,
+        *,
+        namespace: NamespaceFactory | None = None,
+    ):
+        """Initialize StoreBackend.
 
         Args:
-            runtime: The ToolRuntime instance providing store access and configuration.
-        """
-        self.runtime = runtime
+            runtime: Optional ToolRuntime for backwards compatibility.
+                Deprecated: pass `ctx` to individual methods instead.
+            namespace: Optional callable that takes a BackendContext and returns
+                a namespace tuple. This provides full flexibility for namespace resolution.
 
-    def _get_store(self) -> BaseStore:
+        Example:
+                    namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
+                If None, uses legacy assistant_id detection from metadata (deprecated).
+
+        .. deprecated:: 0.4
+            The `runtime` parameter is deprecated and will be removed in 0.5.
+            Pass `ctx` to individual methods instead.
+        """
+        if runtime is not None:
+            warnings.warn(
+                "Passing `runtime` to StoreBackend is deprecated and will be removed in 0.5. Pass `ctx` to individual methods instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self._runtime = runtime
+        self._namespace = namespace
+
+    def _get_store(self, ctx: "BackendContext | None" = None) -> BaseStore:
         """Get the store instance.
 
+        Args:
+            ctx: Optional backend context.
+
         Returns:
-            BaseStore instance from the runtime.
+            BaseStore instance from context or runtime.
 
         Raises:
-            ValueError: If no store is available in the runtime.
+            ValueError: If no store is available.
         """
-        store = self.runtime.store
-        if store is None:
-            msg = "Store is required but not available in runtime"
-            raise ValueError(msg)
-        return store
+        if ctx is not None and ctx.runtime is not None:
+            store = ctx.runtime.store
+            if store is not None:
+                return store
+        if self._runtime is not None:
+            store = self._runtime.store
+            if store is not None:
+                return store
+        msg = "Store is required but not available. Pass ctx with runtime.store set, or set runtime in __init__."
+        raise ValueError(msg)
 
-    def _get_namespace(self) -> tuple[str, ...]:
+    def _get_namespace(self, ctx: "BackendContext | None" = None) -> tuple[str, ...]:
         """Get the namespace for store operations.
 
+        Args:
+            ctx: Optional backend context.
+
+        Returns:
+            Namespace tuple for store operations.
+        """
+        if self._namespace is not None:
+            if ctx is not None:
+                return self._namespace(ctx)
+            # Fall back to constructing ctx from runtime (deprecated path, removed in 0.5)
+            if self._runtime is not None:
+                state = getattr(self._runtime, "state", {})
+                fallback_ctx = BackendContext(state=state, runtime=self._runtime)  # type: ignore[arg-type]
+                return self._namespace(fallback_ctx)
+            msg = "namespace factory requires ctx or runtime"
+            raise ValueError(msg)
+
+        return self._get_namespace_legacy(ctx)
+
+    def _get_namespace_legacy(self, ctx: "BackendContext | None" = None) -> tuple[str, ...]:
+        """Legacy namespace resolution: check metadata for assistant_id.
+
+        Args:
+            ctx: Optional backend context.
+
         Preference order:
-        1) Use `self.runtime.config` if present (tests pass this explicitly).
-        2) Fallback to `langgraph.config.get_config()` if available.
-        3) Default to ("filesystem",).
+        1) Use config from ctx.runtime if present.
+        2) Use `self._runtime.config` if present.
+        3) Fallback to `langgraph.config.get_config()` if available.
+        4) Default to ("filesystem",).
 
         If an assistant_id is available in the config metadata, return
         (assistant_id, "filesystem") to provide per-assistant isolation.
+
+        .. deprecated::
+            Pass `namespace` to StoreBackend instead of relying on legacy detection.
         """
+        warnings.warn(
+            "StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         namespace = "filesystem"
 
-        # Prefer the runtime-provided config when present
-        runtime_cfg = getattr(self.runtime, "config", None)
+        # Try to get config from ctx or runtime
+        runtime_cfg = None
+        if ctx is not None and ctx.runtime is not None:
+            runtime_cfg = getattr(ctx.runtime, "config", None)
+        if runtime_cfg is None and self._runtime is not None:
+            runtime_cfg = getattr(self._runtime, "config", None)
+
         if isinstance(runtime_cfg, dict):
             assistant_id = runtime_cfg.get("metadata", {}).get("assistant_id")
             if assistant_id:
@@ -183,18 +266,24 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(
+        self,
+        path: str,
+        *,
+        ctx: "BackendContext | None" = None,
+    ) -> list[FileInfo]:
         """List files and directories in the specified directory (non-recursive).
 
         Args:
             path: Absolute path to directory.
+            ctx: Optional backend context for accessing store.
 
         Returns:
             List of FileInfo-like dicts for files and directories directly in the directory.
             Directories have a trailing / in their path and is_dir=True.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
 
         # Retrieve all items and filter by path prefix locally to avoid
         # coupling to store-specific filter semantics
@@ -254,6 +343,8 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> str:
         """Read file content with line numbers.
 
@@ -261,12 +352,13 @@ class StoreBackend(BackendProtocol):
             file_path: Absolute file path.
             offset: Line offset to start reading from (0-indexed).
             limit: Maximum number of lines to read.
+            ctx: Optional backend context for accessing store.
 
         Returns:
             Formatted file content with line numbers, or error message.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
         item: Item | None = store.get(namespace, file_path)
 
         if item is None:
@@ -284,13 +376,22 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> str:
         """Async version of read using native store async methods.
 
-        This avoids sync calls in async context by using store.aget directly.
+        Args:
+            file_path: Absolute file path.
+            offset: Line offset to start reading from (0-indexed).
+            limit: Maximum number of lines to read.
+            ctx: Optional backend context for accessing store.
+
+        Returns:
+            Formatted file content with line numbers, or error message.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
         item: Item | None = await store.aget(namespace, file_path)
 
         if item is None:
@@ -307,12 +408,21 @@ class StoreBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> WriteResult:
         """Create a new file with content.
-        Returns WriteResult. External storage sets files_update=None.
+
+        Args:
+            file_path: Absolute path where the file should be created.
+            content: String content to write to the file.
+            ctx: Optional backend context for accessing store.
+
+        Returns:
+            WriteResult. External storage sets files_update=None.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
 
         # Check if file exists
         existing = store.get(namespace, file_path)
@@ -329,13 +439,21 @@ class StoreBackend(BackendProtocol):
         self,
         file_path: str,
         content: str,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> WriteResult:
         """Async version of write using native store async methods.
 
-        This avoids sync calls in async context by using store.aget/aput directly.
+        Args:
+            file_path: Absolute path where the file should be created.
+            content: String content to write to the file.
+            ctx: Optional backend context for accessing store.
+
+        Returns:
+            WriteResult. External storage sets files_update=None.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
 
         # Check if file exists using async method
         existing = await store.aget(namespace, file_path)
@@ -354,12 +472,23 @@ class StoreBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
-        Returns EditResult. External storage sets files_update=None.
+
+        Args:
+            file_path: Absolute path to the file to edit.
+            old_string: Exact string to search for and replace.
+            new_string: String to replace old_string with.
+            replace_all: If True, replace all occurrences.
+            ctx: Optional backend context for accessing store.
+
+        Returns:
+            EditResult. External storage sets files_update=None.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
 
         # Get existing file
         item = store.get(namespace, file_path)
@@ -391,13 +520,23 @@ class StoreBackend(BackendProtocol):
         old_string: str,
         new_string: str,
         replace_all: bool = False,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> EditResult:
         """Async version of edit using native store async methods.
 
-        This avoids sync calls in async context by using store.aget/aput directly.
+        Args:
+            file_path: Absolute path to the file to edit.
+            old_string: Exact string to search for and replace.
+            new_string: String to replace old_string with.
+            replace_all: If True, replace all occurrences.
+            ctx: Optional backend context for accessing store.
+
+        Returns:
+            EditResult. External storage sets files_update=None.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
 
         # Get existing file using async method
         item = await store.aget(namespace, file_path)
@@ -423,16 +562,27 @@ class StoreBackend(BackendProtocol):
         await store.aput(namespace, file_path, store_value)
         return EditResult(path=file_path, files_update=None, occurrences=int(occurrences))
 
-    # Removed legacy grep() convenience to keep lean surface
-
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
-        path: str = "/",
+        path: str | None = None,
         glob: str | None = None,
+        *,
+        ctx: "BackendContext | None" = None,
     ) -> list[GrepMatch] | str:
-        store = self._get_store()
-        namespace = self._get_namespace()
+        """Search for a literal text pattern in files.
+
+        Args:
+            pattern: Literal string to search for.
+            path: Optional directory path to search in.
+            glob: Optional glob pattern to filter files.
+            ctx: Optional backend context for accessing store.
+
+        Returns:
+            List of GrepMatch on success, error string on failure.
+        """
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
         items = self._search_store_paginated(store, namespace)
         files: dict[str, Any] = {}
         for item in items:
@@ -440,11 +590,27 @@ class StoreBackend(BackendProtocol):
                 files[item.key] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-        return grep_matches_from_files(files, pattern, path, glob)
+        return grep_matches_from_files(files, pattern, path or "/", glob)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
-        store = self._get_store()
-        namespace = self._get_namespace()
+    def glob(
+        self,
+        pattern: str,
+        path: str = "/",
+        *,
+        ctx: "BackendContext | None" = None,
+    ) -> list[FileInfo]:
+        """Get FileInfo for files matching glob pattern.
+
+        Args:
+            pattern: Glob pattern to match files.
+            path: Base directory to search from.
+            ctx: Optional backend context for accessing store.
+
+        Returns:
+            List of FileInfo for matching files.
+        """
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
         items = self._search_store_paginated(store, namespace)
         files: dict[str, Any] = {}
         for item in items:
@@ -470,18 +636,24 @@ class StoreBackend(BackendProtocol):
             )
         return infos
 
-    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+    def upload_files(
+        self,
+        files: list[tuple[str, bytes]],
+        *,
+        ctx: "BackendContext | None" = None,
+    ) -> list[FileUploadResponse]:
         """Upload multiple files to the store.
 
         Args:
             files: List of (path, content) tuples where content is bytes.
+            ctx: Optional backend context for accessing store.
 
         Returns:
             List of FileUploadResponse objects, one per input file.
             Response order matches input order.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
         responses: list[FileUploadResponse] = []
 
         for path, content in files:
@@ -496,18 +668,24 @@ class StoreBackend(BackendProtocol):
 
         return responses
 
-    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+    def download_files(
+        self,
+        paths: list[str],
+        *,
+        ctx: "BackendContext | None" = None,
+    ) -> list[FileDownloadResponse]:
         """Download multiple files from the store.
 
         Args:
             paths: List of file paths to download.
+            ctx: Optional backend context for accessing store.
 
         Returns:
             List of FileDownloadResponse objects, one per input path.
             Response order matches input order.
         """
-        store = self._get_store()
-        namespace = self._get_namespace()
+        store = self._get_store(ctx)
+        namespace = self._get_namespace(ctx)
         responses: list[FileDownloadResponse] = []
 
         for path in paths:

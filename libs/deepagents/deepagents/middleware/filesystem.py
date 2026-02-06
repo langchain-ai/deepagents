@@ -19,15 +19,15 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
-from deepagents.backends import StateBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import (
-    BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
     SandboxBackendProtocol,
     WriteResult,
+    _warn_factory_deprecated,
 )
+from deepagents.backends.state import StateBackend
 from deepagents.backends.utils import (
     format_content_with_line_numbers,
     format_grep_matches,
@@ -439,7 +439,7 @@ class FilesystemMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES | None = None,
+        backend: BackendProtocol | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: dict[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
@@ -447,14 +447,14 @@ class FilesystemMiddleware(AgentMiddleware):
         """Initialize the filesystem middleware.
 
         Args:
-            backend: Backend for file storage and optional execution, or a factory callable.
+            backend: Backend for file storage and optional execution.
                 Defaults to StateBackend if not provided.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
         """
-        # Use provided backend or default to StateBackend factory
-        self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+        # Use provided backend or default to StateBackend
+        self.backend: BackendProtocol = backend if backend is not None else StateBackend()
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -472,15 +472,19 @@ class FilesystemMiddleware(AgentMiddleware):
         ]
 
     def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Get the resolved backend instance from backend or factory.
+        """Get the resolved backend instance.
 
         Args:
-            runtime: The tool runtime context.
+            runtime: The tool runtime context (unused, for backwards compat).
 
         Returns:
-            Resolved backend instance.
+            The backend instance.
+
+        Note:
+            Factory pattern support is deprecated and will be removed in 0.5.
         """
         if callable(self.backend):
+            _warn_factory_deprecated()
             return self.backend(runtime)
         return self.backend
 
@@ -498,7 +502,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = resolved_backend.ls_info(validated_path)
+            infos = resolved_backend.ls(validated_path, ctx=runtime.context)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -513,7 +517,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 validated_path = _validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
-            infos = await resolved_backend.als_info(validated_path)
+            infos = await resolved_backend.als(validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -748,7 +752,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
-            infos = resolved_backend.glob_info(pattern, path=path)
+            infos = resolved_backend.glob(pattern, path=path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -760,7 +764,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
-            infos = await resolved_backend.aglob_info(pattern, path=path)
+            infos = await resolved_backend.aglob(pattern, path=path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
             return str(result)
@@ -788,7 +792,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Synchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = resolved_backend.grep_raw(pattern, path=path, glob=glob)
+            raw = resolved_backend.grep(pattern, path=path, glob=glob)
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)
@@ -806,7 +810,7 @@ class FilesystemMiddleware(AgentMiddleware):
         ) -> str:
             """Asynchronous wrapper for grep tool."""
             resolved_backend = self._get_backend(runtime)
-            raw = await resolved_backend.agrep_raw(pattern, path=path, glob=glob)
+            raw = await resolved_backend.agrep(pattern, path=path, glob=glob)
             if isinstance(raw, str):
                 return raw
             formatted = format_grep_matches(raw, output_mode)

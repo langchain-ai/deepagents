@@ -173,19 +173,13 @@ class RunloopSandboxClient(SandboxClient):
         sandbox_id: str,
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
+        """Get an existing Runloop devbox.
+
+        Returns:
+            A connected sandbox backend.
+        """
         devbox = self._client.devboxes.retrieve(id=sandbox_id)
         return RunloopBackend(devbox_id=devbox.id, client=self._client)
-
-    def get_or_create(
-        self,
-        *,
-        sandbox_id: str | None = None,
-        timeout: int = 180,
-        **kwargs: Any,
-    ) -> SandboxBackendProtocol:
-        if sandbox_id is None:
-            return self.create(timeout=timeout, **kwargs)
-        return self.get(sandbox_id=sandbox_id, **kwargs)
 
     def create(
         self,

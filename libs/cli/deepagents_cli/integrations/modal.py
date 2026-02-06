@@ -158,22 +158,15 @@ class ModalSandboxClient(SandboxClient):
         sandbox_id: str,
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
+        """Get an existing Modal sandbox.
+
+        Returns:
+            A connected sandbox backend.
+        """
         import modal
 
         sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
         return ModalBackend(sandbox)
-
-    def get_or_create(
-        self,
-        *,
-        sandbox_id: str | None = None,
-        workdir: str = "/workspace",
-        timeout: int = 180,
-        **kwargs: Any,
-    ) -> SandboxBackendProtocol:
-        if sandbox_id is None:
-            return self.create(workdir=workdir, timeout=timeout, **kwargs)
-        return self.get(sandbox_id=sandbox_id, **kwargs)
 
     def create(
         self,

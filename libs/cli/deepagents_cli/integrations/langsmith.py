@@ -13,13 +13,10 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxClient,
-)
+from deepagents.backends.sandbox import BaseSandbox, SandboxClient
 
 if TYPE_CHECKING:
-    from langsmith.sandbox import Sandbox, SandboxClient
+    from langsmith.sandbox import Sandbox
 
 
 # Default template configuration
@@ -146,7 +143,7 @@ class LangSmithSandboxClient(SandboxClient):
         if not self._api_key:
             msg = "LANGSMITH_API_KEY environment variable not set"
             raise ValueError(msg)
-        self._client: SandboxClient = sandbox.SandboxClient()
+        self._client: LangSmithSandboxClient = sandbox.SandboxClient()
 
     def get(
         self,
@@ -154,6 +151,14 @@ class LangSmithSandboxClient(SandboxClient):
         sandbox_id: str,
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
+        """Get an existing LangSmith sandbox.
+
+        Returns:
+            A connected sandbox backend.
+
+        Raises:
+            RuntimeError: If the sandbox cannot be retrieved.
+        """
         try:
             sandbox = self._client.get_sandbox(name=sandbox_id)
         except Exception as e:
@@ -167,6 +172,14 @@ class LangSmithSandboxClient(SandboxClient):
         timeout: int = 180,
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
+        """Create a new LangSmith sandbox.
+
+        Returns:
+            A connected sandbox backend.
+
+        Raises:
+            RuntimeError: If the sandbox cannot be created.
+        """
         self._ensure_template()
 
         try:
@@ -202,6 +215,12 @@ class LangSmithSandboxClient(SandboxClient):
         timeout: int = 180,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
+        """Get an existing sandbox or create a new one.
+
+        Returns:
+            A connected sandbox backend.
+
+        """
         if sandbox_id is None:
             return self.create(timeout=timeout, **kwargs)
         return self.get(sandbox_id=sandbox_id, **kwargs)

@@ -155,6 +155,14 @@ class DaytonaSandboxClient(SandboxClient):
         sandbox_id: str,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
+        """Get an existing Daytona sandbox.
+
+        Returns:
+            A connected sandbox backend.
+
+        Raises:
+            ValueError: If unsupported keyword arguments are provided.
+        """
         if kwargs:
             keys = sorted(kwargs.keys())
             msg = f"DaytonaSandboxClient.get() got unsupported kwargs: {keys}"
@@ -168,6 +176,15 @@ class DaytonaSandboxClient(SandboxClient):
         timeout: int = 180,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
+        """Create a new Daytona sandbox.
+
+        Returns:
+            A connected sandbox backend.
+
+        Raises:
+            ValueError: If unsupported keyword arguments are provided.
+            RuntimeError: If the sandbox does not become ready within the timeout.
+        """
         if kwargs:
             keys = sorted(kwargs.keys())
             msg = f"DaytonaSandboxClient.create() got unsupported kwargs: {keys}"
@@ -193,28 +210,23 @@ class DaytonaSandboxClient(SandboxClient):
 
         return DaytonaBackend(sandbox)
 
-    def get_or_create(
-        self,
-        *,
-        sandbox_id: str | None = None,
-        timeout: int = 180,
-        **kwargs: Any,
-    ) -> SandboxBackendProtocol:
-        if sandbox_id is None:
-            return self.create(timeout=timeout, **kwargs)
-        return self.get(sandbox_id=sandbox_id, **kwargs)
-
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:
+        """Delete a Daytona sandbox.
+
+        This is best-effort and idempotent.
+
+        Raises:
+            ValueError: If unsupported keyword arguments are provided.
+        """
         if kwargs:
             keys = sorted(kwargs.keys())
             msg = f"DaytonaSandboxClient.delete() got unsupported kwargs: {keys}"
             raise ValueError(msg)
         try:
             sandbox = self._client.get(sandbox_id)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
         try:
             self._client.delete(sandbox)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
-n

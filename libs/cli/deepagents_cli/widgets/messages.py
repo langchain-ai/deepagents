@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import ast
+import json
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +15,7 @@ from textual.containers import Vertical
 from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
@@ -101,7 +106,37 @@ class UserMessage(Static):
         """
         text = Text()
         text.append("> ", style="bold #10b981")
-        text.append(self._content)
+
+        # Highlight @mentions and /commands in the content
+        content = self._content
+        last_end = 0
+        for match in INPUT_HIGHLIGHT_PATTERN.finditer(content):
+            start, end = match.span()
+            token = match.group()
+
+            # Skip @mentions that look like email addresses
+            if token.startswith("@") and start > 0:
+                char_before = content[start - 1]
+                if EMAIL_PREFIX_PATTERN.match(char_before):
+                    continue
+
+            # Add text before the match (unstyled)
+            if start > last_end:
+                text.append(content[last_end:start])
+
+            # The regex only matches tokens starting with / or @
+            if token.startswith("/") and start == 0:
+                # /command at start - yellow/gold
+                text.append(token, style="bold #fbbf24")
+            elif token.startswith("@"):
+                # @file mention - green
+                text.append(token, style="bold #10b981")
+            last_end = end
+
+        # Add remaining text after last match
+        if last_end < len(content):
+            text.append(content[last_end:])
+
         yield Static(text)
 
 
@@ -573,9 +608,6 @@ class ToolCallMessage(Vertical):
         Returns:
             List of todo items, or None if parsing fails.
         """
-        import ast
-        import re
-
         list_match = re.search(r"\[(\{.*\})\]", output.replace("\n", " "), re.DOTALL)
         if list_match:
             try:
@@ -643,9 +675,6 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with directory listing and optional truncation info.
         """
-        import ast
-        from pathlib import Path
-
         # Try to parse as a Python list (common format)
         try:
             items = ast.literal_eval(output)
@@ -707,9 +736,6 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with search results and optional truncation info.
         """
-        import ast
-        from pathlib import Path
-
         # Try to parse as a Python list (glob returns list of paths)
         try:
             items = ast.literal_eval(output.strip())
@@ -801,9 +827,6 @@ class ToolCallMessage(Vertical):
         Returns:
             Parsed dict if successful, None otherwise.
         """
-        import ast
-        import json
-
         try:
             if output.strip().startswith("{"):
                 return json.loads(output)

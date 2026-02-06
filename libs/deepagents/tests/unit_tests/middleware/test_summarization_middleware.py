@@ -1972,3 +1972,86 @@ async def test_truncate_async_works() -> None:
 
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+# -----------------------------------------------------------------------------
+# Chained summarization cutoff index tests
+# -----------------------------------------------------------------------------
+
+
+def test_chained_summarization_cutoff_index() -> None:
+    """Test that state_cutoff_index is computed correctly across three chained summarizations.
+
+    The formula is:
+        state_cutoff = old_state_cutoff + effective_cutoff - 1
+
+    The -1 accounts for the synthetic summary message at effective[0] which does not
+    correspond to any state message.
+
+    Setup: trigger=("messages", 5), keep=("messages", 2).
+
+    Round 1 (no previous event):
+        State: [S0..S7] (8 messages), cutoff = 8 - 2 = 6.
+        Preserved: [S6, S7]. Event: cutoff_index=6.
+
+    Round 2 (previous cutoff=6):
+        State: [S0..S13] (14 messages).
+        effective = [summary_1, S6..S13] (9 messages), effective cutoff = 9 - 2 = 7.
+        state_cutoff = 6 + 7 - 1 = 12. Preserved: [S12, S13].
+
+    Round 3 (previous cutoff=12):
+        State: [S0..S19] (20 messages).
+        effective = [summary_2, S12..S19] (9 messages), effective cutoff = 9 - 2 = 7.
+        state_cutoff = 12 + 7 - 1 = 18. Preserved: [S18, S19].
+    """
+    backend = MockBackend()
+    mock_model = make_mock_model()
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+    runtime = make_mock_runtime()
+
+    def make_state_messages(n: int) -> list:
+        return [HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else AIMessage(content=f"S{i}", id=f"s{i}") for i in range(n)]
+
+    # --- Round 1: first summarization, no previous event ---
+    state = cast("AgentState[Any]", {"messages": make_state_messages(8)})
+    with mock_get_config():
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+
+    assert isinstance(result, ExtendedModelResponse)
+    event_1 = result.command.update["_summarization_event"]
+    assert event_1["cutoff_index"] == 6
+    assert modified_request is not None
+    assert [m.content for m in modified_request.messages[1:]] == ["S6", "S7"]
+
+    # --- Round 2: second summarization, feed back event from round 1 ---
+    state = cast(
+        "AgentState[Any]",
+        {"messages": make_state_messages(14), "_summarization_event": event_1},
+    )
+    with mock_get_config():
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+
+    assert isinstance(result, ExtendedModelResponse)
+    event_2 = result.command.update["_summarization_event"]
+    assert event_2["cutoff_index"] == 12
+    assert modified_request is not None
+    assert [m.content for m in modified_request.messages[1:]] == ["S12", "S13"]
+
+    # --- Round 3: third summarization, feed back event from round 2 ---
+    state = cast(
+        "AgentState[Any]",
+        {"messages": make_state_messages(20), "_summarization_event": event_2},
+    )
+    with mock_get_config():
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+
+    assert isinstance(result, ExtendedModelResponse)
+    event_3 = result.command.update["_summarization_event"]
+    assert event_3["cutoff_index"] == 18
+    assert modified_request is not None
+    assert [m.content for m in modified_request.messages[1:]] == ["S18", "S19"]

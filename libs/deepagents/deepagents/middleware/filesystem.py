@@ -153,12 +153,30 @@ def _validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) 
     normalized = os.path.normpath(path)
     normalized = normalized.replace("\\", "/")
 
-    if not normalized.startswith("/"):
-        normalized = f"/{normalized}"
-
-    if allowed_prefixes is not None and not any(normalized.startswith(prefix) for prefix in allowed_prefixes):
-        msg = f"Path must start with one of {allowed_prefixes}: {path}"
-        raise ValueError(msg)
+    if os.name == 'nt':
+        # Windows logic:
+        # If the leading "/" is preserved, os.path.join(root, "/file") resolves to "C:\file",
+        # causing it to escape the intended root directory.
+        # Therefore, the leading "/" must be stripped to make it a relative path,
+        # ensuring it is safely joined under root_dir.
+        if normalized.startswith("/"):
+            normalized = normalized.lstrip("/")
+        # If the path becomes an empty string (i.e., it was originally just "/"),
+        # default it to the current directory "."
+        if normalized == "":
+            normalized = "."
+    else:
+        # Linux/Mac logic (preserve original behavior):
+        # Enforce a leading "/" to maintain semantic consistency with the virtual filesystem.
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+    if allowed_prefixes is not None:
+        check_path = normalized
+        if os.name == 'nt' and not check_path.startswith("/"):
+            check_path = f"/{check_path}"
+        if not any(check_path.startswith(prefix) for prefix in allowed_prefixes):
+            msg = f"Path must start with one of {allowed_prefixes}: {path}"
+            raise ValueError(msg)
 
     return normalized
 

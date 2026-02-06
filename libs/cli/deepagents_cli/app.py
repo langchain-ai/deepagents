@@ -705,11 +705,17 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "Commands: /quit, /clear, /remember, /tokens, /threads, /help"
-                )
+            help_text = (
+                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+                "Interactive Features:\n"
+                "  Enter           Submit your message\n"
+                "  Ctrl+J          Insert newline\n"
+                "  Shift+Tab       Toggle auto-approve mode\n"
+                "  @filename       Auto-complete files and inject content\n"
+                "  /command        Slash commands (/help, /clear, /quit)\n"
+                "  !command        Run bash commands directly"
             )
+            await self._mount_message(AppMessage(help_text))
 
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))

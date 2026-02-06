@@ -89,3 +89,17 @@ def test_cli_help_flag_short() -> None:
     # Help output should mention key options
     assert "--version" in result.stdout
     assert "--agent" in result.stdout
+
+
+def test_help_excludes_interactive_features() -> None:
+    """Verify that --help does not contain Interactive Features section."""
+    result = subprocess.run(
+        [sys.executable, "-m", "deepagents_cli.main", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # Help should succeed
+    assert result.returncode == 0
+    # Help should NOT contain Interactive Features section
+    assert "Interactive Features" not in result.stdout

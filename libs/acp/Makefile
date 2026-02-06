@@ -29,13 +29,13 @@ lint format: PYTHON_FILES=deepagents_acp/ tests/
 lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
 
 lint lint_diff:
-	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group dev ruff format $(PYTHON_FILES) --diff
-	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group dev ruff check $(PYTHON_FILES) --diff
+	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff format $(PYTHON_FILES) --diff
+	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff check $(PYTHON_FILES) --diff
 	# [ "$(PYTHON_FILES)" = "" ] || uv run --group dev ty check $(PYTHON_FILES)
 
 format format_diff:
-	[ "$(PYTHON_FILES)" = "" ] || uv run --group dev ruff format $(PYTHON_FILES)
-	[ "$(PYTHON_FILES)" = "" ] || uv run --group dev ruff check --fix $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff format $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff check --fix $(PYTHON_FILES)
 
 
 

@@ -760,7 +760,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.3.10"
+version = "0.3.11"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -797,7 +797,7 @@ test = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.17"
+version = "0.0.18"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -806,6 +806,7 @@ dependencies = [
     { name = "langchain" },
     { name = "langchain-openai" },
     { name = "langgraph-checkpoint-sqlite" },
+    { name = "langsmith" },
     { name = "markdownify" },
     { name = "modal" },
     { name = "pillow" },
@@ -852,6 +853,7 @@ requires-dist = [
     { name = "langchain-google-vertexai", marker = "extra == 'vertexai'", specifier = ">=3.0.0,<4.0.0" },
     { name = "langchain-openai", specifier = ">=1.1.7,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0,<4.0.0" },
+    { name = "langsmith", specifier = ">=0.6.6" },
     { name = "markdownify", specifier = ">=0.13.0,<2.0.0" },
     { name = "modal", specifier = ">=0.65.0,<2.0.0" },
     { name = "pillow", specifier = ">=10.0.0,<13.0.0" },

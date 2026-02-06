@@ -10,8 +10,9 @@ from pathlib import Path
 from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.backends.sandbox import SandboxProvider
 
-from deepagents_cli.config import console
+from deepagents_cli.config import console, get_glyphs
 from deepagents_cli.integrations.daytona import DaytonaProvider
+from deepagents_cli.integrations.langsmith import LangSmithProvider
 from deepagents_cli.integrations.modal import ModalProvider
 from deepagents_cli.integrations.runloop import RunloopProvider
 
@@ -50,13 +51,14 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
         msg = "Setup failed - aborting"
         raise RuntimeError(msg)
 
-    console.print("[green]✓ Setup complete[/green]")
+    console.print(f"[green]{get_glyphs().checkmark} Setup complete[/green]")
 
 
 _PROVIDER_TO_WORKING_DIR = {
+    "daytona": "/home/daytona",
+    "langsmith": "/tmp",  # noqa: S108
     "modal": "/workspace",
     "runloop": "/home/user",
-    "daytona": "/home/daytona",
 }
 
 
@@ -72,7 +74,7 @@ def create_sandbox(
     This is the unified interface for sandbox creation using the provider abstraction.
 
     Args:
-        provider: Sandbox provider ("modal", "runloop", "daytona")
+        provider: Sandbox provider ("daytona", "langsmith", "modal", "runloop")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
 
@@ -88,8 +90,10 @@ def create_sandbox(
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
     backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
+    glyphs = get_glyphs()
     console.print(
-        f"[green]✓ {provider.capitalize()} sandbox ready: {backend.id}[/green]"
+        f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "
+        f"{backend.id}[/green]"
     )
 
     # Run setup script if provided
@@ -105,12 +109,17 @@ def create_sandbox(
                     f"[dim]Terminating {provider} sandbox {backend.id}...[/dim]"
                 )
                 provider_obj.delete(sandbox_id=backend.id)
+                glyphs = get_glyphs()
                 console.print(
-                    f"[dim]✓ {provider.capitalize()} sandbox "
+                    f"[dim]{glyphs.checkmark} {provider.capitalize()} sandbox "
                     f"{backend.id} terminated[/dim]"
                 )
             except Exception as e:
-                console.print(f"[yellow]⚠ Cleanup failed: {e}[/yellow]")
+                warning = get_glyphs().warning
+                console.print(
+                    f"[yellow]{warning} Cleanup failed for {provider} sandbox "
+                    f"{backend.id}: {e}[/yellow]"
+                )
 
 
 def _get_available_sandbox_types() -> list[str]:
@@ -126,7 +135,7 @@ def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 
     Args:
-        provider: Sandbox provider name ("modal", "runloop", "daytona")
+        provider: Sandbox provider name ("daytona", "langsmith", "modal", "runloop")
 
     Returns:
         Default working directory path as string
@@ -144,7 +153,7 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     """Get a SandboxProvider instance for the specified provider (internal).
 
     Args:
-        provider_name: Name of the provider ("modal", "runloop", "daytona")
+        provider_name: Name of the provider ("daytona", "langsmith", "modal", "runloop")
 
     Returns:
         SandboxProvider instance
@@ -152,12 +161,14 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     Raises:
         ValueError: If provider_name is unknown
     """
+    if provider_name == "daytona":
+        return DaytonaProvider()
+    if provider_name == "langsmith":
+        return LangSmithProvider()
     if provider_name == "modal":
         return ModalProvider()
     if provider_name == "runloop":
         return RunloopProvider()
-    if provider_name == "daytona":
-        return DaytonaProvider()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "
         f"Available providers: {', '.join(_get_available_sandbox_types())}"

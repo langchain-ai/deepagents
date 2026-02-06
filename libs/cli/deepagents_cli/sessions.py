@@ -31,7 +31,10 @@ if not hasattr(aiosqlite.Connection, "is_alive"):
         """
         return self._connection is not None
 
-    aiosqlite.Connection.is_alive = _is_alive
+    # Dynamically adding a method to aiosqlite.Connection at runtime.
+    # Type checkers can't understand this monkey-patch, so we suppress the
+    # "attr-defined" error that would otherwise be raised.
+    aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
 
 
 def _format_timestamp(iso_timestamp: str | None) -> str:
@@ -88,11 +91,18 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
 async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
+    include_message_count: bool = False,
 ) -> list[dict]:
     """List threads from checkpoints table.
 
+    Args:
+        agent_name: Optional filter by agent name.
+        limit: Maximum number of threads to return.
+        include_message_count: Whether to include message counts.
+
     Returns:
-        List of thread dicts with thread_id, agent_name, and updated_at.
+        List of thread dicts with `thread_id`, `agent_name`, `updated_at`,
+            and optionally `message_count`.
     """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
@@ -126,10 +136,62 @@ async def list_threads(
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
-            return [
+            threads = [
                 {"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]}
                 for r in rows
             ]
+
+        # Fetch message counts if requested
+        if include_message_count and threads:
+            serde = JsonPlusSerializer()
+            for thread in threads:
+                thread["message_count"] = await _count_messages_from_checkpoint(
+                    conn, thread["thread_id"], serde
+                )
+
+        return threads
+
+
+async def _count_messages_from_checkpoint(
+    conn: aiosqlite.Connection,
+    thread_id: str,
+    serde: JsonPlusSerializer,
+) -> int:
+    """Count messages from the most recent checkpoint blob.
+
+    With durability="exit", messages are stored in the checkpoint blob,
+    not in the writes table. This function deserializes the checkpoint
+    and counts the messages in channel_values.
+
+    Args:
+        conn: Database connection.
+        thread_id: The thread ID to count messages for.
+        serde: Serializer for decoding checkpoint data.
+
+    Returns:
+        Number of messages in the checkpoint, or 0 if not found.
+    """
+    query = """
+        SELECT type, checkpoint
+        FROM checkpoints
+        WHERE thread_id = ?
+        ORDER BY checkpoint_id DESC
+        LIMIT 1
+    """
+    async with conn.execute(query, (thread_id,)) as cursor:
+        row = await cursor.fetchone()
+        if not row or not row[0] or not row[1]:
+            return 0
+
+        type_str, checkpoint_blob = row
+        try:
+            data = serde.loads_typed((type_str, checkpoint_blob))
+            channel_values = data.get("channel_values", {})
+            messages = channel_values.get("messages", [])
+            return len(messages)
+        except (ValueError, TypeError, KeyError):
+            # If deserialization fails, fall back to 0
+            return 0
 
 
 async def get_most_recent(agent_name: str | None = None) -> str | None:
@@ -201,6 +263,34 @@ async def thread_exists(thread_id: str) -> bool:
             return row is not None
 
 
+async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
+    """Find threads whose IDs start with the given prefix.
+
+    Args:
+        thread_id: Prefix to match against thread IDs.
+        limit: Maximum number of matching threads to return.
+
+    Returns:
+        List of thread IDs that begin with the given prefix.
+    """
+    db_path = str(get_db_path())
+    async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return []
+
+        query = """
+            SELECT DISTINCT thread_id
+            FROM checkpoints
+            WHERE thread_id LIKE ?
+            ORDER BY thread_id
+            LIMIT ?
+        """
+        prefix = thread_id + "%"
+        async with conn.execute(query, (prefix, limit)) as cursor:
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
+
+
 async def delete_thread(thread_id: str) -> bool:
     """Delete thread checkpoints.
 
@@ -238,7 +328,7 @@ async def list_threads_command(
     limit: int = 20,
 ) -> None:
     """CLI handler for: deepagents threads list."""
-    threads = await list_threads(agent_name, limit=limit)
+    threads = await list_threads(agent_name, limit=limit, include_message_count=True)
 
     if not threads:
         if agent_name:
@@ -257,12 +347,14 @@ async def list_threads_command(
     )
     table.add_column("Thread ID", style="bold")
     table.add_column("Agent")
+    table.add_column("Messages", justify="right")
     table.add_column("Last Used", style="dim")
 
     for t in threads:
         table.add_row(
             t["thread_id"],
             t["agent_name"] or "unknown",
+            str(t.get("message_count", 0)),
             _format_timestamp(t.get("updated_at")),
         )
 
@@ -281,7 +373,7 @@ async def delete_thread_command(thread_id: str) -> None:
         console.print(f"[red]Thread '{thread_id}' not found.[/red]")
 
 
-def _extract_from_content_blocks(content_blocks: list) -> str:
+def _extract_from_content_blocks(content_blocks: list[object]) -> str:
     """Extract text content from content blocks.
 
     Args:
@@ -290,11 +382,13 @@ def _extract_from_content_blocks(content_blocks: list) -> str:
     Returns:
         Concatenated text from all text blocks.
     """
-    text_parts = [
-        block.get("text", "")
-        for block in content_blocks
-        if isinstance(block, dict) and block.get("type") == "text"
-    ]
+    text_parts: list[str] = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        d: dict[str, object] = block  # type: ignore[assignment]
+        if d.get("type") == "text":
+            text_parts.append(str(d.get("text", "")))
     return "".join(text_parts)
 
 
@@ -314,11 +408,16 @@ def _parse_message(msg_data: object) -> dict | None:
     # Use .content_blocks for typed content (supports multimodal in future)
     if hasattr(msg_data, "type") and hasattr(msg_data, "content_blocks"):
         msg_type = msg_data.type
-        content = _extract_from_content_blocks(msg_data.content_blocks)
+        blocks: list[object] = msg_data.content_blocks  # type: ignore[assignment]
+        content = _extract_from_content_blocks(blocks)
     # Handle plain dicts (from writes table or test fixtures)
     elif isinstance(msg_data, dict):
-        msg_type = msg_data.get("type", "")
-        content = msg_data.get("kwargs", {}).get("content", "")
+        d: dict[str, object] = msg_data  # type: ignore[assignment]
+        msg_type = str(d.get("type", ""))
+        kwargs = d.get("kwargs")
+        content = (
+            str(dict.get(kwargs, "content", "")) if isinstance(kwargs, dict) else ""
+        )
     else:
         return None
 

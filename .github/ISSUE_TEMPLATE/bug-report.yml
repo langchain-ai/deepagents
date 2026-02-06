@@ -106,5 +106,7 @@ body:
         Python: 3.x.x
         deepagents: 0.x.y
         deepagents-cli: 0.x.y
-footer: |
-  Thanks for helping improve Deep Agents.
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Deep Agents.

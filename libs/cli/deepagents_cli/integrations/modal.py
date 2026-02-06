@@ -192,7 +192,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         import modal
 
         if sandbox_id:
-            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)
+            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
         else:
             sandbox = modal.Sandbox.create(app=self.app, workdir=workdir)
 
@@ -226,5 +226,5 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         """
         import modal
 
-        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)
+        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
         sandbox.terminate()

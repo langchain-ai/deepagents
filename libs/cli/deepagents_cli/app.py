@@ -1090,11 +1090,19 @@ class DeepAgentsApp(App):
         This method also stores the message data and handles pruning
         when the widget count exceeds the maximum.
 
+        If the ``#messages`` container is not present (e.g. the screen has
+        been torn down during an interruption), the call is silently skipped
+        to avoid cascading `NoMatches` errors.
+
         Args:
             widget: The message widget to mount
         """
         await self._remove_spacer()
-        messages = self.query_one("#messages", Container)
+
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
@@ -1107,8 +1115,11 @@ class DeepAgentsApp(App):
         await self._prune_old_messages()
 
         # Scroll to keep input bar visible
-        input_container = self.query_one("#bottom-app-container", Container)
-        input_container.scroll_visible()
+        try:
+            input_container = self.query_one("#bottom-app-container", Container)
+            input_container.scroll_visible()
+        except NoMatches:
+            pass
 
     async def _prune_old_messages(self) -> None:
         """Prune oldest message widgets if we exceed the window size.

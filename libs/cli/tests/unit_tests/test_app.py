@@ -9,6 +9,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
@@ -18,6 +19,7 @@ from deepagents_cli.app import (
     DeepAgentsApp,
     _write_iterm_escape,
 )
+from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
 
 class TestAppCSSValidation:
@@ -233,3 +235,54 @@ class TestModalScreenEscapeDismissal:
 
             assert app.modal_dismissed is True
             assert app.interrupt_called is False
+
+
+class TestMountMessageNoMatches:
+    """Test _mount_message resilience when #messages container is missing.
+
+    When a user interrupts a streaming response, the cancellation handler and
+    error handler both call _mount_message. If the screen has been torn down
+    (e.g. #messages container no longer exists), this should not crash.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mount_message_no_crash_when_messages_missing(self) -> None:
+        """_mount_message should not raise NoMatches when #messages is absent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Verify the #messages container exists initially
+            messages_container = app.query_one("#messages", Container)
+            assert messages_container is not None
+
+            # Remove #messages to simulate a torn-down screen state
+            await messages_container.remove()
+
+            # Verify it's truly gone
+            with pytest.raises(NoMatches):
+                app.query_one("#messages", Container)
+
+            # _mount_message should handle the missing container gracefully
+            # Before the fix, this raises NoMatches
+            await app._mount_message(AppMessage("Interrupted by user"))
+
+    @pytest.mark.asyncio
+    async def test_mount_error_message_no_crash_when_messages_missing(
+        self,
+    ) -> None:
+        """ErrorMessage via _mount_message should not crash without #messages.
+
+        This is the second crash in the cascade: after _mount_message fails
+        in the CancelledError handler, _run_agent_task's except clause also
+        calls _mount_message(ErrorMessage(...)), which fails the same way.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            messages_container = app.query_one("#messages", Container)
+            await messages_container.remove()
+
+            # Should not raise
+            await app._mount_message(ErrorMessage("Agent error: something"))

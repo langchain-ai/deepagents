@@ -937,8 +937,7 @@ class TestSubAgents:
         assert found_subagent_chunk, "Should have seen subagent content in streaming chunks"
         assert found_parent_tool_call_id, "parent_tool_call_id should be present in subagent streaming metadata"
         assert actual_parent_tool_call_id == expected_tool_call_id, (
-            f"parent_tool_call_id should match original tool_call.id. "
-            f"Expected '{expected_tool_call_id}', got '{actual_parent_tool_call_id}'"
+            f"parent_tool_call_id should match original tool_call.id. Expected '{expected_tool_call_id}', got '{actual_parent_tool_call_id}'"
         )
 
     def test_parallel_subagents_streaming_correlation(self) -> None:
@@ -1019,9 +1018,7 @@ class TestSubAgents:
         assert len(multiplier_parent_ids) == 1, f"Multiplier should have one parent_tool_call_id, got {multiplier_parent_ids}"
 
         # And they should match the correct tool_call.id
-        assert adder_tool_call_id in adder_parent_ids, (
-            f"Adder chunks should have parent_tool_call_id={adder_tool_call_id}, got {adder_parent_ids}"
-        )
+        assert adder_tool_call_id in adder_parent_ids, f"Adder chunks should have parent_tool_call_id={adder_tool_call_id}, got {adder_parent_ids}"
         assert multiplier_tool_call_id in multiplier_parent_ids, (
             f"Multiplier chunks should have parent_tool_call_id={multiplier_tool_call_id}, got {multiplier_parent_ids}"
         )

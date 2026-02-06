@@ -2,7 +2,11 @@
 
 from asyncio import Future
 
-from deepagents_cli.textual_adapter import TextualUIAdapter, _is_summarization_chunk
+from deepagents_cli.textual_adapter import (
+    TextualUIAdapter,
+    _build_stream_config,
+    _is_summarization_chunk,
+)
 
 
 async def _mock_mount(widget: object) -> None:
@@ -74,6 +78,27 @@ class TestTextualUIAdapterInit:
         mock_tracker = object()
         adapter.set_token_tracker(mock_tracker)
         assert adapter._token_tracker is mock_tracker
+
+
+class TestBuildStreamConfig:
+    """Tests for `_build_stream_config` metadata construction."""
+
+    def test_assistant_fields_present(self) -> None:
+        """Assistant-specific metadata should be present when `assistant_id` is set."""
+        config = _build_stream_config("t-456", assistant_id="my-agent")
+        assert config["metadata"]["assistant_id"] == "my-agent"
+        assert config["metadata"]["agent_name"] == "my-agent"
+        assert "updated_at" in config["metadata"]
+
+    def test_no_assistant_fields_when_none(self) -> None:
+        """Assistant-specific fields should be absent when `assistant_id` is `None`."""
+        config = _build_stream_config("t-789", assistant_id=None)
+        assert config["metadata"] == {}
+
+    def test_configurable_thread_id(self) -> None:
+        """``configurable.thread_id`` should match the provided thread ID."""
+        config = _build_stream_config("t-abc", assistant_id=None)
+        assert config["configurable"]["thread_id"] == "t-abc"
 
 
 class TestIsSummarizationChunk:

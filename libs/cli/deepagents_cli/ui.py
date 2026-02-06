@@ -12,7 +12,9 @@ from deepagents_cli.config import (
     get_banner,
     get_glyphs,
 )
-from deepagents_cli.shell import _DEFAULT_SHELL_TIMEOUT
+
+# Default timeout for execute tool (matches LocalShellBackend default)
+_DEFAULT_EXECUTE_TIMEOUT = 120
 
 
 def _format_timeout(seconds: int) -> str:
@@ -57,7 +59,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     Examples:
         read_file(path="/long/path/file.py") → "<prefix> read_file(file.py)"
         web_search(query="how to code") → '<prefix> web_search("how to code")'
-        shell(command="pip install foo") → '<prefix> shell("pip install foo")'
+        execute(command="pip install foo") → '<prefix> execute("pip install foo")'
     """
     prefix = get_glyphs().tool_prefix
 
@@ -119,22 +121,15 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             pattern = truncate_value(pattern, 70)
             return f'{prefix} {tool_name}("{pattern}")'
 
-    elif tool_name == "shell":
-        # Shell: show the command, and timeout only if non-default
+    elif tool_name == "execute":
+        # Execute: show the command, and timeout only if non-default
         if "command" in tool_args:
             command = str(tool_args["command"])
             command = truncate_value(command, 120)
             timeout = tool_args.get("timeout")
-            if timeout is not None and timeout != _DEFAULT_SHELL_TIMEOUT:
+            if timeout is not None and timeout != _DEFAULT_EXECUTE_TIMEOUT:
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
-            return f'{prefix} {tool_name}("{command}")'
-
-    elif tool_name == "execute":
-        # Execute (sandbox shell): show the command being executed
-        if "command" in tool_args:
-            command = str(tool_args["command"])
-            command = truncate_value(command, 120)
             return f'{prefix} {tool_name}("{command}")'
 
     elif tool_name == "ls":

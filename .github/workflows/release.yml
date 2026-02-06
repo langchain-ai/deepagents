@@ -16,7 +16,7 @@ on:
       package:
         required: true
         type: string
-        description: "Package to release (deepagents, deepagents-cli, deepagents-acp, or deepagents-harbor)"
+        description: "Package to release"
   workflow_dispatch:
     inputs:
       package:
@@ -28,6 +28,7 @@ on:
           - deepagents-cli
           - deepagents-acp
           - deepagents-harbor
+          - langchain-daytona
         default: deepagents
       dangerous-nonmaster-release:
         required: false
@@ -70,9 +71,12 @@ jobs:
             deepagents-harbor)
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
+            daytona)
+              echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona"
               exit 1
               ;;
           esac

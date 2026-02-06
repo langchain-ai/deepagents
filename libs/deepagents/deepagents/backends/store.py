@@ -107,10 +107,13 @@ class StoreBackend(BackendProtocol):
             runtime: The ToolRuntime instance providing store access and configuration.
             namespace: Optional callable that takes a BackendContext and returns
                 a namespace tuple. This provides full flexibility for namespace resolution.
+                If None, uses legacy assistant_id detection from metadata (deprecated).
+
+                .. note::
+                    This parameter will be **required** in version 0.5.0.
 
         Example:
                     namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
-                If None, uses legacy assistant_id detection from metadata (deprecated).
         """
         self.runtime = runtime
         self._namespace = namespace

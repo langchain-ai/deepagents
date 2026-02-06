@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, Any
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+
+from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
 
 if TYPE_CHECKING:
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
@@ -116,11 +117,7 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
     console.print(f"Location: {agent_dir}\n", style=COLORS["dim"])
 
 
-def get_system_prompt(
-    assistant_id: str,
-    sandbox_type: str | None = None,
-    _working_dir: str | None = None,
-) -> str:
+def get_system_prompt(assistant_id: str, sandbox_type: str | None = None) -> str:
     """Get the base system prompt for the agent.
 
     This includes:
@@ -131,11 +128,8 @@ def get_system_prompt(
         assistant_id: The agent identifier for path references
         sandbox_type: Type of sandbox provider
             ("daytona", "langsmith", "modal", "runloop").
+
             If None, agent is operating in local mode.
-        _working_dir: **Internal use only.** Custom working directory override
-            for sandbox mode. Used to update the prompt with sandbox-specific
-            paths. Implementation may change in the future. End users should
-            not rely on this parameter.
 
     Returns:
         The system prompt string (base instructions + environment context)
@@ -160,19 +154,19 @@ You are running as model `{settings.model_name}`"""
         model_identity_section += "\n"
 
     if sandbox_type:
-        # Use provided _working_dir or get provider-specific default
-        if _working_dir is None:
-            _working_dir = get_default_working_dir(sandbox_type)
+        # Get provider-specific working directory
+
+        working_dir = get_default_working_dir(sandbox_type)
 
         working_dir_section = f"""### Current Working Directory
 
-You are operating in a **remote Linux sandbox** at `{_working_dir}`.
+You are operating in a **remote Linux sandbox** at `{working_dir}`.
 
 All code execution and file operations happen in this sandbox environment.
 
 **Important:**
 - The CLI is running locally on the user's machine, but you execute code remotely
-- Use `{_working_dir}` as your working directory for all operations
+- Use `{working_dir}` as your working directory for all operations
 
 """
     else:
@@ -409,7 +403,6 @@ def create_cli_agent(
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
-    _working_dir: str | None = None,
     system_prompt: str | None = None,
     auto_approve: bool = False,
     enable_memory: bool = True,
@@ -433,10 +426,6 @@ def create_cli_agent(
         sandbox_type: Type of sandbox provider
             (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
             Used for system prompt generation.
-        _working_dir: **Internal use only.** Custom working directory override
-            for sandbox mode. Used to update the prompt with sandbox-specific
-            paths. Implementation may change in the future. End users should
-            not rely on this parameter.
         system_prompt: Override the default system prompt.
 
             If `None`, generates one based on `sandbox_type` and `assistant_id`.
@@ -446,7 +435,7 @@ def create_cli_agent(
             Useful for automated workflows.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
-        enable_shell: Enable shell execution via `LocalShellBackend`
+        enable_shell: Enable shell execution via `CLIShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
         checkpointer: Optional checkpointer for session persistence.
 
@@ -536,9 +525,10 @@ def create_cli_agent(
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-            # Use LocalShellBackend for filesystem + shell execution.
-            # Provides `execute` tool via FilesystemMiddleware.
-            backend = LocalShellBackend(
+            # Use CLIShellBackend for filesystem + shell execution.
+            # Provides `execute` tool via FilesystemMiddleware with per-command
+            # timeout support.
+            backend = CLIShellBackend(
                 root_dir=Path.cwd(),
                 inherit_env=True,
                 env=shell_env,
@@ -558,9 +548,7 @@ def create_cli_agent(
     # Get or use custom system prompt
     if system_prompt is None:
         system_prompt = get_system_prompt(
-            assistant_id=assistant_id,
-            sandbox_type=sandbox_type,
-            _working_dir=_working_dir,
+            assistant_id=assistant_id, sandbox_type=sandbox_type
         )
 
     # Configure interrupt_on based on auto_approve setting
@@ -601,6 +589,11 @@ def create_cli_agent(
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver
+    if sandbox is None and enable_shell:
+        # Patch FilesystemMiddleware so the SDK constructs our subclass with
+        # per-command timeout support on the execute tool. Only needed in local
+        # shell mode -- remote sandbox backends do not accept the timeout kwarg.
+        patch_filesystem_middleware()
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
     agent = create_deep_agent(
         model=model,

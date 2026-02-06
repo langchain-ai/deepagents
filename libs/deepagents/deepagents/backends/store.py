@@ -1,8 +1,9 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
@@ -61,7 +62,8 @@ class StoreBackend(BackendProtocol):
             runtime: The ToolRuntime instance providing store access and configuration.
             namespace: Optional callable that takes a BackendContext and returns
                 a namespace tuple. This provides full flexibility for namespace resolution.
-                Example:
+
+        Example:
                     namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
                 If None, uses legacy assistant_id detection from metadata (deprecated).
         """
@@ -111,8 +113,7 @@ class StoreBackend(BackendProtocol):
             Pass `namespace` to StoreBackend instead of relying on legacy detection.
         """
         warnings.warn(
-            "StoreBackend without explicit `namespace` is deprecated. "
-            "Pass `namespace=lambda ctx: (...)` to StoreBackend.",
+            "StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.",
             DeprecationWarning,
             stacklevel=3,
         )

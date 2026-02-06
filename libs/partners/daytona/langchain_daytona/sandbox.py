@@ -83,13 +83,24 @@ DaytonaBackend = DaytonaSandbox
 class DaytonaSandboxClient(SandboxClient):
     """Daytona sandbox provider implementation."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(
+        self, *, api_key: str | None = None, client: Daytona | None = None
+    ) -> None:
         """Create a provider backed by the Daytona SDK."""
-        self._api_key = api_key or os.environ.get("DAYTONA_API_KEY")
-        if not self._api_key:
-            msg = "DAYTONA_API_KEY environment variable not set"
+        if api_key and client:
+            msg = "Provide either api_key or client, not both."
             raise ValueError(msg)
-        self._client = Daytona(DaytonaConfig(api_key=self._api_key))
+
+        if client is not None:
+            self._client = client
+            return
+
+        api_key = api_key or os.environ.get("DAYTONA_API_KEY")
+        if not api_key:
+            msg = "Provide either client or api_key (or set DAYTONA_API_KEY)."
+            raise ValueError(msg)
+
+        self._client = Daytona(DaytonaConfig(api_key=api_key))
 
     @property
     def client(self) -> Daytona:

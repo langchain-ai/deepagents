@@ -421,7 +421,7 @@ class ExecuteResponse:
 
 
 class SandboxBackendProtocol(BackendProtocol):
-    """Protocol for sandboxed backends with isolated runtime.
+    """Extension of `BackendProtocol` that adds shell command execution.
 
     Designed for backends running in isolated environments (containers, VMs,
     remote hosts).

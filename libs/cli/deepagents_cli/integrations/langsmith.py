@@ -136,10 +136,11 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         """Initialize LangSmith provider.
 
         Args:
-            api_key: LangSmith API key (defaults to LANGSMITH_API_KEY or LANGSMITH_API_KEY_PROD env var)
+            api_key: LangSmith API key. Falls back to LANGSMITH_API_KEY
+                or LANGSMITH_API_KEY_PROD env var.
 
         Raises:
-            ValueError: If neither LANGSMITH_API_KEY nor LANGSMITH_API_KEY_PROD environment variable is set
+            ValueError: If no API key is provided and neither env var is set.
         """
         from langsmith import sandbox
 
@@ -149,7 +150,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             or os.environ.get("LANGSMITH_API_KEY_PROD")
         )
         if not self._api_key:
-            msg = "LANGSMITH_API_KEY or LANGSMITH_API_KEY_PROD environment variable not set"
+            msg = "LangSmith API key not set"
             raise ValueError(msg)
         self._client: SandboxClient = sandbox.SandboxClient()
 
@@ -172,6 +173,8 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
+        template: str | None = None,
+        template_image: str | None = None,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get existing or create new LangSmith sandbox.
@@ -179,17 +182,19 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         Args:
             sandbox_id: Optional existing sandbox name to reuse
             timeout: Timeout in seconds for sandbox startup (default: 180)
-            **kwargs: Additional LangSmith-specific parameters
+            template: Template name for the sandbox
+            template_image: Docker image for the template
 
         Returns:
             LangSmithBackend instance
 
         Raises:
             RuntimeError: Sandbox connection or startup failed
+            TypeError: If unsupported keyword arguments are provided
         """
-        # Extract template params from kwargs
-        template = kwargs.get("template")
-        template_image = kwargs.get("template_image")
+        if kwargs:
+            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
 
         if sandbox_id:
             # Connect to existing sandbox by name
@@ -263,8 +268,8 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         if isinstance(template, str):
             return template, resolved_image
         # SandboxTemplate object - extract image if not provided
-        if template_image is None and hasattr(template, "image"):
-            resolved_image = template.image or DEFAULT_TEMPLATE_IMAGE
+        if template_image is None and template.image:
+            resolved_image = template.image
         return template.name, resolved_image
 
     def _ensure_template(

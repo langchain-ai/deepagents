@@ -89,8 +89,13 @@ def create_sandbox(
 
     Yields:
         SandboxBackendProtocol instance
+
+    Raises:
+        TypeError: If unsupported keyword arguments are provided
     """
-    _ = kwargs  # Accept but don't use additional kwargs
+    if kwargs:
+        msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+        raise TypeError(msg)
 
     # Get provider instance
     provider_obj = _get_provider(provider, api_key=api_key)

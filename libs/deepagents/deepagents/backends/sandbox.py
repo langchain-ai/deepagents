@@ -422,6 +422,10 @@ class SandboxClient(ABC):
     should integrate with their respective SDKs to provide standardized sandbox
     lifecycle operations (get, create, delete).
 
+    Error semantics:
+        Provider/client implementations should raise `SandboxError` (or subclasses)
+        when normalizing errors for callers.
+
     Implementations can add provider-specific parameters as keyword-only arguments
     with defaults, maintaining compatibility while providing type-safe APIs.
 
@@ -464,7 +468,8 @@ class SandboxClient(ABC):
     ) -> SandboxBackendProtocol:
         """Get an existing sandbox.
 
-        If the sandbox does not exist, implementations should raise an error.
+        If the sandbox does not exist, implementations should raise
+        `SandboxNotFoundError`.
         """
 
     @abstractmethod

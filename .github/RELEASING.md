@@ -142,6 +142,18 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 
 ## Troubleshooting
 
+### "Found release tag with component X, but not configured in manifest" Warnings
+
+You may see warnings in the release-please logs like:
+
+```txt
+⚠ Found release tag with component 'deepagents=', but not configured in manifest
+```
+
+This is **harmless**. Release-please scans existing tags in the repository and warns when it finds tags for packages that aren't in the current configuration. The `deepagents` SDK package has existing release tags (`deepagents==0.x.x`) but is not currently managed by release-please.
+
+These warnings will disappear once the SDK is added to `release-please-config.json`. Until then, they can be safely ignored—they don't affect CLI releases.
+
 ### Unexpected Commit Authors in Release PRs
 
 When viewing a release-please PR on GitHub, you may see commits attributed to contributors who didn't directly push to that PR. For example:

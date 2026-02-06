@@ -13,12 +13,12 @@ from deepagents_cli.agent import (
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
-    _format_shell_description,
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
     get_system_prompt,
 )
+from deepagents_cli.config import get_glyphs
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -139,7 +139,7 @@ def test_format_web_search_description():
 
     assert "Query: python async programming" in description
     assert "Max results: 10" in description
-    assert "⚠️  This will use Tavily API credits" in description
+    assert f"{get_glyphs().warning}  This will use Tavily API credits" in description
 
 
 def test_format_web_search_description_default_max_results():
@@ -183,7 +183,8 @@ def test_format_fetch_url_description():
 
     assert "URL: https://example.com/docs" in description
     assert "Timeout: 60s" in description
-    assert "⚠️  Will fetch and convert web content to markdown" in description
+    warning = get_glyphs().warning
+    assert f"{warning}  Will fetch and convert web content to markdown" in description
 
 
 def test_format_fetch_url_description_default_timeout():
@@ -228,8 +229,9 @@ def test_format_task_description():
     assert "Subagent Type: general-purpose" in description
     assert "Task Instructions:" in description
     assert "Analyze code structure and identify main components." in description
+    warning = get_glyphs().warning
     assert (
-        "⚠️  Subagent will have access to file operations and shell commands"
+        f"{warning}  Subagent will have access to file operations and shell commands"
         in description
     )
 
@@ -259,27 +261,6 @@ def test_format_task_description_truncates_long_description():
     assert len(description) < len(long_description) + 300
 
 
-def test_format_shell_description():
-    """Test shell command description formatting."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "shell",
-            "args": {
-                "command": "ls -la /tmp",
-            },
-            "id": "call-11",
-        },
-    )
-
-    description = _format_shell_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Shell Command: ls -la /tmp" in description
-    assert "Working Directory:" in description
-
-
 def test_format_execute_description():
     """Test execute command description formatting."""
     tool_call = cast(
@@ -298,7 +279,7 @@ def test_format_execute_description():
     )
 
     assert "Execute Command: python script.py" in description
-    assert "Location: Remote Sandbox" in description
+    assert "Working Directory:" in description
 
 
 class TestGetSystemPromptModelIdentity:

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../.github/images/deepagents_logo.svg" alt="Deep Agents" height="40"/>
+  <img src="../.github/images/logo-dark.svg" alt="Deep Agents" height="40"/>
 </p>
 
 <h3 align="center">Examples</h3>

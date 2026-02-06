@@ -16,6 +16,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 
+from deepagents_cli.config import get_glyphs
+
 
 def _get_git_executable() -> str | None:
     """Get full path to git executable using shutil.which().
@@ -213,13 +215,14 @@ class LocalContextMiddleware(AgentMiddleware):
             except (OSError, PermissionError):
                 return
 
+            glyphs = get_glyphs()
             for i, item in enumerate(items):
                 if entry_count[0] >= max_entries:
                     lines.append(f"{prefix}... (truncated)")
                     return
 
                 is_last = i == len(items) - 1
-                connector = "└── " if is_last else "├── "
+                connector = glyphs.tree_last if is_last else glyphs.tree_branch
 
                 display_name = f"{item.name}/" if item.is_dir() else item.name
                 lines.append(f"{prefix}{connector}{display_name}")
@@ -227,7 +230,8 @@ class LocalContextMiddleware(AgentMiddleware):
 
                 # Recurse into directories
                 if item.is_dir() and depth + 1 < max_depth:
-                    extension = "    " if is_last else "│   "
+                    # Use 4 spaces when at last item, otherwise tree_vertical
+                    extension = "    " if is_last else glyphs.tree_vertical
                     _build_tree(item, prefix + extension, depth + 1)
 
         try:
@@ -453,12 +457,15 @@ class LocalContextMiddleware(AgentMiddleware):
         state: LocalContextState,
         runtime: Runtime,
     ) -> dict[str, Any] | None:
-        # Return type is dict[str, Any] rather than LocalContextStateUpdate to
-        # match the base class signature. At runtime, TypedDict is just dict, so
-        # this is functionally equivalent while satisfying the type checker.
         """Load local context before agent execution.
 
         Runs once at session start to preserve prompt caching.
+
+        Note:
+            Return type is `dict[str, Any]` rather than
+            `LocalContextStateUpdate` to match the base class signature. At
+            runtime, TypedDict is just dict, so this is functionally equivalent
+            while satisfying the type checker.
 
         Args:
             state: Current agent state.

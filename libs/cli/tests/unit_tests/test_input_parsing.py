@@ -1,7 +1,4 @@
-from prompt_toolkit.document import Document
-
-from deepagents_cli.config import COLORS
-from deepagents_cli.input import MentionHighlightLexer, parse_file_mentions
+from deepagents_cli.input import parse_file_mentions
 
 
 def test_parse_file_mentions_with_chinese_sentence(tmp_path, monkeypatch):
@@ -30,65 +27,6 @@ def test_parse_file_mentions_handles_multiple_mentions(tmp_path, monkeypatch):
     _, files = parse_file_mentions(text)
 
     assert files == [first.resolve(), second.resolve()]
-
-
-def test_highlighter_marks_file_mentions():
-    """Ensure @file mentions are highlighted with the correct style."""
-    lexer = MentionHighlightLexer()
-    document = Document("请阅读@README.md然后继续", cursor_position=0)
-    tokens = lexer.lex_document(document)(0)
-
-    default_style = f"fg:{COLORS['user']}"
-    path_style = f"bold fg:{COLORS['primary']}"
-
-    assert tokens == [
-        (default_style, "请阅读"),
-        (path_style, "@README.md"),
-        (default_style, "然后继续"),
-    ]
-
-
-def test_highlighter_skips_email_addresses():
-    """Ensure email addresses are not highlighted as file mentions."""
-    lexer = MentionHighlightLexer()
-    document = Document("contact user@example.com please", cursor_position=0)
-    tokens = lexer.lex_document(document)(0)
-
-    default_style = f"fg:{COLORS['user']}"
-
-    # Entire line should be default style (no highlighting)
-    assert tokens == [(default_style, "contact user@example.com please")]
-
-
-def test_highlighter_highlights_file_but_not_email():
-    """Ensure @file is highlighted but email in same line is not."""
-    lexer = MentionHighlightLexer()
-    document = Document("read @file.py and email me@test.com", cursor_position=0)
-    tokens = lexer.lex_document(document)(0)
-
-    default_style = f"fg:{COLORS['user']}"
-    path_style = f"bold fg:{COLORS['primary']}"
-
-    assert tokens == [
-        (default_style, "read "),
-        (path_style, "@file.py"),
-        (default_style, " and email me@test.com"),
-    ]
-
-
-def test_highlighter_marks_slash_only_on_first_line():
-    """Ensure slash commands are only highlighted on the first line."""
-    lexer = MentionHighlightLexer()
-    document = Document("/help 命令\n/ignore", cursor_position=0)
-
-    first_line = lexer.lex_document(document)(0)
-    second_line = lexer.lex_document(document)(1)
-
-    command_style = f"bold fg:{COLORS['tool']}"
-    default_style = f"fg:{COLORS['user']}"
-
-    assert first_line[0] == (command_style, "/help")
-    assert second_line[0] == (default_style, "/ignore")
 
 
 def test_parse_file_mentions_with_escaped_spaces(tmp_path, monkeypatch):

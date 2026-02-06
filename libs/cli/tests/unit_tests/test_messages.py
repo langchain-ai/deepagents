@@ -3,6 +3,7 @@
 import pytest
 
 from deepagents_cli.widgets.messages import (
+    _USER_HIGHLIGHT_PATTERN,
     AppMessage,
     ErrorMessage,
     ToolCallMessage,
@@ -196,8 +197,6 @@ class TestUserMessageHighlighting:
 
     def test_at_mention_highlighted(self) -> None:
         """`@file` mentions should be styled in the output."""
-        from deepagents_cli.widgets.messages import _USER_HIGHLIGHT_PATTERN
-
         content = "look at @README.md please"
         matches = list(_USER_HIGHLIGHT_PATTERN.finditer(content))
         assert len(matches) == 1
@@ -205,8 +204,6 @@ class TestUserMessageHighlighting:
 
     def test_slash_command_highlighted_at_start(self) -> None:
         """Slash commands at start should be detected."""
-        from deepagents_cli.widgets.messages import _USER_HIGHLIGHT_PATTERN
-
         content = "/help me with something"
         matches = list(_USER_HIGHLIGHT_PATTERN.finditer(content))
         assert len(matches) == 1
@@ -215,8 +212,6 @@ class TestUserMessageHighlighting:
 
     def test_slash_command_not_matched_mid_text(self) -> None:
         """Slash in middle of text should not match as command due to ^ anchor."""
-        from deepagents_cli.widgets.messages import _USER_HIGHLIGHT_PATTERN
-
         content = "check the /usr/bin path"
         matches = list(_USER_HIGHLIGHT_PATTERN.finditer(content))
         # The ^ anchor means /usr doesn't match when not at start of string
@@ -224,8 +219,6 @@ class TestUserMessageHighlighting:
 
     def test_multiple_at_mentions(self) -> None:
         """Multiple `@mentions` should all be detected."""
-        from deepagents_cli.widgets.messages import _USER_HIGHLIGHT_PATTERN
-
         content = "compare @file1.py with @file2.py"
         matches = list(_USER_HIGHLIGHT_PATTERN.finditer(content))
         assert len(matches) == 2
@@ -234,8 +227,6 @@ class TestUserMessageHighlighting:
 
     def test_at_mention_with_path(self) -> None:
         """`@mentions` with paths should be fully captured."""
-        from deepagents_cli.widgets.messages import _USER_HIGHLIGHT_PATTERN
-
         content = "read @src/utils/helpers.py"
         matches = list(_USER_HIGHLIGHT_PATTERN.finditer(content))
         assert len(matches) == 1
@@ -243,8 +234,6 @@ class TestUserMessageHighlighting:
 
     def test_no_matches_in_plain_text(self) -> None:
         """Plain text without `@` or `/` should have no matches."""
-        from deepagents_cli.widgets.messages import _USER_HIGHLIGHT_PATTERN
-
         content = "just some normal text here"
         matches = list(_USER_HIGHLIGHT_PATTERN.finditer(content))
         assert len(matches) == 0

@@ -8,13 +8,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
-from deepagents.backends.sandbox import SandboxProvider
+from deepagents.backends.sandbox import SandboxClient
 
 from deepagents_cli.config import console, get_glyphs
-from deepagents_cli.integrations.daytona import DaytonaProvider
-from deepagents_cli.integrations.langsmith import LangSmithProvider
-from deepagents_cli.integrations.modal import ModalProvider
-from deepagents_cli.integrations.runloop import RunloopProvider
+from deepagents_cli.integrations.daytona import DaytonaSandboxClient
+from deepagents_cli.integrations.langsmith import LangSmithSandboxClient
+from deepagents_cli.integrations.modal import ModalSandboxClient
+from deepagents_cli.integrations.runloop import RunloopSandboxClient
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -89,7 +89,11 @@ def create_sandbox(
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
-    backend = provider_obj.create() if sandbox_id is None else provider_obj.get(sandbox_id=sandbox_id)
+    backend = (
+        provider_obj.create()
+        if sandbox_id is None
+        else provider_obj.get(sandbox_id=sandbox_id)
+    )
     glyphs = get_glyphs()
     console.print(
         f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "
@@ -149,26 +153,26 @@ def get_default_working_dir(provider: str) -> str:
     raise ValueError(msg)
 
 
-def _get_provider(provider_name: str) -> SandboxProvider:
-    """Get a SandboxProvider instance for the specified provider (internal).
+def _get_provider(provider_name: str) -> SandboxClient:
+    """Get a SandboxClient instance for the specified provider (internal).
 
     Args:
         provider_name: Name of the provider ("daytona", "langsmith", "modal", "runloop")
 
     Returns:
-        SandboxProvider instance
+        SandboxClient instance
 
     Raises:
         ValueError: If provider_name is unknown
     """
     if provider_name == "daytona":
-        return DaytonaProvider()
+        return DaytonaSandboxClient()
     if provider_name == "langsmith":
-        return LangSmithProvider()
+        return LangSmithSandboxClient()
     if provider_name == "modal":
-        return ModalProvider()
+        return ModalSandboxClient()
     if provider_name == "runloop":
-        return RunloopProvider()
+        return RunloopSandboxClient()
     msg = (
         f"Unknown sandbox provider: {provider_name}. "
         f"Available providers: {', '.join(_get_available_sandbox_types())}"

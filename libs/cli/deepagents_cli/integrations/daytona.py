@@ -14,7 +14,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxProvider,
+    SandboxClient,
 )
 
 if TYPE_CHECKING:
@@ -126,7 +126,7 @@ class DaytonaBackend(BaseSandbox):
         return [FileUploadResponse(path=path, error=None) for path, _ in files]
 
 
-class DaytonaProvider(SandboxProvider[dict[str, Any]]):
+class DaytonaSandboxClient(SandboxClient):
     """Daytona sandbox provider implementation.
 
     Manages Daytona sandbox lifecycle using the Daytona SDK.
@@ -157,7 +157,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
     ) -> SandboxBackendProtocol:
         if kwargs:
             keys = sorted(kwargs.keys())
-            msg = f"DaytonaProvider.get() got unsupported kwargs: {keys}"
+            msg = f"DaytonaSandboxClient.get() got unsupported kwargs: {keys}"
             raise ValueError(msg)
         sandbox = self._client.get(sandbox_id)
         return DaytonaBackend(sandbox)
@@ -170,7 +170,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
     ) -> SandboxBackendProtocol:
         if kwargs:
             keys = sorted(kwargs.keys())
-            msg = f"DaytonaProvider.create() got unsupported kwargs: {keys}"
+            msg = f"DaytonaSandboxClient.create() got unsupported kwargs: {keys}"
             raise ValueError(msg)
 
         sandbox = self._client.create()
@@ -207,7 +207,7 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:
         if kwargs:
             keys = sorted(kwargs.keys())
-            msg = f"DaytonaProvider.delete() got unsupported kwargs: {keys}"
+            msg = f"DaytonaSandboxClient.delete() got unsupported kwargs: {keys}"
             raise ValueError(msg)
         try:
             sandbox = self._client.get(sandbox_id)
@@ -217,3 +217,4 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             self._client.delete(sandbox)
         except Exception:
             return
+n

@@ -21,7 +21,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxProvider,
+    SandboxClient,
 )
 from runloop_api_client import Runloop
 
@@ -146,7 +146,7 @@ class RunloopBackend(BaseSandbox):
         return responses
 
 
-class RunloopProvider(SandboxProvider[dict[str, Any]]):
+class RunloopSandboxClient(SandboxClient):
     """Runloop sandbox provider implementation.
 
     Manages Runloop devbox lifecycle using the Runloop SDK.
@@ -181,7 +181,7 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         if sandbox_id is None:
             return self.create(timeout=timeout, **kwargs)

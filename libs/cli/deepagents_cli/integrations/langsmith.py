@@ -15,7 +15,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxProvider,
+    SandboxClient,
 )
 
 if TYPE_CHECKING:
@@ -125,7 +125,7 @@ class LangSmithBackend(BaseSandbox):
         return responses
 
 
-class LangSmithProvider(SandboxProvider[dict[str, Any]]):
+class LangSmithSandboxClient(SandboxClient):
     """LangSmith sandbox provider implementation.
 
     Manages LangSmith sandbox lifecycle using the LangSmith SDK.
@@ -200,12 +200,11 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         if sandbox_id is None:
             return self.create(timeout=timeout, **kwargs)
         return self.get(sandbox_id=sandbox_id, **kwargs)
-
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a LangSmith sandbox.

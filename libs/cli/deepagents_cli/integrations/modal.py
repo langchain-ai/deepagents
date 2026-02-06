@@ -13,7 +13,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxProvider,
+    SandboxClient,
 )
 
 if TYPE_CHECKING:
@@ -135,7 +135,7 @@ class ModalBackend(BaseSandbox):
         return responses
 
 
-class ModalProvider(SandboxProvider[dict[str, Any]]):
+class ModalSandboxClient(SandboxClient):
     """Modal sandbox provider implementation.
 
     Manages Modal sandbox lifecycle using the Modal SDK.
@@ -169,7 +169,7 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         sandbox_id: str | None = None,
         workdir: str = "/workspace",
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         if sandbox_id is None:
             return self.create(workdir=workdir, timeout=timeout, **kwargs)

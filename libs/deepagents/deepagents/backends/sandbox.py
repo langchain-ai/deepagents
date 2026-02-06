@@ -4,7 +4,7 @@ This module provides a base class that implements all SandboxBackendProtocol
 methods using shell commands executed via execute(). Concrete implementations
 only need to implement the execute() method.
 
-It also defines the SandboxProvider abstract base class for third-party SDK
+It also defines the SandboxClient abstract base class for third-party SDK
 implementations to manage sandbox lifecycle (get, create, delete).
 """
 
@@ -63,10 +63,10 @@ class SandboxNotFoundError(SandboxError):
     """Raised when a sandbox_id is provided but the sandbox does not exist."""
 
 
-class SandboxProvider(ABC):
-    """Abstract base class for third-party sandbox provider implementations.
+class SandboxClient(ABC):
+    """Standardized client for managing sandboxes.
 
-    Defines the lifecycle management interface for sandbox providers. Implementations
+    Defines a standardized interface for sandbox SDK integrations. Implementations
     should integrate with their respective SDKs to provide standardized sandbox
     lifecycle operations (get, create, delete).
 
@@ -90,7 +90,7 @@ class SandboxProvider(ABC):
             created_at: str
 
 
-        class CustomSandboxProvider(SandboxProvider):
+        class CustomSandboxClient(SandboxClient):
             def get(self, *, sandbox_id: str, **kwargs: Any) -> SandboxBackendProtocol:
                 return CustomSandbox(sandbox_id)
 
@@ -121,20 +121,6 @@ class SandboxProvider(ABC):
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Create a new sandbox and return a connected backend."""
-
-    def get_or_create(
-        self,
-        *,
-        sandbox_id: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxBackendProtocol:
-        """Backward-compatible wrapper around get() / create().
-
-        Prefer calling get() or create() directly.
-        """
-        if sandbox_id is None:
-            return self.create(**kwargs)
-        return self.get(sandbox_id=sandbox_id, **kwargs)
 
     @abstractmethod
     def delete(
@@ -201,34 +187,6 @@ class SandboxProvider(ABC):
         Providers can override this for native async implementations.
         """
         return await asyncio.to_thread(self.create, **kwargs)
-
-    async def aget_or_create(
-        self,
-        *,
-        sandbox_id: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxBackendProtocol:
-        """Async version of get_or_create().
-
-        By default, runs the synchronous get_or_create() method in a thread pool.
-        Providers can override this for native async implementations.
-
-        This method delegates to get() when sandbox_id is provided, otherwise create().
-
-        Important: If a sandbox_id is provided but does not exist, this method
-        should raise an error rather than creating a new sandbox. Only when
-        sandbox_id is explicitly None should a new sandbox be created.
-
-        Args:
-            sandbox_id: Unique identifier of an existing sandbox to retrieve.
-                If None, creates a new sandbox instance. If a non-None value
-                is provided but the sandbox doesn't exist, an error will be raised.
-            **kwargs: Provider-specific creation/connection parameters.
-
-        Returns:
-            An object implementing SandboxBackendProtocol.
-        """
-        return await asyncio.to_thread(self.get_or_create, sandbox_id=sandbox_id, **kwargs)
 
     async def adelete(
         self,

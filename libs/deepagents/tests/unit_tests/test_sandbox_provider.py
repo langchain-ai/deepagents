@@ -1,4 +1,4 @@
-"""Tests for SandboxProvider protocol and related types."""
+"""Tests for SandboxClient protocol and related types."""
 
 from typing import Any, Literal
 
@@ -7,7 +7,7 @@ from typing_extensions import TypedDict
 from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse, SandboxBackendProtocol
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxProvider,
+    SandboxClient,
 )
 
 
@@ -45,10 +45,10 @@ class MockSandboxBackend(BaseSandbox):
         return [FileDownloadResponse(path=path, content=b"mock content") for path in paths]
 
 
-class MockSandboxProvider(SandboxProvider):
+class MockSandboxClient(SandboxClient):
     """Mock provider implementation for testing.
 
-    This demonstrates how to implement the SandboxProvider ABC
+    This demonstrates how to implement the SandboxClient ABC
     with custom kwargs types and typed metadata.
     """
 
@@ -119,71 +119,71 @@ class MockSandboxProvider(SandboxProvider):
             del self.sandboxes[sandbox_id]
 
 
-def test_provider_get_existing() -> None:
+def test_client_get_existing() -> None:
     """Test getting an existing sandbox."""
-    provider = MockSandboxProvider()
-    sandbox = provider.get(sandbox_id="sb_001")
+    client = MockSandboxClient()
+    sandbox = client.get(sandbox_id="sb_001")
 
     assert sandbox.id == "sb_001"
 
 
-def test_provider_create_new() -> None:
+def test_client_create_new() -> None:
     """Test creating a new sandbox."""
-    provider = MockSandboxProvider()
-    sandbox = provider.create(template_id="python-3.11", timeout_minutes=60)
+    client = MockSandboxClient()
+    sandbox = client.create(template_id="python-3.11", timeout_minutes=60)
 
     assert sandbox.id == "sb_003"
-    assert "sb_003" in provider.sandboxes
+    assert "sb_003" in client.sandboxes
 
 
-def test_provider_delete() -> None:
+def test_client_delete() -> None:
     """Test deleting a sandbox."""
-    provider = MockSandboxProvider()
-    assert "sb_001" in provider.sandboxes
+    client = MockSandboxClient()
+    assert "sb_001" in client.sandboxes
 
-    provider.delete(sandbox_id="sb_001")
+    client.delete(sandbox_id="sb_001")
 
-    assert "sb_001" not in provider.sandboxes
+    assert "sb_001" not in client.sandboxes
 
 
-def test_provider_delete_idempotent() -> None:
+def test_client_delete_idempotent() -> None:
     """Test that delete is idempotent (doesn't error on non-existent sandbox)."""
-    provider = MockSandboxProvider()
+    client = MockSandboxClient()
 
     # Delete non-existent sandbox - should not raise an error
-    provider.delete(sandbox_id="sb_999")
+    client.delete(sandbox_id="sb_999")
 
     # Delete existing sandbox twice - should not raise an error
-    provider.delete(sandbox_id="sb_001")
-    provider.delete(sandbox_id="sb_001")  # Second delete should succeed
+    client.delete(sandbox_id="sb_001")
+    client.delete(sandbox_id="sb_001")  # Second delete should succeed
 
-    assert "sb_001" not in provider.sandboxes
+    assert "sb_001" not in client.sandboxes
 
 
-def test_provider_protocol_compliance() -> None:
-    """Test that MockSandboxProvider satisfies the protocol."""
-    provider: SandboxProvider = MockSandboxProvider()
+def test_client_protocol_compliance() -> None:
+    """Test that MockSandboxClient satisfies the protocol."""
+    client: SandboxClient = MockSandboxClient()
 
-    backend = provider.create()
+    backend = client.create()
     assert isinstance(backend.id, str)
 
-    reconnected = provider.get(sandbox_id=backend.id)
+    reconnected = client.get(sandbox_id=backend.id)
     assert reconnected.id == backend.id
 
 
-async def test_provider_async_get() -> None:
+async def test_client_async_get() -> None:
     """Test async get method."""
-    provider = MockSandboxProvider()
-    sandbox = await provider.aget(sandbox_id="sb_001")
+    client = MockSandboxClient()
+    sandbox = await client.aget(sandbox_id="sb_001")
 
     assert sandbox.id == "sb_001"
 
 
-async def test_provider_async_delete() -> None:
+async def test_client_async_delete() -> None:
     """Test async delete method."""
-    provider = MockSandboxProvider()
-    assert "sb_001" in provider.sandboxes
+    client = MockSandboxClient()
+    assert "sb_001" in client.sandboxes
 
-    await provider.adelete(sandbox_id="sb_001")
+    await client.adelete(sandbox_id="sb_001")
 
-    assert "sb_001" not in provider.sandboxes
+    assert "sb_001" not in client.sandboxes

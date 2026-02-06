@@ -243,6 +243,9 @@ def show_help() -> None:
         "  --model MODEL                 Model to use (e.g., claude-sonnet-4-5-20250929, gpt-4o)"  # noqa: E501
     )
     console.print(
+        "  --openai-reasoning-effort LVL OpenAI reasoning effort (none|low|medium|high)"
+    )
+    console.print(
         "  --auto-approve                Auto-approve tool usage without prompting"
     )
     console.print(
@@ -267,6 +270,10 @@ def show_help() -> None:
     )
     console.print(
         "  deepagents --model gpt-4o               # Use specific model (auto-detects provider)",  # noqa: E501
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents --model gpt-5.2 --openai-reasoning-effort high   # Increase reasoning effort (OpenAI only)",  # noqa: E501
         style=COLORS["dim"],
     )
     console.print(

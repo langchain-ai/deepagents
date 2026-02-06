@@ -93,3 +93,17 @@ class TestResumeArg:
             args = parse_args()
         assert args.resume_thread == "thread456"
         assert args.initial_prompt == "continue work"
+
+
+class TestOpenAIReasoningEffortArg:
+    """Tests for --openai-reasoning-effort argument."""
+
+    def test_sets_value(self) -> None:
+        """Verify --openai-reasoning-effort sets openai_reasoning_effort."""
+        with patch.object(
+            sys,
+            "argv",
+            ["deepagents", "--openai-reasoning-effort", "high"],
+        ):
+            args = parse_args()
+        assert args.openai_reasoning_effort == "high"

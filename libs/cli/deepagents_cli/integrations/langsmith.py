@@ -136,19 +136,14 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         """Initialize LangSmith provider.
 
         Args:
-            api_key: LangSmith API key. Falls back to LANGSMITH_API_KEY
-                or LANGSMITH_API_KEY_PROD env var.
+            api_key: LangSmith API key. Falls back to LANGSMITH_API_KEY env var.
 
         Raises:
-            ValueError: If no API key is provided and neither env var is set.
+            ValueError: If no API key is provided and env var is not set.
         """
         from langsmith import sandbox
 
-        self._api_key = (
-            api_key
-            or os.environ.get("LANGSMITH_API_KEY")
-            or os.environ.get("LANGSMITH_API_KEY_PROD")
-        )
+        self._api_key = api_key or os.environ.get("LANGSMITH_API_KEY")
         if not self._api_key:
             msg = "LangSmith API key not set"
             raise ValueError(msg)

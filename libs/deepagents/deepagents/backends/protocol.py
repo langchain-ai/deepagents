@@ -443,6 +443,7 @@ class SandboxBackendProtocol(BackendProtocol):
     @property
     def id(self) -> str:
         """Unique identifier for the sandbox backend instance."""
+        raise NotImplementedError
 
     def execute(
         self,

@@ -136,10 +136,10 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         """Initialize LangSmith provider.
 
         Args:
-            api_key: LangSmith API key. Falls back to LANGSMITH_API_KEY env var.
+            api_key: LangSmith API key (defaults to LANGSMITH_API_KEY env var)
 
         Raises:
-            ValueError: If no API key is provided and env var is not set.
+            ValueError: If LANGSMITH_API_KEY environment variable not set
         """
         from langsmith import sandbox
 

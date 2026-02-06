@@ -349,7 +349,7 @@ The validation script checks:
 - Skill naming conventions (hyphen-case, max 64 characters)
 - Description completeness (no angle brackets, max 1024 characters)
 - Required fields: `name` and `description`
-- Allowed frontmatter properties only: `name`, `description`, `license`, `allowed-tools`, `metadata`
+- Allowed frontmatter properties only: `name`, `description`, `license`, `compatibility`, `allowed-tools`, `metadata`
 
 If validation fails, fix the reported errors and run the validation command again.
 

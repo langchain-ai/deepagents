@@ -6,7 +6,7 @@ from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.protocol import EditResult, WriteResult
-from deepagents.backends.store import BackendContext, StoreBackend
+from deepagents.backends.store import BackendContext, StoreBackend, _validate_namespace
 
 
 def make_runtime():
@@ -362,3 +362,74 @@ def test_store_backend_grep_literal_search_special_chars(pattern: str, expected_
     matches = be.grep_raw(pattern, path="/")
     assert isinstance(matches, list)
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
+
+
+# --- _validate_namespace tests ---
+
+
+class TestValidateNamespace:
+    """Tests for the _validate_namespace function."""
+
+    @pytest.mark.parametrize(
+        "namespace",
+        [
+            ("filesystem",),
+            ("filesystem", "alice"),
+            ("workspace", "ws-123", "user", "bob"),
+            ("user@example.com",),
+            ("user+tag@example.com",),
+            ("550e8400-e29b-41d4-a716-446655440000",),
+            ("asst-123", "filesystem"),
+            ("threads", "thread-abc"),
+            ("org:team:project",),
+            ("~user",),
+            ("v1.2.3",),
+        ],
+    )
+    def test_valid_namespaces(self, namespace: tuple[str, ...]) -> None:
+        assert _validate_namespace(namespace) == namespace
+
+    @pytest.mark.parametrize(
+        ("namespace", "match_msg"),
+        [
+            ((), "must not be empty"),
+            (("",), "must not be empty"),
+            (("ok", ""), "must not be empty"),
+            (("*",), "disallowed characters"),
+            (("file*system",), "disallowed characters"),
+            (("user?",), "disallowed characters"),
+            (("ns[0]",), "disallowed characters"),
+            (("ns{a}",), "disallowed characters"),
+            (("a b",), "disallowed characters"),
+            (("path/to",), "disallowed characters"),
+            (("$var",), "disallowed characters"),
+            (("hello!",), "disallowed characters"),
+            (("semi;colon",), "disallowed characters"),
+            (("back\\slash",), "disallowed characters"),
+            (("a\nb",), "disallowed characters"),
+        ],
+    )
+    def test_invalid_namespaces(self, namespace: tuple[str, ...], match_msg: str) -> None:
+        with pytest.raises(ValueError, match=match_msg):
+            _validate_namespace(namespace)
+
+    def test_non_string_component(self) -> None:
+        with pytest.raises(TypeError, match="must be a string"):
+            _validate_namespace(("ok", 123))  # type: ignore[arg-type]
+
+
+def test_store_backend_rejects_wildcard_namespace() -> None:
+    """Ensure StoreBackend rejects namespace tuples with wildcard characters."""
+    store = InMemoryStore()
+    rt = ToolRuntime(
+        state={"messages": []},
+        context=UserContext(user_id="*"),
+        tool_call_id="t1",
+        store=store,
+        stream_writer=lambda _: None,
+        config={},
+    )
+    be = StoreBackend(rt, namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id))
+
+    with pytest.raises(ValueError, match="disallowed characters"):
+        be.write("/test.txt", "content")

@@ -1,5 +1,6 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
+import re
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -43,6 +44,51 @@ class BackendContext(Generic[StateT, ContextT]):
 
 # Type alias for namespace factory functions
 NamespaceFactory = Callable[[BackendContext[Any, Any]], tuple[str, ...]]
+
+# Allowed characters in namespace components: alphanumeric, plus characters
+# common in user IDs (hyphen, underscore, dot, @, +, colon, tilde).
+_NAMESPACE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9\-_.@+:~]+$")
+
+
+def _validate_namespace(namespace: tuple[str, ...]) -> tuple[str, ...]:
+    """Validate a namespace tuple returned by a NamespaceFactory.
+
+    Each component must be a non-empty string containing only safe characters:
+    alphanumeric (a-z, A-Z, 0-9), hyphen (-), underscore (_), dot (.),
+    at sign (@), plus (+), colon (:), and tilde (~).
+
+    Characters like ``*``, ``?``, ``[``, ``]``, ``{``, ``}``, etc. are
+    rejected to prevent wildcard or glob injection in store lookups.
+
+    Args:
+        namespace: The namespace tuple to validate.
+
+    Returns:
+        The validated namespace tuple (unchanged).
+
+    Raises:
+        ValueError: If the namespace is empty, contains non-string elements,
+            empty strings, or strings with disallowed characters.
+    """
+    if not namespace:
+        msg = "Namespace tuple must not be empty."
+        raise ValueError(msg)
+
+    for i, component in enumerate(namespace):
+        if not isinstance(component, str):
+            msg = f"Namespace component at index {i} must be a string, got {type(component).__name__}."
+            raise TypeError(msg)
+        if not component:
+            msg = f"Namespace component at index {i} must not be empty."
+            raise ValueError(msg)
+        if not _NAMESPACE_COMPONENT_RE.match(component):
+            msg = (
+                f"Namespace component at index {i} contains disallowed characters: {component!r}. "
+                f"Only alphanumeric characters, hyphens, underscores, dots, @, +, colons, and tildes are allowed."
+            )
+            raise ValueError(msg)
+
+    return namespace
 
 
 class StoreBackend(BackendProtocol):
@@ -93,7 +139,7 @@ class StoreBackend(BackendProtocol):
         if self._namespace is not None:
             state = getattr(self.runtime, "state", None)
             ctx = BackendContext(state=state, runtime=self.runtime)
-            return self._namespace(ctx)
+            return _validate_namespace(self._namespace(ctx))
 
         return self._get_namespace_legacy()
 

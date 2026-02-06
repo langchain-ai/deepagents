@@ -107,7 +107,9 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
     }
 
 
-def _load_subagents_from_dir(agents_dir: Path, source: str) -> dict[str, SubagentMetadata]:
+def _load_subagents_from_dir(
+    agents_dir: Path, source: str
+) -> dict[str, SubagentMetadata]:
     """Load subagents from a directory.
 
     Expects structure: agents_dir/{subagent_name}/AGENTS.md

@@ -1,10 +1,13 @@
 """Configuration, constants, and model creation for the CLI."""
 
+import json
 import os
 import re
 import sys
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 import dotenv
@@ -23,8 +26,9 @@ if _deepagents_project:
     # Override LANGSMITH_PROJECT for agent traces
     os.environ["LANGSMITH_PROJECT"] = _deepagents_project
 
-# Now safe to import LangChain modules
-from langchain_core.language_models import BaseChatModel
+# E402: Now safe to import LangChain modules
+from langchain_core.language_models import BaseChatModel  # noqa: E402
+from langchain_core.runnables import RunnableConfig  # noqa: E402
 
 # Color scheme
 COLORS = {
@@ -36,31 +40,240 @@ COLORS = {
     "tool": "#fbbf24",
 }
 
-# ASCII art banner
 
-DEEP_AGENTS_ASCII = f"""
- ██████╗  ███████╗ ███████╗ ██████╗
- ██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
- ██║  ██║ █████╗   █████╗   ██████╔╝
- ██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝
- ██████╔╝ ███████╗ ███████╗ ██║
- ╚═════╝  ╚══════╝ ╚══════╝ ╚═╝
+# Charset mode configuration
+class CharsetMode(StrEnum):
+    """Character set mode for TUI display."""
 
-  █████╗   ██████╗  ███████╗ ███╗   ██╗ ████████╗ ███████╗
- ██╔══██╗ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝ ██╔════╝
- ███████║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║    ███████╗
- ██╔══██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║    ╚════██║
- ██║  ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║    ███████║
- ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
-                                              v{__version__}
+    UNICODE = "unicode"
+    ASCII = "ascii"
+    AUTO = "auto"
+
+
+@dataclass(frozen=True)
+class Glyphs:
+    """Character glyphs for TUI display."""
+
+    tool_prefix: str  # ⏺ vs (*)
+    ellipsis: str  # … vs ...
+    checkmark: str  # ✓ vs [OK]
+    error: str  # ✗ vs [X]
+    circle_empty: str  # ○ vs [ ]
+    circle_filled: str  # ● vs [*]
+    output_prefix: str  # ⎿ vs L
+    spinner_frames: tuple[str, ...]  # Braille vs ASCII spinner
+    pause: str  # ⏸ vs ||
+    newline: str  # ⏎ vs \\n
+    warning: str  # ⚠ vs [!]
+    arrow_up: str  # up arrow vs ^
+    arrow_down: str  # down arrow vs v
+    bullet: str  # bullet vs -
+    cursor: str  # cursor vs >
+
+    # Box-drawing characters
+    box_vertical: str  # │ vs |
+    box_horizontal: str  # ─ vs -
+    box_double_horizontal: str  # ═ vs =
+
+    # Diff-specific
+    gutter_bar: str  # ▌ vs |
+
+    # Tree connectors (full prefixes for tree display)
+    tree_branch: str  # "├── " vs "+-- "
+    tree_last: str  # "└── " vs "`-- "
+    tree_vertical: str  # "│   " vs "|   "
+
+
+UNICODE_GLYPHS = Glyphs(
+    tool_prefix="⏺",
+    ellipsis="…",
+    checkmark="✓",
+    error="✗",
+    circle_empty="○",
+    circle_filled="●",
+    output_prefix="⎿",
+    spinner_frames=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
+    pause="⏸",
+    newline="⏎",
+    warning="⚠",
+    arrow_up="↑",
+    arrow_down="↓",
+    bullet="•",
+    cursor="›",  # noqa: RUF001
+    # Box-drawing characters
+    box_vertical="│",
+    box_horizontal="─",
+    box_double_horizontal="═",
+    gutter_bar="▌",
+    tree_branch="├── ",
+    tree_last="└── ",
+    tree_vertical="│   ",
+)
+
+ASCII_GLYPHS = Glyphs(
+    tool_prefix="(*)",
+    ellipsis="...",
+    checkmark="[OK]",
+    error="[X]",
+    circle_empty="[ ]",
+    circle_filled="[*]",
+    output_prefix="L",
+    spinner_frames=("(-)", "(\\)", "(|)", "(/)"),
+    pause="||",
+    newline="\\n",
+    warning="[!]",
+    arrow_up="^",
+    arrow_down="v",
+    bullet="-",
+    cursor=">",
+    # Box-drawing characters
+    box_vertical="|",
+    box_horizontal="-",
+    box_double_horizontal="=",
+    gutter_bar="|",
+    tree_branch="+-- ",
+    tree_last="`-- ",
+    tree_vertical="|   ",
+)
+
+# Module-level cache for detected glyphs
+_glyphs_cache: Glyphs | None = None
+
+# Module-level cache for editable install detection
+_editable_cache: bool | None = None
+
+
+def _is_editable_install() -> bool:
+    """Check if deepagents-cli is installed in editable mode.
+
+    Uses PEP 610 direct_url.json metadata to detect editable installs.
+
+    Returns:
+        True if installed in editable mode, False otherwise.
+    """
+    global _editable_cache  # noqa: PLW0603
+    if _editable_cache is not None:
+        return _editable_cache
+
+    try:
+        dist = distribution("deepagents-cli")
+        direct_url = dist.read_text("direct_url.json")
+        if direct_url:
+            data = json.loads(direct_url)
+            _editable_cache = data.get("dir_info", {}).get("editable", False)
+        else:
+            _editable_cache = False
+    except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
+        _editable_cache = False
+
+    return _editable_cache
+
+
+def _detect_charset_mode() -> CharsetMode:
+    """Auto-detect terminal charset capabilities.
+
+    Returns:
+        The detected CharsetMode based on environment and terminal encoding.
+    """
+    env_mode = os.environ.get("UI_CHARSET_MODE", "auto").lower()
+    if env_mode == "unicode":
+        return CharsetMode.UNICODE
+    if env_mode == "ascii":
+        return CharsetMode.ASCII
+
+    # Auto: check stdout encoding and LANG
+    encoding = getattr(sys.stdout, "encoding", "") or ""
+    if "utf" in encoding.lower():
+        return CharsetMode.UNICODE
+    lang = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
+    if "utf" in lang.lower():
+        return CharsetMode.UNICODE
+    return CharsetMode.ASCII
+
+
+def get_glyphs() -> Glyphs:
+    """Get the glyph set for the current charset mode.
+
+    Returns:
+        The appropriate Glyphs instance based on charset mode detection.
+    """
+    global _glyphs_cache  # noqa: PLW0603
+    if _glyphs_cache is not None:
+        return _glyphs_cache
+
+    mode = _detect_charset_mode()
+    _glyphs_cache = ASCII_GLYPHS if mode == CharsetMode.ASCII else UNICODE_GLYPHS
+    return _glyphs_cache
+
+
+def reset_glyphs_cache() -> None:
+    """Reset the glyphs cache (for testing)."""
+    global _glyphs_cache  # noqa: PLW0603
+    _glyphs_cache = None
+
+
+# Text art banners (Unicode and ASCII variants)
+
+_UNICODE_BANNER = f"""
+██████╗  ███████╗ ███████╗ ██████╗
+██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
+██║  ██║ █████╗   █████╗   ██████╔╝
+██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝
+██████╔╝ ███████╗ ███████╗ ██║
+╚═════╝  ╚══════╝ ╚══════╝ ╚═╝
+
+ █████╗   ██████╗  ███████╗ ███╗   ██╗ ████████╗ ███████╗
+██╔══██╗ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝ ██╔════╝
+███████║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║    ███████╗
+██╔══██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║    ╚════██║
+██║  ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║    ███████║
+╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
+                                                  v{__version__}
 """
+
+_ASCII_BANNER = f"""
+ ____  ____  ____  ____
+|  _ \\| ___|| ___||  _ \\
+| | | | |_  | |_  | |_) |
+| |_| |  _| |  _| |  __/
+|____/|____||____||_|
+
+    _    ____  ____  _   _  _____  ____
+   / \\  / ___|| ___|| \\ | ||_   _|/ ___|
+  / _ \\| |  _ | |_  |  \\| |  | |  \\___ \\
+ / ___ \\ |_| ||  _| | |\\  |  | |   ___) |
+/_/   \\_\\____||____||_| \\_|  |_|  |____/
+                                  v{__version__}
+"""
+
+
+def get_banner() -> str:
+    """Get the appropriate banner for the current charset mode.
+
+    Returns:
+        The text art banner string (Unicode or ASCII based on charset mode).
+        Includes "(local)" suffix when installed in editable mode.
+    """
+    if _detect_charset_mode() == CharsetMode.ASCII:
+        banner = _ASCII_BANNER
+    else:
+        banner = _UNICODE_BANNER
+
+    if _is_editable_install():
+        banner = banner.replace(f"v{__version__}", f"v{__version__} (local)")
+
+    return banner
+
+
+# Legacy alias for backwards compatibility
+DEEP_AGENTS_ASCII = _UNICODE_BANNER
 
 # Interactive commands
 COMMANDS = {
     "clear": "Clear screen and reset conversation",
     "help": "Show help information",
     "remember": "Review conversation and update memory/skills",
-    "tokens": "Show token usage for current session",
+    "tokens": "Show token usage for current thread",
     "quit": "Exit the CLI",
     "exit": "Exit the CLI",
 }
@@ -70,7 +283,7 @@ COMMANDS = {
 MAX_ARG_LENGTH = 150
 
 # Agent configuration
-config = {"recursion_limit": 1000}
+config: RunnableConfig = {"recursion_limit": 1000}
 
 # Rich console instance
 console = Console(highlight=False)
@@ -83,7 +296,8 @@ def _find_project_root(start_path: Path | None = None) -> Path | None:
     directory, which indicates the project root.
 
     Args:
-        start_path: Directory to start searching from. Defaults to current working directory.
+        start_path: Directory to start searching from.
+            Defaults to current working directory.
 
     Returns:
         Path to the project root if found, None otherwise.
@@ -145,8 +359,10 @@ class Settings:
         openai_api_key: OpenAI API key if available
         anthropic_api_key: Anthropic API key if available
         tavily_api_key: Tavily API key if available
-        deepagents_langchain_project: LangSmith project name for deepagents agent tracing
-        user_langchain_project: Original LANGSMITH_PROJECT from environment (for user code)
+        deepagents_langchain_project: LangSmith project name for deepagents
+            agent tracing
+        user_langchain_project: Original LANGSMITH_PROJECT from environment
+            (for user code)
     """
 
     # API keys
@@ -165,6 +381,7 @@ class Settings:
     # Model configuration
     model_name: str | None = None  # Currently active model name
     model_provider: str | None = None  # Provider (openai, anthropic, google)
+    model_context_limit: int | None = None  # Max input tokens from model profile
 
     # Project information
     project_root: Path | None = None
@@ -225,10 +442,11 @@ class Settings:
 
     @property
     def has_vertex_ai(self) -> bool:
-        """Check if VertexAI is available (Google Cloud project set, but no Google API key).
+        """Check if VertexAI is available (Google Cloud project set, no API key).
 
         VertexAI uses Application Default Credentials (ADC) for authentication,
-        so if GOOGLE_CLOUD_PROJECT is set and GOOGLE_API_KEY is not, we assume VertexAI.
+        so if GOOGLE_CLOUD_PROJECT is set and GOOGLE_API_KEY is not, we assume
+        VertexAI.
         """
         return self.google_cloud_project is not None and self.google_api_key is None
 
@@ -256,7 +474,8 @@ class Settings:
         """
         return Path.home() / ".deepagents"
 
-    def get_user_agent_md_path(self, agent_name: str) -> Path:
+    @staticmethod
+    def get_user_agent_md_path(agent_name: str) -> Path:
         """Get user-level AGENTS.md path for a specific agent.
 
         Returns path regardless of whether the file exists.
@@ -283,7 +502,11 @@ class Settings:
 
     @staticmethod
     def _is_valid_agent_name(agent_name: str) -> bool:
-        """Validate prevent invalid filesystem paths and security issues."""
+        """Validate to prevent invalid filesystem paths and security issues.
+
+        Returns:
+            True if the agent name is valid, False otherwise.
+        """
         if not agent_name or not agent_name.strip():
             return False
         # Allow only alphanumeric, hyphens, underscores, and whitespace
@@ -297,11 +520,14 @@ class Settings:
 
         Returns:
             Path to ~/.deepagents/{agent_name}
+
+        Raises:
+            ValueError: If the agent name contains invalid characters.
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (
-                f"Invalid agent name: {agent_name!r}. "
-                "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
+                f"Invalid agent name: {agent_name!r}. Agent names can only "
+                "contain letters, numbers, hyphens, underscores, and spaces."
             )
             raise ValueError(msg)
         return Path.home() / ".deepagents" / agent_name
@@ -314,11 +540,14 @@ class Settings:
 
         Returns:
             Path to ~/.deepagents/{agent_name}
+
+        Raises:
+            ValueError: If the agent name contains invalid characters.
         """
         if not self._is_valid_agent_name(agent_name):
             msg = (
-                f"Invalid agent name: {agent_name!r}. "
-                "Agent names can only contain letters, numbers, hyphens, underscores, and spaces."
+                f"Invalid agent name: {agent_name!r}. Agent names can only "
+                "contain letters, numbers, hyphens, underscores, and spaces."
             )
             raise ValueError(msg)
         agent_dir = self.get_agent_dir(agent_name)
@@ -381,6 +610,8 @@ class Settings:
         if not self.project_root:
             return None
         skills_dir = self.get_project_skills_dir()
+        if skills_dir is None:
+            return None
         skills_dir.mkdir(parents=True, exist_ok=True)
         return skills_dir
 
@@ -405,6 +636,37 @@ class Settings:
             return None
         return self.project_root / ".deepagents" / "agents"
 
+    @property
+    def user_agents_dir(self) -> Path:
+        """Get the base user-level `.agents` directory (`~/.agents`).
+
+        Returns:
+            Path to `~/.agents`
+        """
+        return Path.home() / ".agents"
+
+    def get_user_agent_skills_dir(self) -> Path:
+        """Get user-level `~/.agents/skills/` directory.
+
+        This is a generic alias path for skills that is tool-agnostic.
+
+        Returns:
+            Path to `~/.agents/skills/`
+        """
+        return self.user_agents_dir / "skills"
+
+    def get_project_agent_skills_dir(self) -> Path | None:
+        """Get project-level `.agents/skills/` directory.
+
+        This is a generic alias path for skills that is tool-agnostic.
+
+        Returns:
+            Path to `{project_root}/.agents/skills/`, or `None` if not in a project
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".agents" / "skills"
+
 
 # Global settings instance (initialized once)
 settings = Settings.from_environment()
@@ -414,6 +676,12 @@ class SessionState:
     """Holds mutable session state (auto-approve mode, etc)."""
 
     def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
+        """Initialize session state with optional flags.
+
+        Args:
+            auto_approve: Whether to auto-approve tool calls without prompting.
+            no_splash: Whether to skip displaying the splash screen on startup.
+        """
         self.auto_approve = auto_approve
         self.no_splash = no_splash
         self.exit_hint_until: float | None = None
@@ -421,7 +689,11 @@ class SessionState:
         self.thread_id = str(uuid.uuid4())
 
     def toggle_auto_approve(self) -> bool:
-        """Toggle auto-approve and return new state."""
+        """Toggle auto-approve and return new state.
+
+        Returns:
+            The new auto_approve state.
+        """
         self.auto_approve = not self.auto_approve
         return self.auto_approve
 
@@ -431,6 +703,9 @@ def get_default_coding_instructions() -> str:
 
     These are the immutable base instructions that cannot be modified by the agent.
     Long-term memory (AGENTS.md) is handled separately by the middleware.
+
+    Returns:
+        The default agent instructions as a string.
     """
     default_prompt_path = Path(__file__).parent / "default_agent_prompt.md"
     return default_prompt_path.read_text()
@@ -482,7 +757,8 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         provider = _detect_provider(model_name_override)
         if not provider:
             console.print(
-                f"[bold red]Error:[/bold red] Could not detect provider from model name: {model_name_override}"
+                "[bold red]Error:[/bold red] Could not detect provider "
+                f"from model name: {model_name_override}"
             )
             console.print("\nSupported model name patterns:")
             console.print("  - OpenAI: gpt-*, o1-*, o3-*")
@@ -497,17 +773,20 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         # Check if credentials for detected provider are available
         if provider == "openai" and not settings.has_openai:
             console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires OPENAI_API_KEY"
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
+                "requires OPENAI_API_KEY"
             )
             sys.exit(1)
         elif provider == "anthropic" and not settings.has_anthropic:
             console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires ANTHROPIC_API_KEY"
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
+                "requires ANTHROPIC_API_KEY"
             )
             sys.exit(1)
         elif provider == "google" and not settings.has_google:
             console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires GOOGLE_API_KEY"
+                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
+                "requires GOOGLE_API_KEY"
             )
             sys.exit(1)
         elif provider == "vertexai" and not settings.has_vertex_ai:
@@ -541,7 +820,8 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
         console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
         console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
         console.print(
-            "  - GOOGLE_CLOUD_PROJECT (for VertexAI models, with Application Default Credentials)"
+            "  - GOOGLE_CLOUD_PROJECT (for VertexAI models, "
+            "with Application Default Credentials)"
         )
         console.print("\nExample:")
         console.print("  export OPENAI_API_KEY=your_api_key_here")
@@ -552,57 +832,74 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     settings.model_name = model_name
     settings.model_provider = provider
 
-    # Create and return the model
+    # Create the model
+    model: BaseChatModel
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model_name)
-    if provider == "anthropic":
+        model = ChatOpenAI(model=model_name)  # type: ignore[call-arg]
+    elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
+        model = ChatAnthropic(
             model_name=model_name,
-            max_tokens=20_000,  # type: ignore[arg-type]
+            max_tokens=20_000,
         )
-    if provider == "google":
+    elif provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(
+        model = ChatGoogleGenerativeAI(
             model=model_name,
             temperature=0,
             max_tokens=None,
         )
-    if provider == "vertexai":
+    elif provider == "vertexai":
         model_lower = model_name.lower()
 
         if "claude" in model_lower:
             try:
-                from langchain_google_vertexai.model_garden import ChatAnthropicVertex
+                from langchain_google_vertexai.model_garden import (  # type: ignore[unresolved-import]
+                    ChatAnthropicVertex,
+                )
             except ImportError:
                 console.print(
-                    "[bold red]Error:[/bold red] langchain-google-vertexai package is required for this model"
+                    "[bold red]Error:[/bold red] langchain-google-vertexai "
+                    "package is required for this model"
                 )
                 console.print("\nInstall it with:")
                 console.print("  pip install deepagents-cli[vertexai]", markup=False)
                 sys.exit(1)
 
-            return ChatAnthropicVertex(
-                # Remove version tag (e.g., "claude-haiku-4-5@20251015" -> "claude-haiku-4-5")
-                # ChatAnthropicVertex expects just the base model name without the @version suffix
+            model = ChatAnthropicVertex(
+                # Remove version tag (e.g., "claude-haiku-4-5@20251015" ->
+                # "claude-haiku-4-5"). ChatAnthropicVertex expects just the base
+                # model name without the @version suffix.
                 model_name=model_name,
                 project=settings.google_cloud_project,
                 location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
                 max_tokens=20_000,
             )
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        else:
+            from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(
-            model=model_name,
-            project=settings.google_cloud_project,
-            vertexai=True,
-            temperature=0,
-            max_tokens=None,
-        )
+            model = ChatGoogleGenerativeAI(
+                model=model_name,
+                project=settings.google_cloud_project,
+                vertexai=True,
+                temperature=0,
+                max_tokens=None,
+            )
+    else:
+        # Should not reach here due to earlier validation
+        console.print(f"[bold red]Error:[/bold red] Unknown provider: {provider}")
+        sys.exit(1)
+
+    # Extract context limit from model profile (if available)
+    profile = getattr(model, "profile", None)
+    if isinstance(profile, dict) and isinstance(profile.get("max_input_tokens"), int):
+        settings.model_context_limit = profile["max_input_tokens"]
+
+    return model
 
 
 def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
@@ -616,19 +913,18 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
         model: The instantiated model to validate.
         model_name: Model name for error/warning messages.
 
-    Raises:
-        SystemExit: If model profile explicitly indicates `tool_calling=False`.
-
     Note:
-        This validation is best-effort. Models without profiles will pass with a warning.
+        This validation is best-effort. Models without profiles will pass with
+        a warning. Exits via sys.exit(1) if model profile explicitly indicates
+        tool_calling=False.
     """
     profile = getattr(model, "profile", None)
 
     if profile is None:
         # Model doesn't have profile data - warn but allow
         console.print(
-            f"[dim][yellow]Note:[/yellow] No capability profile for '{model_name}'. "
-            "Cannot verify tool calling support.[/dim]"
+            f"[dim][yellow]Note:[/yellow] No capability profile for "
+            f"'{model_name}'. Cannot verify tool calling support.[/dim]"
         )
         return
 
@@ -639,7 +935,8 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
     tool_calling = profile.get("tool_calling")
     if tool_calling is False:
         console.print(
-            f"[bold red]Error:[/bold red] Model '{model_name}' does not support tool calling."
+            f"[bold red]Error:[/bold red] Model '{model_name}' "
+            "does not support tool calling."
         )
         console.print(
             "\nDeep Agents requires tool calling for agent functionality. "
@@ -650,7 +947,7 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
 
     # Warn about potentially limited context (< 8k tokens)
     max_input_tokens = profile.get("max_input_tokens")
-    if max_input_tokens and max_input_tokens < 8000:  # noqa: PLR2004
+    if max_input_tokens and max_input_tokens < 8000:
         console.print(
             f"[dim][yellow]Warning:[/yellow] Model '{model_name}' has limited context "
             f"({max_input_tokens:,} tokens). Agent performance may be affected.[/dim]"

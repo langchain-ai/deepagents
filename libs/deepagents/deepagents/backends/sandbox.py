@@ -5,7 +5,7 @@ methods using shell commands executed via execute(). Concrete implementations
 only need to implement the execute() method.
 
 It also defines the SandboxProvider abstract base class for third-party SDK
-implementations to manage sandbox lifecycle (list, create, delete).
+implementations to manage sandbox lifecycle (get, create, delete).
 """
 
 from __future__ import annotations
@@ -15,9 +15,7 @@ import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Generic, NotRequired, TypeVar
-
-from typing_extensions import TypedDict
+from typing import Any
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -65,124 +63,24 @@ class SandboxNotFoundError(SandboxError):
     """Raised when a sandbox_id is provided but the sandbox does not exist."""
 
 
-# Type variable for provider-specific metadata
-MetadataT = TypeVar("MetadataT", covariant=True)
-"""Type variable for sandbox metadata.
-
-Providers can define their own TypedDict to specify the structure of sandbox metadata,
-enabling type-safe access to metadata fields.
-
-Example:
-    ```python
-    class ProviderMetadata(TypedDict, total=False):
-        status: Literal["running", "stopped"]
-        created_at: str
-        template: str
-
-    class MyProvider(SandboxProvider[ProviderMetadata]):
-        def list(
-            self, *, cursor=None, **kwargs: Any
-        ) -> SandboxListResponse[ProviderMetadata]:
-            # Extract kwargs as needed
-            status = kwargs.get("status")
-            ...
-    ```
-"""
-
-
-class SandboxInfo(TypedDict, Generic[MetadataT]):
-    """Metadata for a single sandbox instance.
-
-    This lightweight structure is returned from list operations and provides
-    basic information about a sandbox without requiring a full connection.
-
-    Type Parameters:
-        MetadataT: Type of the metadata field. Providers should define a TypedDict
-            for type-safe metadata access.
-
-    Attributes:
-        sandbox_id: Unique identifier for the sandbox instance.
-        metadata: Optional provider-specific metadata (e.g., creation time, status,
-            resource limits, template information). Structure is provider-defined.
-
-    Example:
-        ```python
-        # Using default dict[str, Any]
-        info: SandboxInfo = {
-            "sandbox_id": "sb_abc123",
-            "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z", "template": "python-3.11"},
-        }
-
-
-        # Using typed metadata
-        class MyMetadata(TypedDict, total=False):
-            status: Literal["running", "stopped"]
-            created_at: str
-
-
-        typed_info: SandboxInfo[MyMetadata] = {
-            "sandbox_id": "sb_abc123",
-            "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z"},
-        }
-        ```
-    """
-
-    sandbox_id: str
-    metadata: NotRequired[MetadataT]
-
-
-class SandboxListResponse(TypedDict, Generic[MetadataT]):
-    """Paginated response from a sandbox list operation.
-
-    This structure supports cursor-based pagination for efficiently browsing
-    large collections of sandboxes.
-
-    Type Parameters:
-        MetadataT: Type of the metadata field in SandboxInfo items.
-
-    Attributes:
-        items: List of sandbox metadata objects for the current page.
-        cursor: Opaque continuation token for retrieving the next page.
-            None indicates no more pages available. Clients should treat this
-            as an opaque string and pass it to subsequent list() calls.
-
-    Example:
-        ```python
-        response: SandboxListResponse[MyMetadata] = {
-            "items": [{"sandbox_id": "sb_001", "metadata": {"status": "running"}}, {"sandbox_id": "sb_002", "metadata": {"status": "stopped"}}],
-            "cursor": "eyJvZmZzZXQiOjEwMH0=",
-        }
-
-        # Fetch next page
-        next_response = provider.list(cursor=response["cursor"])
-        ```
-    """
-
-    items: list[SandboxInfo[MetadataT]]
-    cursor: str | None
-
-
-class SandboxProvider(ABC, Generic[MetadataT]):
+class SandboxProvider(ABC):
     """Abstract base class for third-party sandbox provider implementations.
 
     Defines the lifecycle management interface for sandbox providers. Implementations
     should integrate with their respective SDKs to provide standardized sandbox
-    lifecycle operations (list, get_or_create, delete).
+    lifecycle operations (get, create, delete).
 
     Implementations can add provider-specific parameters as keyword-only arguments
     with defaults, maintaining compatibility while providing type-safe APIs.
 
     Sync/Async Convention: Following LangChain convention, providers should offer both
-    sync and async methods in the same namespace if possible (doesn't hurt performance)
-    (e.g., both `list()` and `alist()` in one class). The default async implementations
-    delegate to sync methods via a thread pool. Providers can override async methods to
-    provide optimized async implementations if needed.
+    sync and async methods in the same namespace if possible (doesn't hurt performance).
+    The default async implementations delegate to sync methods via a thread pool.
+    Providers can override async methods to provide optimized async implementations if needed.
 
     Alternatively, if necessary for performance optimization, providers may split into
     separate implementations (e.g., `MySyncProvider` and `MyAsyncProvider`). In this
-    case, unimplemented methods should raise NotImplementedError with clear guidance
-    (e.g., "This provider only supports async operations. Use 'await provider.alist()'
-    or switch to MySyncProvider for synchronous code").
+    case, unimplemented methods should raise NotImplementedError with clear guidance.
 
     Example Implementation:
         ```python
@@ -192,34 +90,18 @@ class SandboxProvider(ABC, Generic[MetadataT]):
             created_at: str
 
 
-        class CustomSandboxProvider(SandboxProvider[CustomMetadata]):
-            def list(
-                self, *, cursor=None, status: Literal["running", "stopped"] | None = None, template_id: str | None = None, **kwargs: Any
-            ) -> SandboxListResponse[CustomMetadata]:
-                # Type-safe parameters with IDE autocomplete
-                # ... query provider API
-                return {"items": [...], "cursor": None}
+        class CustomSandboxProvider(SandboxProvider):
+            def get(self, *, sandbox_id: str, **kwargs: Any) -> SandboxBackendProtocol:
+                return CustomSandbox(sandbox_id)
 
-            def get_or_create(
-                self, *, sandbox_id=None, template_id: str = "default", timeout_minutes: int | None = None, **kwargs: Any
-            ) -> SandboxBackendProtocol:
-                # Type-safe parameters with IDE autocomplete
-                return CustomSandbox(sandbox_id or self._create_new(), template_id)
+            def create(self, *, template_id: str = "default", timeout_minutes: int | None = None, **kwargs: Any) -> SandboxBackendProtocol:
+                return CustomSandbox(self._create_new(), template_id)
 
             def delete(self, *, sandbox_id: str, force: bool = False, **kwargs: Any) -> None:
                 # Implementation
                 self._client.delete(sandbox_id, force=force)
         ```
     """
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[MetadataT]:
-        msg = "SandboxProvider.list() is not implemented"
-        raise NotImplementedError(msg)
 
     @abstractmethod
     def get(
@@ -295,26 +177,6 @@ class SandboxProvider(ABC, Generic[MetadataT]):
             provider.delete(sandbox_id="sb_456", force=True)
             ```
         """
-
-    async def alist(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[MetadataT]:
-        """Async version of list().
-
-        By default, runs the synchronous list() method in a thread pool.
-        Providers can override this for native async implementations.
-
-        Args:
-            cursor: Optional continuation token from a previous list() call.
-            **kwargs: Provider-specific filter parameters.
-
-        Returns:
-            SandboxListResponse containing items and cursor for pagination.
-        """
-        return await asyncio.to_thread(self.list, cursor=cursor, **kwargs)
 
     async def aget(
         self,

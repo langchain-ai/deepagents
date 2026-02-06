@@ -7,8 +7,6 @@ from typing_extensions import TypedDict
 from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse, SandboxBackendProtocol
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxInfo,
-    SandboxListResponse,
     SandboxProvider,
 )
 
@@ -47,7 +45,7 @@ class MockSandboxBackend(BaseSandbox):
         return [FileDownloadResponse(path=path, content=b"mock content") for path in paths]
 
 
-class MockSandboxProvider(SandboxProvider[MockMetadata]):
+class MockSandboxProvider(SandboxProvider):
     """Mock provider implementation for testing.
 
     This demonstrates how to implement the SandboxProvider ABC
@@ -58,47 +56,6 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
         self.sandboxes: dict[str, MockMetadata] = {
             "sb_001": {"status": "running", "template": "python-3.11"},
             "sb_002": {"status": "stopped", "template": "node-20"},
-        }
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        status: Literal["running", "stopped"] | None = None,
-        template_id: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[MockMetadata]:
-        """List sandboxes with optional filtering.
-
-        Args:
-            cursor: Pagination cursor (unused in this simple implementation).
-            status: Filter by sandbox status.
-            template_id: Filter by template ID.
-            **kwargs: Additional provider-specific filters (unused).
-        """
-        _ = cursor  # Unused in simple implementation
-        _ = kwargs  # No additional filters supported
-
-        items: list[SandboxInfo[MockMetadata]] = []
-
-        for sandbox_id, metadata in self.sandboxes.items():
-            # Apply status filter
-            if status and metadata.get("status") != status:
-                continue
-            # Apply template filter
-            if template_id and metadata.get("template") != template_id:
-                continue
-
-            items.append(
-                {
-                    "sandbox_id": sandbox_id,
-                    "metadata": metadata,
-                }
-            )
-
-        return {
-            "items": items,
-            "cursor": None,  # Simple implementation without pagination
         }
 
     def get(
@@ -162,51 +119,6 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
             del self.sandboxes[sandbox_id]
 
 
-def test_sandbox_info_structure() -> None:
-    """Test SandboxInfo TypedDict structure."""
-    info: SandboxInfo[MockMetadata] = {
-        "sandbox_id": "sb_123",
-        "metadata": {"status": "running", "template": "python-3.11"},
-    }
-
-    assert info["sandbox_id"] == "sb_123"
-    metadata = info.get("metadata")
-    assert metadata is not None
-    assert metadata["status"] == "running"
-
-
-def test_sandbox_list_response() -> None:
-    """Test SandboxListResponse structure."""
-    response: SandboxListResponse[MockMetadata] = {
-        "items": [
-            {"sandbox_id": "sb_001", "metadata": {"status": "running", "template": "python-3.11"}},
-            {"sandbox_id": "sb_002"},  # metadata is optional
-        ],
-        "cursor": "next_page_token",
-    }
-
-    assert len(response["items"]) == 2
-    assert response["cursor"] == "next_page_token"
-
-
-def test_provider_list_all() -> None:
-    """Test listing all sandboxes."""
-    provider = MockSandboxProvider()
-    result = provider.list()
-
-    assert len(result["items"]) == 2
-    assert result["cursor"] is None
-
-
-def test_provider_list_with_filter() -> None:
-    """Test listing with status filter."""
-    provider = MockSandboxProvider()
-    result = provider.list(status="running")
-
-    assert len(result["items"]) == 1
-    assert result["items"][0]["sandbox_id"] == "sb_001"
-
-
 def test_provider_get_existing() -> None:
     """Test getting an existing sandbox."""
     provider = MockSandboxProvider()
@@ -250,22 +162,13 @@ def test_provider_delete_idempotent() -> None:
 
 def test_provider_protocol_compliance() -> None:
     """Test that MockSandboxProvider satisfies the protocol."""
-    provider: SandboxProvider = MockSandboxProvider()  # type: ignore[type-arg]
+    provider: SandboxProvider = MockSandboxProvider()
 
-    # Should be able to call protocol methods
-    result = provider.list()
-    assert isinstance(result, dict)
-    assert "items" in result
-    assert "cursor" in result
+    backend = provider.create()
+    assert isinstance(backend.id, str)
 
-
-async def test_provider_async_list() -> None:
-    """Test async list method (defaults to running sync in thread)."""
-    provider = MockSandboxProvider()
-    result = await provider.alist()
-
-    assert len(result["items"]) == 2
-    assert result["cursor"] is None
+    reconnected = provider.get(sandbox_id=backend.id)
+    assert reconnected.id == backend.id
 
 
 async def test_provider_async_get() -> None:

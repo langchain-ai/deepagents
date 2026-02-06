@@ -170,6 +170,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         timeout: int = 180,
         template: str | None = None,
         template_image: str | None = None,
+        **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
         """Get existing or create new LangSmith sandbox.
 
@@ -178,6 +179,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             timeout: Timeout in seconds for sandbox startup (default: 180)
             template: Template name for the sandbox
             template_image: Docker image for the template
+            **kwargs: Additional LangSmith-specific parameters
 
         Returns:
             LangSmithBackend instance

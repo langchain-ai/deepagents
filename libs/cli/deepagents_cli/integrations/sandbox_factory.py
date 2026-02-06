@@ -6,6 +6,7 @@ import string
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.backends.sandbox import SandboxProvider
@@ -72,6 +73,7 @@ def create_sandbox(
     template: str | None = None,
     template_image: str | None = None,
     cleanup: bool | None = None,
+    **kwargs: Any,  # noqa: ARG001
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
@@ -86,6 +88,7 @@ def create_sandbox(
         template_image: Docker image for template (langsmith provider only)
         cleanup: Whether to cleanup sandbox on exit. Defaults to True if sandbox_id
             is None (new sandbox), False otherwise (reusing existing).
+        **kwargs: Additional provider-specific parameters
 
     Yields:
         SandboxBackendProtocol instance

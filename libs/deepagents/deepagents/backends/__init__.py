@@ -7,9 +7,7 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import (
     BackendContext,
-    ContextT,
     NamespaceFactory,
-    StateT,
     StoreBackend,
 )
 
@@ -17,11 +15,9 @@ __all__ = [
     "BackendContext",
     "BackendProtocol",
     "CompositeBackend",
-    "ContextT",
     "FilesystemBackend",
     "LocalShellBackend",
     "NamespaceFactory",
     "StateBackend",
-    "StateT",
     "StoreBackend",
 ]

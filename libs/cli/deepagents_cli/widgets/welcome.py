@@ -20,7 +20,8 @@ def _fetch_project_url(project_name: str) -> str | None:
         Project URL string if found, None otherwise.
     """
     try:
-        from langsmith import Client
+        # Optional dep
+        from langsmith import Client  # noqa: PLC0415
 
         project = Client().read_project(project_name=project_name)
     except (OSError, ValueError, RuntimeError):

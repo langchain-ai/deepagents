@@ -1,6 +1,11 @@
 """Unit tests for main entry point."""
 
+import inspect
+
 import pytest
+
+from deepagents_cli.app import run_textual_app
+from deepagents_cli.main import run_textual_cli_async
 
 
 class TestResumeHintLogic:
@@ -44,10 +49,6 @@ class TestRunTextualAppReturnType:
     @pytest.mark.asyncio
     async def test_run_textual_app_returns_int(self) -> None:
         """run_textual_app should return an integer return code."""
-        import inspect
-
-        from deepagents_cli.app import run_textual_app
-
         # Verify the function signature returns int
         sig = inspect.signature(run_textual_app)
         # Handle both 'int' string and int type (forward refs)
@@ -62,10 +63,6 @@ class TestRunTextualCliAsyncReturnType:
 
     def test_run_textual_cli_async_returns_int(self) -> None:
         """run_textual_cli_async should return an integer return code."""
-        import inspect
-
-        from deepagents_cli.main import run_textual_cli_async
-
         # Verify the function signature returns int
         sig = inspect.signature(run_textual_cli_async)
         assert sig.return_annotation in (int, "int"), (
@@ -78,10 +75,6 @@ class TestThreadMessage:
 
     def test_new_session_message_format(self) -> None:
         """New session message should say 'Starting with thread:' not 'Thread:'."""
-        import inspect
-
-        from deepagents_cli.main import run_textual_cli_async
-
         # This tests that the format is correct by checking the source
         source = inspect.getsource(run_textual_cli_async)
         assert "Starting with thread:" in source, (

@@ -3,10 +3,11 @@
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic
 
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
+from langgraph.typing import ContextT, StateT
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -28,10 +29,8 @@ from deepagents.backends.utils import (
 )
 
 if TYPE_CHECKING:
-    from langchain.tools import Runtime, ToolRuntime
-
-StateT = TypeVar("StateT")
-ContextT = TypeVar("ContextT")
+    from langchain.tools import ToolRuntime
+    from langgraph.runtime import Runtime
 
 
 @dataclass

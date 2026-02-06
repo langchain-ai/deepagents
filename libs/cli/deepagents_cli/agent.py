@@ -119,7 +119,7 @@ def reset_agent(agent_name: str, source_agent: str | None = None) -> None:
 def get_system_prompt(
     assistant_id: str,
     sandbox_type: str | None = None,
-    working_dir: str | None = None,
+    _working_dir: str | None = None,
 ) -> str:
     """Get the base system prompt for the agent.
 
@@ -132,7 +132,10 @@ def get_system_prompt(
         sandbox_type: Type of sandbox provider
             ("daytona", "langsmith", "modal", "runloop").
             If None, agent is operating in local mode.
-        working_dir: Custom working directory override for sandbox mode.
+        _working_dir: **Internal use only.** Custom working directory override
+            for sandbox mode. Used to update the prompt with sandbox-specific
+            paths. Implementation may change in the future. End users should
+            not rely on this parameter.
 
     Returns:
         The system prompt string (base instructions + environment context)
@@ -157,19 +160,19 @@ You are running as model `{settings.model_name}`"""
         model_identity_section += "\n"
 
     if sandbox_type:
-        # Use provided working_dir or get provider-specific default
-        if working_dir is None:
-            working_dir = get_default_working_dir(sandbox_type)
+        # Use provided _working_dir or get provider-specific default
+        if _working_dir is None:
+            _working_dir = get_default_working_dir(sandbox_type)
 
         working_dir_section = f"""### Current Working Directory
 
-You are operating in a **remote Linux sandbox** at `{working_dir}`.
+You are operating in a **remote Linux sandbox** at `{_working_dir}`.
 
 All code execution and file operations happen in this sandbox environment.
 
 **Important:**
 - The CLI is running locally on the user's machine, but you execute code remotely
-- Use `{working_dir}` as your working directory for all operations
+- Use `{_working_dir}` as your working directory for all operations
 
 """
     else:
@@ -406,7 +409,7 @@ def create_cli_agent(
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
-    working_dir: str | None = None,
+    _working_dir: str | None = None,
     system_prompt: str | None = None,
     auto_approve: bool = False,
     enable_memory: bool = True,
@@ -430,7 +433,10 @@ def create_cli_agent(
         sandbox_type: Type of sandbox provider
             (`'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
             Used for system prompt generation.
-        working_dir: Custom working directory override for sandbox mode.
+        _working_dir: **Internal use only.** Custom working directory override
+            for sandbox mode. Used to update the prompt with sandbox-specific
+            paths. Implementation may change in the future. End users should
+            not rely on this parameter.
         system_prompt: Override the default system prompt.
 
             If `None`, generates one based on `sandbox_type` and `assistant_id`.
@@ -554,7 +560,7 @@ def create_cli_agent(
         system_prompt = get_system_prompt(
             assistant_id=assistant_id,
             sandbox_type=sandbox_type,
-            working_dir=working_dir,
+            _working_dir=_working_dir,
         )
 
     # Configure interrupt_on based on auto_approve setting

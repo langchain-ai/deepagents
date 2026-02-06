@@ -1,22 +1,23 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 
 import pytest
-from deepagents.backends.sandbox import SandboxProvider
+from deepagents.backends.sandbox import SandboxClient
 
-from langchain_daytona.sandbox import DaytonaProvider
-from tests.integration_tests.sandboxes import SandboxProviderIntegrationTests
+from langchain_daytona.sandbox import DaytonaSandboxClient
+from tests.integration_tests.sandboxes import SandboxClientIntegrationTests
 
 
-class TestDaytonaSandboxProviderStandard(SandboxProviderIntegrationTests):
+class TestDaytonaSandboxClientStandard(SandboxClientIntegrationTests):
     @pytest.fixture(scope="class")
-    def sandbox_provider(self) -> SandboxProvider[Any]:
+    def sandbox_provider(self) -> SandboxClient:
         api_key = os.environ.get("DAYTONA_API_KEY")
         if not api_key:
-            raise RuntimeError("DAYTONA_API_KEY is required for Daytona integration tests")
-        return DaytonaProvider(api_key=api_key)
+            raise RuntimeError(
+                "DAYTONA_API_KEY is required for Daytona integration tests"
+            )
+        return DaytonaSandboxClient(api_key=api_key)
 
     @property
     def has_async(self) -> bool:

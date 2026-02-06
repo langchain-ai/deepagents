@@ -15,7 +15,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxProvider,
+    SandboxClient,
 )
 
 if TYPE_CHECKING:
@@ -76,7 +76,8 @@ class DaytonaBackend(BaseSandbox):
 
         return [FileUploadResponse(path=path, error=None) for path, _ in files]
 
-class DaytonaProvider(SandboxProvider[Sandbox]):
+
+class DaytonaSandboxClient(SandboxClient):
     """Daytona sandbox provider implementation."""
 
     def __init__(self, api_key: str | None = None) -> None:

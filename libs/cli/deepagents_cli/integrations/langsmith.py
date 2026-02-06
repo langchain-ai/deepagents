@@ -145,9 +145,9 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
 
         self._api_key = api_key or os.environ.get("LANGSMITH_API_KEY")
         if not self._api_key:
-            msg = "LangSmith API key not set"
+            msg = "LANGSMITH_API_KEY environment variable not set"
             raise ValueError(msg)
-        self._client: SandboxClient = sandbox.SandboxClient()
+        self._client: SandboxClient = sandbox.SandboxClient(api_key=self._api_key)
 
     def list(
         self,

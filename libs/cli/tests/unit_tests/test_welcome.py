@@ -11,6 +11,9 @@ from deepagents_cli.widgets.welcome import WelcomeBanner
 def _extract_links(banner: Text, text_start: int, text_end: int) -> list[str]:
     """Extract link URLs from spans covering the given text range.
 
+    Note: This relies on `rich.text.Text._spans` internals and may need
+    updating if the Rich library changes its internal representation.
+
     Args:
         banner: The Rich Text object to inspect.
         text_start: Start index in the plain text.
@@ -32,7 +35,7 @@ def _make_banner(
     thread_id: str | None = None,
     project_name: str | None = None,
 ) -> WelcomeBanner:
-    """Create a `WelcomeBanner` with LangSmith env vars cleared.
+    """Create a `WelcomeBanner` with all env vars cleared.
 
     Args:
         thread_id: Optional thread ID to display.
@@ -88,7 +91,7 @@ class TestBuildBannerThreadLink:
         banner = widget._build_banner(project_url=None)
         assert "Thread:" not in banner.plain
 
-    def test_thread_line_still_present_with_project_url_and_no_thread_id(self) -> None:
+    def test_no_thread_line_when_project_url_but_no_thread_id(self) -> None:
         """Banner should not contain a thread line even with `project_url`."""
         widget = _make_banner(thread_id=None)
         banner = widget._build_banner(
@@ -96,12 +99,41 @@ class TestBuildBannerThreadLink:
         )
         assert "Thread:" not in banner.plain
 
+    def test_trailing_slash_on_project_url_normalized(self) -> None:
+        """Trailing slash on `project_url` should not cause double-slash in URL."""
+        project_url = "https://smith.langchain.com/o/org/projects/p/abc123/"
+        widget = _make_banner(thread_id="55555")
+        banner = widget._build_banner(project_url=project_url)
+
+        thread_id_start = banner.plain.index("55555")
+        thread_id_end = thread_id_start + len("55555")
+        links = _extract_links(banner, thread_id_start, thread_id_end)
+        assert links
+        # Path portion (after ://) should not contain double slashes
+        path = links[0].split("://", 1)[1]
+        assert "//" not in path
+
+    def test_thread_link_coexists_with_langsmith_project(self) -> None:
+        """Thread link should work when LangSmith project info is also shown."""
+        project_url = "https://smith.langchain.com/o/org/projects/p/abc123"
+        widget = _make_banner(thread_id="77777", project_name="my-project")
+        banner = widget._build_banner(project_url=project_url)
+
+        assert "my-project" in banner.plain
+        assert "Thread: 77777" in banner.plain
+
+        thread_id_start = banner.plain.index("77777")
+        thread_id_end = thread_id_start + len("77777")
+        links = _extract_links(banner, thread_id_start, thread_id_end)
+        assert links
+        assert links[0] == f"{project_url}/t/77777"
+
 
 class TestBuildBannerReturnType:
     """Tests for `_build_banner` return value."""
 
     def test_returns_rich_text(self) -> None:
-        """``_build_banner`` should return a `rich.text.Text` object."""
+        """`_build_banner` should return a `rich.text.Text` object."""
         widget = _make_banner(thread_id="abc")
         result = widget._build_banner()
         assert isinstance(result, Text)

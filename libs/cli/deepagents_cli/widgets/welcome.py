@@ -89,6 +89,13 @@ class WelcomeBanner(Static):
     def _build_banner(self, project_url: str | None = None) -> Text:
         """Build the banner rich text.
 
+        When a `project_url` is provided and a thread ID is set, the thread ID
+        is rendered as a clickable hyperlink to the LangSmith thread view.
+
+        Args:
+            project_url: LangSmith project URL used for linking the project
+                name and thread ID. When `None`, text is rendered without links.
+
         Returns:
             Rich Text object containing the formatted banner.
         """
@@ -111,7 +118,7 @@ class WelcomeBanner(Static):
 
         if self._cli_thread_id:
             if project_url:
-                thread_url = f"{project_url}/t/{self._cli_thread_id}"
+                thread_url = f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
                 thread_line = Text.assemble(
                     ("Thread: ", "dim"),
                     (self._cli_thread_id, Style(dim=True, link=thread_url)),

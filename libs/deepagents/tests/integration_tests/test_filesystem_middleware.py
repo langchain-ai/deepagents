@@ -1,7 +1,7 @@
 import uuid
 
 import pytest
-from langchain.agents import create_agent
+from langchain.agents import AgentMiddleware, create_agent
 from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
@@ -9,11 +9,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.protocol import ExecuteResponse
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
     WRITE_FILE_TOOL_DESCRIPTION,
     FileData,
     FilesystemMiddleware,
+    _supports_execution,
 )
 from tests.utils import ResearchMiddleware, get_la_liga_standings, get_nba_standings, get_nfl_standings, get_premier_league_standings
 
@@ -933,10 +935,6 @@ class TestFilesystem:
 
     def test_execute_tool_filtered_for_non_sandbox_backend(self):
         """Verify execute tool is filtered out when backend doesn't support it."""
-        from langchain.agents import AgentMiddleware
-
-        from deepagents.backends.protocol import ExecuteResponse
-
         # Track what tools are passed to the model
         captured_tools = []
 
@@ -985,10 +983,6 @@ class TestFilesystem:
 
     def test_system_prompt_includes_execute_instructions_only_when_supported(self):
         """Verify EXECUTION_SYSTEM_PROMPT is only added when backend supports execution."""
-        from langchain.agents import AgentMiddleware
-
-        from deepagents.backends.protocol import ExecuteResponse
-
         # Track system prompts passed to the model
         captured_prompts = []
 
@@ -1038,8 +1032,6 @@ class TestFilesystem:
 
     def test_composite_backend_execution_support_detection(self):
         """Verify _supports_execution correctly detects CompositeBackend capabilities."""
-        from deepagents.backends.protocol import ExecuteResponse
-        from deepagents.middleware.filesystem import _supports_execution
 
         # Mock sandbox backend
         class MockSandboxBackend(StateBackend):

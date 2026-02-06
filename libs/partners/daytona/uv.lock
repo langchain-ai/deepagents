@@ -1071,6 +1071,7 @@ source = { editable = "." }
 dependencies = [
     { name = "daytona" },
     { name = "deepagents" },
+    { name = "langchain-tests" },
 ]
 
 [package.dev-dependencies]
@@ -1090,6 +1091,7 @@ test = [
 requires-dist = [
     { name = "daytona" },
     { name = "deepagents", editable = "../../deepagents" },
+    { name = "langchain-tests", specifier = ">=1.1.3" },
 ]
 
 [package.metadata.requires-dev]
@@ -1122,7 +1124,7 @@ wheels = [
 
 [[package]]
 name = "langchain-tests"
-version = "1.1.3"
+version = "1.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -1137,9 +1139,9 @@ dependencies = [
     { name = "syrupy" },
     { name = "vcrpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/23/6b/0168122d0fc7e8f62af910a076d87769311fff270b47d0b4a8a27fadfeca/langchain_tests-1.1.3.tar.gz", hash = "sha256:4afd15984783a718e114ac99b66a8ef822628d8ac372a69a83fa3b539c8df8cc", size = 150811, upload-time = "2026-01-31T21:41:40.059Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/84/7002cb448cf879d59c32dd9741ba3ed68df0926433b8d0a81b54e080c66e/langchain_tests-1.1.4.tar.gz", hash = "sha256:b066e2eace946e6f7af12fd181898ba5681fea3fe8522511575c2270d74d75b2", size = 154162, upload-time = "2026-02-06T18:46:22.001Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/a6/37c4cbb718f67932f8dca77d86b77d068281756440d9da6ed087a93fcd7b/langchain_tests-1.1.3-py3-none-any.whl", hash = "sha256:155ff912a611c28d313e00f1f0ad0099c0689d036797580bd89a2c6a11815cb5", size = 52511, upload-time = "2026-01-31T21:41:39.109Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/be/6823bf99e11ce7dc61d3bd295c1a6d2f19de0a36af2f20bedc5417a53ce6/langchain_tests-1.1.4-py3-none-any.whl", hash = "sha256:f7efff221ec99a1e7bb6a28c35b78309c71f312d9719982bdf36cc435e8f5b38", size = 55172, upload-time = "2026-02-06T18:46:20.7Z" },
 ]
 
 [[package]]

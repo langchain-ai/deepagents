@@ -101,15 +101,29 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
             "cursor": None,  # Simple implementation without pagination
         }
 
-    def get_or_create(
+    def get(
         self,
         *,
-        sandbox_id: str | None = None,
+        sandbox_id: str,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get existing sandbox."""
+        _ = kwargs
+
+        if sandbox_id not in self.sandboxes:
+            msg = f"Sandbox {sandbox_id} not found"
+            raise ValueError(msg)
+
+        return MockSandboxBackend(sandbox_id)
+
+    def create(
+        self,
+        *,
         template_id: str = "default",
         timeout_minutes: int | None = None,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
-        """Get existing or create new sandbox.
+        """Create a new sandbox.
 
         Args:
             sandbox_id: ID of existing sandbox to retrieve, or None to create new.
@@ -117,21 +131,12 @@ class MockSandboxProvider(SandboxProvider[MockMetadata]):
             timeout_minutes: Timeout for sandbox operations (unused).
             **kwargs: Additional provider-specific options (unused).
         """
-        _ = timeout_minutes  # Unused in simple implementation
-        _ = kwargs  # No additional options supported
+        _ = timeout_minutes
+        _ = kwargs
 
-        if sandbox_id is None:
-            # Create new sandbox
-            new_id = f"sb_{len(self.sandboxes) + 1:03d}"
-            self.sandboxes[new_id] = {"status": "running", "template": template_id}
-            return MockSandboxBackend(new_id)
-
-        # Get existing sandbox
-        if sandbox_id not in self.sandboxes:
-            msg = f"Sandbox {sandbox_id} not found"
-            raise ValueError(msg)
-
-        return MockSandboxBackend(sandbox_id)
+        new_id = f"sb_{len(self.sandboxes) + 1:03d}"
+        self.sandboxes[new_id] = {"status": "running", "template": template_id}
+        return MockSandboxBackend(new_id)
 
     def delete(
         self,
@@ -202,18 +207,18 @@ def test_provider_list_with_filter() -> None:
     assert result["items"][0]["sandbox_id"] == "sb_001"
 
 
-def test_provider_get_or_create_existing() -> None:
+def test_provider_get_existing() -> None:
     """Test getting an existing sandbox."""
     provider = MockSandboxProvider()
-    sandbox = provider.get_or_create(sandbox_id="sb_001")
+    sandbox = provider.get(sandbox_id="sb_001")
 
     assert sandbox.id == "sb_001"
 
 
-def test_provider_get_or_create_new() -> None:
+def test_provider_create_new() -> None:
     """Test creating a new sandbox."""
     provider = MockSandboxProvider()
-    sandbox = provider.get_or_create(sandbox_id=None, template_id="python-3.11", timeout_minutes=60)
+    sandbox = provider.create(template_id="python-3.11", timeout_minutes=60)
 
     assert sandbox.id == "sb_003"
     assert "sb_003" in provider.sandboxes
@@ -263,10 +268,10 @@ async def test_provider_async_list() -> None:
     assert result["cursor"] is None
 
 
-async def test_provider_async_get_or_create() -> None:
-    """Test async get_or_create method."""
+async def test_provider_async_get() -> None:
+    """Test async get method."""
     provider = MockSandboxProvider()
-    sandbox = await provider.aget_or_create(sandbox_id="sb_001")
+    sandbox = await provider.aget(sandbox_id="sb_001")
 
     assert sandbox.id == "sb_001"
 

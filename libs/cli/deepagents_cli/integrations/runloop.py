@@ -21,7 +21,6 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxListResponse,
     SandboxProvider,
 )
 from runloop_api_client import Runloop
@@ -168,24 +167,29 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
             raise ValueError(msg)
         self._client = Runloop(bearer_token=self._api_key)
 
-    def list(
+    def get(
         self,
         *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Runloop devboxes.
-
-        Raises:
-            NotImplementedError: Runloop SDK doesn't expose a list API yet.
-        """
-        msg = "Listing with Runloop SDK not yet implemented"
-        raise NotImplementedError(msg)
+        sandbox_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        devbox = self._client.devboxes.retrieve(id=sandbox_id)
+        return RunloopBackend(devbox_id=devbox.id, client=self._client)
 
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        if sandbox_id is None:
+            return self.create(timeout=timeout, **kwargs)
+        return self.get(sandbox_id=sandbox_id, **kwargs)
+
+    def create(
+        self,
+        *,
         timeout: int = 180,
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
@@ -202,21 +206,17 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
         Raises:
             RuntimeError: Devbox startup failed
         """
-        if sandbox_id:
-            devbox = self._client.devboxes.retrieve(id=sandbox_id)
-        else:
-            devbox = self._client.devboxes.create()
+        devbox = self._client.devboxes.create()
 
-            # Poll until running
-            for _ in range(timeout // 2):
-                status = self._client.devboxes.retrieve(id=devbox.id)
-                if status.status == "running":
-                    break
-                time.sleep(2)
-            else:
-                self._client.devboxes.shutdown(id=devbox.id)
-                msg = f"Devbox failed to start within {timeout} seconds"
-                raise RuntimeError(msg)
+        for _ in range(timeout // 2):
+            status = self._client.devboxes.retrieve(id=devbox.id)
+            if status.status == "running":
+                break
+            time.sleep(2)
+        else:
+            self._client.devboxes.shutdown(id=devbox.id)
+            msg = f"Devbox failed to start within {timeout} seconds"
+            raise RuntimeError(msg)
 
         return RunloopBackend(devbox_id=devbox.id, client=self._client)
 

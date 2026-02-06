@@ -15,12 +15,12 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxListResponse,
     SandboxProvider,
 )
 
 if TYPE_CHECKING:
     from daytona import Sandbox
+    from daytona._sync.sandbox import Sandbox
 
 
 class DaytonaBackend(BaseSandbox):
@@ -76,8 +76,7 @@ class DaytonaBackend(BaseSandbox):
 
         return [FileUploadResponse(path=path, error=None) for path, _ in files]
 
-
-class DaytonaProvider(SandboxProvider[dict[str, Any]]):
+class DaytonaProvider(SandboxProvider[Sandbox]):
     """Daytona sandbox provider implementation."""
 
     def __init__(self, api_key: str | None = None) -> None:
@@ -88,41 +87,34 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             raise ValueError(msg)
         self._client = Daytona(DaytonaConfig(api_key=self._api_key))
 
-    def list(
+    @property
+    def client(self) -> Daytona:
+        """Expose the underlying Daytona client instance."""
+        return self._client
+
+    def get(
         self,
         *,
-        cursor: str | None = None,
+        sandbox_id: str,
         **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List sandboxes (not yet implemented for Daytona SDK)."""
-        if cursor is not None:
-            msg = "DaytonaProvider.list() does not support cursor"
-            raise ValueError(msg)
+    ) -> SandboxBackendProtocol:
         if kwargs:
             keys = sorted(kwargs.keys())
-            msg = f"DaytonaProvider.list() got unsupported kwargs: {keys}"
+            msg = f"DaytonaProvider.get() got unsupported kwargs: {keys}"
             raise ValueError(msg)
-        msg = "Listing with Daytona SDK not yet implemented"
-        raise NotImplementedError(msg)
+        sandbox = self._client.get(sandbox_id)
+        return DaytonaBackend(sandbox)
 
-    def get_or_create(
+    def create(
         self,
         *,
-        sandbox_id: str | None = None,
         timeout: int = 180,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
-        """Create a new sandbox and wait until it's ready."""
         if kwargs:
             keys = sorted(kwargs.keys())
-            msg = f"DaytonaProvider.get_or_create() got unsupported kwargs: {keys}"
+            msg = f"DaytonaProvider.create() got unsupported kwargs: {keys}"
             raise ValueError(msg)
-        if sandbox_id:
-            msg = (
-                "Connecting to existing Daytona sandbox by ID not yet supported. "
-                "Create a new sandbox by omitting sandbox_id parameter."
-            )
-            raise NotImplementedError(msg)
 
         sandbox = self._client.create()
 
@@ -145,11 +137,28 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
 
         return DaytonaBackend(sandbox)
 
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        if sandbox_id is None:
+            return self.create(timeout=timeout, **kwargs)
+        return self.get(sandbox_id=sandbox_id, **kwargs)
+
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:
         """Delete a sandbox by id."""
         if kwargs:
             keys = sorted(kwargs.keys())
             msg = f"DaytonaProvider.delete() got unsupported kwargs: {keys}"
             raise ValueError(msg)
-        sandbox = self._client.get(sandbox_id)
-        self._client.delete(sandbox)
+        try:
+            sandbox = self._client.get(sandbox_id)
+        except Exception:
+            return
+        try:
+            self._client.delete(sandbox)
+        except Exception:
+            return

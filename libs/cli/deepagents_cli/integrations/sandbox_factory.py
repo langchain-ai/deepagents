@@ -89,7 +89,7 @@ def create_sandbox(
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
-    backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
+    backend = provider_obj.create() if sandbox_id is None else provider_obj.get(sandbox_id=sandbox_id)
     glyphs = get_glyphs()
     console.print(
         f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "

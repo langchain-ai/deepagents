@@ -212,99 +212,47 @@ class SandboxProvider(ABC, Generic[MetadataT]):
         ```
     """
 
-    @abstractmethod
     def list(
         self,
         *,
         cursor: str | None = None,
         **kwargs: Any,
     ) -> SandboxListResponse[MetadataT]:
-        """List available sandboxes with optional filtering and pagination.
+        msg = "SandboxProvider.list() is not implemented"
+        raise NotImplementedError(msg)
 
-        Args:
-            cursor: Optional continuation token from a previous list() call.
-                Pass None to start from the beginning. The cursor is opaque
-                and provider-specific; clients should not parse or modify it.
-            **kwargs: Provider-specific filter parameters. Implementations should
-                expose these as named keyword-only parameters with defaults for
-                type safety. Common examples include status filters, creation time
-                ranges, template filters, or owner filters.
+    @abstractmethod
+    def get(
+        self,
+        *,
+        sandbox_id: str,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Get an existing sandbox.
 
-        Returns:
-            SandboxListResponse containing:
-                - items: List of sandbox metadata for the current page
-                - cursor: Token for next page, or None if this is the last page
-
-        Example:
-            ```python
-            # First page
-            response = provider.list()
-            for sandbox in response["items"]:
-                print(sandbox["sandbox_id"])
-
-            # Next page if available
-            if response["cursor"]:
-                next_response = provider.list(cursor=response["cursor"])
-
-            # With filters (if provider supports them)
-            running = provider.list(status="running")
-            ```
+        If the sandbox does not exist, implementations should raise an error.
         """
 
     @abstractmethod
+    def create(
+        self,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Create a new sandbox and return a connected backend."""
+
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
-        """Get an existing sandbox or create a new one.
+        """Backward-compatible wrapper around get() / create().
 
-        This method retrieves a connection to an existing sandbox if sandbox_id
-        is provided, or creates a new sandbox instance if sandbox_id is None.
-        The returned object implements SandboxBackendProtocol and can be used
-        for all sandbox operations (execute, read, write, etc.).
-
-        Important: If a sandbox_id is provided but does not exist, this method
-        should raise an error rather than creating a new sandbox. Only when
-        sandbox_id is explicitly None should a new sandbox be created.
-
-        Args:
-            sandbox_id: Unique identifier of an existing sandbox to retrieve.
-                If None, creates a new sandbox instance. The new sandbox's ID
-                can be accessed via the returned object's .id property.
-                If a non-None value is provided but the sandbox doesn't exist,
-                an error will be raised.
-            **kwargs: Provider-specific creation/connection parameters. Implementations
-                should expose these as named keyword-only parameters with defaults
-                for type safety. Common examples include template_id, resource limits,
-                environment variables, or timeout settings.
-
-        Returns:
-            An object implementing SandboxBackendProtocol that can execute
-            commands, read/write files, and perform other sandbox operations.
-
-        Raises:
-            Implementation-specific exceptions for errors such as:
-                - Sandbox not found (if sandbox_id provided but doesn't exist)
-                - Insufficient permissions
-                - Resource limits exceeded
-                - Invalid template or configuration
-
-        Example:
-            ```python
-            # Create a new sandbox
-            sandbox = provider.get_or_create(sandbox_id=None, template_id="python-3.11", timeout_minutes=60)
-            print(sandbox.id)  # "sb_new123"
-
-            # Reconnect to existing sandbox
-            existing = provider.get_or_create(sandbox_id="sb_new123")
-
-            # Use the sandbox
-            result = sandbox.execute("python --version")
-            print(result.output)
-            ```
+        Prefer calling get() or create() directly.
         """
+        if sandbox_id is None:
+            return self.create(**kwargs)
+        return self.get(sandbox_id=sandbox_id, **kwargs)
 
     @abstractmethod
     def delete(
@@ -368,6 +316,30 @@ class SandboxProvider(ABC, Generic[MetadataT]):
         """
         return await asyncio.to_thread(self.list, cursor=cursor, **kwargs)
 
+    async def aget(
+        self,
+        *,
+        sandbox_id: str,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Async version of get().
+
+        By default, runs the synchronous get() method in a thread pool.
+        Providers can override this for native async implementations.
+        """
+        return await asyncio.to_thread(self.get, sandbox_id=sandbox_id, **kwargs)
+
+    async def acreate(
+        self,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Async version of create().
+
+        By default, runs the synchronous create() method in a thread pool.
+        Providers can override this for native async implementations.
+        """
+        return await asyncio.to_thread(self.create, **kwargs)
+
     async def aget_or_create(
         self,
         *,
@@ -378,6 +350,8 @@ class SandboxProvider(ABC, Generic[MetadataT]):
 
         By default, runs the synchronous get_or_create() method in a thread pool.
         Providers can override this for native async implementations.
+
+        This method delegates to get() when sandbox_id is provided, otherwise create().
 
         Important: If a sandbox_id is provided but does not exist, this method
         should raise an error rather than creating a new sandbox. Only when

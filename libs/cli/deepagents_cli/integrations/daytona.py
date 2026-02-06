@@ -14,7 +14,6 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxListResponse,
     SandboxProvider,
 )
 
@@ -150,75 +149,71 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             raise ValueError(msg)
         self._client = Daytona(DaytonaConfig(api_key=self._api_key))
 
-    def list(
+    def get(
         self,
         *,
-        cursor: str | None = None,
+        sandbox_id: str,
         **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Daytona sandboxes.
+    ) -> SandboxBackendProtocol:
+        if kwargs:
+            keys = sorted(kwargs.keys())
+            msg = f"DaytonaProvider.get() got unsupported kwargs: {keys}"
+            raise ValueError(msg)
+        sandbox = self._client.get(sandbox_id)
+        return DaytonaBackend(sandbox)
 
-        Raises:
-            NotImplementedError: Daytona SDK doesn't expose a list API yet.
-        """
-        msg = "Listing with Daytona SDK not yet implemented"
-        raise NotImplementedError(msg)
-
-    def get_or_create(
+    def create(
         self,
         *,
-        sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
-        """Get existing or create new Daytona sandbox.
-
-        Args:
-            sandbox_id: Not supported yet - must be None
-            timeout: Timeout in seconds for sandbox startup (default: 180)
-            **kwargs: Additional Daytona-specific parameters
-
-        Returns:
-            DaytonaBackend instance
-
-        Raises:
-            NotImplementedError: Connecting to existing sandbox not supported
-            RuntimeError: Sandbox startup failed
-        """
-        if sandbox_id:
-            msg = (
-                "Connecting to existing Daytona sandbox by ID not yet supported. "
-                "Create a new sandbox by omitting sandbox_id parameter."
-            )
-            raise NotImplementedError(msg)
+        if kwargs:
+            keys = sorted(kwargs.keys())
+            msg = f"DaytonaProvider.create() got unsupported kwargs: {keys}"
+            raise ValueError(msg)
 
         sandbox = self._client.create()
 
-        # Poll until running
         for _ in range(timeout // 2):
             try:
                 result = sandbox.process.exec("echo ready", timeout=5)
                 if result.exit_code == 0:
                     break
-            except Exception:  # noqa: S110, BLE001
-                # Sandbox not ready yet, continue polling
-                pass
+            except Exception:  # noqa: BLE001
+                time.sleep(2)
+                continue
             time.sleep(2)
         else:
             try:
-                sandbox.delete()
+                self._client.delete(sandbox)
             finally:
                 msg = f"Daytona sandbox failed to start within {timeout} seconds"
                 raise RuntimeError(msg)
 
         return DaytonaBackend(sandbox)
 
-    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
-        """Delete a Daytona sandbox.
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        if sandbox_id is None:
+            return self.create(timeout=timeout, **kwargs)
+        return self.get(sandbox_id=sandbox_id, **kwargs)
 
-        Args:
-            sandbox_id: Sandbox ID to delete
-            **kwargs: Additional parameters
-        """
-        sandbox = self._client.get(sandbox_id)
-        self._client.delete(sandbox)
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:
+        if kwargs:
+            keys = sorted(kwargs.keys())
+            msg = f"DaytonaProvider.delete() got unsupported kwargs: {keys}"
+            raise ValueError(msg)
+        try:
+            sandbox = self._client.get(sandbox_id)
+        except Exception:
+            return
+        try:
+            self._client.delete(sandbox)
+        except Exception:
+            return

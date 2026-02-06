@@ -15,7 +15,6 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxListResponse,
     SandboxProvider,
 )
 
@@ -149,50 +148,25 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             raise ValueError(msg)
         self._client: SandboxClient = sandbox.SandboxClient()
 
-    def list(
+    def get(
         self,
         *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available LangSmith sandboxes.
+        sandbox_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        try:
+            sandbox = self._client.get_sandbox(name=sandbox_id)
+        except Exception as e:
+            msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
+            raise RuntimeError(msg) from e
+        return LangSmithBackend(sandbox)
 
-        Raises:
-            NotImplementedError: LangSmith SDK list API not yet implemented.
-        """
-        msg = "Listing with LangSmith SDK not yet implemented"
-        raise NotImplementedError(msg)
-
-    def get_or_create(
+    def create(
         self,
         *,
-        sandbox_id: str | None = None,
         timeout: int = 180,
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
-        """Get existing or create new LangSmith sandbox.
-
-        Args:
-            sandbox_id: Optional existing sandbox name to reuse
-            timeout: Timeout in seconds for sandbox startup (default: 180)
-            **kwargs: Additional LangSmith-specific parameters
-
-        Returns:
-            LangSmithBackend instance
-
-        Raises:
-            RuntimeError: Sandbox connection or startup failed
-        """
-        if sandbox_id:
-            # Connect to existing sandbox by name
-            try:
-                sandbox = self._client.get_sandbox(name=sandbox_id)
-            except Exception as e:
-                msg = f"Failed to connect to existing sandbox '{sandbox_id}': {e}"
-                raise RuntimeError(msg) from e
-            return LangSmithBackend(sandbox)
-
-        # Create new sandbox - ensure template exists first
         self._ensure_template()
 
         try:
@@ -205,24 +179,33 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             )
             raise RuntimeError(msg) from e
 
-        # Verify sandbox is ready by polling
         for _ in range(timeout // 2):
             try:
                 result = sandbox.run("echo ready", timeout=5)
                 if result.exit_code == 0:
                     break
             except Exception:  # noqa: S110, BLE001
-                # Sandbox not ready yet, continue polling
                 pass
             time.sleep(2)
         else:
-            # Cleanup on failure
             with contextlib.suppress(Exception):
                 self._client.delete_sandbox(sandbox.name)
             msg = f"LangSmith sandbox failed to start within {timeout} seconds"
             raise RuntimeError(msg)
 
         return LangSmithBackend(sandbox)
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        if sandbox_id is None:
+            return self.create(timeout=timeout, **kwargs)
+        return self.get(sandbox_id=sandbox_id, **kwargs)
+
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a LangSmith sandbox.

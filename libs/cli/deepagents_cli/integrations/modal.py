@@ -13,7 +13,6 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import (
     BaseSandbox,
-    SandboxListResponse,
     SandboxProvider,
 )
 
@@ -153,24 +152,32 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         self._app_name = app_name
         self.app = modal.App.lookup(name=app_name, create_if_missing=True)
 
-    def list(
+    def get(
         self,
         *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Modal sandboxes.
+        sandbox_id: str,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        import modal
 
-        Raises:
-            NotImplementedError: Modal doesn't provide a list API.
-        """
-        msg = "Listing Modal sandboxes is not supported yet."
-        raise NotImplementedError(msg)
+        sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
+        return ModalBackend(sandbox)
 
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
+        workdir: str = "/workspace",
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        if sandbox_id is None:
+            return self.create(workdir=workdir, timeout=timeout, **kwargs)
+        return self.get(sandbox_id=sandbox_id, **kwargs)
+
+    def create(
+        self,
+        *,
         workdir: str = "/workspace",
         timeout: int = 180,
         **kwargs: Any,  # noqa: ARG002
@@ -191,29 +198,24 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
         """
         import modal
 
-        if sandbox_id:
-            sandbox = modal.Sandbox.from_id(sandbox_id=sandbox_id, app=self.app)  # type: ignore[call-arg]
-        else:
-            sandbox = modal.Sandbox.create(app=self.app, workdir=workdir)
+        sandbox = modal.Sandbox.create(app=self.app, workdir=workdir)
 
-            # Poll until running
-            for _ in range(timeout // 2):
-                if sandbox.poll() is not None:
-                    msg = "Modal sandbox terminated unexpectedly during startup"
-                    raise RuntimeError(msg)
-                try:
-                    process = sandbox.exec("echo", "ready", timeout=5)
-                    process.wait()
-                    if process.returncode == 0:
-                        break
-                except Exception:  # noqa: S110, BLE001
-                    # Sandbox not ready yet, continue polling
-                    pass
-                time.sleep(2)
-            else:
-                sandbox.terminate()
-                msg = f"Modal sandbox failed to start within {timeout} seconds"
+        for _ in range(timeout // 2):
+            if sandbox.poll() is not None:
+                msg = "Modal sandbox terminated unexpectedly during startup"
                 raise RuntimeError(msg)
+            try:
+                process = sandbox.exec("echo", "ready", timeout=5)
+                process.wait()
+                if process.returncode == 0:
+                    break
+            except Exception:  # noqa: S110, BLE001
+                pass
+            time.sleep(2)
+        else:
+            sandbox.terminate()
+            msg = f"Modal sandbox failed to start within {timeout} seconds"
+            raise RuntimeError(msg)
 
         return ModalBackend(sandbox)
 

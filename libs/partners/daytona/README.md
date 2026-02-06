@@ -17,7 +17,7 @@ pip install langchain_daytona
 from langchain_daytona import DaytonaProvider
 
 provider = DaytonaProvider()
-sandbox = provider.get_or_create()
+sandbox = provider.create()
 result = sandbox.execute("echo hello")
 print(result.output)
 ```

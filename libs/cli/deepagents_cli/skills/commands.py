@@ -157,8 +157,12 @@ def _list(agent: str, *, project: bool = False) -> None:
         if not skills:
             console.print("[yellow]No skills found.[/yellow]")
             console.print(
-                "[dim]Skills will be created in ~/.deepagents/agent/skills/ "
-                "when you add them.[/dim]",
+                "[dim]Skills are loaded from these directories "
+                "(lowest to highest precedence):\n"
+                "  1. ~/.deepagents/<agent>/skills/   (user, deepagents alias)\n"
+                "  2. ~/.agents/skills/               (user)\n"
+                "  3. .deepagents/skills/             (project, deepagents alias)\n"
+                "  4. .agents/skills/                 (project)[/dim]",
                 style=COLORS["dim"],
             )
             console.print(
@@ -450,10 +454,22 @@ def setup_skills_parser(
     Returns:
         The skills subparser for argument handling.
     """
+    skills_epilog = """\
+skill directories (lowest to highest precedence):
+  1. ~/.deepagents/<agent>/skills/   user skills (deepagents alias)
+  2. ~/.agents/skills/               user skills
+  3. .deepagents/skills/             project skills (deepagents alias)
+  4. .agents/skills/                 project skills
+
+When two directories contain a skill with the same name, the
+higher-precedence version wins. Project skills override user skills.
+"""
     skills_parser = subparsers.add_parser(
         "skills",
         help="Manage agent skills",
-        description="Manage agent skills - create, list, and view skill information",
+        description="Manage agent skills - create, list, and view skill information.",
+        epilog=skills_epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     skills_subparsers = skills_parser.add_subparsers(
         dest="skills_command", help="Skills command"
@@ -463,7 +479,10 @@ def setup_skills_parser(
     list_parser = skills_subparsers.add_parser(
         "list",
         help="List all available skills",
-        description="List all available skills",
+        description=(
+            "List skills from all four skill directories "
+            "(user, user alias, project, project alias)."
+        ),
     )
     list_parser.add_argument(
         "--agent",
@@ -480,7 +499,11 @@ def setup_skills_parser(
     create_parser = skills_subparsers.add_parser(
         "create",
         help="Create a new skill",
-        description="Create a new skill with a template SKILL.md file",
+        description=(
+            "Create a new skill with a template SKILL.md file. "
+            "By default, skills are created in ~/.deepagents/<agent>/skills/. "
+            "Use --project to create in the project's .deepagents/skills/ directory."
+        ),
     )
     create_parser.add_argument(
         "name", help="Name of the skill to create (e.g., web-research)"

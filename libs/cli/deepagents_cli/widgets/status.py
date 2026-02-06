@@ -109,7 +109,11 @@ class StatusBar(Horizontal):
         self._initial_cwd = str(cwd) if cwd else str(Path.cwd())
 
     def compose(self) -> ComposeResult:
-        """Compose the status bar layout."""
+        """Compose the status bar layout.
+
+        Yields:
+            Widgets for mode, auto-approve, message, tokens, and model display.
+        """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
             "manual | shift+tab to cycle",
@@ -118,7 +122,9 @@ class StatusBar(Horizontal):
         )
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-tokens", id="tokens-display")
-        yield Static(settings.model_name or "", classes="status-model", id="model-display")
+        yield Static(
+            settings.model_name or "", classes="status-model", id="model-display"
+        )
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
@@ -142,7 +148,7 @@ class StatusBar(Horizontal):
             indicator.update("")
             indicator.add_class("normal")
 
-    def watch_auto_approve(self, new_value: bool) -> None:  # noqa: FBT001
+    def watch_auto_approve(self, new_value: bool) -> None:
         """Update auto-approve indicator when state changes."""
         try:
             indicator = self.query_one("#auto-approve-indicator", Static)
@@ -181,7 +187,11 @@ class StatusBar(Horizontal):
             msg_widget.update("")
 
     def _format_cwd(self, cwd_path: str = "") -> str:
-        """Format the current working directory for display."""
+        """Format the current working directory for display.
+
+        Returns:
+            Formatted path string, using ~ for home directory when possible.
+        """
         path = Path(cwd_path or self.cwd or self._initial_cwd)
         try:
             # Try to use ~ for home directory

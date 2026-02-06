@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import subprocess
-from collections.abc import Awaitable, Callable
+import shutil
+
+# S404: subprocess is required for git commands to detect project context
+import subprocess  # noqa: S404
 from pathlib import Path
-from typing import NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -13,7 +15,23 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
-from langgraph.runtime import Runtime
+
+from deepagents_cli.config import get_glyphs
+
+
+def _get_git_executable() -> str | None:
+    """Get full path to git executable using shutil.which().
+
+    Returns:
+        Full path to git executable, or None if not found.
+    """
+    return shutil.which("git")
+
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langgraph.runtime import Runtime
 
 # Directories to ignore in file listings and tree views
 IGNORE_PATTERNS = frozenset(
@@ -61,17 +79,24 @@ class LocalContextMiddleware(AgentMiddleware):
 
     state_schema = LocalContextState
 
-    def _get_git_info(self) -> dict[str, str | list[str]]:
+    @staticmethod
+    def _get_git_info() -> dict[str, str | list[str]]:
         """Gather git state information.
 
         Returns:
-            Dict with 'branch' (current branch) and 'main_branches' (list of main/master if they exist).
-            Returns empty dict if not in git repo.
+            Dict with 'branch' (current branch) and 'main_branches'
+                (list of main/master if they exist). Returns empty dict if not in
+                git repo.
         """
+        git_path = _get_git_executable()
+        if not git_path:
+            return {}
+
         try:
             # Get current branch
-            result = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            # S603: git_path is validated via shutil.which(), args are hardcoded
+            result = subprocess.run(  # noqa: S603
+                [git_path, "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True,
                 text=True,
                 timeout=2,
@@ -85,8 +110,9 @@ class LocalContextMiddleware(AgentMiddleware):
 
             # Get local branches to check for main/master
             main_branches = []
-            result = subprocess.run(
-                ["git", "branch"],
+            # S603: git_path is validated via shutil.which(), args are hardcoded
+            result = subprocess.run(  # noqa: S603
+                [git_path, "branch"],
                 capture_output=True,
                 text=True,
                 timeout=2,
@@ -105,12 +131,13 @@ class LocalContextMiddleware(AgentMiddleware):
                 if "master" in branches:
                     main_branches.append("master")
 
-            return {"branch": current_branch, "main_branches": main_branches}
-
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return {}
+        else:
+            return {"branch": current_branch, "main_branches": main_branches}
 
-    def _get_file_list(self, max_files: int = 20) -> list[str]:
+    @staticmethod
+    def _get_file_list(max_files: int = 20) -> list[str]:
         """Get list of files in current directory (non-recursive).
 
         Args:
@@ -146,7 +173,8 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return files
 
-    def _get_directory_tree(self, max_depth: int = 3, max_entries: int = 20) -> str:
+    @staticmethod
+    def _get_directory_tree(max_depth: int = 3, max_entries: int = 20) -> str:
         """Get directory tree structure.
 
         Args:
@@ -162,7 +190,11 @@ class LocalContextMiddleware(AgentMiddleware):
         entry_count = [0]  # Mutable for closure
 
         def _should_include(item: Path) -> bool:
-            """Check if item should be included in tree."""
+            """Check if item should be included in tree.
+
+            Returns:
+                True if item should be included, False otherwise.
+            """
             # Skip hidden files (except .deepagents)
             if item.name.startswith(".") and item.name != ".deepagents":
                 return False
@@ -175,19 +207,22 @@ class LocalContextMiddleware(AgentMiddleware):
                 return
 
             try:
-                all_items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
+                all_items = sorted(
+                    path.iterdir(), key=lambda p: (not p.is_dir(), p.name)
+                )
                 # Pre-filter to get correct is_last determination
                 items = [item for item in all_items if _should_include(item)]
             except (OSError, PermissionError):
                 return
 
+            glyphs = get_glyphs()
             for i, item in enumerate(items):
                 if entry_count[0] >= max_entries:
                     lines.append(f"{prefix}... (truncated)")
                     return
 
                 is_last = i == len(items) - 1
-                connector = "└── " if is_last else "├── "
+                connector = glyphs.tree_last if is_last else glyphs.tree_branch
 
                 display_name = f"{item.name}/" if item.is_dir() else item.name
                 lines.append(f"{prefix}{connector}{display_name}")
@@ -195,7 +230,8 @@ class LocalContextMiddleware(AgentMiddleware):
 
                 # Recurse into directories
                 if item.is_dir() and depth + 1 < max_depth:
-                    extension = "    " if is_last else "│   "
+                    # Use 4 spaces when at last item, otherwise tree_vertical
+                    extension = "    " if is_last else glyphs.tree_vertical
                     _build_tree(item, prefix + extension, depth + 1)
 
         try:
@@ -206,7 +242,8 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return "\n".join(lines)
 
-    def _detect_package_manager(self) -> str | None:
+    @staticmethod
+    def _detect_package_manager() -> str | None:
         """Detect Python package manager in use.
 
         Checks for lock files and config files to determine the package manager.
@@ -236,14 +273,15 @@ class LocalContextMiddleware(AgentMiddleware):
         if pyproject.exists():
             try:
                 content = pyproject.read_text()
+            except (OSError, PermissionError, UnicodeDecodeError):
+                pass
+            else:
                 if "[tool.uv]" in content:
                     return "uv"
                 if "[tool.poetry]" in content:
                     return "poetry"
                 # Has pyproject.toml but no specific tool - likely pip/setuptools
                 return "pip"
-            except (OSError, PermissionError, UnicodeDecodeError):
-                pass
 
         # Check for requirements.txt
         if (cwd / "requirements.txt").exists():
@@ -251,7 +289,8 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return None
 
-    def _detect_node_package_manager(self) -> str | None:
+    @staticmethod
+    def _detect_node_package_manager() -> str | None:
         """Detect Node.js package manager in use.
 
         Uses priority order: `bun > pnpm > yarn > npm`.
@@ -274,7 +313,8 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return None
 
-    def _get_makefile_preview(self, max_lines: int = 20) -> str | None:
+    @staticmethod
+    def _get_makefile_preview(max_lines: int = 20) -> str | None:
         """Get first N lines of `Makefile` if present.
 
         Args:
@@ -291,19 +331,22 @@ class LocalContextMiddleware(AgentMiddleware):
 
         try:
             content = makefile.read_text()
+        except (OSError, PermissionError, UnicodeDecodeError):
+            return None
+        else:
             lines = content.split("\n")[:max_lines]
             preview = "\n".join(lines)
             if len(content.split("\n")) > max_lines:
                 preview += "\n... (truncated)"
             return preview
-        except (OSError, PermissionError, UnicodeDecodeError):
-            return None
 
-    def _detect_project_info(self) -> dict[str, str | bool | None]:
+    @staticmethod
+    def _detect_project_info() -> dict[str, str | bool | None]:
         """Detect project type, language, and structure.
 
         Returns:
-            Dict with `language`, `is_monorepo`, `project_root`, `has_venv`, `has_node_modules`.
+            Dict with `language`, `is_monorepo`, `project_root`, `has_venv`,
+                `has_node_modules`.
         """
         cwd = Path.cwd()
         info: dict[str, str | bool | None] = {
@@ -342,23 +385,27 @@ class LocalContextMiddleware(AgentMiddleware):
         info["is_monorepo"] = any(monorepo_indicators)
 
         # Try to find project root (look for .git or pyproject.toml up the tree)
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-                cwd=cwd,
-                check=False,
-            )
-            if result.returncode == 0:
-                info["project_root"] = result.stdout.strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
+        git_path = _get_git_executable()
+        if git_path:
+            try:
+                # S603: git_path is validated via shutil.which(), args are hardcoded
+                result = subprocess.run(  # noqa: S603
+                    [git_path, "rev-parse", "--show-toplevel"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    cwd=cwd,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    info["project_root"] = result.stdout.strip()
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
 
         return info
 
-    def _detect_test_command(self) -> str | None:
+    @staticmethod
+    def _detect_test_command() -> str | None:
         """Detect how to run tests based on project structure.
 
         Returns:
@@ -401,14 +448,24 @@ class LocalContextMiddleware(AgentMiddleware):
 
         return None
 
-    def before_agent(
+    # override - state parameter is intentionally narrowed from
+    # AgentState to LocalContextState for type safety within this middleware.
+    # This violates strict Liskov substitution but is safe since the middleware
+    # only processes its own state schema.
+    def before_agent(  # type: ignore[override]
         self,
         state: LocalContextState,
         runtime: Runtime,
-    ) -> LocalContextStateUpdate | None:
+    ) -> dict[str, Any] | None:
         """Load local context before agent execution.
 
         Runs once at session start to preserve prompt caching.
+
+        Note:
+            Return type is `dict[str, Any]` rather than
+            `LocalContextStateUpdate` to match the base class signature. At
+            runtime, TypedDict is just dict, so this is functionally equivalent
+            while satisfying the type checker.
 
         Args:
             state: Current agent state.
@@ -425,15 +482,16 @@ class LocalContextMiddleware(AgentMiddleware):
         sections = ["## Local Context", ""]
 
         # Current directory
-        sections.append(f"**Current Directory**: `{cwd}`")
-        sections.append("")
+        sections.extend([f"**Current Directory**: `{cwd}`", ""])
 
         # Project info (language, monorepo, root, environments)
         project_info = self._detect_project_info()
         project_lines = []
         if project_info.get("language"):
             project_lines.append(f"Language: {project_info['language']}")
-        if project_info.get("project_root") and str(project_info["project_root"]) != str(cwd):
+        if project_info.get("project_root") and str(
+            project_info["project_root"]
+        ) != str(cwd):
             project_lines.append(f"Project root: `{project_info['project_root']}`")
         if project_info.get("is_monorepo"):
             project_lines.append("Monorepo: yes")
@@ -458,8 +516,7 @@ class LocalContextMiddleware(AgentMiddleware):
         if node_pkg:
             pkg_managers.append(f"Node: {node_pkg}")
         if pkg_managers:
-            sections.append(f"**Package Manager**: {', '.join(pkg_managers)}")
-            sections.append("")
+            sections.extend([f"**Package Manager**: {', '.join(pkg_managers)}", ""])
 
         # Git info
         git_info = self._get_git_info()
@@ -468,22 +525,19 @@ class LocalContextMiddleware(AgentMiddleware):
             if git_info.get("main_branches"):
                 main_branches = ", ".join(f"`{b}`" for b in git_info["main_branches"])
                 git_text += f", main branch available: {main_branches}"
-            sections.append(git_text)
-            sections.append("")
+            sections.extend([git_text, ""])
 
         # Test command
         test_cmd = self._detect_test_command()
         if test_cmd:
-            sections.append(f"**Run Tests**: `{test_cmd}`")
-            sections.append("")
+            sections.extend([f"**Run Tests**: `{test_cmd}`", ""])
 
         # File list
         files = self._get_file_list()
         if files:
             total_items = len(list(Path.cwd().iterdir()))
             sections.append(f"**Files** ({len(files)} shown):")
-            for file in files:
-                sections.append(f"- {file}")
+            sections.extend(f"- {file}" for file in files)
             if len(files) < total_items:
                 remaining = total_items - len(files)
                 sections.append(f"... ({remaining} more files)")
@@ -492,24 +546,25 @@ class LocalContextMiddleware(AgentMiddleware):
         # Directory tree
         tree = self._get_directory_tree()
         if tree:
-            sections.append("**Tree** (3 levels):")
-            sections.append("```text")
-            sections.append(tree)
-            sections.append("```")
-            sections.append("")
+            sections.extend(["**Tree** (3 levels):", "```text", tree, "```", ""])
 
         # Makefile preview
         makefile_preview = self._get_makefile_preview()
         if makefile_preview:
-            sections.append("**Makefile** (first 20 lines):")
-            sections.append("```makefile")
-            sections.append(makefile_preview)
-            sections.append("```")
+            sections.extend(
+                [
+                    "**Makefile** (first 20 lines):",
+                    "```makefile",
+                    makefile_preview,
+                    "```",
+                ]
+            )
 
         local_context = "\n".join(sections)
-        return LocalContextStateUpdate(local_context=local_context)
+        return {"local_context": local_context}
 
-    def _get_modified_request(self, request: ModelRequest) -> ModelRequest | None:
+    @staticmethod
+    def _get_modified_request(request: ModelRequest) -> ModelRequest | None:
         """Get modified request with local context injected, or None if no context.
 
         Args:
@@ -545,7 +600,7 @@ class LocalContextMiddleware(AgentMiddleware):
             The model response from the handler.
         """
         modified_request = self._get_modified_request(request)
-        return handler(modified_request if modified_request else request)
+        return handler(modified_request or request)
 
     async def awrap_model_call(
         self,
@@ -562,7 +617,7 @@ class LocalContextMiddleware(AgentMiddleware):
             The model response from the handler.
         """
         modified_request = self._get_modified_request(request)
-        return await handler(modified_request if modified_request else request)
+        return await handler(modified_request or request)
 
 
 __all__ = ["LocalContextMiddleware"]

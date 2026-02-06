@@ -4,7 +4,9 @@
 # - Automatically via workflow_call from release-please.yml when a release PR is merged
 # - Manually via workflow_dispatch
 #
-# Flow: build -> release-notes -> test-pypi -> pre-release-checks -> publish -> mark-release
+# Flow:
+# - CLI: build -> pre-release-checks -> test-pypi -> DRAFT release (PyPI publish happens when draft is published)
+# - Other packages: build -> pre-release-checks -> test-pypi -> publish -> release
 
 name: "🚀 Package Release"
 run-name: "Release ${{ inputs.package }}"
@@ -14,7 +16,7 @@ on:
       package:
         required: true
         type: string
-        description: "Package to release (deepagents, deepagents-cli, deepagents-acp, or deepagents-harbor)"
+        description: "Package to release"
   workflow_dispatch:
     inputs:
       package:
@@ -26,6 +28,7 @@ on:
           - deepagents-cli
           - deepagents-acp
           - deepagents-harbor
+          - langchain-daytona
         default: deepagents
       dangerous-nonmaster-release:
         required: false
@@ -68,9 +71,12 @@ jobs:
             deepagents-harbor)
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
+            daytona)
+              echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona"
               exit 1
               ;;
           esac
@@ -196,8 +202,9 @@ jobs:
             COMMITS=$(git rev-list "$PREV_TAG"..HEAD -- "$WORKING_DIR" | head -100)
           fi
 
-          # Find PRs and collect contributors (GitHub username + optional Twitter)
-          declare -A CONTRIBUTORS  # Map: github_username -> twitter_handle (or empty)
+          # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
+          declare -A TWITTER_HANDLES  # Map: github_username -> twitter_handle (or empty)
+          declare -A LINKEDIN_URLS    # Map: github_username -> linkedin_url (or empty)
           SEEN_PRS=""
 
           for sha in $COMMITS; do
@@ -208,33 +215,64 @@ jobs:
             if [ -n "$PR_NUM" ] && [[ ! "$SEEN_PRS" =~ ":$PR_NUM:" ]]; then
               SEEN_PRS="$SEEN_PRS:$PR_NUM:"
 
-              # Get PR author and body
-              PR_DATA=$(gh pr view "$PR_NUM" --json author,body 2>/dev/null || true)
+              # Get PR author, body, and labels
+              PR_DATA=$(gh pr view "$PR_NUM" --json author,body,labels 2>/dev/null || true)
               if [ -n "$PR_DATA" ]; then
                 GH_USER=$(echo "$PR_DATA" | jq -r '.author.login // empty')
                 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // empty')
+
+                # Skip internal contributors (PRs labeled "internal" by tag-external-contributions workflow)
+                IS_INTERNAL=$(echo "$PR_DATA" | jq -r '.labels[].name // empty' | grep -qx "internal" && echo "true" || echo "false")
+                if [ "$IS_INTERNAL" = "true" ]; then
+                  echo "Skipping internal contributor: $GH_USER (PR #$PR_NUM)"
+                  continue
+                fi
 
                 if [ -n "$GH_USER" ]; then
                   # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
                   TWITTER=$(echo "$PR_BODY" | grep -iP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
 
-                  # Add user if not seen, or update Twitter if newly provided
-                  if [ -z "${CONTRIBUTORS[$GH_USER]+x}" ]; then
-                    CONTRIBUTORS[$GH_USER]="$TWITTER"
-                  elif [ -n "$TWITTER" ] && [ -z "${CONTRIBUTORS[$GH_USER]}" ]; then
-                    CONTRIBUTORS[$GH_USER]="$TWITTER"
+                  # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
+                  LINKEDIN=$(echo "$PR_BODY" | grep -iP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
+
+                  # Add user if not seen, or update socials if newly provided
+                  if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then
+                    TWITTER_HANDLES[$GH_USER]="$TWITTER"
+                    LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
+                  else
+                    [ -n "$TWITTER" ] && [ -z "${TWITTER_HANDLES[$GH_USER]}" ] && TWITTER_HANDLES[$GH_USER]="$TWITTER"
+                    [ -n "$LINKEDIN" ] && [ -z "${LINKEDIN_URLS[$GH_USER]}" ] && LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
                   fi
                 fi
               fi
             fi
           done
 
-          # Build contributor list: @ghuser ([Twitter](url)) or just @ghuser
+          # Build contributor list: @ghuser ([Twitter](url), [LinkedIn](url)) or just @ghuser
           CONTRIBUTOR_LIST=""
-          for GH_USER in "${!CONTRIBUTORS[@]}"; do
-            TWITTER="${CONTRIBUTORS[$GH_USER]}"
+          for GH_USER in "${!TWITTER_HANDLES[@]}"; do
+            TWITTER="${TWITTER_HANDLES[$GH_USER]}"
+            LINKEDIN="${LINKEDIN_URLS[$GH_USER]}"
+
+            # Build social links
+            SOCIALS=""
             if [ -n "$TWITTER" ]; then
-              ENTRY="@$GH_USER ([Twitter](https://x.com/$TWITTER))"
+              SOCIALS="[Twitter](https://x.com/$TWITTER)"
+            fi
+            if [ -n "$LINKEDIN" ]; then
+              # Ensure LinkedIn URL has https:// prefix
+              if [[ ! "$LINKEDIN" =~ ^https?:// ]]; then
+                LINKEDIN="https://$LINKEDIN"
+              fi
+              if [ -n "$SOCIALS" ]; then
+                SOCIALS="$SOCIALS, [LinkedIn]($LINKEDIN)"
+              else
+                SOCIALS="[LinkedIn]($LINKEDIN)"
+              fi
+            fi
+
+            if [ -n "$SOCIALS" ]; then
+              ENTRY="@$GH_USER ($SOCIALS)"
             else
               ENTRY="@$GH_USER"
             fi
@@ -376,6 +414,7 @@ jobs:
     needs:
       - setup
       - build
+      - pre-release-checks
     runs-on: ubuntu-latest
     permissions:
       # This permission is used for trusted publishing:
@@ -413,7 +452,6 @@ jobs:
     needs:
       - setup
       - build
-      - test-pypi-publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -498,11 +536,13 @@ jobs:
 
   publish:
     # Publishes the package to PyPI
+    # Skipped for CLI - PyPI publish happens via release-publish.yml when draft is published
     needs:
       - setup
       - build
       - test-pypi-publish
       - pre-release-checks
+    if: needs.build.outputs.pkg-name != 'deepagents-cli'
     runs-on: ubuntu-latest
     permissions:
       # This permission is used for trusted publishing:
@@ -541,6 +581,8 @@ jobs:
           attestations: false
 
   # Create GitHub release after checks pass
+  # For CLI: creates a DRAFT release (user edits notes, then publishes to trigger PyPI upload)
+  # For other packages: creates a published release (PyPI upload already done)
   mark-release:
     needs:
       - setup
@@ -549,11 +591,14 @@ jobs:
       - test-pypi-publish
       - pre-release-checks
       - publish
+    if: always() && needs.pre-release-checks.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       # This permission is needed by `ncipollo/release-action` to
       # create the GitHub release/tag
       contents: write
+      # This permission is needed to update release PR labels
+      pull-requests: write
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
@@ -574,13 +619,37 @@ jobs:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
-      - name: Create Tag
+      - name: Create Release
         uses: ncipollo/release-action@v1
         with:
           artifacts: "${{ env.WORKING_DIR }}/dist/*"
           token: ${{ secrets.GITHUB_TOKEN }}
           generateReleaseNotes: false
-          tag: ${{needs.build.outputs.pkg-name}}==${{ needs.build.outputs.version }}
+          tag: ${{ needs.build.outputs.pkg-name }}==${{ needs.build.outputs.version }}
           body: ${{ needs.release-notes.outputs.release-body }}
           commit: ${{ github.sha }}
-          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents'}}
+          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' }}
+          # CLI uses draft releases for manual review before PyPI publish
+          draft: ${{ needs.build.outputs.pkg-name == 'deepagents-cli' }}
+
+      # Mark the release PR as tagged so release-please knows it's been released
+      # This is required because skip-github-release is true in release-please config
+      - name: Update release PR label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the release PR that was merged (look for PR associated with this commit)
+          PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          if [ -n "$PR_NUMBER" ]; then
+            # Only update label if this is actually a release PR (has autorelease: pending label)
+            # This prevents accidentally labeling feature PRs when workflow is manually triggered
+            HAS_PENDING=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | grep -q "autorelease: pending" && echo "true" || echo "false")
+            if [ "$HAS_PENDING" = "true" ]; then
+              echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
+              gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" || true
+            else
+              echo "PR #$PR_NUMBER does not have 'autorelease: pending' label, skipping (not a release PR)"
+            fi
+          else
+            echo "No PR found for commit ${{ github.sha }}, skipping label update"
+          fi

@@ -1,4 +1,4 @@
-# Ralph Mode for DeepAgents
+# Ralph Mode for Deep Agents
 
 ![Ralph Mode Diagram](ralph_mode_diagram.png)
 

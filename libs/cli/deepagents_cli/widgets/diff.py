@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 from textual.containers import Vertical
 from textual.widgets import Static
 
+from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
@@ -38,11 +40,16 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     if not diff:
         return "[dim]No changes detected[/dim]"
 
+    glyphs = get_glyphs()
     lines = diff.splitlines()
 
     # Compute stats first
-    additions = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
-    deletions = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+    additions = sum(
+        1 for ln in lines if ln.startswith("+") and not ln.startswith("+++")
+    )
+    deletions = sum(
+        1 for ln in lines if ln.startswith("-") and not ln.startswith("---")
+    )
 
     # Find max line number for width calculation
     max_line = 0
@@ -60,8 +67,7 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
     if deletions:
         stats_parts.append(f"[red]-{deletions}[/red]")
     if stats_parts:
-        formatted.append(" ".join(stats_parts))
-        formatted.append("")  # Blank line after stats
+        formatted.extend([" ".join(stats_parts), ""])  # Blank line after stats
 
     old_num = new_num = 0
     line_count = 0
@@ -86,23 +92,25 @@ def format_diff_textual(diff: str, max_lines: int | None = 100) -> str:
 
         if line.startswith("-"):
             # Deletion - red gutter bar, subtle red background
-            formatted.append(
-                f"[red bold]▌[/red bold][dim]{old_num:>{width}}[/dim] "
-                f"[on #2d1515]{escaped_content}[/on #2d1515]"
-            )
+            gutter = f"[red bold]{glyphs.gutter_bar}[/red bold]"
+            line_num = f"[dim]{old_num:>{width}}[/dim]"
+            content = f"[on #2d1515]{escaped_content}[/on #2d1515]"
+            formatted.append(f"{gutter}{line_num} {content}")
             old_num += 1
             line_count += 1
         elif line.startswith("+"):
             # Addition - green gutter bar, subtle green background
-            formatted.append(
-                f"[green bold]▌[/green bold][dim]{new_num:>{width}}[/dim] "
-                f"[on #152d15]{escaped_content}[/on #152d15]"
-            )
+            gutter = f"[green bold]{glyphs.gutter_bar}[/green bold]"
+            line_num = f"[dim]{new_num:>{width}}[/dim]"
+            content = f"[on #152d15]{escaped_content}[/on #152d15]"
+            formatted.append(f"{gutter}{line_num} {content}")
             new_num += 1
             line_count += 1
         elif line.startswith(" "):
             # Context line - dim gutter
-            formatted.append(f"[dim]│{old_num:>{width}}[/dim]  {escaped_content}")
+            formatted.append(
+                f"[dim]{glyphs.box_vertical}{old_num:>{width}}[/dim]  {escaped_content}"
+            )
             old_num += 1
             new_num += 1
             line_count += 1
@@ -166,7 +174,7 @@ class EnhancedDiff(Vertical):
         """Compute additions and deletions count.
 
         Returns:
-            Tuple of (additions, deletions)
+            Tuple of (additions count, deletions count).
         """
         additions = 0
         deletions = 0
@@ -177,9 +185,23 @@ class EnhancedDiff(Vertical):
                 deletions += 1
         return additions, deletions
 
+    def on_mount(self) -> None:
+        """Set border style based on charset mode."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border = ("ascii", "cyan")
+
     def compose(self) -> ComposeResult:
-        """Compose the diff widget layout."""
-        yield Static(f"[bold cyan]═══ {self._title} ═══[/bold cyan]", classes="diff-title")
+        """Compose the diff widget layout.
+
+        Yields:
+            Widgets for title, formatted diff content, and stats.
+        """
+        glyphs = get_glyphs()
+        h = glyphs.box_double_horizontal
+        yield Static(
+            f"[bold cyan]{h}{h}{h} {self._title} {h}{h}{h}[/bold cyan]",
+            classes="diff-title",
+        )
 
         formatted = format_diff_textual(self._diff, self._max_lines)
         yield Static(formatted, classes="diff-content")

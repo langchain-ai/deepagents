@@ -70,18 +70,18 @@ class MessageData:
     # Cached height hint for scroll calculations (set after first render)
     height_hint: int | None = None
 
-    def to_widget(self) -> Widget:  # noqa: PLR0911
+    def to_widget(self) -> Widget:
         """Recreate a widget from this message data.
 
         Returns:
             The appropriate message widget for this data.
         """
         # Import here to avoid circular imports
-        from deepagents_cli.widgets.messages import (
+        from deepagents_cli.widgets.messages import (  # noqa: PLC0415
+            AppMessage,
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
-            SystemMessage,
             ToolCallMessage,
             UserMessage,
         )
@@ -112,7 +112,7 @@ class MessageData:
                 return ErrorMessage(self.content, id=self.id)
 
             case MessageType.SYSTEM:
-                return SystemMessage(self.content, id=self.id)
+                return AppMessage(self.content, id=self.id)
 
             case MessageType.DIFF:
                 return DiffMessage(
@@ -123,10 +123,10 @@ class MessageData:
 
             case _:
                 # Fallback to system message
-                return SystemMessage(self.content, id=self.id)
+                return AppMessage(self.content, id=self.id)
 
     @classmethod
-    def from_widget(cls, widget: Widget) -> MessageData:  # noqa: PLR0911
+    def from_widget(cls, widget: Widget) -> MessageData:
         """Create MessageData from an existing widget.
 
         Args:
@@ -135,11 +135,11 @@ class MessageData:
         Returns:
             MessageData containing all the widget's state.
         """
-        from deepagents_cli.widgets.messages import (
+        from deepagents_cli.widgets.messages import (  # noqa: PLC0415
+            AppMessage,
             AssistantMessage,
             DiffMessage,
             ErrorMessage,
-            SystemMessage,
             ToolCallMessage,
             UserMessage,
         )
@@ -180,7 +180,7 @@ class MessageData:
                 id=widget_id,
             )
 
-        if isinstance(widget, SystemMessage):
+        if isinstance(widget, AppMessage):
             return cls(
                 type=MessageType.SYSTEM,
                 content=widget._content,
@@ -402,7 +402,9 @@ class MessageStore:
         """
         self._visible_start = max(0, self._visible_start - count)
 
-    def should_hydrate_above(self, scroll_position: float, viewport_height: int) -> bool:
+    def should_hydrate_above(
+        self, scroll_position: float, viewport_height: int
+    ) -> bool:
         """Check if we should hydrate messages above the current view.
 
         Args:

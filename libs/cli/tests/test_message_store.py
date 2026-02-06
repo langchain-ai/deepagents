@@ -9,9 +9,9 @@ from deepagents_cli.widgets.message_store import (
     ToolStatus,
 )
 from deepagents_cli.widgets.messages import (
+    AppMessage,
     AssistantMessage,
     ErrorMessage,
-    SystemMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -38,7 +38,9 @@ class TestMessageData:
 
     def test_assistant_message_roundtrip(self):
         """Test AssistantMessage serialization and deserialization."""
-        original = AssistantMessage("# Hello\n\nThis is **markdown**.", id="test-asst-1")
+        original = AssistantMessage(
+            "# Hello\n\nThis is **markdown**.", id="test-asst-1"
+        )
 
         # Serialize
         data = MessageData.from_widget(original)
@@ -100,8 +102,8 @@ class TestMessageData:
         assert restored.id == "test-error-1"
 
     def test_system_message_roundtrip(self):
-        """Test SystemMessage serialization and deserialization."""
-        original = SystemMessage("Session started", id="test-sys-1")
+        """Test AppMessage serialization and deserialization."""
+        original = AppMessage("Session started", id="test-sys-1")
 
         # Serialize
         data = MessageData.from_widget(original)
@@ -111,7 +113,7 @@ class TestMessageData:
 
         # Deserialize
         restored = data.to_widget()
-        assert isinstance(restored, SystemMessage)
+        assert isinstance(restored, AppMessage)
         assert restored._content == "Session started"
         assert restored.id == "test-sys-1"
 
@@ -162,7 +164,9 @@ class TestMessageStore:
         store.WINDOW_SIZE = 5
 
         for i in range(7):
-            store.append(MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}"))
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
 
         assert store.visible_count == 7
         assert store.window_exceeded()
@@ -184,7 +188,9 @@ class TestMessageStore:
         store.WINDOW_SIZE = 3
 
         for i in range(5):
-            store.append(MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}"))
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
 
         # Set first message as active (streaming)
         store.set_active_message("id-0")
@@ -201,7 +207,9 @@ class TestMessageStore:
         store.HYDRATE_BUFFER = 3
 
         for i in range(10):
-            store.append(MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}"))
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
 
         # Simulate having pruned first 5 messages
         store._visible_start = 5
@@ -254,12 +262,15 @@ class TestMessageStore:
         """Test updating message data."""
         store = MessageStore()
 
-        store.append(MessageData(type=MessageType.USER, content="original", id="update-me"))
+        store.append(
+            MessageData(type=MessageType.USER, content="original", id="update-me")
+        )
 
         result = store.update_message("update-me", content="updated")
         assert result is True
 
         msg = store.get_message("update-me")
+        assert msg is not None
         assert msg.content == "updated"
 
         # Update nonexistent
@@ -305,7 +316,9 @@ class TestMessageStore:
         store = MessageStore()
 
         for i in range(10):
-            store.append(MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}"))
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
 
         store._visible_start = 3
         store._visible_end = 6
@@ -328,7 +341,9 @@ class TestVirtualizationFlow:
 
         # Add 10 messages
         for i in range(10):
-            store.append(MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}"))
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
 
         # Initially all are visible
         assert store.total_count == 10
@@ -388,6 +403,7 @@ class TestVirtualizationFlow:
 
         # Deserialize
         restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
 
         # Verify deferred state
         assert restored._deferred_status == ToolStatus.SUCCESS
@@ -401,7 +417,9 @@ class TestVirtualizationFlow:
 
         # Add messages
         for i in range(5):
-            store.append(MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}"))
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
 
         # Mark first message as active (simulating streaming)
         store.set_active_message("id-0")
@@ -439,6 +457,7 @@ class TestVirtualizationFlow:
 
         # Verify update
         retrieved = store.get_message("asst-1")
+        assert retrieved is not None
         assert retrieved.content == "Updated content"
         assert retrieved.is_streaming is False
 

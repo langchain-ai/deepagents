@@ -29,17 +29,19 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
 
     def bind_tools(
         self,
-        _tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
         *,
-        _tool_choice: str | None = None,
-        **_kwargs: Any,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
         return self
 
 
 @contextmanager
-def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator[Path, None, None]:
+def mock_settings(
+    tmp_path: Path, assistant_id: str = "test-agent"
+) -> Generator[Path, None, None]:
     """Context manager for patching CLI settings with temporary directories.
 
     Args:
@@ -65,9 +67,9 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
         mock_settings_obj.ensure_user_skills_dir.return_value = skills_dir
         mock_settings_obj.get_project_skills_dir.return_value = None
 
-        # Mock methods that get called during agent execution to return real Path objects
-        # This prevents MagicMock objects from being stored in state
-        # (which would fail serialization)
+        # Mock methods that get called during agent execution to return
+        # real Path objects. This prevents MagicMock objects from being
+        # stored in state (which would fail serialization)
         def get_user_agent_md_path(agent_id: str) -> Path:
             return tmp_path / "agents" / agent_id / "agent.md"
 
@@ -78,6 +80,11 @@ def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator
         mock_settings_obj.get_project_agent_md_path.return_value = None
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
+
+        # Model identity settings (used in system prompt generation)
+        mock_settings_obj.model_name = None
+        mock_settings_obj.model_provider = None
+        mock_settings_obj.model_context_limit = None
 
         yield agent_dir
 
@@ -176,7 +183,9 @@ class TestDeepAgentsCLIEndToEnd:
                 {"messages": input_messages},
                 {"configurable": {"thread_id": thread_id}},
             )
-            assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+            assert (
+                result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+            )
             assert backend.ls_info("/conversation_history/")
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:

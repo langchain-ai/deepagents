@@ -211,7 +211,9 @@ class TestIntegrationSecurity:
                 # If name validation doesn't catch it, path validation must
                 skill_dir = base_dir / skill_name
                 is_valid_path, _path_error = _validate_skill_path(skill_dir, base_dir)
-                assert not is_valid_path, f"{attack_type} bypassed both validations: {skill_name}"
+                assert not is_valid_path, (
+                    f"{attack_type} bypassed both validations: {skill_name}"
+                )
             else:
                 # Name validation caught it - this is good
                 assert name_error != "", f"No error message for {attack_type}"

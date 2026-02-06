@@ -22,7 +22,7 @@ from deepagents.middleware.filesystem import (
     _create_content_preview,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.subagents import SubAgentMiddleware
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
 
 
 def build_composite_state_backend(runtime: ToolRuntime, *, routes):
@@ -50,12 +50,23 @@ class TestAddMiddleware:
         assert "grep" in agent_tools
 
     def test_subagent_middleware(self):
-        middleware = [SubAgentMiddleware(default_tools=[], subagents=[], default_model="claude-sonnet-4-20250514")]
+        middleware = [
+            SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-20250514", "tools": []}],
+            )
+        ]
         agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
         assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()
 
     def test_multiple_middleware(self):
-        middleware = [FilesystemMiddleware(), SubAgentMiddleware(default_tools=[], subagents=[], default_model="claude-sonnet-4-20250514")]
+        middleware = [
+            FilesystemMiddleware(),
+            SubAgentMiddleware(
+                backend=StateBackend,
+                subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-20250514", "tools": []}],
+            ),
+        ]
         agent = create_agent(model="claude-sonnet-4-20250514", middleware=middleware, tools=[])
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
@@ -560,6 +571,7 @@ class TestFilesystemMiddleware:
         assert "/tests/test.py" not in result
 
     def test_grep_search_shortterm_regex_pattern(self):
+        """Test grep with literal pattern (not regex)."""
         state = FilesystemState(
             messages=[],
             files={
@@ -572,9 +584,10 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        # Search for literal "def " - literal search, not regex
         result = grep_search_tool.invoke(
             {
-                "pattern": r"def \w+\(",
+                "pattern": "def ",
                 "output_mode": "content",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
@@ -606,6 +619,7 @@ class TestFilesystemMiddleware:
         assert result == "No matches found"
 
     def test_grep_search_shortterm_invalid_regex(self):
+        """Test grep with special characters (literal search, not regex)."""
         state = FilesystemState(
             messages=[],
             files={
@@ -618,13 +632,14 @@ class TestFilesystemMiddleware:
         )
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        # Special characters are treated literally, so no matches expected
         result = grep_search_tool.invoke(
             {
                 "pattern": "[invalid",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        assert "Invalid regex pattern" in result
+        assert "No matches found" in result
 
     def test_search_store_paginated_empty(self):
         """Test pagination with no items."""

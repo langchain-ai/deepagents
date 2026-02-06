@@ -16,15 +16,15 @@ from deepagents.backends.protocol import (
 from deepagents.backends.sandbox import (
     BaseSandbox,
     SandboxClient,
+    SandboxNotFoundError,
 )
 
 if TYPE_CHECKING:
     from daytona import Sandbox
-    from daytona._sync.sandbox import Sandbox
 
 
-class DaytonaBackend(BaseSandbox):
-    """Daytona backend implementation conforming to SandboxBackendProtocol.
+class DaytonaSandbox(BaseSandbox):
+    """Daytona sandbox implementation conforming to SandboxBackendProtocol.
 
     This implementation inherits all file operation methods from BaseSandbox
     and only implements the execute() method using Daytona's API.
@@ -77,6 +77,9 @@ class DaytonaBackend(BaseSandbox):
         return [FileUploadResponse(path=path, error=None) for path, _ in files]
 
 
+DaytonaBackend = DaytonaSandbox
+
+
 class DaytonaSandboxClient(SandboxClient):
     """Daytona sandbox provider implementation."""
 
@@ -99,12 +102,16 @@ class DaytonaSandboxClient(SandboxClient):
         sandbox_id: str,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
+        """Get an existing Daytona sandbox."""
         if kwargs:
             keys = sorted(kwargs.keys())
             msg = f"DaytonaProvider.get() got unsupported kwargs: {keys}"
             raise ValueError(msg)
-        sandbox = self._client.get(sandbox_id)
-        return DaytonaBackend(sandbox)
+        try:
+            sandbox = self._client.get(sandbox_id)
+        except Exception as e:
+            raise SandboxNotFoundError(sandbox_id) from e
+        return DaytonaSandbox(sandbox)
 
     def create(
         self,
@@ -112,6 +119,7 @@ class DaytonaSandboxClient(SandboxClient):
         timeout: int = 180,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
+        """Create a new Daytona sandbox."""
         if kwargs:
             keys = sorted(kwargs.keys())
             msg = f"DaytonaProvider.create() got unsupported kwargs: {keys}"
@@ -136,7 +144,7 @@ class DaytonaSandboxClient(SandboxClient):
                 msg = f"Daytona sandbox failed to start within {timeout} seconds"
                 raise RuntimeError(msg)
 
-        return DaytonaBackend(sandbox)
+        return DaytonaSandbox(sandbox)
 
     def get_or_create(
         self,
@@ -145,6 +153,7 @@ class DaytonaSandboxClient(SandboxClient):
         timeout: int = 180,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
+        """Deprecated: use get() or create()."""
         if sandbox_id is None:
             return self.create(timeout=timeout, **kwargs)
         return self.get(sandbox_id=sandbox_id, **kwargs)
@@ -157,9 +166,9 @@ class DaytonaSandboxClient(SandboxClient):
             raise ValueError(msg)
         try:
             sandbox = self._client.get(sandbox_id)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
         try:
             self._client.delete(sandbox)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return

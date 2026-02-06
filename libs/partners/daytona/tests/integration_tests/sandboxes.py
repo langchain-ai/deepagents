@@ -46,7 +46,11 @@ import pytest
 
 deepagents = pytest.importorskip("deepagents")
 
-from deepagents.backends.sandbox import SandboxNotFoundError, SandboxClient
+from deepagents.backends.sandbox import (
+    SandboxClient,
+    SandboxError,
+    SandboxNotFoundError,
+)
 from langchain_tests.base import BaseStandardTests
 
 if TYPE_CHECKING:
@@ -197,6 +201,14 @@ class SandboxClientIntegrationTests(BaseStandardTests):
         with pytest.raises(SandboxNotFoundError):
             sandbox_provider.get(sandbox_id=missing_id)
 
+        try:
+            sandbox_provider.get(sandbox_id=missing_id)
+        except SandboxNotFoundError:
+            pass
+        except SandboxError as e:
+            msg = f"Expected SandboxNotFoundError, got SandboxError: {type(e).__name__}"
+            raise AssertionError(msg) from e
+
     def test_delete_is_idempotent(self, sandbox_provider: SandboxClient) -> None:
         """Test `delete()` is idempotent and safe to call for missing IDs."""
         if not self.has_sync:
@@ -322,6 +334,14 @@ class SandboxClientIntegrationTests(BaseStandardTests):
         missing_id = "definitely-not-a-real-sandbox-id"
         with pytest.raises(SandboxNotFoundError):
             await sandbox_provider.aget(sandbox_id=missing_id)
+
+        try:
+            await sandbox_provider.aget(sandbox_id=missing_id)
+        except SandboxNotFoundError:
+            pass
+        except SandboxError as e:
+            msg = f"Expected SandboxNotFoundError, got SandboxError: {type(e).__name__}"
+            raise AssertionError(msg) from e
 
     async def test_async_delete_is_idempotent(
         self,

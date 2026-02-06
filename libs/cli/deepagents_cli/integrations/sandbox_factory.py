@@ -6,7 +6,6 @@ import string
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.backends.sandbox import SandboxProvider
@@ -73,7 +72,6 @@ def create_sandbox(
     template: str | None = None,
     template_image: str | None = None,
     cleanup: bool | None = None,
-    **kwargs: Any,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
@@ -91,14 +89,7 @@ def create_sandbox(
 
     Yields:
         SandboxBackendProtocol instance
-
-    Raises:
-        TypeError: If unsupported keyword arguments are provided
     """
-    if kwargs:
-        msg = f"Received unsupported arguments: {list(kwargs.keys())}"
-        raise TypeError(msg)
-
     # Get provider instance
     provider_obj = _get_provider(provider, api_key=api_key)
 

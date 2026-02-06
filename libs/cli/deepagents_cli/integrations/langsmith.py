@@ -170,7 +170,6 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         timeout: int = 180,
         template: str | None = None,
         template_image: str | None = None,
-        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get existing or create new LangSmith sandbox.
 
@@ -185,12 +184,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
 
         Raises:
             RuntimeError: Sandbox connection or startup failed
-            TypeError: If unsupported keyword arguments are provided
         """
-        if kwargs:
-            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
-            raise TypeError(msg)
-
         if sandbox_id:
             # Connect to existing sandbox by name
             try:

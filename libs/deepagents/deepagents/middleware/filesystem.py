@@ -250,6 +250,7 @@ Usage notes:
   - Commands run in an isolated sandbox environment
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
+  - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
   - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
@@ -261,6 +262,7 @@ Examples:
     - execute(command="pytest /foo/bar/tests")
     - execute(command="python /path/to/script.py")
     - execute(command="npm install && npm test")
+    - execute(command="make build", timeout=300)
 
   Bad examples (avoid these):
     - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
@@ -826,8 +828,14 @@ class FilesystemMiddleware(AgentMiddleware):
         def sync_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            timeout: Annotated[
+                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+            ] = None,
         ) -> str:
             """Synchronous wrapper for execute tool."""
+            if timeout is not None and timeout <= 0:
+                return f"Error: timeout must be a positive integer, got {timeout}."
+
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
@@ -839,10 +847,12 @@ class FilesystemMiddleware(AgentMiddleware):
                 )
 
             try:
-                result = resolved_backend.execute(command)
+                result = resolved_backend.execute(command, timeout=timeout)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
+            except ValueError as e:
+                return f"Error: Invalid parameter. {e}"
 
             # Format output for LLM consumption
             parts = [result.output]
@@ -859,8 +869,14 @@ class FilesystemMiddleware(AgentMiddleware):
         async def async_execute(
             command: Annotated[str, "Shell command to execute in the sandbox environment."],
             runtime: ToolRuntime[None, FilesystemState],
+            timeout: Annotated[  # noqa: ASYNC109
+                int | None, "Optional timeout in seconds for this command. Overrides the default timeout. Use for long-running commands."
+            ] = None,
         ) -> str:
             """Asynchronous wrapper for execute tool."""
+            if timeout is not None and timeout <= 0:
+                return f"Error: timeout must be a positive integer, got {timeout}."
+
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
@@ -872,10 +888,12 @@ class FilesystemMiddleware(AgentMiddleware):
                 )
 
             try:
-                result = await resolved_backend.aexecute(command)
+                result = await resolved_backend.aexecute(command, timeout=timeout)
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
+            except ValueError as e:
+                return f"Error: Invalid parameter. {e}"
 
             # Format output for LLM consumption
             parts = [result.output]

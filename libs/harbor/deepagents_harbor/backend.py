@@ -29,9 +29,18 @@ class HarborSandbox(SandboxBackendProtocol):
     async def aexecute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
-        """Execute a bash command in the task environment."""
-        result = await self.environment.exec(command)
+        """Execute a bash command in the task environment.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the environment's default timeout.
+        """
+        result = await self.environment.exec(command, timeout_sec=timeout)
 
         # These errors appear in harbor environments when running bash commands
         # in non-interactive/non-TTY contexts. They're harmless artifacts.
@@ -76,6 +85,8 @@ class HarborSandbox(SandboxBackendProtocol):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a bash command in the task environment."""
         raise NotImplementedError("This backend only supports async execution")

@@ -1,8 +1,16 @@
+"""Unit tests for input parsing utilities."""
+
+from pathlib import Path
+
+import pytest
+
 from deepagents_cli.input import parse_file_mentions
 
 
-def test_parse_file_mentions_with_chinese_sentence(tmp_path, monkeypatch):
-    """Ensure @file parsing stops before Chinese text or punctuation."""
+def test_parse_file_mentions_with_chinese_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure `@file` parsing terminates at non-path characters such as CJK text."""
     file_path = tmp_path / "input.py"
     file_path.write_text("print('hello')")
 
@@ -14,8 +22,10 @@ def test_parse_file_mentions_with_chinese_sentence(tmp_path, monkeypatch):
     assert files == [file_path.resolve()]
 
 
-def test_parse_file_mentions_handles_multiple_mentions(tmp_path, monkeypatch):
-    """Ensure multiple @file mentions are extracted from a single input."""
+def test_parse_file_mentions_handles_multiple_mentions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure multiple `@file` mentions are extracted from a single input."""
     first = tmp_path / "a.txt"
     second = tmp_path / "b.txt"
     first.write_text("1")
@@ -29,7 +39,9 @@ def test_parse_file_mentions_handles_multiple_mentions(tmp_path, monkeypatch):
     assert files == [first.resolve(), second.resolve()]
 
 
-def test_parse_file_mentions_with_escaped_spaces(tmp_path, monkeypatch):
+def test_parse_file_mentions_with_escaped_spaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Ensure escaped spaces in paths are handled correctly."""
     spaced_dir = tmp_path / "my folder"
     spaced_dir.mkdir()
@@ -42,7 +54,9 @@ def test_parse_file_mentions_with_escaped_spaces(tmp_path, monkeypatch):
     assert files == [file_path.resolve()]
 
 
-def test_parse_file_mentions_warns_for_nonexistent_file(tmp_path, monkeypatch, mocker):
+def test_parse_file_mentions_warns_for_nonexistent_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
     """Ensure non-existent files are excluded and warning is printed."""
     monkeypatch.chdir(tmp_path)
     mock_console = mocker.patch("deepagents_cli.input.console")
@@ -54,24 +68,31 @@ def test_parse_file_mentions_warns_for_nonexistent_file(tmp_path, monkeypatch, m
     assert "nonexistent.py" in mock_console.print.call_args[0][0]
 
 
-def test_parse_file_mentions_ignores_directories(tmp_path, monkeypatch):
+def test_parse_file_mentions_ignores_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
     """Ensure directories are not included in file list."""
     dir_path = tmp_path / "mydir"
     dir_path.mkdir()
     monkeypatch.chdir(tmp_path)
+    mock_console = mocker.patch("deepagents_cli.input.console")
 
     _, files = parse_file_mentions("@mydir")
 
     assert files == []
+    mock_console.print.assert_called_once()
+    assert "mydir" in mock_console.print.call_args[0][0]
 
 
-def test_parse_file_mentions_with_no_mentions():
+def test_parse_file_mentions_with_no_mentions() -> None:
     """Ensure text without mentions returns empty file list."""
     _, files = parse_file_mentions("just some text without mentions")
     assert files == []
 
 
-def test_parse_file_mentions_handles_path_traversal(tmp_path, monkeypatch):
+def test_parse_file_mentions_handles_path_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Ensure path traversal sequences are resolved to actual paths."""
     subdir = tmp_path / "subdir"
     subdir.mkdir()
@@ -84,7 +105,7 @@ def test_parse_file_mentions_handles_path_traversal(tmp_path, monkeypatch):
     assert files == [file_path.resolve()]
 
 
-def test_parse_file_mentions_with_absolute_path(tmp_path):
+def test_parse_file_mentions_with_absolute_path(tmp_path: Path) -> None:
     """Ensure absolute paths are resolved correctly without cwd changes."""
     file_path = tmp_path / "test.py"
     file_path.write_text("content")
@@ -94,8 +115,10 @@ def test_parse_file_mentions_with_absolute_path(tmp_path):
     assert files == [file_path.resolve()]
 
 
-def test_parse_file_mentions_handles_multiple_in_sentence(tmp_path, monkeypatch):
-    """Ensure multiple @mentions with spaces are parsed as separate files."""
+def test_parse_file_mentions_handles_multiple_in_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ensure multiple `@mentions` within a sentence are each parsed separately."""
     first = tmp_path / "a.py"
     second = tmp_path / "b.py"
     first.write_text("1")
@@ -107,8 +130,10 @@ def test_parse_file_mentions_handles_multiple_in_sentence(tmp_path, monkeypatch)
     assert files == [first.resolve(), second.resolve()]
 
 
-def test_parse_file_mentions_adjacent_looks_like_email(tmp_path, monkeypatch, mocker):
-    """Adjacent @mentions without space look like emails and are skipped.
+def test_parse_file_mentions_adjacent_looks_like_email(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    """Adjacent `@mentions` without space look like emails and are skipped.
 
     `@a.py@b.py` - the second `@` is preceded by `y` which looks like
     an email username, so `@b.py` is skipped. This is expected behavior
@@ -128,8 +153,10 @@ def test_parse_file_mentions_adjacent_looks_like_email(tmp_path, monkeypatch, mo
     mock_console.print.assert_not_called()
 
 
-def test_parse_file_mentions_handles_oserror(tmp_path, monkeypatch, mocker):
-    """Ensure OSError during path resolution is handled gracefully."""
+def test_parse_file_mentions_handles_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    """Ensure `OSError` during path resolution is handled gracefully."""
     monkeypatch.chdir(tmp_path)
     mock_console = mocker.patch("deepagents_cli.input.console")
     mocker.patch("pathlib.Path.resolve", side_effect=OSError("Permission denied"))
@@ -143,7 +170,9 @@ def test_parse_file_mentions_handles_oserror(tmp_path, monkeypatch, mocker):
     assert "Invalid path" in call_arg
 
 
-def test_parse_file_mentions_skips_email_addresses(tmp_path, monkeypatch, mocker):
+def test_parse_file_mentions_skips_email_addresses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
     """Ensure email addresses are not parsed as file mentions.
 
     Email addresses like `user@example.com` should be silently skipped
@@ -159,7 +188,9 @@ def test_parse_file_mentions_skips_email_addresses(tmp_path, monkeypatch, mocker
     mock_console.print.assert_not_called()
 
 
-def test_parse_file_mentions_skips_various_email_formats(tmp_path, monkeypatch, mocker):
+def test_parse_file_mentions_skips_various_email_formats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
     """Ensure various email formats are all skipped."""
     monkeypatch.chdir(tmp_path)
     mock_console = mocker.patch("deepagents_cli.input.console")
@@ -179,8 +210,10 @@ def test_parse_file_mentions_skips_various_email_formats(tmp_path, monkeypatch, 
     mock_console.print.assert_not_called()
 
 
-def test_parse_file_mentions_works_after_cjk_text(tmp_path, monkeypatch, mocker):
-    """Ensure @file mentions work after CJK text (not email-like)."""
+def test_parse_file_mentions_works_after_cjk_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    """Ensure `@file` mentions work after CJK text (not email-like)."""
     file_path = tmp_path / "test.py"
     file_path.write_text("content")
     monkeypatch.chdir(tmp_path)
@@ -191,3 +224,22 @@ def test_parse_file_mentions_works_after_cjk_text(tmp_path, monkeypatch, mocker)
 
     assert files == [file_path.resolve()]
     mock_console.print.assert_not_called()
+
+
+def test_parse_file_mentions_handles_bad_tilde_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    """Ensure `~nonexistentuser` paths produce a warning instead of crashing.
+
+    `Path.expanduser()` raises `RuntimeError` when the username does not
+    exist. This must be caught gracefully rather than propagating up.
+    """
+    monkeypatch.chdir(tmp_path)
+    mock_console = mocker.patch("deepagents_cli.input.console")
+
+    _, files = parse_file_mentions("@~nonexistentuser12345/file.py")
+
+    assert files == []
+    mock_console.print.assert_called_once()
+    call_arg = mock_console.print.call_args[0][0]
+    assert "nonexistentuser12345" in call_arg

@@ -16,7 +16,8 @@ Includes alphanumeric, period, underscore, tilde (home), forward/back slashes
 FILE_MENTION_PATTERN = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])+)")
 """Pattern for extracting `@file` mentions from input text.
 
-Matches `@` followed by one or more path characters anywhere in the text.
+Matches `@` followed by one or more path characters or escaped character
+pairs (backslash + any character, e.g., `\\ ` for spaces in paths).
 
 Uses `+` (not `*`) because a bare `@` without a path is not a valid
 file reference.
@@ -33,14 +34,16 @@ a file reference.
 INPUT_HIGHLIGHT_PATTERN = re.compile(
     r"(^\/[a-zA-Z0-9_-]+|@(?:\\.|[" + PATH_CHAR_CLASS + r"])+)"
 )
-"""Pattern for syntax highlighting in the input prompt.
+"""Pattern for highlighting `@mentions` and `/commands` in rendered
+user messages.
 
 Matches either:
-- Slash commands at the start of input (the lexer only highlights on the first line)
+- Slash commands at the start of the string (e.g., `/help`)
 - `@file` mentions anywhere in the text (e.g., `@README.md`)
 
-Note: The `^` anchor matches start of string, not start of line. The lexer applies
-this pattern line-by-line and additionally checks `i == 0` for slash commands.
+Note: The `^` anchor matches start of string, not start of line. The consumer
+in `UserMessage.compose()` additionally checks `start == 0` before styling
+slash commands, so a `/` mid-string is not highlighted.
 """
 
 
@@ -86,7 +89,7 @@ class ImageTracker:
 
 
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
-    """Extract `@file` mentions and return the text with resolved file paths.
+    r"""Extract `@file` mentions and return the text with resolved file paths.
 
     Parses `@file` mentions from the input text and resolves them to absolute
     file paths. Files that do not exist or cannot be resolved are excluded with
@@ -94,6 +97,14 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
 
     Email addresses (e.g., `user@example.com`) are automatically excluded by
     detecting email-like characters before the `@` symbol.
+
+    Backslash-escaped spaces in paths (e.g., `@my\ folder/file.txt`) are
+    unescaped before resolution. Tilde paths (e.g., `@~/file.txt`) are expanded
+    via `Path.expanduser()`. Only regular files are returned; directories are
+    excluded.
+
+    This function does not raise exceptions; invalid paths are handled
+    internally with a console warning.
 
     Args:
         text: Input text potentially containing `@file` mentions.
@@ -112,18 +123,19 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
 
         raw_path = match.group("path")
         clean_path = raw_path.replace("\\ ", " ")
-        path = Path(clean_path).expanduser()
-
-        if not path.is_absolute():
-            path = Path.cwd() / path
 
         try:
+            path = Path(clean_path).expanduser()
+
+            if not path.is_absolute():
+                path = Path.cwd() / path
+
             resolved = path.resolve()
             if resolved.exists() and resolved.is_file():
                 files.append(resolved)
             else:
                 console.print(f"[yellow]Warning: File not found: {raw_path}[/yellow]")
-        except OSError as e:
+        except (OSError, RuntimeError) as e:
             console.print(f"[yellow]Warning: Invalid path {raw_path}: {e}[/yellow]")
 
     return text, files

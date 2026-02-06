@@ -15,9 +15,6 @@ from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
-_USER_HIGHLIGHT_PATTERN = INPUT_HIGHLIGHT_PATTERN
-"""Reuse the highlight pattern from input.py to avoid duplication."""
-
 if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click
@@ -109,7 +106,7 @@ class UserMessage(Static):
         # Highlight @mentions and /commands in the content
         content = self._content
         last_end = 0
-        for match in _USER_HIGHLIGHT_PATTERN.finditer(content):
+        for match in INPUT_HIGHLIGHT_PATTERN.finditer(content):
             start, end = match.span()
             token = match.group()
 
@@ -123,14 +120,13 @@ class UserMessage(Static):
             if start > last_end:
                 text.append(content[last_end:start])
 
+            # The regex only matches tokens starting with / or @
             if token.startswith("/") and start == 0:
                 # /command at start - yellow/gold
                 text.append(token, style="bold #fbbf24")
             elif token.startswith("@"):
                 # @file mention - green
                 text.append(token, style="bold #10b981")
-            else:
-                text.append(token)
             last_end = end
 
         # Add remaining text after last match

@@ -1,9 +1,14 @@
 """StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
-from typing import Any
+import re
+import warnings
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generic
 
 from langgraph.config import get_config
 from langgraph.store.base import BaseStore, Item
+from langgraph.typing import ContextT, StateT
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -24,6 +29,67 @@ from deepagents.backends.utils import (
     update_file_data,
 )
 
+if TYPE_CHECKING:
+    from langchain.tools import ToolRuntime
+    from langgraph.runtime import Runtime
+
+
+@dataclass
+class BackendContext(Generic[StateT, ContextT]):
+    """Context passed to namespace factory functions."""
+
+    state: StateT
+    runtime: "Runtime[ContextT]"
+
+
+# Type alias for namespace factory functions
+NamespaceFactory = Callable[[BackendContext[Any, Any]], tuple[str, ...]]
+
+# Allowed characters in namespace components: alphanumeric, plus characters
+# common in user IDs (hyphen, underscore, dot, @, +, colon, tilde).
+_NAMESPACE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9\-_.@+:~]+$")
+
+
+def _validate_namespace(namespace: tuple[str, ...]) -> tuple[str, ...]:
+    """Validate a namespace tuple returned by a NamespaceFactory.
+
+    Each component must be a non-empty string containing only safe characters:
+    alphanumeric (a-z, A-Z, 0-9), hyphen (-), underscore (_), dot (.),
+    at sign (@), plus (+), colon (:), and tilde (~).
+
+    Characters like ``*``, ``?``, ``[``, ``]``, ``{``, ``}``, etc. are
+    rejected to prevent wildcard or glob injection in store lookups.
+
+    Args:
+        namespace: The namespace tuple to validate.
+
+    Returns:
+        The validated namespace tuple (unchanged).
+
+    Raises:
+        ValueError: If the namespace is empty, contains non-string elements,
+            empty strings, or strings with disallowed characters.
+    """
+    if not namespace:
+        msg = "Namespace tuple must not be empty."
+        raise ValueError(msg)
+
+    for i, component in enumerate(namespace):
+        if not isinstance(component, str):
+            msg = f"Namespace component at index {i} must be a string, got {type(component).__name__}."
+            raise TypeError(msg)
+        if not component:
+            msg = f"Namespace component at index {i} must not be empty."
+            raise ValueError(msg)
+        if not _NAMESPACE_COMPONENT_RE.match(component):
+            msg = (
+                f"Namespace component at index {i} contains disallowed characters: {component!r}. "
+                f"Only alphanumeric characters, hyphens, underscores, dots, @, +, colons, and tildes are allowed."
+            )
+            raise ValueError(msg)
+
+    return namespace
+
 
 class StoreBackend(BackendProtocol):
     """Backend that stores files in LangGraph's BaseStore (persistent).
@@ -34,13 +100,27 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime"):
+    def __init__(self, runtime: "ToolRuntime", *, namespace: NamespaceFactory | None = None):
         """Initialize StoreBackend with runtime.
 
         Args:
             runtime: The ToolRuntime instance providing store access and configuration.
+            namespace: Optional callable that takes a BackendContext and returns
+                a namespace tuple. This provides full flexibility for namespace resolution.
+                We forbid * which is a wild card for now.
+                If None, uses legacy assistant_id detection from metadata (deprecated).
+
+                .. note::
+                    This parameter will be **required** in version 0.5.0.
+
+                .. warning::
+                    This API is subject to change in a minor version.
+
+        Example:
+                    namespace=lambda ctx: ("filesystem", ctx.runtime.context.user_id)
         """
         self.runtime = runtime
+        self._namespace = namespace
 
     def _get_store(self) -> BaseStore:
         """Get the store instance.
@@ -60,6 +140,19 @@ class StoreBackend(BackendProtocol):
     def _get_namespace(self) -> tuple[str, ...]:
         """Get the namespace for store operations.
 
+        If namespace was provided at init, calls it with a BackendContext.
+        Otherwise, uses legacy assistant_id detection from metadata (deprecated).
+        """
+        if self._namespace is not None:
+            state = getattr(self.runtime, "state", None)
+            ctx = BackendContext(state=state, runtime=self.runtime)
+            return _validate_namespace(self._namespace(ctx))
+
+        return self._get_namespace_legacy()
+
+    def _get_namespace_legacy(self) -> tuple[str, ...]:
+        """Legacy namespace resolution: check metadata for assistant_id.
+
         Preference order:
         1) Use `self.runtime.config` if present (tests pass this explicitly).
         2) Fallback to `langgraph.config.get_config()` if available.
@@ -67,7 +160,15 @@ class StoreBackend(BackendProtocol):
 
         If an assistant_id is available in the config metadata, return
         (assistant_id, "filesystem") to provide per-assistant isolation.
+
+        .. deprecated::
+            Pass `namespace` to StoreBackend instead of relying on legacy detection.
         """
+        warnings.warn(
+            "StoreBackend without explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to StoreBackend.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         namespace = "filesystem"
 
         # Prefer the runtime-provided config when present

@@ -2017,6 +2017,10 @@ def test_chained_summarization_cutoff_index() -> None:
     def make_state_messages(n: int) -> list:
         return [HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else AIMessage(content=f"S{i}", id=f"s{i}") for i in range(n)]
 
+    def offloaded_labels(write_call_content: str) -> list[str]:
+        """Extract S-labels from backend write content (e.g. "Human: S0" -> "S0")."""
+        return [word for word in write_call_content.split() if word.startswith("S") and word[1:].isdigit()]
+
     # --- Round 1: first summarization, no previous event ---
     state = cast("AgentState[Any]", {"messages": make_state_messages(8)})
     with mock_get_config():
@@ -2027,6 +2031,8 @@ def test_chained_summarization_cutoff_index() -> None:
     assert event_1["cutoff_index"] == 6
     assert modified_request is not None
     assert [m.content for m in modified_request.messages[1:]] == ["S6", "S7"]
+    _, content = backend.write_calls[0]
+    assert offloaded_labels(content) == ["S0", "S1", "S2", "S3", "S4", "S5"]
 
     # --- Round 2: second summarization, feed back event from round 1 ---
     state = cast(
@@ -2041,6 +2047,8 @@ def test_chained_summarization_cutoff_index() -> None:
     assert event_2["cutoff_index"] == 12
     assert modified_request is not None
     assert [m.content for m in modified_request.messages[1:]] == ["S12", "S13"]
+    _, content = backend.write_calls[1]
+    assert offloaded_labels(content) == ["S6", "S7", "S8", "S9", "S10", "S11"]
 
     # --- Round 3: third summarization, feed back event from round 2 ---
     state = cast(
@@ -2055,3 +2063,5 @@ def test_chained_summarization_cutoff_index() -> None:
     assert event_3["cutoff_index"] == 18
     assert modified_request is not None
     assert [m.content for m in modified_request.messages[1:]] == ["S18", "S19"]
+    _, content = backend.write_calls[2]
+    assert offloaded_labels(content) == ["S12", "S13", "S14", "S15", "S16", "S17"]

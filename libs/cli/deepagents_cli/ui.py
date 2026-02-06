@@ -5,6 +5,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from deepagents_cli.backends import DEFAULT_EXECUTE_TIMEOUT
 from deepagents_cli.config import (
     COLORS,
     MAX_ARG_LENGTH,
@@ -13,12 +14,12 @@ from deepagents_cli.config import (
     get_glyphs,
 )
 
-# Default timeout for execute tool (matches LocalShellBackend default)
-_DEFAULT_EXECUTE_TIMEOUT = 120
-
 
 def _format_timeout(seconds: int) -> str:
     """Format timeout in human-readable units (e.g., 300 -> '5m', 3600 -> '1h').
+
+    Args:
+        seconds: The timeout value in seconds to format.
 
     Returns:
         Human-readable timeout string (e.g., '5m', '1h', '300s').
@@ -127,7 +128,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             command = str(tool_args["command"])
             command = truncate_value(command, 120)
             timeout = tool_args.get("timeout")
-            if timeout is not None and timeout != _DEFAULT_EXECUTE_TIMEOUT:
+            if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
             return f'{prefix} {tool_name}("{command}")'

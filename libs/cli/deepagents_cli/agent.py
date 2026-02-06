@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING, Any
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+
+from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
 
 if TYPE_CHECKING:
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
@@ -524,9 +525,10 @@ def create_cli_agent(
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-            # Use LocalShellBackend for filesystem + shell execution.
-            # Provides `execute` tool via FilesystemMiddleware.
-            backend = LocalShellBackend(
+            # Use CLIShellBackend for filesystem + shell execution.
+            # Provides `execute` tool via FilesystemMiddleware with per-command
+            # timeout support.
+            backend = CLIShellBackend(
                 root_dir=Path.cwd(),
                 inherit_env=True,
                 env=shell_env,
@@ -587,6 +589,9 @@ def create_cli_agent(
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver
+    # Patch FilesystemMiddleware so the SDK constructs our subclass with
+    # per-command timeout support on the execute tool.
+    patch_filesystem_middleware()
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
     agent = create_deep_agent(
         model=model,

@@ -147,9 +147,9 @@ def create_deep_agent(
         if model.startswith("openai:"):
             # Use Responses API by default. To use chat completions, use
             # `model=init_chat_model("openai:...")`
-            # To disable data retention with the Responses API, use
-            # `model=init_chat_model("openai:...", use_responses_api=True, store=False)``
-            model_init_params: dict = {"use_responses_api": True}
+            # To enable data retention with the Responses API, use
+            # `model=init_chat_model("openai:...", use_responses_api=True, store=True)``
+            model_init_params: dict = {"use_responses_api": True, "store": False}
         else:
             model_init_params = {}
 

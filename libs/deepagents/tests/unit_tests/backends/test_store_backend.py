@@ -327,6 +327,7 @@ def test_store_backend_namespace_with_state() -> None:
     assert len(items) == 1
     assert items[0].key == "/test.txt"
 
+
 @pytest.mark.parametrize(
     ("pattern", "expected_file"),
     [

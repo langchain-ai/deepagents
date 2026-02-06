@@ -36,28 +36,25 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
     _DEFAULT_TRIM_TOKEN_LIMIT,
     DEFAULT_SUMMARY_PROMPT,
     ContextSize,
-    SummarizationMiddleware as LCSummarizationMiddleware,
+    SummarizationMiddleware as BaseSummarizationMiddleware,
     TokenCounter,
 )
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
-from langgraph.types import Command
-from typing_extensions import TypedDict
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
+from typing_extensions import TypedDict, override
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain.agents.middleware.types import AgentState
     from langchain.chat_models import BaseChatModel
     from langchain_core.runnables.config import RunnableConfig
     from langgraph.runtime import Runtime
@@ -65,20 +62,6 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 logger = logging.getLogger(__name__)
-
-
-class SummarizationEvent(TypedDict):
-    """Represents a summarization event.
-
-    Attributes:
-        cutoff_index: The index in the messages list where summarization occurred.
-        summary_message: The HumanMessage containing the summary.
-        file_path: Path where the conversation history was offloaded, or None if offload failed.
-    """
-
-    cutoff_index: int
-    summary_message: HumanMessage
-    file_path: str | None
 
 
 class TruncateArgsSettings(TypedDict, total=False):
@@ -95,16 +78,6 @@ class TruncateArgsSettings(TypedDict, total=False):
     keep: ContextSize
     max_length: int
     truncation_text: str
-
-
-class SummarizationState(AgentState):
-    """State for the summarization middleware.
-
-    Extends AgentState with a private field for tracking summarization events.
-    """
-
-    _summarization_event: Annotated[NotRequired[SummarizationEvent | None], PrivateStateAttr]
-    """Private field storing the most recent summarization event."""
 
 
 class SummarizationDefaults(TypedDict):
@@ -154,10 +127,8 @@ def _compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaul
     }
 
 
-class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
+class SummarizationMiddleware(BaseSummarizationMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
-
-    state_schema = SummarizationState
 
     def __init__(
         self,
@@ -216,8 +187,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             )
             ```
         """
-        # Initialize langchain helper for core summarization logic
-        self._lc_helper = LCSummarizationMiddleware(
+        super().__init__(
             model=model,
             trigger=trigger,
             keep=keep,
@@ -226,8 +196,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             trim_tokens_to_summarize=trim_tokens_to_summarize,
             **deprecated_kwargs,
         )
-
-        # DeepAgents-specific attributes
         self._backend = backend
         self._history_path_prefix = history_path_prefix
 
@@ -242,45 +210,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             self._truncate_args_keep = truncate_args_settings.get("keep", ("messages", 20))
             self._max_arg_length = truncate_args_settings.get("max_length", 2000)
             self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
-
-    # Delegated properties and methods from langchain helper
-    @property
-    def model(self) -> BaseChatModel:
-        """The language model used for generating summaries."""
-        return self._lc_helper.model
-
-    @property
-    def token_counter(self) -> TokenCounter:
-        """Function to count tokens in messages."""
-        return self._lc_helper.token_counter
-
-    def _get_profile_limits(self) -> int | None:
-        """Retrieve max input token limit from the model profile."""
-        return self._lc_helper._get_profile_limits()
-
-    def _should_summarize(self, messages: list[AnyMessage], total_tokens: int) -> bool:
-        """Determine whether summarization should run for the current token usage."""
-        return self._lc_helper._should_summarize(messages, total_tokens)
-
-    def _determine_cutoff_index(self, messages: list[AnyMessage]) -> int:
-        """Choose cutoff index respecting retention configuration."""
-        return self._lc_helper._determine_cutoff_index(messages)
-
-    def _partition_messages(
-        self,
-        conversation_messages: list[AnyMessage],
-        cutoff_index: int,
-    ) -> tuple[list[AnyMessage], list[AnyMessage]]:
-        """Partition messages into those to summarize and those to preserve."""
-        return self._lc_helper._partition_messages(conversation_messages, cutoff_index)
-
-    def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
-        """Generate summary for the given messages."""
-        return self._lc_helper._create_summary(messages_to_summarize)
-
-    async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
-        """Generate summary for the given messages (async)."""
-        return await self._lc_helper._acreate_summary(messages_to_summarize)
 
     def _get_backend(
         self,
@@ -413,42 +342,6 @@ A condensed summary follows:
                 additional_kwargs={"lc_source": "summarization"},
             )
         ]
-
-    def _get_effective_messages(self, request: ModelRequest) -> list[AnyMessage]:
-        """Generate effective messages for model call based on summarization event.
-
-        This reconstructs the message list by applying the most recent summarization event.
-        After summarization, instead of using all messages from state, we use the summary
-        message plus messages after the cutoff index.
-
-        Args:
-            request: The model request with messages from state.
-
-        Returns:
-            The effective message list to use for the model call. This includes the
-            most recent summary message (if we've summarized) and all preserved
-            messages from the cutoff index onward.
-        """
-        # Get messages from request (these are from state["messages"])
-        messages = request.messages
-
-        # Get summarization event from state
-        event = request.state.get("_summarization_event")
-
-        # If no summarization event, return all messages as-is
-        if event is None:
-            return messages
-
-        # Apply the summarization event
-        # The cutoff_index tells us: messages before cutoff are summarized, messages at/after are kept
-
-        # Build effective messages: summary message, then messages from cutoff onward
-        result = [event["summary_message"]]
-
-        # Add messages from cutoff_index onward (messages at cutoff_index and after are preserved)
-        result.extend(messages[event["cutoff_index"] :])
-
-        return result
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
         """Check if argument truncation should be triggered.
@@ -751,33 +644,31 @@ A condensed summary follows:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
             return path
 
-    def wrap_model_call(
+    @override
+    def before_model(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse | ExtendedModelResponse:
+        state: AgentState[Any],
+        runtime: Runtime,
+    ) -> dict[str, Any] | None:
         """Process messages before model invocation, with history offloading and arg truncation.
 
-        First applies any previous summarization events to reconstruct the effective message list.
-        Then truncates large tool arguments in old messages if configured.
-        Finally offloads messages to backend before summarization if thresholds are met.
-
-        Unlike the legacy `before_model` approach, this does NOT modify the LangGraph state.
-        Instead, it tracks summarization events in middleware state and modifies the model
-        request directly.
+        First truncates large tool arguments in old messages if configured.
+        Then offloads messages to backend before summarization if thresholds are met.
+        The summary message includes a reference to the file path where the full
+        conversation history was stored.
 
         Args:
-            request: The model request to process.
-            handler: The handler to call with the (possibly modified) request.
+            state: The agent state.
+            runtime: The runtime environment.
 
         Returns:
-            The model response from the handler.
+            Updated state with truncated/summarized messages if processing was performed.
         """
-        # Get effective messages based on previous summarization events
-        effective_messages = self._get_effective_messages(request)
+        messages = state["messages"]
+        self._ensure_message_ids(messages)
 
         # Step 1: Truncate args if configured
-        truncated_messages, args_were_truncated = self._truncate_args(effective_messages)
+        truncated_messages, args_were_truncated = self._truncate_args(messages)
 
         # Step 2: Check if summarization should happen
         total_tokens = self.token_counter(truncated_messages)
@@ -785,24 +676,34 @@ A condensed summary follows:
 
         # If only truncation happened (no summarization)
         if args_were_truncated and not should_summarize:
-            return handler(request.override(messages=truncated_messages))
+            return {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    *truncated_messages,
+                ]
+            }
 
         # If no truncation and no summarization
         if not should_summarize:
-            return handler(request.override(messages=truncated_messages))
+            return None
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
             # If truncation happened but we can't summarize, still return truncated messages
             if args_were_truncated:
-                return handler(request.override(messages=truncated_messages))
-            return handler(request.override(messages=truncated_messages))
+                return {
+                    "messages": [
+                        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                        *truncated_messages,
+                    ]
+                }
+            return None
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first - abort summarization if this fails to prevent data loss
-        backend = self._get_backend(request.state, request.runtime)
+        backend = self._get_backend(state, runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
             warnings.warn(
@@ -816,57 +717,42 @@ A condensed summary follows:
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        # Calculate state cutoff index
-        # If this is a subsequent summarization, convert effective message index to state index
-        # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
-        # The -1 accounts for the summary message at effective[0]
-        previous_event = request.state.get("_summarization_event")
-        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
-
-        # Create new summarization event
-        new_event: SummarizationEvent = {
-            "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],  # The HumanMessage with summary
-            "file_path": file_path,
+        return {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *new_messages,
+                *preserved_messages,
+            ]
         }
 
-        # Modify request to use summarized messages
-        modified_messages = [*new_messages, *preserved_messages]
-        response = handler(request.override(messages=modified_messages))
-
-        # Return WrapModelCallResult with state update
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update={"_summarization_event": new_event}),
-        )
-
-    async def awrap_model_call(
+    @override
+    async def abefore_model(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse | ExtendedModelResponse:
+        state: AgentState[Any],
+        runtime: Runtime,
+    ) -> dict[str, Any] | None:
         """Process messages before model invocation, with history offloading and arg truncation (async).
 
-        First applies any previous summarization events to reconstruct the effective message list.
-        Then truncates large tool arguments in old messages if configured.
-        Finally offloads messages to backend before summarization if thresholds are met.
+        First truncates large tool arguments in old messages if configured.
+        Then offloads messages to backend before summarization if thresholds are met.
+        The summary message includes a reference to the file path where the
+        full conversation history was stored.
 
-        Unlike the legacy `abefore_model` approach, this does NOT modify the LangGraph state.
-        Instead, it tracks summarization events in middleware state and modifies the model
-        request directly.
+        The summary message includes a reference to the file path where the full
+        conversation history was stored.
 
         Args:
-            request: The model request to process.
-            handler: The handler to call with the (possibly modified) request.
+            state: The agent state.
+            runtime: The runtime environment.
 
         Returns:
-            The model response from the handler.
+            Updated state with truncated/summarized messages if processing was performed.
         """
-        # Get effective messages based on previous summarization events
-        effective_messages = self._get_effective_messages(request)
+        messages = state["messages"]
+        self._ensure_message_ids(messages)
 
         # Step 1: Truncate args if configured
-        truncated_messages, args_were_truncated = self._truncate_args(effective_messages)
+        truncated_messages, args_were_truncated = self._truncate_args(messages)
 
         # Step 2: Check if summarization should happen
         total_tokens = self.token_counter(truncated_messages)
@@ -874,24 +760,34 @@ A condensed summary follows:
 
         # If only truncation happened (no summarization)
         if args_were_truncated and not should_summarize:
-            return await handler(request.override(messages=truncated_messages))
+            return {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    *truncated_messages,
+                ]
+            }
 
         # If no truncation and no summarization
         if not should_summarize:
-            return await handler(request.override(messages=truncated_messages))
+            return None
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
             # If truncation happened but we can't summarize, still return truncated messages
             if args_were_truncated:
-                return await handler(request.override(messages=truncated_messages))
-            return await handler(request.override(messages=truncated_messages))
+                return {
+                    "messages": [
+                        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                        *truncated_messages,
+                    ]
+                }
+            return None
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first - abort summarization if this fails to prevent data loss
-        backend = self._get_backend(request.state, request.runtime)
+        backend = self._get_backend(state, runtime)
         file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
         if file_path is None:
             warnings.warn(
@@ -905,30 +801,10 @@ A condensed summary follows:
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        # Calculate state cutoff index
-        # If this is a subsequent summarization, convert effective message index to state index
-        # new_state_cutoff = old_state_cutoff + effective_cutoff - 1  # noqa: ERA001
-        # The -1 accounts for the summary message at effective[0]
-        previous_event = request.state.get("_summarization_event")
-        state_cutoff_index = previous_event["cutoff_index"] + cutoff_index - 1 if previous_event is not None else cutoff_index
-
-        # Create new summarization event
-        new_event: SummarizationEvent = {
-            "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],  # The HumanMessage with summary
-            "file_path": file_path,
+        return {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *new_messages,
+                *preserved_messages,
+            ]
         }
-
-        # Modify request to use summarized messages
-        modified_messages = [*new_messages, *preserved_messages]
-        response = await handler(request.override(messages=modified_messages))
-
-        # Return WrapModelCallResult with state update
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update={"_summarization_event": new_event}),
-        )
-
-
-# Public alias
-SummarizationMiddleware = _DeepAgentsSummarizationMiddleware

@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
@@ -229,90 +228,6 @@ def make_mock_model(summary_response: str = "This is a test summary.") -> MagicM
     return model
 
 
-def make_model_request(
-    state: "AgentState[Any]",
-    runtime: Any,  # noqa: ANN401
-) -> ModelRequest:
-    """Create a ModelRequest from a state dict.
-
-    Args:
-        state: The agent state containing messages.
-        runtime: The runtime object.
-
-    Returns:
-        A ModelRequest suitable for calling wrap_model_call.
-    """
-    mock_model = make_mock_model()
-    return ModelRequest(
-        model=mock_model,
-        messages=state["messages"],
-        system_message=None,
-        tools=[],
-        runtime=runtime,
-        state=state,
-    )
-
-
-def call_wrap_model_call(
-    middleware: SummarizationMiddleware,
-    state: "AgentState[Any]",
-    runtime: Any,  # noqa: ANN401
-) -> tuple["ModelResponse | ExtendedModelResponse", ModelRequest | None]:
-    """Helper to call wrap_model_call and capture what was passed to handler.
-
-    Args:
-        middleware: The middleware instance to test.
-        state: The agent state.
-        runtime: The runtime object.
-
-    Returns:
-        Tuple of (result, modified_request) where:
-        - result is the return value from wrap_model_call
-        - modified_request is the request passed to the handler (or None if handler wasn't called)
-    """
-    request = make_model_request(state, runtime)
-    captured_request = None
-
-    def handler(req: ModelRequest) -> "ModelResponse":
-        nonlocal captured_request
-        captured_request = req
-        # Return a mock response
-        return AIMessage(content="Mock response")
-
-    result = middleware.wrap_model_call(request, handler)
-    return result, captured_request
-
-
-async def call_awrap_model_call(
-    middleware: SummarizationMiddleware,
-    state: "AgentState[Any]",
-    runtime: Any,  # noqa: ANN401
-) -> tuple["ModelResponse | ExtendedModelResponse", ModelRequest | None]:
-    """Helper to call awrap_model_call and capture what was passed to handler (async version).
-
-    Args:
-        middleware: The middleware instance to test.
-        state: The agent state.
-        runtime: The runtime object.
-
-    Returns:
-        Tuple of (result, modified_request) where:
-        - result is the return value from awrap_model_call
-        - modified_request is the request passed to the handler (or None if handler wasn't called)
-    """
-    request = make_model_request(state, runtime)
-    captured_request = None
-
-    async def handler(req: ModelRequest) -> "ModelResponse":
-        nonlocal captured_request
-        captured_request = req
-        # Return a mock response
-        return AIMessage(content="Mock response")
-
-    result = await middleware.awrap_model_call(request, handler)
-    return result, captured_request
-
-
 # -----------------------------------------------------------------------------
 
 
@@ -367,13 +282,10 @@ class TestOffloadingBasic:
         runtime = make_mock_runtime()
 
         with mock_get_config():
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result = middleware.before_model(state, runtime)
 
         # Should have triggered summarization
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert "_summarization_event" in result.command.update
+        assert result is not None
         assert len(backend.write_calls) == 1
 
         path, content = backend.write_calls[0]
@@ -399,7 +311,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        call_wrap_model_call(middleware, state, runtime)
+        middleware.before_model(state, runtime)
 
         assert len(backend.edit_calls) == 1
         _, old_string, new_string = backend.edit_calls[0]
@@ -455,11 +367,9 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, _ = call_wrap_model_call(middleware, state, runtime)
+        result = middleware.before_model(state, runtime)
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
+        assert result is not None
         assert len(backend.write_calls) == 1
 
         _, content = backend.write_calls[0]
@@ -503,11 +413,9 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, _ = call_wrap_model_call(middleware, state, runtime)
+        result = middleware.before_model(state, runtime)
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
+        assert result is not None
 
         _, content = backend.write_calls[0]
 
@@ -543,7 +451,7 @@ class TestOffloadingBasic:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        call_wrap_model_call(middleware, state, runtime)
+        middleware.before_model(state, runtime)
 
         _, content = backend.write_calls[0]
 
@@ -572,15 +480,11 @@ class TestSummaryMessageFormat:
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id="test-thread"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result = middleware.before_model(state, runtime)
+        assert result is not None
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
-
-        # Get the summary message (first in modified messages list)
-        summary_msg = modified_request.messages[0]
+        # Get the summary message (second in list, after RemoveMessage)
+        summary_msg = result["messages"][1]
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
@@ -607,11 +511,10 @@ class TestSummaryMessageFormat:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result = middleware.before_model(state, runtime)
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert modified_request is not None
-        summary_msg = modified_request.messages[0]
+        assert result is not None
+        summary_msg = result["messages"][1]
 
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
 
@@ -632,13 +535,11 @@ class TestSummaryMessageFormat:
         runtime = make_mock_runtime()
 
         with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result = middleware.before_model(state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
+        assert "messages" in result
 
     def test_summary_includes_file_path_after_second_summarization(self) -> None:
         """Test that summary message includes file path reference after multiple summarizations.
@@ -676,15 +577,12 @@ class TestSummaryMessageFormat:
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id="multi-summarize-thread"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result = middleware.before_model(state, runtime)
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
 
-        # The summary message should be the first message
-        summary_msg = modified_request.messages[0]
+        # The summary message should be at index 1 (after RemoveMessage)
+        summary_msg = result["messages"][1]
 
         # Should include the file path reference
         assert "full conversation history has been saved to" in summary_msg.content
@@ -718,10 +616,10 @@ class TestNoSummarizationTriggered:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result = middleware.before_model(state, runtime)
 
-        # Should return ModelResponse (no summarization)
-        assert not isinstance(result, ExtendedModelResponse)
+        # Should return None (no summarization)
+        assert result is None
 
         # No writes should have occurred
         assert len(backend.write_calls) == 0
@@ -747,13 +645,11 @@ class TestBackendFailureHandling:
         runtime = make_mock_runtime()
 
         with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result = middleware.before_model(state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
+        assert "messages" in result
 
     def test_summarization_aborts_on_write_exception(self) -> None:
         """Test that summarization warns when backend raises exception but still summarizes."""
@@ -774,13 +670,11 @@ class TestBackendFailureHandling:
         runtime = make_mock_runtime()
 
         with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result = middleware.before_model(state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
+        assert "messages" in result
 
 
 class TestThreadIdExtraction:
@@ -803,7 +697,7 @@ class TestThreadIdExtraction:
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id="custom-thread-456"):
-            call_wrap_model_call(middleware, state, runtime)
+            middleware.before_model(state, runtime)
 
         path, _ = backend.write_calls[0]
         assert path == "/conversation_history/custom-thread-456.md"
@@ -825,7 +719,7 @@ class TestThreadIdExtraction:
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id=None):
-            call_wrap_model_call(middleware, state, runtime)
+            middleware.before_model(state, runtime)
 
         path, _ = backend.write_calls[0]
 
@@ -856,11 +750,9 @@ class TestAsyncBehavior:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result = await middleware.abefore_model(state, runtime)
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
+        assert result is not None
         assert len(backend.write_calls) == 1
 
     @pytest.mark.anyio
@@ -882,13 +774,11 @@ class TestAsyncBehavior:
         runtime = make_mock_runtime()
 
         with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
-            result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+            result = await middleware.abefore_model(state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
+        assert "messages" in result
 
 
 class TestBackendFactoryInvocation:
@@ -914,7 +804,7 @@ class TestBackendFactoryInvocation:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        call_wrap_model_call(middleware, state, runtime)
+        middleware.before_model(state, runtime)
 
         # Factory should have been called once
         assert len(factory_called_with) == 1
@@ -943,7 +833,7 @@ class TestCustomHistoryPathPrefix:
         runtime = make_mock_runtime()
 
         with mock_get_config(thread_id="test-thread"):
-            call_wrap_model_call(middleware, state, runtime)
+            middleware.before_model(state, runtime)
 
         path, _ = backend.write_calls[0]
         assert path == "/custom/path/test-thread.md"
@@ -968,10 +858,8 @@ class TestMarkdownFormatting:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
+        result = middleware.before_model(state, runtime)
+        assert result is not None
 
         # Verify the offloaded content is markdown formatted
         _, content = backend.write_calls[0]
@@ -1002,11 +890,10 @@ class TestDownloadFilesException:
         runtime = make_mock_runtime()
 
         # Should not raise - summarization should continue
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result = middleware.before_model(state, runtime)
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
+        assert result is not None
+        assert "messages" in result
         # download_files was called (and raised)
         assert len(backend.download_files_calls) == 1
         # write should still be called (with no existing content)
@@ -1031,11 +918,10 @@ class TestDownloadFilesException:
         runtime = make_mock_runtime()
 
         # Should not raise - summarization should continue
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result = await middleware.abefore_model(state, runtime)
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
+        assert result is not None
+        assert "messages" in result
         # write should still be called (with no existing content)
         assert len(backend.write_calls) == 1
 
@@ -1063,13 +949,11 @@ class TestWriteEditException:
         runtime = make_mock_runtime()
 
         with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result = middleware.before_model(state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
+        assert "messages" in result
 
     @pytest.mark.anyio
     async def test_async_summarization_aborts_on_write_exception(self) -> None:
@@ -1093,13 +977,11 @@ class TestWriteEditException:
         runtime = make_mock_runtime()
 
         with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
-            result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+            result = await middleware.abefore_model(state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
+        assert "messages" in result
 
     def test_summarization_aborts_on_edit_exception(self) -> None:
         """Test that summarization warns when `edit` raises an exception but still summarizes (existing content).
@@ -1122,13 +1004,11 @@ class TestWriteEditException:
         runtime = make_mock_runtime()
 
         with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result = middleware.before_model(state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
+        assert "messages" in result
 
     @pytest.mark.anyio
     async def test_async_summarization_aborts_on_edit_exception(self) -> None:
@@ -1153,13 +1033,11 @@ class TestWriteEditException:
         runtime = make_mock_runtime()
 
         with pytest.warns(UserWarning, match="Offloading conversation history to backend failed"):
-            result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+            result = await middleware.abefore_model(state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        assert result.command.update is not None
-        assert modified_request is not None
+        assert result is not None
+        assert "messages" in result
 
 
 class TestCutoffIndexEdgeCases:
@@ -1186,10 +1064,10 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result = middleware.before_model(state, runtime)
 
-        # Should return ModelResponse (no summarization) because cutoff_index would be 0 or negative
-        assert not isinstance(result, ExtendedModelResponse)
+        # Should return None because cutoff_index would be 0 or negative
+        assert result is None
         # No writes should occur
         assert len(backend.write_calls) == 0
 
@@ -1210,10 +1088,10 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result = await middleware.abefore_model(state, runtime)
 
-        # Should return ModelResponse (no summarization)
-        assert not isinstance(result, ExtendedModelResponse)
+        # Should return None (no summarization)
+        assert result is None
         # No writes should have occurred
         assert len(backend.write_calls) == 0
 
@@ -1240,10 +1118,10 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result = await middleware.abefore_model(state, runtime)
 
-        # Should return ModelResponse (no summarization) because cutoff_index would be 0 or negative
-        assert not isinstance(result, ExtendedModelResponse)
+        # Should return None because cutoff_index would be 0 or negative
+        assert result is None
         # No writes should occur
         assert len(backend.write_calls) == 0
 
@@ -1286,10 +1164,10 @@ def test_no_truncation_when_trigger_is_none() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
-    # Should return ModelResponse (no truncation, no summarization)
-    assert not isinstance(result, ExtendedModelResponse)
+    # Should return None (no truncation, no summarization)
+    assert result is None
 
 
 def test_truncate_old_write_file_tool_call() -> None:
@@ -1333,13 +1211,11 @@ def test_truncate_old_write_file_tool_call() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
-    # Truncation only - returns AIMessage (ModelResponse)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-    # Truncation modifies messages inline
-    cleaned_messages = modified_request.messages
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     # Check that the old tool call was cleaned
     first_ai_msg = cleaned_messages[0]
@@ -1395,13 +1271,11 @@ def test_truncate_old_edit_file_tool_call() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
-    # Truncation only - returns AIMessage (ModelResponse)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-    # Truncation modifies messages inline
-    cleaned_messages = modified_request.messages
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["name"] == "edit_file"
@@ -1449,16 +1323,10 @@ def test_truncate_ignores_other_tool_calls() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
-    # Should return AIMessage since read_file is not cleaned (no truncation)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-
-    # Verify read_file args are unchanged
-    first_msg = modified_request.messages[0]
-    assert isinstance(first_msg, AIMessage)
-    assert first_msg.tool_calls[0]["args"]["content"] == large_content
+    # Should return None since read_file is not cleaned
+    assert result is None
 
 
 def test_truncate_respects_recent_messages() -> None:
@@ -1502,16 +1370,10 @@ def test_truncate_respects_recent_messages() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
     # No truncation should happen since the tool call is in the keep window (last 4 messages)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-
-    # Verify the write_file content is unchanged
-    write_file_msg = modified_request.messages[2]
-    assert isinstance(write_file_msg, AIMessage)
-    assert write_file_msg.tool_calls[0]["args"]["content"] == large_content
+    assert result is None
 
 
 def test_truncate_with_token_keep_policy() -> None:
@@ -1559,13 +1421,11 @@ def test_truncate_with_token_keep_policy() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
-    # Truncation only - returns AIMessage (ModelResponse)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-    # Truncation modifies messages inline
-    cleaned_messages = modified_request.messages
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     # First message should be cleaned since it's outside the token window
     first_ai_msg = cleaned_messages[0]
@@ -1615,16 +1475,14 @@ def test_truncate_with_fraction_trigger_and_keep() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
     # Should trigger truncation: 3 messages * 200 = 600 tokens > 500 threshold
     # Should keep only ~200 tokens (1 message) from the end
     # So first 2 messages should be in truncation zone
-    # Truncation only - returns AIMessage (ModelResponse)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-    # Truncation modifies messages inline
-    cleaned_messages = modified_request.messages
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
@@ -1668,19 +1526,16 @@ def test_truncate_before_summarization() -> None:
     runtime = make_mock_runtime()
 
     with mock_get_config(thread_id="test-thread"):
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result = middleware.before_model(state, runtime)
 
-    assert isinstance(result, ExtendedModelResponse)
-    assert result.command is not None
-    assert result.command.update is not None
-    assert modified_request is not None
+    assert result is not None
 
     # Should have triggered both truncation and summarization
     # Backend should have received a write call for offloading
     assert len(backend.write_calls) == 1
 
-    # Result should contain summary message
-    new_messages = modified_request.messages
+    # Result should contain summary message (skip RemoveMessage at index 0)
+    new_messages = result["messages"][1:]
     assert any("summary" in str(msg.content).lower() for msg in new_messages)
 
 
@@ -1724,18 +1579,16 @@ def test_truncate_without_summarization() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
-    # Truncation only - returns AIMessage (ModelResponse)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
+    assert result is not None
 
     # No backend write (no summarization)
     assert len(backend.write_calls) == 0
 
     # But truncation should have happened
-    # Truncation modifies messages inline
-    cleaned_messages = modified_request.messages
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
@@ -1780,16 +1633,10 @@ def test_truncate_preserves_small_arguments() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
     # No modification should happen since content is small
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-
-    # Verify the content is unchanged
-    first_msg = modified_request.messages[0]
-    assert isinstance(first_msg, AIMessage)
-    assert first_msg.tool_calls[0]["args"]["content"] == small_content
+    assert result is None
 
 
 def test_truncate_mixed_tool_calls() -> None:
@@ -1844,13 +1691,11 @@ def test_truncate_mixed_tool_calls() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
-    # Truncation only - returns AIMessage (ModelResponse)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-    # Truncation modifies messages inline
-    cleaned_messages = modified_request.messages
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
     assert len(first_ai_msg.tool_calls) == 3
@@ -1909,13 +1754,11 @@ def test_truncate_custom_truncation_text() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result = middleware.before_model(state, runtime)
 
-    # Truncation only - returns AIMessage (ModelResponse)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-    # Truncation modifies messages inline
-    cleaned_messages = modified_request.messages
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "y" * 20 + "[TRUNCATED]"
@@ -1962,106 +1805,11 @@ async def test_truncate_async_works() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+    result = await middleware.abefore_model(state, runtime)
 
-    # Truncation only - returns AIMessage (ModelResponse)
-    assert isinstance(result, AIMessage)
-    assert modified_request is not None
-    # Truncation modifies messages inline
-    cleaned_messages = modified_request.messages
+    assert result is not None
+    # Skip RemoveMessage at index 0, actual messages start at index 1
+    cleaned_messages = result["messages"][1:]
 
     first_ai_msg = cleaned_messages[0]
     assert first_ai_msg.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
-
-
-# -----------------------------------------------------------------------------
-# Chained summarization cutoff index tests
-# -----------------------------------------------------------------------------
-
-
-def test_chained_summarization_cutoff_index() -> None:
-    """Test that state_cutoff_index is computed correctly across three chained summarizations.
-
-    The formula is:
-        state_cutoff = old_state_cutoff + effective_cutoff - 1
-
-    The -1 accounts for the synthetic summary message at effective[0] which does not
-    correspond to any state message.
-
-    Setup: trigger=("messages", 5), keep=("messages", 2).
-
-    Round 1 (no previous event):
-        State: [S0..S7] (8 messages), cutoff = 8 - 2 = 6.
-        Preserved: [S6, S7]. Event: cutoff_index=6.
-
-    Round 2 (previous cutoff=6):
-        State: [S0..S13] (14 messages).
-        effective = [summary_1, S6..S13] (9 messages), effective cutoff = 9 - 2 = 7.
-        state_cutoff = 6 + 7 - 1 = 12. Preserved: [S12, S13].
-
-    Round 3 (previous cutoff=12):
-        State: [S0..S19] (20 messages).
-        effective = [summary_2, S12..S19] (9 messages), effective cutoff = 9 - 2 = 7.
-        state_cutoff = 12 + 7 - 1 = 18. Preserved: [S18, S19].
-    """
-    backend = MockBackend()
-    mock_model = make_mock_model()
-    middleware = SummarizationMiddleware(
-        model=mock_model,
-        backend=backend,
-        trigger=("messages", 5),
-        keep=("messages", 2),
-    )
-    runtime = make_mock_runtime()
-
-    def make_state_messages(n: int) -> list:
-        return [HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else AIMessage(content=f"S{i}", id=f"s{i}") for i in range(n)]
-
-    def offloaded_labels(write_call_content: str) -> list[str]:
-        """Extract S-labels from backend write content (e.g. "Human: S0" -> "S0")."""
-        return [word for word in write_call_content.split() if word.startswith("S") and word[1:].isdigit()]
-
-    # --- Round 1: first summarization, no previous event ---
-    state = cast("AgentState[Any]", {"messages": make_state_messages(8)})
-    with mock_get_config():
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
-
-    assert isinstance(result, ExtendedModelResponse)
-    event_1 = result.command.update["_summarization_event"]
-    assert event_1["cutoff_index"] == 6
-    assert modified_request is not None
-    assert [m.content for m in modified_request.messages[1:]] == ["S6", "S7"]
-    _, content = backend.write_calls[0]
-    assert offloaded_labels(content) == ["S0", "S1", "S2", "S3", "S4", "S5"]
-
-    # --- Round 2: second summarization, feed back event from round 1 ---
-    state = cast(
-        "AgentState[Any]",
-        {"messages": make_state_messages(14), "_summarization_event": event_1},
-    )
-    with mock_get_config():
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
-
-    assert isinstance(result, ExtendedModelResponse)
-    event_2 = result.command.update["_summarization_event"]
-    assert event_2["cutoff_index"] == 12
-    assert modified_request is not None
-    assert [m.content for m in modified_request.messages[1:]] == ["S12", "S13"]
-    _, content = backend.write_calls[1]
-    assert offloaded_labels(content) == ["S6", "S7", "S8", "S9", "S10", "S11"]
-
-    # --- Round 3: third summarization, feed back event from round 2 ---
-    state = cast(
-        "AgentState[Any]",
-        {"messages": make_state_messages(20), "_summarization_event": event_2},
-    )
-    with mock_get_config():
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
-
-    assert isinstance(result, ExtendedModelResponse)
-    event_3 = result.command.update["_summarization_event"]
-    assert event_3["cutoff_index"] == 18
-    assert modified_request is not None
-    assert [m.content for m in modified_request.messages[1:]] == ["S18", "S19"]
-    _, content = backend.write_calls[2]
-    assert offloaded_labels(content) == ["S12", "S13", "S14", "S15", "S16", "S17"]

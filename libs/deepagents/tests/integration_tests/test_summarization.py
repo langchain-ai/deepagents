@@ -91,13 +91,12 @@ def test_summarize_continues_task(tmp_path: Path, model_name: str) -> None:
 
     input_message = {
         "role": "user",
-        "content": "Can you read the entirety of base.py, 500 lines at a time, and summarize it?",
+        "content": "Can you read the entirety of base.py and summarize it?",
     }
     result = agent.invoke({"messages": [input_message]}, config)
 
     # Check we summarized
-    state = agent.get_state(config)
-    assert state.values["_summarization_event"]
+    assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
 
     # Verify the agent made substantial progress reading the file after summarization.
     # We check the highest line number seen across all tool messages to confirm
@@ -136,13 +135,12 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
 
     input_message = {
         "role": "user",
-        "content": "Can you read the entirety of base.py, 500 lines at a time, and summarize it?",
+        "content": "Can you read the entirety of base.py and summarize it?",
     }
-    _ = agent.invoke({"messages": [input_message]}, config)
+    result = agent.invoke({"messages": [input_message]}, config)
 
     # Check we summarized
-    state = agent.get_state(config)
-    assert state.values["_summarization_event"]
+    assert result["messages"][0].additional_kwargs["lc_source"] == "summarization"
 
     # Verify conversation history was offloaded to filesystem
     conversation_history_root = root / "conversation_history"
@@ -163,7 +161,7 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model_name: str) -
     assert "Human:" in content or "AI:" in content, "Missing message content in markdown file"
 
     # Verify the summary message references the conversation_history path
-    summary_message = state.values["_summarization_event"]["summary_message"]
+    summary_message = result["messages"][0]
     assert "conversation_history" in summary_message.content
     assert f"{thread_id}.md" in summary_message.content
 

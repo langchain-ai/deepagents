@@ -36,7 +36,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -47,6 +47,7 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
+from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
+    from langchain_core.runnables.config import RunnableConfig
     from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
@@ -280,17 +282,36 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Generate summary for the given messages (async)."""
         return await self._lc_helper._acreate_summary(messages_to_summarize)
 
-    def _get_backend(self, runtime: Runtime) -> BackendProtocol:
-        """Get the resolved backend instance from backend or factory.
+    def _get_backend(
+        self,
+        state: AgentState[Any],
+        runtime: Runtime,
+    ) -> BackendProtocol:
+        """Resolve backend from instance or factory.
 
         Args:
-            runtime: The tool runtime context.
+            state: Current agent state.
+            runtime: Runtime context for factory functions.
 
         Returns:
             Resolved backend instance.
         """
         if callable(self._backend):
-            return self._backend(runtime)
+            # Because we're using `before_model`, which doesn't receive `config` as a
+            # parameter, we access it via `runtime.config` instead.
+            # Cast is safe: empty dict `{}` is a valid `RunnableConfig` (all fields are
+            # optional in TypedDict).
+            config = cast("RunnableConfig", getattr(runtime, "config", {}))
+
+            tool_runtime = ToolRuntime(
+                state=state,
+                context=runtime.context,
+                stream_writer=runtime.stream_writer,
+                store=runtime.store,
+                config=config,
+                tool_call_id=None,
+            )
+            return self._backend(tool_runtime)
         return self._backend
 
     def _get_thread_id(self) -> str:
@@ -781,7 +802,7 @@ A condensed summary follows:
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first - abort summarization if this fails to prevent data loss
-        backend = self._get_backend(request.runtime)
+        backend = self._get_backend(request.state, request.runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
             warnings.warn(
@@ -870,7 +891,7 @@ A condensed summary follows:
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
         # Offload to backend first - abort summarization if this fails to prevent data loss
-        backend = self._get_backend(request.runtime)
+        backend = self._get_backend(request.state, request.runtime)
         file_path = await self._aoffload_to_backend(backend, messages_to_summarize)
         if file_path is None:
             warnings.warn(

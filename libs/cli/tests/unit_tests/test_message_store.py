@@ -1,6 +1,7 @@
 """Tests for message store and serialization."""
 
 import pytest
+from textual.widgets import Static
 
 from deepagents_cli.widgets.message_store import (
     MessageData,
@@ -11,6 +12,7 @@ from deepagents_cli.widgets.message_store import (
 from deepagents_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
+    DiffMessage,
     ErrorMessage,
     ToolCallMessage,
     UserMessage,
@@ -101,21 +103,40 @@ class TestMessageData:
         assert restored._content == "Something went wrong!"
         assert restored.id == "test-error-1"
 
-    def test_system_message_roundtrip(self):
+    def test_app_message_roundtrip(self):
         """Test AppMessage serialization and deserialization."""
-        original = AppMessage("Session started", id="test-sys-1")
+        original = AppMessage("Session started", id="test-app-1")
 
         # Serialize
         data = MessageData.from_widget(original)
-        assert data.type == MessageType.SYSTEM
+        assert data.type == MessageType.APP
         assert data.content == "Session started"
-        assert data.id == "test-sys-1"
+        assert data.id == "test-app-1"
 
         # Deserialize
         restored = data.to_widget()
         assert isinstance(restored, AppMessage)
         assert restored._content == "Session started"
-        assert restored.id == "test-sys-1"
+        assert restored.id == "test-app-1"
+
+    def test_diff_message_roundtrip(self):
+        """Test DiffMessage serialization and deserialization."""
+        diff_content = "--- a/file.py\n+++ b/file.py\n@@ -1 +1 @@\n-old\n+new"
+        original = DiffMessage(diff_content, file_path="src/file.py", id="test-diff-1")
+
+        # Serialize
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.DIFF
+        assert data.content == diff_content
+        assert data.diff_file_path == "src/file.py"
+        assert data.id == "test-diff-1"
+
+        # Deserialize
+        restored = data.to_widget()
+        assert isinstance(restored, DiffMessage)
+        assert restored._diff_content == diff_content
+        assert restored._file_path == "src/file.py"
+        assert restored.id == "test-diff-1"
 
     def test_message_data_defaults(self):
         """Test MessageData default values."""
@@ -126,6 +147,20 @@ class TestMessageData:
         assert data.tool_name is None
         assert data.is_streaming is False
         assert data.height_hint is None
+
+    def test_tool_message_requires_tool_name(self):
+        """Test that TOOL messages must have a tool_name."""
+        with pytest.raises(ValueError, match="TOOL messages must have a tool_name"):
+            MessageData(type=MessageType.TOOL, content="")
+
+    def test_unknown_widget_serializes_as_app(self):
+        """Test that unknown widget types fall back to APP MessageData."""
+        unknown = Static("hello", id="unk-1")
+        data = MessageData.from_widget(unknown)
+
+        assert data.type == MessageType.APP
+        assert "Unknown widget" in data.content
+        assert data.id == "unk-1"
 
 
 class TestMessageStore:
@@ -182,8 +217,13 @@ class TestMessageStore:
         assert store.visible_count == 5
         assert store._visible_start == 2
 
-    def test_active_message_not_pruned(self):
-        """Test that active streaming message is never pruned."""
+    def test_active_message_at_start_blocks_all_pruning(self):
+        """Test that active message at window start prevents any pruning.
+
+        When the active (streaming) message is the first visible message,
+        `get_messages_to_prune` breaks immediately to keep the window
+        contiguous — no messages can be pruned.
+        """
         store = MessageStore()
         store.WINDOW_SIZE = 3
 
@@ -196,10 +236,32 @@ class TestMessageStore:
         store.set_active_message("id-0")
 
         to_prune = store.get_messages_to_prune()
-        # Should skip id-0 since it's active
+        # Active at position 0 -> break immediately -> nothing pruned
+        assert len(to_prune) == 0
+
+    def test_active_message_in_middle_prunes_up_to_it(self):
+        """Test that pruning stops at the active message to keep window contiguous.
+
+        Messages before the active message are prunable, but the active
+        message and everything after it are kept.
+        """
+        store = MessageStore()
+        store.WINDOW_SIZE = 3
+
+        for i in range(7):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+
+        # Set message in the middle as active
+        store.set_active_message("id-2")
+
+        to_prune = store.get_messages_to_prune()
+        # Can prune id-0 and id-1, then break at id-2
+        assert len(to_prune) == 2
         pruned_ids = [msg.id for msg in to_prune]
-        assert "id-0" not in pruned_ids
-        assert "id-1" in pruned_ids
+        assert pruned_ids == ["id-0", "id-1"]
+        assert "id-2" not in pruned_ids
 
     def test_hydrate_messages(self):
         """Test hydrating messages above visible window."""
@@ -277,6 +339,22 @@ class TestMessageStore:
         result = store.update_message("nonexistent", content="fail")
         assert result is False
 
+    def test_update_message_rejects_unknown_fields(self):
+        """Test that updating protected or unknown fields raises ValueError."""
+        store = MessageStore()
+        store.append(
+            MessageData(type=MessageType.USER, content="test", id="protected-1")
+        )
+
+        with pytest.raises(ValueError, match="Cannot update unknown or protected"):
+            store.update_message("protected-1", id="new-id")
+
+        with pytest.raises(ValueError, match="Cannot update unknown or protected"):
+            store.update_message("protected-1", type=MessageType.ERROR)
+
+        with pytest.raises(ValueError, match="Cannot update unknown or protected"):
+            store.update_message("protected-1", nonexistent_field="value")
+
     def test_should_hydrate_above(self):
         """Test hydration trigger based on scroll position."""
         store = MessageStore()
@@ -296,6 +374,33 @@ class TestMessageStore:
 
         # Far from top - shouldn't hydrate
         assert not store.should_hydrate_above(scroll_position=500, viewport_height=100)
+
+    def test_should_prune_below(self):
+        """Test prune-below trigger based on scroll position and distance."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 5
+
+        for i in range(10):
+            store.append(MessageData(type=MessageType.USER, content=f"msg{i}"))
+
+        # Within window size -> no pruning needed
+        store2 = MessageStore()
+        store2.WINDOW_SIZE = 20
+        for i in range(10):
+            store2.append(MessageData(type=MessageType.USER, content=f"msg{i}"))
+        assert not store2.should_prune_below(
+            scroll_position=0, viewport_height=100, content_height=1000
+        )
+
+        # Exceeds window, user far from bottom -> should prune
+        assert store.should_prune_below(
+            scroll_position=0, viewport_height=100, content_height=1000
+        )
+
+        # Exceeds window, user near bottom -> should not prune
+        assert not store.should_prune_below(
+            scroll_position=800, viewport_height=100, content_height=1000
+        )
 
     def test_visible_range(self):
         """Test getting visible range."""
@@ -411,7 +516,11 @@ class TestVirtualizationFlow:
         assert restored._deferred_expanded is True
 
     def test_streaming_message_protection(self):
-        """Test that streaming (active) messages are never pruned."""
+        """Test that streaming (active) messages are never pruned.
+
+        With break-at-active behavior, when the active message is at position
+        0, no messages can be pruned at all.
+        """
         store = MessageStore()
         store.WINDOW_SIZE = 3
 
@@ -425,19 +534,19 @@ class TestVirtualizationFlow:
         store.set_active_message("id-0")
         assert store.is_active("id-0")
 
-        # Try to prune
+        # Try to prune — active at start means nothing can be pruned
         to_prune = store.get_messages_to_prune()
-
-        # id-0 should not be in the prune list
-        pruned_ids = [msg.id for msg in to_prune]
-        assert "id-0" not in pruned_ids
-
-        # But we should still prune id-1
-        assert "id-1" in pruned_ids
+        assert len(to_prune) == 0
 
         # Clear active and verify
         store.set_active_message(None)
         assert not store.is_active("id-0")
+
+        # Now pruning should work normally
+        to_prune = store.get_messages_to_prune()
+        assert len(to_prune) == 2  # 5 - 3 = 2
+        assert to_prune[0].id == "id-0"
+        assert to_prune[1].id == "id-1"
 
     def test_message_update_syncs_data(self):
         """Test that updating message data syncs properly."""

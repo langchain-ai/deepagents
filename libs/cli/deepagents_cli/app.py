@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import logging
 
 # S404: subprocess is required for user-initiated shell commands via ! prefix
+import os
 import subprocess  # noqa: S404
 import uuid
 from contextlib import suppress
@@ -17,7 +18,6 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import Click, MouseUp, Resize
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
@@ -37,6 +37,8 @@ from deepagents_cli.widgets.messages import (
 )
 from deepagents_cli.widgets.status import StatusBar
 from deepagents_cli.widgets.welcome import WelcomeBanner
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -434,6 +436,7 @@ class DeepAgentsApp(App):
                 scroll_to_bottom=self._scroll_chat_to_bottom,
                 set_spinner=self._set_spinner,
                 set_active_message=self._set_active_message,
+                sync_message_content=self._sync_message_content,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -515,13 +518,13 @@ class DeepAgentsApp(App):
         try:
             chat = self.query_one("#chat", VerticalScroll)
         except NoMatches:
+            logger.debug("Skipping hydration check: #chat container not found")
             return
 
         scroll_y = chat.scroll_y
         viewport_height = chat.size.height
 
         if self._message_store.should_hydrate_above(scroll_y, viewport_height):
-            # Schedule hydration (don't block scroll)
             self.call_later(self._hydrate_messages_above)
 
     async def _hydrate_messages_above(self) -> None:
@@ -535,45 +538,66 @@ class DeepAgentsApp(App):
 
         try:
             chat = self.query_one("#chat", VerticalScroll)
-            messages_container = self.query_one("#messages", Container)
         except NoMatches:
+            logger.debug("Skipping hydration: #chat not found")
             return
 
-        # Get messages to hydrate
+        try:
+            messages_container = self.query_one("#messages", Container)
+        except NoMatches:
+            logger.debug("Skipping hydration: #messages not found")
+            return
+
         to_hydrate = self._message_store.get_messages_to_hydrate()
         if not to_hydrate:
             return
 
-        # Remember current scroll position and first widget
         old_scroll_y = chat.scroll_y
         first_child = (
             messages_container.children[0] if messages_container.children else None
         )
 
-        # Hydrate messages in reverse order (oldest first, inserted at top)
-        hydrated_widgets = []
+        # Build widgets in chronological order, then mount in reverse so
+        # each is inserted before the previous first_child, resulting in
+        # correct chronological order in the DOM.
+        hydrated_count = 0
+        hydrated_widgets: list[tuple] = []  # (widget, msg_data)
         for msg_data in to_hydrate:
-            widget = msg_data.to_widget()
-            hydrated_widgets.append(widget)
+            try:
+                widget = msg_data.to_widget()
+                hydrated_widgets.append((widget, msg_data))
+            except Exception:
+                logger.warning(
+                    "Failed to create widget for message %s",
+                    msg_data.id,
+                    exc_info=True,
+                )
 
-        # Mount all widgets at once, before the first current widget
-        for widget in reversed(hydrated_widgets):
-            if first_child:
-                await messages_container.mount(widget, before=first_child)
-            else:
-                await messages_container.mount(widget)
-            first_child = widget
+        for widget, _msg_data in reversed(hydrated_widgets):
+            try:
+                if first_child:
+                    await messages_container.mount(widget, before=first_child)
+                else:
+                    await messages_container.mount(widget)
+                first_child = widget
+                hydrated_count += 1
+            except Exception:
+                logger.warning(
+                    "Failed to mount hydrated widget %s",
+                    widget.id,
+                    exc_info=True,
+                )
 
-        # Update the store
-        self._message_store.mark_hydrated(len(to_hydrate))
+        # Only update store for the number we actually mounted
+        if hydrated_count > 0:
+            self._message_store.mark_hydrated(hydrated_count)
 
-        # Adjust scroll position to maintain view
-        # We need to add the height of the new widgets to keep the same view
-        # This is tricky because widget heights aren't known until after layout
-        # For now, use a simple heuristic based on average message height
-        # A more accurate approach would measure actual heights after mount
-        estimated_height_per_message = 60  # pixels, rough estimate
-        added_height = len(hydrated_widgets) * estimated_height_per_message
+        # Adjust scroll position to maintain the user's view.
+        # Widget heights aren't known until after layout, so we use a
+        # heuristic. A more accurate approach would measure actual heights
+        # via call_after_refresh.
+        estimated_height_per_message = 5  # terminal rows, rough estimate
+        added_height = hydrated_count * estimated_height_per_message
         chat.scroll_y = old_scroll_y + added_height
 
     async def _set_spinner(self, status: str | None) -> None:
@@ -1095,23 +1119,32 @@ class DeepAgentsApp(App):
         if not self._message_store.window_exceeded():
             return
 
-        messages_container = self.query_one("#messages", Container)
-        to_prune = self._message_store.get_messages_to_prune()
+        try:
+            messages_container = self.query_one("#messages", Container)
+        except NoMatches:
+            logger.debug("Skipping pruning: #messages container not found")
+            return
 
+        to_prune = self._message_store.get_messages_to_prune()
         if not to_prune:
             return
 
-        pruned_ids = []
+        pruned_ids: list[str] = []
         for msg_data in to_prune:
             try:
                 widget = messages_container.query_one(f"#{msg_data.id}")
                 await widget.remove()
                 pruned_ids.append(msg_data.id)
             except NoMatches:
-                # Widget already removed or never existed
-                pruned_ids.append(msg_data.id)
+                # Widget not found -- do NOT mark as pruned to avoid
+                # desyncing the store from the actual DOM state
+                logger.debug(
+                    "Widget %s not found during pruning, skipping",
+                    msg_data.id,
+                )
 
-        self._message_store.mark_pruned(pruned_ids)
+        if pruned_ids:
+            self._message_store.mark_pruned(pruned_ids)
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
@@ -1120,6 +1153,22 @@ class DeepAgentsApp(App):
             message_id: The ID of the active message, or None to clear.
         """
         self._message_store.set_active_message(message_id)
+
+    def _sync_message_content(self, message_id: str, content: str) -> None:
+        """Sync final message content back to the store after streaming.
+
+        Called when streaming finishes so the store holds the full text
+        instead of the empty string captured at mount time.
+
+        Args:
+            message_id: The ID of the message to update.
+            content: The final content after streaming.
+        """
+        self._message_store.update_message(
+            message_id,
+            content=content,
+            is_streaming=False,
+        )
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""

@@ -2,13 +2,16 @@
 
 This module provides data structures and management for message virtualization,
 allowing the CLI to handle large message histories efficiently by keeping only
-a window of widgets in the DOM while storing all message data.
+a sliding window of widgets in the DOM while storing all message data as
+lightweight dataclasses.
 
-Based on patterns from Textual's Log and RichLog widgets.
+The approach is inspired by Textual's `Log` widget, which only keeps `N` lines
+in the DOM and recreates older ones on demand.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -18,6 +21,21 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from textual.widget import Widget
 
+logger = logging.getLogger(__name__)
+
+# Fields on MessageData that callers are allowed to update via update_message().
+# Prevents accidental overwriting of identity fields like id/type/timestamp.
+_UPDATABLE_FIELDS: frozenset[str] = frozenset(
+    {
+        "content",
+        "tool_status",
+        "tool_output",
+        "tool_expanded",
+        "is_streaming",
+        "height_hint",
+    }
+)
+
 
 class MessageType(StrEnum):
     """Types of messages in the chat."""
@@ -26,7 +44,7 @@ class MessageType(StrEnum):
     ASSISTANT = "assistant"
     TOOL = "tool"
     ERROR = "error"
-    SYSTEM = "system"
+    APP = "app"
     DIFF = "diff"
 
 
@@ -43,32 +61,79 @@ class ToolStatus(StrEnum):
 
 @dataclass
 class MessageData:
-    """Serialized message data for storage.
+    """In-memory message data for virtualization.
 
     This dataclass holds all information needed to recreate a message widget.
-    It's designed to be lightweight and serializable.
+    It is designed to be lightweight so that thousands of messages can be
+    stored without meaningful memory overhead.
     """
 
     type: MessageType
+    """The kind of message (user, assistant, tool, etc.)."""
+
     content: str
+    """Primary text content of the message.
+
+    For most message types this is the display text. For TOOL messages it is
+    typically empty because the tool's identity comes from `tool_name` /
+    `tool_args` instead.
+    """
+
     id: str = field(default_factory=lambda: f"msg-{uuid.uuid4().hex[:8]}")
+    """Unique identifier used to match the dataclass to its DOM widget."""
+
     timestamp: float = field(default_factory=time)
+    """Unix epoch timestamp of when the message was created."""
 
-    # Tool-specific metadata
+    # TOOL message fields - only populated for TOOL messages
     tool_name: str | None = None
+    """Name of the tool that was called."""
+
     tool_args: dict[str, Any] | None = None
+    """Arguments passed to the tool call."""
+
     tool_status: ToolStatus | None = None
+    """Current execution status of the tool call."""
+
     tool_output: str | None = None
+    """Output returned by the tool after execution."""
+
     tool_expanded: bool = False
+    """Whether the tool output section is expanded in the UI."""
 
-    # Diff-specific metadata
+    # ---
+
     diff_file_path: str | None = None
+    """File path associated with the diff (DIFF messages only)."""
 
-    # Streaming state - True if message is still being streamed
     is_streaming: bool = False
+    """Whether the message is still being streamed.
 
-    # Cached height hint for scroll calculations (set after first render)
+    While `True`, the corresponding widget is actively receiving content
+    chunks and should not be pruned or re-hydrated.
+    """
+
     height_hint: int | None = None
+    """Cached widget height in terminal rows for scroll position estimation.
+
+    When `_hydrate_messages_above` inserts widgets above the viewport it needs
+    to adjust the scroll offset so the user's view doesn't jump. Currently this
+    uses a fixed estimate (5 rows per message). Caching the actual rendered
+    height here after first mount would make that estimate accurate, especially
+    for tall messages like diffs or long assistant responses.
+
+    Not yet populated — see `_hydrate_messages_above` in `app.py`.
+    """
+
+    def __post_init__(self) -> None:
+        """Validate type-field coherence after construction.
+
+        Raises:
+            ValueError: If a TOOL message is missing `tool_name`.
+        """
+        if self.type == MessageType.TOOL and not self.tool_name:
+            msg = "TOOL messages must have a tool_name"
+            raise ValueError(msg)
 
     def to_widget(self) -> Widget:
         """Recreate a widget from this message data.
@@ -91,8 +156,6 @@ class MessageData:
                 return UserMessage(self.content, id=self.id)
 
             case MessageType.ASSISTANT:
-                # For assistant messages, we create with content
-                # The widget will render it via Markdown
                 return AssistantMessage(self.content, id=self.id)
 
             case MessageType.TOOL:
@@ -101,8 +164,8 @@ class MessageData:
                     self.tool_args,
                     id=self.id,
                 )
-                # Restore the status and output after mount
-                # We'll need to call _restore_tool_state after mounting
+                # Deferred state is restored automatically during on_mount
+                # via _restore_deferred_state
                 widget._deferred_status = self.tool_status
                 widget._deferred_output = self.tool_output
                 widget._deferred_expanded = self.tool_expanded
@@ -111,7 +174,7 @@ class MessageData:
             case MessageType.ERROR:
                 return ErrorMessage(self.content, id=self.id)
 
-            case MessageType.SYSTEM:
+            case MessageType.APP:
                 return AppMessage(self.content, id=self.id)
 
             case MessageType.DIFF:
@@ -122,7 +185,11 @@ class MessageData:
                 )
 
             case _:
-                # Fallback to system message
+                logger.warning(
+                    "Unknown MessageType %r for message %s, falling back to AppMessage",
+                    self.type,
+                    self.id,
+                )
                 return AppMessage(self.content, id=self.id)
 
     @classmethod
@@ -162,13 +229,24 @@ class MessageData:
             )
 
         if isinstance(widget, ToolCallMessage):
+            tool_status: ToolStatus | None = None
+            if widget._status:
+                try:
+                    tool_status = ToolStatus(widget._status)
+                except ValueError:
+                    logger.warning(
+                        "Unknown tool status %r for widget %s",
+                        widget._status,
+                        widget_id,
+                    )
+
             return cls(
                 type=MessageType.TOOL,
                 content="",  # Tool messages don't have simple content
                 id=widget_id,
                 tool_name=widget._tool_name,
                 tool_args=widget._args,
-                tool_status=ToolStatus(widget._status) if widget._status else None,
+                tool_status=tool_status,
                 tool_output=widget._output,
                 tool_expanded=widget._expanded,
             )
@@ -180,13 +258,9 @@ class MessageData:
                 id=widget_id,
             )
 
-        if isinstance(widget, AppMessage):
-            return cls(
-                type=MessageType.SYSTEM,
-                content=widget._content,
-                id=widget_id,
-            )
-
+        # Check DiffMessage before AppMessage: both extend Static, so check
+        # the more specific type first to avoid misclassification if the
+        # inheritance hierarchy ever changes.
         if isinstance(widget, DiffMessage):
             return cls(
                 type=MessageType.DIFF,
@@ -195,9 +269,20 @@ class MessageData:
                 diff_file_path=widget._file_path,
             )
 
-        # Unknown widget type - treat as system message
+        if isinstance(widget, AppMessage):
+            return cls(
+                type=MessageType.APP,
+                content=widget._content,
+                id=widget_id,
+            )
+
+        logger.warning(
+            "Unknown widget type %s (id=%s), storing as APP message",
+            type(widget).__name__,
+            widget_id,
+        )
         return cls(
-            type=MessageType.SYSTEM,
+            type=MessageType.APP,
             content=f"[Unknown widget: {type(widget).__name__}]",
             id=widget_id,
         )
@@ -207,12 +292,15 @@ class MessageStore:
     """Manages message data and widget window for virtualization.
 
     This class stores all messages as data and manages a sliding window
-    of widgets that are actually mounted in the DOM. Based on patterns
-    from Textual's Log widget.
+    of widgets that are actually mounted in the DOM.
 
     Attributes:
         WINDOW_SIZE: Maximum number of widgets to keep in DOM.
+
+            Balances DOM performance with smooth scrolling experience.
         HYDRATE_BUFFER: Number of messages to hydrate when scrolling near edge.
+
+            Provides enough buffer to avoid visible loading pauses.
     """
 
     WINDOW_SIZE: int = 50
@@ -286,18 +374,29 @@ class MessageStore:
     def update_message(self, message_id: str, **updates: Any) -> bool:
         """Update a message's data.
 
+        Only fields in `_UPDATABLE_FIELDS` may be updated. Unknown field
+        names raise `ValueError` to catch typos early.
+
         Args:
             message_id: The ID of the message to update.
             **updates: Fields to update.
 
         Returns:
             True if the message was found and updated.
+
+        Raises:
+            ValueError: If any key in `updates` is not in the updatable
+                allowlist.
         """
-        for msg in self._messages:
-            if msg.id == message_id:
+        unknown = set(updates) - _UPDATABLE_FIELDS
+        if unknown:
+            msg = f"Cannot update unknown or protected fields: {unknown}"
+            raise ValueError(msg)
+
+        for msg_data in self._messages:
+            if msg_data.id == message_id:
                 for key, value in updates.items():
-                    if hasattr(msg, key):
-                        setattr(msg, key, value)
+                    setattr(msg_data, key, value)
                 return True
         return False
 
@@ -333,12 +432,13 @@ class MessageStore:
     def get_messages_to_prune(self, count: int | None = None) -> list[MessageData]:
         """Get the oldest visible messages that should be pruned.
 
-        This returns messages from the START of the visible window,
-        excluding any active streaming message.
+        Returns a contiguous run of messages from the START of the visible
+        window. Stops at the active streaming message to avoid creating gaps
+        in the visible window (which would desync store state from the DOM).
 
         Args:
             count: Number of messages to prune, or None to prune
-                   enough to get back to WINDOW_SIZE.
+                enough to get back to WINDOW_SIZE.
 
         Returns:
             List of messages to prune (remove widgets for).
@@ -350,25 +450,27 @@ class MessageStore:
             return []
 
         to_prune: list[MessageData] = []
-        prune_end = min(self._visible_start + count, self._visible_end)
+        idx = self._visible_start
 
-        for i in range(self._visible_start, prune_end):
-            msg = self._messages[i]
-            # Never prune the active streaming message
-            if msg.id != self._active_message_id:
-                to_prune.append(msg)
+        while len(to_prune) < count and idx < self._visible_end:
+            msg = self._messages[idx]
+            # Stop at the active message to keep the window contiguous
+            if msg.id == self._active_message_id:
+                break
+            to_prune.append(msg)
+            idx += 1
 
         return to_prune
 
     def mark_pruned(self, message_ids: list[str]) -> None:
         """Mark messages as pruned (widgets removed).
 
-        This updates the visible window start index.
+        Advances `_visible_start` past consecutive pruned messages at the front
+        of the window.
 
         Args:
             message_ids: IDs of messages that were pruned.
         """
-        # Find the new start index (first message that wasn't pruned)
         pruned_set = set(message_ids)
         while (
             self._visible_start < self._visible_end
@@ -380,7 +482,7 @@ class MessageStore:
         """Get messages above the visible window to hydrate.
 
         Args:
-            count: Number of messages to hydrate, or None for HYDRATE_BUFFER.
+            count: Number of messages to hydrate, or None for `HYDRATE_BUFFER`.
 
         Returns:
             List of messages to hydrate (create widgets for), in order.
@@ -426,6 +528,10 @@ class MessageStore:
     ) -> bool:
         """Check if we should prune messages below the current view.
 
+        Note:
+            Not yet integrated into the scroll handler. Intended for future
+            pruning of messages below the viewport when the user scrolls far up.
+
         Args:
             scroll_position: Current scroll Y position.
             viewport_height: Height of the viewport.
@@ -461,7 +567,7 @@ class MessageStore:
         """Get all stored messages.
 
         Returns:
-            List of all message data.
+            List of all message data (shallow copy).
         """
         return list(self._messages)
 

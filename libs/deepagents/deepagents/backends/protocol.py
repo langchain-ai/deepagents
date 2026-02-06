@@ -429,11 +429,20 @@ class ExecuteResponse:
 
 
 class SandboxBackendProtocol(BackendProtocol):
-    """Protocol for sandboxed backends with isolated runtime.
+    """Extension of `BackendProtocol` that adds shell command execution.
 
-    Sandboxed backends run in isolated environments (e.g., separate processes,
-    containers) and communicate via defined interfaces.
+    Designed for backends running in isolated environments (containers, VMs,
+    remote hosts).
+
+    Adds `execute()`/`aexecute()` for shell commands and an `id` property.
+
+    See `BaseSandbox` for a base class that implements all inherited file
+    operations by delegating to `execute()`.
     """
+
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend instance."""
 
     def execute(
         self,
@@ -457,11 +466,6 @@ class SandboxBackendProtocol(BackendProtocol):
     ) -> ExecuteResponse:
         """Async version of execute."""
         return await asyncio.to_thread(self.execute, command)
-
-    @property
-    def id(self) -> str:
-        """Unique identifier for the sandbox backend instance."""
-        raise NotImplementedError
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

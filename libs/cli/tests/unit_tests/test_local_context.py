@@ -1,10 +1,12 @@
 """Tests for local context middleware."""
 
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from deepagents_cli.local_context import LocalContextMiddleware
+from deepagents_cli.local_context import LocalContextMiddleware, LocalContextState
 
 
 class TestLocalContextMiddleware:
@@ -104,12 +106,20 @@ class TestLocalContextMiddleware:
         assert git_info["branch"] == "develop"
         assert git_info["main_branches"] == []
 
+    @patch("deepagents_cli.local_context._get_git_executable")
     @patch("deepagents_cli.local_context.subprocess.run")
     def test_before_agent_with_git_repo(
-        self, mock_run: Mock, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_run: Mock,
+        mock_get_git: Mock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test before_agent returns git context when in git repo."""
         monkeypatch.chdir(tmp_path)
+
+        # Mock git executable to be available
+        mock_get_git.return_value = "/usr/bin/git"
 
         # Create a file so the directory isn't empty
         (tmp_path / "test_file.py").write_text("# test")
@@ -119,11 +129,11 @@ class TestLocalContextMiddleware:
             result = Mock()
             result.returncode = 0
 
-            if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            if cmd == ["/usr/bin/git", "rev-parse", "--abbrev-ref", "HEAD"]:
                 result.stdout = "main\n"
-            elif cmd == ["git", "branch"]:
+            elif cmd == ["/usr/bin/git", "branch"]:
                 result.stdout = "* main\n  master\n"
-            elif cmd == ["git", "rev-parse", "--show-toplevel"]:
+            elif cmd == ["/usr/bin/git", "rev-parse", "--show-toplevel"]:
                 result.stdout = str(tmp_path) + "\n"
             else:
                 result.returncode = 1
@@ -134,8 +144,8 @@ class TestLocalContextMiddleware:
         mock_run.side_effect = mock_subprocess_run
 
         middleware = LocalContextMiddleware()
-        state = {}
-        runtime = Mock()
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
 
         result = middleware.before_agent(state, runtime)
 
@@ -148,9 +158,12 @@ class TestLocalContextMiddleware:
 
     @patch("deepagents_cli.local_context.subprocess.run")
     def test_before_agent_not_in_git_repo(
-        self, mock_run: Mock, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+        self,
+        mock_run: Mock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test before_agent returns local context without git info when not in git repo."""
+        """Test before_agent returns local context without git info."""
         monkeypatch.chdir(tmp_path)
 
         # Create a file so the directory isn't empty
@@ -163,8 +176,8 @@ class TestLocalContextMiddleware:
         mock_run.return_value = mock_result
 
         middleware = LocalContextMiddleware()
-        state = {}
-        runtime = Mock()
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
 
         result = middleware.before_agent(state, runtime)
 
@@ -182,7 +195,10 @@ class TestLocalContextMiddleware:
         request = Mock()
         request.system_prompt = "Base system prompt"
         request.state = {
-            "local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"  # noqa: E501
+            "local_context": (
+                "## Local Context\n\n"
+                "Current branch: `main`\nMain branch available: `main`"
+            )
         }
 
         # Mock the override method to return a new request
@@ -237,7 +253,10 @@ class TestLocalContextMiddleware:
         request = Mock()
         request.system_prompt = "Base system prompt"
         request.state = {
-            "local_context": "## Local Context\n\nCurrent branch: `main`\nMain branch available: `main`"  # noqa: E501
+            "local_context": (
+                "## Local Context\n\n"
+                "Current branch: `main`\nMain branch available: `main`"
+            )
         }
 
         # Mock the override method to return a new request

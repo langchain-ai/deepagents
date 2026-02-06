@@ -6,8 +6,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 from deepagents_cli.config import (
+    Settings,
     _find_project_agent_md,
     _find_project_root,
+    create_model,
+    settings,
     validate_model_capabilities,
 )
 
@@ -232,3 +235,153 @@ class TestValidateModelCapabilities:
         validate_model_capabilities(model, "empty-profile-model")
 
         mock_console.print.assert_not_called()
+
+
+class TestAgentsAliasDirectories:
+    """Tests for .agents directory alias methods."""
+
+    def test_user_agents_dir(self) -> None:
+        """Test user_agents_dir returns ~/.agents."""
+        settings = Settings.from_environment()
+        expected = Path.home() / ".agents"
+        assert settings.user_agents_dir == expected
+
+    def test_get_user_agent_skills_dir(self) -> None:
+        """Test get_user_agent_skills_dir returns ~/.agents/skills."""
+        settings = Settings.from_environment()
+        expected = Path.home() / ".agents" / "skills"
+        assert settings.get_user_agent_skills_dir() == expected
+
+    def test_get_project_agent_skills_dir_with_project(self, tmp_path: Path) -> None:
+        """Test get_project_agent_skills_dir returns .agents/skills in project."""
+        # Create a mock project with .git
+        project_root = tmp_path / "my-project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+
+        settings = Settings.from_environment(start_path=project_root)
+        expected = project_root / ".agents" / "skills"
+        assert settings.get_project_agent_skills_dir() == expected
+
+    def test_get_project_agent_skills_dir_without_project(self, tmp_path: Path) -> None:
+        """Test get_project_agent_skills_dir returns None when not in a project."""
+        # Create a directory without .git
+        no_project = tmp_path / "no-project"
+        no_project.mkdir()
+
+        settings = Settings.from_environment(start_path=no_project)
+        assert settings.get_project_agent_skills_dir() is None
+
+
+class TestCreateModelProfileExtraction:
+    """Tests for profile extraction in create_model."""
+
+    def setup_method(self) -> None:
+        """Reset settings before each test."""
+        settings.model_context_limit = None
+        settings.model_name = None
+        settings.model_provider = None
+
+    def _patch_settings_for_anthropic(self) -> dict[str, str | None]:
+        """Return original settings and set up for Anthropic-only."""
+        original = {
+            "anthropic_api_key": settings.anthropic_api_key,
+            "openai_api_key": settings.openai_api_key,
+            "google_api_key": settings.google_api_key,
+            "google_cloud_project": settings.google_cloud_project,
+        }
+        settings.anthropic_api_key = "test-key"
+        settings.openai_api_key = None
+        settings.google_api_key = None
+        settings.google_cloud_project = None
+        return original
+
+    def _restore_settings(self, original: dict[str, str | None]) -> None:
+        """Restore original settings."""
+        settings.anthropic_api_key = original["anthropic_api_key"]
+        settings.openai_api_key = original["openai_api_key"]
+        settings.google_api_key = original["google_api_key"]
+        settings.google_cloud_project = original["google_cloud_project"]
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_extracts_context_limit_from_profile(self, mock_chat_class: Mock) -> None:
+        """Test that model_context_limit is extracted from model profile."""
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit == 200000
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_missing_profile_gracefully(self, mock_chat_class: Mock) -> None:
+        """Test that missing profile attribute leaves context_limit as None."""
+        mock_model = Mock(spec=["invoke"])  # No profile attribute
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_none_profile(self, mock_chat_class: Mock) -> None:
+        """Test that profile=None leaves context_limit as None."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_non_dict_profile(self, mock_chat_class: Mock) -> None:
+        """Test that non-dict profile is handled safely."""
+        mock_model = Mock()
+        mock_model.profile = "not a dict"
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_non_int_max_input_tokens(self, mock_chat_class: Mock) -> None:
+        """Test that string max_input_tokens is ignored."""
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": "200000"}  # String, not int
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_missing_max_input_tokens_key(self, mock_chat_class: Mock) -> None:
+        """Test that profile without max_input_tokens key is handled."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}  # No max_input_tokens
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)

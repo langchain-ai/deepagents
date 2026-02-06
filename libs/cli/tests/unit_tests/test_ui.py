@@ -1,5 +1,6 @@
 """Unit tests for UI rendering utilities."""
 
+from deepagents_cli.config import get_glyphs
 from deepagents_cli.ui import _format_timeout, format_tool_display, truncate_value
 
 
@@ -44,7 +45,7 @@ class TestTruncateValue:
     def test_long_string_truncated(self) -> None:
         """Test that long strings are truncated with ellipsis."""
         result = truncate_value("hello world", max_length=5)
-        assert result == "hello..."
+        assert result == f"hello{get_glyphs().ellipsis}"
 
     def test_exact_length_unchanged(self) -> None:
         """Test that strings at exact max length are unchanged."""
@@ -52,44 +53,58 @@ class TestTruncateValue:
         assert result == "hello"
 
 
-class TestFormatToolDisplayShell:
-    """Tests for `format_tool_display` with shell tool."""
+class TestFormatToolDisplayExecute:
+    """Tests for `format_tool_display` with execute tool."""
 
-    def test_shell_command_only(self) -> None:
-        """Test shell display with command only."""
-        result = format_tool_display("shell", {"command": "echo hello"})
-        assert result == 'shell("echo hello")'
+    def test_execute_command_only(self) -> None:
+        """Test execute display with command only."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display("execute", {"command": "echo hello"})
+        assert result == f'{prefix} execute("echo hello")'
 
-    def test_shell_with_timeout_minutes(self) -> None:
-        """Test shell display formats timeout in minutes when appropriate."""
-        result = format_tool_display("shell", {"command": "make test", "timeout": 300})
-        assert result == 'shell("make test", timeout=5m)'
+    def test_execute_with_timeout_minutes(self) -> None:
+        """Test execute display formats timeout in minutes when appropriate."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "make test", "timeout": 300}
+        )
+        assert result == f'{prefix} execute("make test", timeout=5m)'
 
-    def test_shell_with_timeout_seconds(self) -> None:
-        """Test shell display formats timeout in seconds for small values."""
-        result = format_tool_display("shell", {"command": "make test", "timeout": 30})
-        assert result == 'shell("make test", timeout=30s)'
+    def test_execute_with_timeout_seconds(self) -> None:
+        """Test execute display formats timeout in seconds for small values."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display("execute", {"command": "make test", "timeout": 30})
+        assert result == f'{prefix} execute("make test", timeout=30s)'
 
-    def test_shell_with_timeout_hours(self) -> None:
-        """Test shell display formats timeout in hours when appropriate."""
-        result = format_tool_display("shell", {"command": "make test", "timeout": 3600})
-        assert result == 'shell("make test", timeout=1h)'
+    def test_execute_with_timeout_hours(self) -> None:
+        """Test execute display formats timeout in hours when appropriate."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "make test", "timeout": 3600}
+        )
+        assert result == f'{prefix} execute("make test", timeout=1h)'
 
-    def test_shell_with_none_timeout(self) -> None:
-        """Test shell display excludes timeout when `None`."""
-        result = format_tool_display("shell", {"command": "echo hello", "timeout": None})
-        assert result == 'shell("echo hello")'
+    def test_execute_with_none_timeout(self) -> None:
+        """Test execute display excludes timeout when `None`."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "echo hello", "timeout": None}
+        )
+        assert result == f'{prefix} execute("echo hello")'
 
-    def test_shell_with_default_timeout_hidden(self) -> None:
-        """Test shell display excludes timeout when it equals the default (120s)."""
-        result = format_tool_display("shell", {"command": "echo hello", "timeout": 120})
-        assert result == 'shell("echo hello")'
+    def test_execute_with_default_timeout_hidden(self) -> None:
+        """Test execute display excludes timeout when it equals the default (120s)."""
+        prefix = get_glyphs().tool_prefix
+        result = format_tool_display(
+            "execute", {"command": "echo hello", "timeout": 120}
+        )
+        assert result == f'{prefix} execute("echo hello")'
 
-    def test_shell_long_command_truncated(self) -> None:
-        """Test that long shell commands are truncated."""
+    def test_execute_long_command_truncated(self) -> None:
+        """Test that long execute commands are truncated."""
         long_cmd = "x" * 200
-        result = format_tool_display("shell", {"command": long_cmd})
-        assert "..." in result
+        result = format_tool_display("execute", {"command": long_cmd})
+        assert get_glyphs().ellipsis in result
         assert len(result) < 200
 
 
@@ -97,23 +112,28 @@ class TestFormatToolDisplayOther:
     """Tests for `format_tool_display` with other tools."""
 
     def test_read_file(self) -> None:
-        """Test read_file display shows filename."""
+        """Test read_file display shows filename with icon."""
+        prefix = get_glyphs().tool_prefix
         result = format_tool_display("read_file", {"file_path": "/path/to/file.py"})
+        assert result.startswith(f"{prefix} read_file(")
         assert "file.py" in result
 
     def test_web_search(self) -> None:
         """Test web_search display shows query."""
+        prefix = get_glyphs().tool_prefix
         result = format_tool_display("web_search", {"query": "how to code"})
-        assert result == 'web_search("how to code")'
+        assert result == f'{prefix} web_search("how to code")'
 
     def test_grep(self) -> None:
         """Test grep display shows pattern."""
+        prefix = get_glyphs().tool_prefix
         result = format_tool_display("grep", {"pattern": "TODO"})
-        assert result == 'grep("TODO")'
+        assert result == f'{prefix} grep("TODO")'
 
     def test_unknown_tool_fallback(self) -> None:
         """Test unknown tools use generic formatting."""
+        prefix = get_glyphs().tool_prefix
         result = format_tool_display("custom_tool", {"arg1": "val1", "arg2": "val2"})
-        assert "custom_tool(" in result
+        assert f"{prefix} custom_tool(" in result
         assert "arg1=" in result
         assert "arg2=" in result

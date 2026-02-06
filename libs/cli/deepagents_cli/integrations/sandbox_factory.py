@@ -72,8 +72,7 @@ def create_sandbox(
     api_key: str | None = None,
     template: str | None = None,
     template_image: str | None = None,
-    cleanup: bool | None = None,
-    **kwargs: Any,  # noqa: ARG001
+    **kwargs: Any,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
@@ -86,18 +85,18 @@ def create_sandbox(
         api_key: LangSmith API key (langsmith provider only)
         template: Template name for sandbox (langsmith provider only)
         template_image: Docker image for template (langsmith provider only)
-        cleanup: Whether to cleanup sandbox on exit. Defaults to True if sandbox_id
-            is None (new sandbox), False otherwise (reusing existing).
         **kwargs: Additional provider-specific parameters
 
     Yields:
         SandboxBackendProtocol instance
     """
+    _ = kwargs  # Accept but don't use additional kwargs
+
     # Get provider instance
     provider_obj = _get_provider(provider, api_key=api_key)
 
-    # Determine if we should cleanup (only cleanup if we created it, unless overridden)
-    should_cleanup = cleanup if cleanup is not None else sandbox_id is None
+    # Determine if we should cleanup (only cleanup if we created it)
+    should_cleanup = sandbox_id is None
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")

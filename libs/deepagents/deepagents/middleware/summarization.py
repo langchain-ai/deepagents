@@ -46,10 +46,11 @@ from langchain.agents.middleware.summarization import (
     SummarizationMiddleware as LCSummarizationMiddleware,
     TokenCounter,
 )
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr, WrapModelCallResult
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
+from langgraph.types import Command
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
@@ -733,7 +734,7 @@ A condensed summary follows:
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse | WrapModelCallResult:
+    ) -> ModelResponse | ExtendedModelResponse:
         """Process messages before model invocation, with history offloading and arg truncation.
 
         First applies any previous summarization events to reconstruct the effective message list.
@@ -813,16 +814,16 @@ A condensed summary follows:
         response = handler(request.override(messages=modified_messages))
 
         # Return WrapModelCallResult with state update
-        return WrapModelCallResult(
+        return ExtendedModelResponse(
             model_response=response,
-            state_update={"_summarization_event": new_event},
+            command=Command(update={"_summarization_event": new_event}),
         )
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse | WrapModelCallResult:
+    ) -> ModelResponse | ExtendedModelResponse:
         """Process messages before model invocation, with history offloading and arg truncation (async).
 
         First applies any previous summarization events to reconstruct the effective message list.
@@ -902,9 +903,9 @@ A condensed summary follows:
         response = await handler(request.override(messages=modified_messages))
 
         # Return WrapModelCallResult with state update
-        return WrapModelCallResult(
+        return ExtendedModelResponse(
             model_response=response,
-            state_update={"_summarization_event": new_event},
+            command=Command(update={"_summarization_event": new_event}),
         )
 
 

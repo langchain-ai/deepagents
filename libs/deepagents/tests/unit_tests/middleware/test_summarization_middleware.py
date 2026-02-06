@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain.agents.middleware.types import ModelRequest, ModelResponse, WrapModelCallResult
+from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
@@ -257,7 +257,7 @@ def call_wrap_model_call(
     middleware: SummarizationMiddleware,
     state: "AgentState[Any]",
     runtime: Any,  # noqa: ANN401
-) -> tuple["ModelResponse | WrapModelCallResult", ModelRequest | None]:
+) -> tuple["ModelResponse | ExtendedModelResponse", ModelRequest | None]:
     """Helper to call wrap_model_call and capture what was passed to handler.
 
     Args:
@@ -287,7 +287,7 @@ async def call_awrap_model_call(
     middleware: SummarizationMiddleware,
     state: "AgentState[Any]",
     runtime: Any,  # noqa: ANN401
-) -> tuple["ModelResponse | WrapModelCallResult", ModelRequest | None]:
+) -> tuple["ModelResponse | ExtendedModelResponse", ModelRequest | None]:
     """Helper to call awrap_model_call and capture what was passed to handler (async version).
 
     Args:
@@ -370,9 +370,10 @@ class TestOffloadingBasic:
             result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         # Should have triggered summarization
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
-        assert "_summarization_event" in result.state_update
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
+        assert "_summarization_event" in result.command.update
         assert len(backend.write_calls) == 1
 
         path, content = backend.write_calls[0]
@@ -456,8 +457,9 @@ class TestOffloadingBasic:
 
         result, _ = call_wrap_model_call(middleware, state, runtime)
 
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert len(backend.write_calls) == 1
 
         _, content = backend.write_calls[0]
@@ -503,8 +505,9 @@ class TestOffloadingBasic:
 
         result, _ = call_wrap_model_call(middleware, state, runtime)
 
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
 
         _, content = backend.write_calls[0]
 
@@ -571,8 +574,9 @@ class TestSummaryMessageFormat:
         with mock_get_config(thread_id="test-thread"):
             result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
         # Get the summary message (first in modified messages list)
@@ -605,7 +609,7 @@ class TestSummaryMessageFormat:
 
         result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
-        assert isinstance(result, WrapModelCallResult)
+        assert isinstance(result, ExtendedModelResponse)
         assert modified_request is not None
         summary_msg = modified_request.messages[0]
 
@@ -631,8 +635,9 @@ class TestSummaryMessageFormat:
             result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
     def test_summary_includes_file_path_after_second_summarization(self) -> None:
@@ -673,8 +678,9 @@ class TestSummaryMessageFormat:
         with mock_get_config(thread_id="multi-summarize-thread"):
             result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
         # The summary message should be the first message
@@ -715,7 +721,7 @@ class TestNoSummarizationTriggered:
         result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization)
-        assert not isinstance(result, WrapModelCallResult)
+        assert not isinstance(result, ExtendedModelResponse)
 
         # No writes should have occurred
         assert len(backend.write_calls) == 0
@@ -744,8 +750,9 @@ class TestBackendFailureHandling:
             result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
     def test_summarization_aborts_on_write_exception(self) -> None:
@@ -770,8 +777,9 @@ class TestBackendFailureHandling:
             result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
 
@@ -850,8 +858,9 @@ class TestAsyncBehavior:
 
         result, modified_request = await call_awrap_model_call(middleware, state, runtime)
 
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert len(backend.write_calls) == 1
 
     @pytest.mark.anyio
@@ -876,8 +885,9 @@ class TestAsyncBehavior:
             result, modified_request = await call_awrap_model_call(middleware, state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
 
@@ -959,8 +969,9 @@ class TestMarkdownFormatting:
         runtime = make_mock_runtime()
 
         result, modified_request = call_wrap_model_call(middleware, state, runtime)
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
 
         # Verify the offloaded content is markdown formatted
         _, content = backend.write_calls[0]
@@ -993,8 +1004,9 @@ class TestDownloadFilesException:
         # Should not raise - summarization should continue
         result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         # download_files was called (and raised)
         assert len(backend.download_files_calls) == 1
         # write should still be called (with no existing content)
@@ -1021,8 +1033,9 @@ class TestDownloadFilesException:
         # Should not raise - summarization should continue
         result, modified_request = await call_awrap_model_call(middleware, state, runtime)
 
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         # write should still be called (with no existing content)
         assert len(backend.write_calls) == 1
 
@@ -1053,8 +1066,9 @@ class TestWriteEditException:
             result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
     @pytest.mark.anyio
@@ -1082,8 +1096,9 @@ class TestWriteEditException:
             result, modified_request = await call_awrap_model_call(middleware, state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
     def test_summarization_aborts_on_edit_exception(self) -> None:
@@ -1110,8 +1125,9 @@ class TestWriteEditException:
             result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
     @pytest.mark.anyio
@@ -1140,8 +1156,9 @@ class TestWriteEditException:
             result, modified_request = await call_awrap_model_call(middleware, state, runtime)
 
         # Should still produce summarization result despite backend failure
-        assert isinstance(result, WrapModelCallResult)
-        assert result.state_update is not None
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert result.command.update is not None
         assert modified_request is not None
 
 
@@ -1172,7 +1189,7 @@ class TestCutoffIndexEdgeCases:
         result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization) because cutoff_index would be 0 or negative
-        assert not isinstance(result, WrapModelCallResult)
+        assert not isinstance(result, ExtendedModelResponse)
         # No writes should occur
         assert len(backend.write_calls) == 0
 
@@ -1196,7 +1213,7 @@ class TestCutoffIndexEdgeCases:
         result, modified_request = await call_awrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization)
-        assert not isinstance(result, WrapModelCallResult)
+        assert not isinstance(result, ExtendedModelResponse)
         # No writes should have occurred
         assert len(backend.write_calls) == 0
 
@@ -1226,7 +1243,7 @@ class TestCutoffIndexEdgeCases:
         result, modified_request = await call_awrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization) because cutoff_index would be 0 or negative
-        assert not isinstance(result, WrapModelCallResult)
+        assert not isinstance(result, ExtendedModelResponse)
         # No writes should occur
         assert len(backend.write_calls) == 0
 
@@ -1272,7 +1289,7 @@ def test_no_truncation_when_trigger_is_none() -> None:
     result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
     # Should return ModelResponse (no truncation, no summarization)
-    assert not isinstance(result, WrapModelCallResult)
+    assert not isinstance(result, ExtendedModelResponse)
 
 
 def test_truncate_old_write_file_tool_call() -> None:
@@ -1653,8 +1670,9 @@ def test_truncate_before_summarization() -> None:
     with mock_get_config(thread_id="test-thread"):
         result, modified_request = call_wrap_model_call(middleware, state, runtime)
 
-    assert isinstance(result, WrapModelCallResult)
-    assert result.state_update is not None
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert result.command.update is not None
     assert modified_request is not None
 
     # Should have triggered both truncation and summarization

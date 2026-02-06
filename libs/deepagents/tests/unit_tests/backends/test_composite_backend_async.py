@@ -43,7 +43,7 @@ def build_composite_state_backend(runtime: ToolRuntime, *, routes):
 class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
     """Mock sandbox backend that implements SandboxBackendProtocol."""
 
-    def execute(self, command: str, *, timeout: int = 30 * 60) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Mock execute that returns the command as output."""
         return ExecuteResponse(
             output=f"Executed: {command}",
@@ -51,7 +51,7 @@ class MockSandboxBackend(SandboxBackendProtocol, StateBackend):
             truncated=False,
         )
 
-    async def aexecute(self, command: str) -> ExecuteResponse:
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
         """Async mock execute that returns the command as output."""
         return ExecuteResponse(
             output=f"Async Executed: {command}",

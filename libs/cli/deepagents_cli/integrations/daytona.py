@@ -46,17 +46,26 @@ class DaytonaBackend(BaseSandbox):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the sandbox and return ExecuteResponse.
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
+
+                Note that in Daytona's implementation, a timeout of 0 means
+                "wait indefinitely".
 
         Returns:
             ExecuteResponse with combined output, exit code, optional signal, and
                 truncation flag.
         """
-        result = self._sandbox.process.exec(command, timeout=self._timeout)
+        effective_timeout = timeout if timeout is not None else self._timeout
+        result = self._sandbox.process.exec(command, timeout=effective_timeout)
 
         return ExecuteResponse(
             output=result.result,  # Daytona combines stdout/stderr

@@ -448,6 +448,8 @@ class SandboxBackendProtocol(BackendProtocol):
     def execute(
         self,
         command: str,
+        *,
+        timeout: int | None = None,
     ) -> ExecuteResponse:
         """Execute a command in the process.
 
@@ -455,6 +457,12 @@ class SandboxBackendProtocol(BackendProtocol):
 
         Args:
             command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If None, uses the backend's default timeout.
+
+                Callers should provide positive integer values for portable
+                behavior across backends.
 
         Returns:
             ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
@@ -464,9 +472,13 @@ class SandboxBackendProtocol(BackendProtocol):
     async def aexecute(
         self,
         command: str,
+        *,
+        # ASYNC109 - timeout is a semantic parameter forwarded to the sync
+        # implementation, not an asyncio.timeout() contract.
+        timeout: int | None = None,  # noqa: ASYNC109
     ) -> ExecuteResponse:
         """Async version of execute."""
-        return await asyncio.to_thread(self.execute, command)
+        return await asyncio.to_thread(self.execute, command, timeout=timeout)
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

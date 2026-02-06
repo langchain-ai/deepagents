@@ -203,6 +203,76 @@ def _list(agent: str, *, project: bool = False) -> None:
             console.print()
 
 
+def _generate_template(skill_name: str) -> str:
+    """Generate a `SKILL.md` template for a new skill.
+
+    The template follows the Agent Skills spec
+    (https://agentskills.io/specification) and the skill-creator guidance:
+    - Description includes "when to use" trigger information (not the body)
+    - Body contains only instructions loaded after the skill triggers
+
+    Args:
+        skill_name: Name of the skill (used in frontmatter and heading).
+
+    Returns:
+        Complete `SKILL.md` content with YAML frontmatter and markdown body.
+    """
+    title = skill_name.title().replace("-", " ")
+    description = (
+        "TODO: Explain what this skill does and when to use it. "
+        "Include specific triggers — scenarios, file types, or phrases "
+        "that should activate this skill. Example: 'Create and edit PDF "
+        "documents. Use when the user asks to merge, split, fill, or "
+        "annotate PDF files.'"
+    )
+    return f"""---
+name: {skill_name}
+description: "{description}"
+# Optional fields per Agent Skills spec:
+# license: Apache-2.0
+# compatibility: Designed for deepagents CLI
+# metadata:
+#   author: your-org
+#   version: "1.0"
+# allowed-tools: Bash(git:*) Read
+---
+
+# {title}
+
+## Overview
+
+[TODO: 1-2 sentences explaining what this skill enables]
+
+## Instructions
+
+### Step 1: [First Action]
+[Explain what to do first]
+
+### Step 2: [Second Action]
+[Explain what to do next]
+
+### Step 3: [Final Action]
+[Explain how to complete the task]
+
+## Best Practices
+
+- [Best practice 1]
+- [Best practice 2]
+- [Best practice 3]
+
+## Examples
+
+### Example 1: [Scenario Name]
+
+**User Request:** "[Example user request]"
+
+**Approach:**
+1. [Step-by-step breakdown]
+2. [Using tools and commands]
+3. [Expected outcome]
+"""
+
+
 def _create(skill_name: str, agent: str, project: bool = False) -> None:
     """Create a new skill with a template SKILL.md file.
 
@@ -262,82 +332,7 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
     # Create skill directory
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create template SKILL.md (per Agent Skills spec: https://agentskills.io/specification)
-    template = f"""---
-name: {skill_name}
-description: Brief description of what this skill does and when to use it.
-# Optional fields per Agent Skills spec:
-# license: Apache-2.0
-# compatibility: Designed for deepagents CLI
-# metadata:
-#   author: your-org
-#   version: "1.0"
-# allowed-tools: Bash(git:*) Read
----
-
-# {skill_name.title().replace("-", " ")} Skill
-
-## Description
-
-[Provide a detailed explanation of what this skill does and when it should be used]
-
-## When to Use
-
-- [Scenario 1: When the user asks...]
-- [Scenario 2: When you need to...]
-- [Scenario 3: When the task involves...]
-
-## How to Use
-
-### Step 1: [First Action]
-[Explain what to do first]
-
-### Step 2: [Second Action]
-[Explain what to do next]
-
-### Step 3: [Final Action]
-[Explain how to complete the task]
-
-## Best Practices
-
-- [Best practice 1]
-- [Best practice 2]
-- [Best practice 3]
-
-## Supporting Files
-
-This skill directory can include supporting files referenced in the instructions:
-- `helper.py` - Python scripts for automation
-- `config.json` - Configuration files
-- `reference.md` - Additional reference documentation
-
-## Examples
-
-### Example 1: [Scenario Name]
-
-**User Request:** "[Example user request]"
-
-**Approach:**
-1. [Step-by-step breakdown]
-2. [Using tools and commands]
-3. [Expected outcome]
-
-### Example 2: [Another Scenario]
-
-**User Request:** "[Another example]"
-
-**Approach:**
-1. [Different approach]
-2. [Relevant commands]
-3. [Expected result]
-
-## Notes
-
-- [Additional tips, warnings, or context]
-- [Known limitations or edge cases]
-- [Links to external resources if helpful]
-"""
-
+    template = _generate_template(skill_name)
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text(template)
 

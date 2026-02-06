@@ -435,7 +435,7 @@ def create_cli_agent(
             Useful for automated workflows.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
-        enable_shell: Enable shell execution via `LocalShellBackend`
+        enable_shell: Enable shell execution via `CLIShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
         checkpointer: Optional checkpointer for session persistence.
 
@@ -589,9 +589,11 @@ def create_cli_agent(
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver
-    # Patch FilesystemMiddleware so the SDK constructs our subclass with
-    # per-command timeout support on the execute tool.
-    patch_filesystem_middleware()
+    if sandbox is None and enable_shell:
+        # Patch FilesystemMiddleware so the SDK constructs our subclass with
+        # per-command timeout support on the execute tool. Only needed in local
+        # shell mode -- remote sandbox backends do not accept the timeout kwarg.
+        patch_filesystem_middleware()
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
     agent = create_deep_agent(
         model=model,

@@ -5,12 +5,13 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from deepagents_cli._version import __version__
 from deepagents_cli.backends import DEFAULT_EXECUTE_TIMEOUT
 from deepagents_cli.config import (
     COLORS,
     MAX_ARG_LENGTH,
+    _is_editable_install,
     console,
-    get_banner,
     get_glyphs,
 )
 
@@ -210,11 +211,17 @@ def format_tool_message_content(content: Any) -> str:
 
 
 def show_help() -> None:
-    """Show help information."""
+    """Show top-level help information for the deepagents CLI."""
+    install_type = " (local)" if _is_editable_install() else ""
+    banner_color = (
+        COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
+    )
     console.print()
-    console.print(get_banner(), style=f"bold {COLORS['primary']}")
+    console.print(
+        f"[bold {banner_color}]deepagents[/bold {banner_color}]"
+        f" v{__version__}{install_type}"
+    )
     console.print()
-
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
     console.print(
         "  deepagents [OPTIONS]                           Start interactive thread"

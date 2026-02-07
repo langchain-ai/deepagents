@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import re
 import shlex
 import time
@@ -22,6 +23,7 @@ from harbor.environments.base import BaseEnvironment
 
 # Default per-command timeout (5 minutes) - prevents hanging on stuck commands
 DEFAULT_COMMAND_TIMEOUT_SEC = 300
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
 
 # Patterns for commands that produce build artifacts needing cleanup
 # These patterns match when the command STARTS with or has the build tool as a primary command
@@ -270,67 +272,68 @@ fi
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
-        """Edit a file by replacing string occurrences using shell commands."""
-        # Create JSON payload with old and new strings, then base64 encode
-        payload = json.dumps({"old": old_string, "new": new_string})
+        """Edit a file by replacing exact string occurrences using Python.
+
+        Uses a small Python helper inside the sandbox to avoid shell/grep/perl
+        edge cases with multiline strings and special characters.
+        """
+        # Create JSON payload with old/new strings and replacement mode.
+        payload = json.dumps(
+            {"old": old_string, "new": new_string, "replace_all": replace_all}
+        )
         payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         safe_path = shlex.quote(file_path)
-        replace_all_str = "true" if replace_all else "false"
 
-        # Use heredoc to pass old/new strings via stdin to avoid ARG_MAX limits.
-        # ARG_MAX limits the total size of command-line arguments.
-        # Format: base64-encoded JSON with {{"old": str, "new": str}}.
-        # The heredoc feeds into the brace group { ... } which reads and processes stdin.
+        # Use Python for counting and replacement so multiline old/new strings
+        # behave exactly like in-memory string replacement.
         cmd = f"""
 if [ ! -f {safe_path} ]; then
     exit 3
 fi
 
-{{
-    # Read entire heredoc content using cat (read only gets first line)
-    payload_b64=$(cat)
-    if [ -z "$payload_b64" ]; then
-        echo "Error: No payload received for edit operation" >&2
-        exit 4
-    fi
+python3 - {safe_path} '{payload_b64}' <<'__DEEPAGENTS_EOF__'
+import base64
+import json
+import pathlib
+import sys
 
-    # Decode base64 payload
-    payload=$(echo "$payload_b64" | base64 -d) || {{
-        echo "Error: Failed to decode payload" >&2
-        exit 4
-    }}
+file_path = pathlib.Path(sys.argv[1])
+payload_b64 = sys.argv[2]
 
-    # Extract old and new strings from JSON using python3
-    old=$(echo "$payload" | python3 -c "import sys, json; print(json.load(sys.stdin)['old'], end='')") || {{
-        echo "Error: Failed to parse JSON payload" >&2
-        exit 4
-    }}
-    new=$(echo "$payload" | python3 -c "import sys, json; print(json.load(sys.stdin)['new'], end='')") || {{
-        echo "Error: Failed to parse JSON payload" >&2
-        exit 4
-    }}
+try:
+    payload = json.loads(base64.b64decode(payload_b64).decode("utf-8"))
+except Exception as exc:
+    print(f"Error: Failed to decode edit payload: {{exc}}")
+    raise SystemExit(4) from exc
 
-    # Count occurrences using grep -F (fixed strings)
-    count=$(grep -o -F "$old" {safe_path} | wc -l)
+try:
+    content = file_path.read_text(encoding="utf-8")
+except Exception as exc:
+    print(f"Error: Failed to read file for edit: {{exc}}")
+    raise SystemExit(5) from exc
 
-    if [ "$count" -eq 0 ]; then
-        exit 1
-    elif [ "$count" -gt 1 ] && [ "{replace_all_str}" = "false" ]; then
-        exit 2
-    fi
+old = payload["old"]
+new = payload["new"]
+replace_all = bool(payload.get("replace_all", False))
 
-    # Use perl for reliable string replacement (handles special chars).
-    # Note: \\Q...\\E escapes the search pattern. The replacement string is not
-    # escaped, so Perl special sequences (\\U, $1, etc.) in new will be interpreted.
-    if [ "{replace_all_str}" = "true" ]; then
-        perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/g' {safe_path}
-    else
-        perl -i -pe 's/\\Q'"$old"'\\E/'"$new"'/' {safe_path}
-    fi
+count = content.count(old)
+if count == 0:
+    raise SystemExit(1)
+if count > 1 and not replace_all:
+    raise SystemExit(2)
 
-    echo "$count"
-}} <<'__DEEPAGENTS_EOF__'
-{payload_b64}
+if replace_all:
+    updated_content = content.replace(old, new)
+else:
+    updated_content = content.replace(old, new, 1)
+
+try:
+    file_path.write_text(updated_content, encoding="utf-8")
+except Exception as exc:
+    print(f"Error: Failed to write file for edit: {{exc}}")
+    raise SystemExit(5) from exc
+
+print(count)
 __DEEPAGENTS_EOF__
 """
         result = await self.aexecute(cmd)
@@ -348,6 +351,8 @@ __DEEPAGENTS_EOF__
             return EditResult(error=f"Error: File '{file_path}' not found")
         if exit_code == 4:
             return EditResult(error=f"Error: Failed to decode edit payload: {output}")
+        if exit_code == 5:
+            return EditResult(error=f"Error: Failed during edit file I/O: {output}")
         if exit_code != 0:
             return EditResult(
                 error=f"Error editing file (exit code {exit_code}): {output or 'Unknown error'}"
@@ -542,13 +547,24 @@ base64 {safe_path}
                 )
             else:
                 try:
-                    # Clean up base64 output - remove any whitespace/newlines
-                    b64_data = (result.stdout or "").strip().replace("\n", "").replace("\r", "")
-                    # Decode the base64 output to get raw bytes
-                    content = base64.b64decode(b64_data)
+                    # Normalize whitespace so wrapped base64 output can be decoded.
+                    b64_data = "".join((result.stdout or "").split())
+                    if not b64_data:
+                        responses.append(
+                            FileDownloadResponse(path=path, content=None, error="empty_output")
+                        )
+                        continue
 
-                    # Validate it's actually a valid image by checking magic bytes
-                    if not _is_valid_image(content):
+                    # Decode the base64 output to get raw bytes
+                    # validate=True catches noisy/corrupted output rather than silently
+                    # dropping non-base64 characters.
+                    content = base64.b64decode(b64_data, validate=True)
+
+                    # Only apply image integrity checks for known image extensions.
+                    # adownload_files() is used by other middleware too (e.g. text
+                    # offloading for summarization), so non-image files must pass through.
+                    ext = os.path.splitext(path)[1].lower()
+                    if ext in IMAGE_EXTENSIONS and not _is_valid_image(content):
                         responses.append(
                             FileDownloadResponse(path=path, content=None, error="invalid_image_format")
                         )
@@ -564,33 +580,37 @@ base64 {safe_path}
 
         return responses
 
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download files as raw bytes."""
+        raise NotImplementedError("Use adownload_files instead")
+
 
 def _is_valid_image(data: bytes) -> bool:
-    """Check if data is a valid image by examining magic bytes.
+    """Check if data is a valid image by examining signatures and footers.
 
-    This prevents sending corrupted or non-image data to the vision API.
+    This is intentionally lightweight but stricter than header-only checks.
+    It catches common truncation cases that otherwise produce model API errors.
     """
-    if len(data) < 8:
+    if len(data) < 12:
         return False
 
     # PNG magic bytes
     if data[:8] == b'\x89PNG\r\n\x1a\n':
-        return True
+        return data.endswith(b'IEND\xaeB`\x82')
 
     # JPEG magic bytes (FFD8FF)
     if data[:3] == b'\xff\xd8\xff':
-        return True
+        return data[-2:] == b'\xff\xd9'
 
     # GIF magic bytes
     if data[:6] in (b'GIF87a', b'GIF89a'):
-        return True
+        return data[-1:] == b';'
 
     # WebP magic bytes (RIFF....WEBP)
     if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
-        return True
+        if len(data) < 16:
+            return False
+        riff_size = int.from_bytes(data[4:8], byteorder="little", signed=False)
+        return riff_size + 8 == len(data)
 
     return False
-
-    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download files as raw bytes."""
-        raise NotImplementedError("Use adownload_files instead")

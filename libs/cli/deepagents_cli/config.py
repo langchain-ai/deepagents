@@ -737,13 +737,21 @@ def _detect_provider(model_name: str) -> str | None:
     return None
 
 
-def create_model(model_name_override: str | None = None) -> BaseChatModel:
+def create_model(
+    model_name_override: str | None = None,
+    *,
+    openai_reasoning_effort: str | None = None,
+) -> BaseChatModel:
     """Create the appropriate model based on available API keys.
 
     Uses the global settings instance to determine which model to create.
 
     Args:
         model_name_override: Optional model name to use instead of environment variable
+        openai_reasoning_effort: Optional reasoning effort override for OpenAI models.
+            If provided (or if `OPENAI_REASONING_EFFORT` is set), OpenAI requests will
+            be routed through the Responses API and sent with
+            `reasoning={"effort": <value>}`.
 
     Returns:
         ChatModel instance (OpenAI, Anthropic, or Google)
@@ -832,12 +840,38 @@ def create_model(model_name_override: str | None = None) -> BaseChatModel:
     settings.model_name = model_name
     settings.model_provider = provider
 
+    if provider != "openai" and openai_reasoning_effort is not None:
+        console.print(
+            "[dim][yellow]Note:[/yellow] --openai-reasoning-effort is only "
+            "supported for OpenAI models; ignoring.[/dim]"
+        )
+
     # Create the model
     model: BaseChatModel
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        model = ChatOpenAI(model=model_name)  # type: ignore[call-arg]
+        effort = openai_reasoning_effort or os.environ.get("OPENAI_REASONING_EFFORT")
+        if effort is not None:
+            effort = effort.strip().lower()
+            # Keep CLI surface stable while matching LangChain/OpenAI expected values.
+            if effort == "minimal":
+                effort = "low"
+            allowed = {"none", "low", "medium", "high"}
+            if effort not in allowed:
+                console.print(
+                    "[bold red]Error:[/bold red] Invalid OpenAI reasoning effort: "
+                    f"{effort!r}. Use one of: none, low, medium, high."
+                )
+                sys.exit(1)
+
+            # Setting `reasoning` routes ChatOpenAI through OpenAI's Responses API.
+            model = ChatOpenAI(
+                model_name=model_name,
+                reasoning={"effort": effort},
+            )
+        else:
+            model = ChatOpenAI(model_name=model_name)
     elif provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 

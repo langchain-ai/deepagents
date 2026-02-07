@@ -385,3 +385,68 @@ class TestCreateModelProfileExtraction:
             assert settings.model_context_limit is None
         finally:
             self._restore_settings(original)
+
+
+class TestCreateModelOpenAIReasoningEffort:
+    """Tests for OpenAI reasoning effort wiring in create_model."""
+
+    def setup_method(self) -> None:
+        """Reset settings before each test."""
+        settings.model_context_limit = None
+        settings.model_name = None
+        settings.model_provider = None
+
+    def _patch_settings_for_openai(self) -> dict[str, str | None]:
+        """Return original settings and set up for OpenAI-only."""
+        original = {
+            "anthropic_api_key": settings.anthropic_api_key,
+            "openai_api_key": settings.openai_api_key,
+            "google_api_key": settings.google_api_key,
+            "google_cloud_project": settings.google_cloud_project,
+        }
+        settings.anthropic_api_key = None
+        settings.openai_api_key = "test-key"
+        settings.google_api_key = None
+        settings.google_cloud_project = None
+        return original
+
+    def _restore_settings(self, original: dict[str, str | None]) -> None:
+        """Restore original settings."""
+        settings.anthropic_api_key = original["anthropic_api_key"]
+        settings.openai_api_key = original["openai_api_key"]
+        settings.google_api_key = original["google_api_key"]
+        settings.google_cloud_project = original["google_cloud_project"]
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_passes_reasoning_effort_high(self, mock_chat_class: Mock) -> None:
+        """Verify `openai_reasoning_effort='high'` passes reasoning config."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_openai()
+        try:
+            create_model("gpt-5.2", openai_reasoning_effort="high")
+            mock_chat_class.assert_called_with(
+                model_name="gpt-5.2",
+                reasoning={"effort": "high"},
+            )
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_maps_minimal_to_low(self, mock_chat_class: Mock) -> None:
+        """Verify `minimal` is accepted and mapped to `low`."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_openai()
+        try:
+            create_model("gpt-5.2", openai_reasoning_effort="minimal")
+            mock_chat_class.assert_called_with(
+                model_name="gpt-5.2",
+                reasoning={"effort": "low"},
+            )
+        finally:
+            self._restore_settings(original)

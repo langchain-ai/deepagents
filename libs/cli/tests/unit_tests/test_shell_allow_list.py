@@ -559,13 +559,9 @@ class TestContainsDangerousPatterns:
             ("echo ${PATH}", "variable expansion with braces"),
         ],
     )
-    def test_dangerous_patterns_detected(
-        self, command: str, description: str
-    ) -> None:
+    def test_dangerous_patterns_detected(self, command: str, description: str) -> None:
         """Dangerous shell patterns should be detected."""
-        assert contains_dangerous_patterns(command), (
-            f"Failed to detect: {description}"
-        )
+        assert contains_dangerous_patterns(command), f"Failed to detect: {description}"
 
     def test_empty_command(self) -> None:
         """Empty command should not be flagged."""

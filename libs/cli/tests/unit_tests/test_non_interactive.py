@@ -67,7 +67,7 @@ class TestMakeHitlDecision:
 
     def test_empty_action_name_approved(self, console: Console) -> None:
         """Actions with empty name should be approved (non-shell)."""
-        result = _make_hitl_decision({"args": {}}, console)
+        result = _make_hitl_decision({"name": "", "args": {}}, console)
         assert result == {"type": "approve"}
 
     def test_shell_piped_command_allowed(self, console: Console) -> None:

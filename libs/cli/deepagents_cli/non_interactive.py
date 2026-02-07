@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from langchain.agents.middleware.human_in_the_loop import HITLRequest
+from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter
@@ -73,57 +73,43 @@ def _process_interrupts(
             state.interrupt_occurred = True
 
 
-def _process_text_block(block: dict[str, Any], state: StreamState) -> None:
-    """Process a text block from the stream."""
-    text = block.get("text", "")
-    if text:
-        _write_text(text)
-        state.full_response.append(text)
-
-
-def _process_tool_call_block(
-    block: dict[str, Any],
-    state: StreamState,
-    console: Console,
-) -> None:
-    """Process a tool call block from the stream."""
-    chunk_name = block.get("name")
-    chunk_id = block.get("id")
-    chunk_index = block.get("index")
-
-    buffer_key = (
-        chunk_index
-        if chunk_index is not None
-        else (
-            chunk_id
-            if chunk_id is not None
-            else f"unknown-{len(state.tool_call_buffers)}"
-        )
-    )
-
-    if buffer_key not in state.tool_call_buffers:
-        state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
-
-    if chunk_name:
-        state.tool_call_buffers[buffer_key]["name"] = chunk_name
-        if state.full_response:
-            _write_newline()
-        console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
-
-
 def _process_ai_message(
     message_obj: AIMessage,
     state: StreamState,
     console: Console,
 ) -> None:
     """Process an AI message from the stream."""
-    if hasattr(message_obj, "content_blocks"):
-        for block in message_obj.content_blocks:
-            block_type = block.get("type")
-            if block_type == "text":
-                _process_text_block(cast("dict[str, Any]", block), state)
-            elif block_type in {"tool_call_chunk", "tool_call"}:
-                _process_tool_call_block(cast("dict[str, Any]", block), state, console)
+    if not hasattr(message_obj, "content_blocks"):
+        return
+    for block in message_obj.content_blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text", "")
+            if text:
+                _write_text(text)
+                state.full_response.append(text)
+        elif block_type in {"tool_call_chunk", "tool_call"}:
+            chunk_name = block.get("name")
+            chunk_id = block.get("id")
+            chunk_index = block.get("index")
+            buffer_key = (
+                chunk_index
+                if chunk_index is not None
+                else (
+                    chunk_id
+                    if chunk_id is not None
+                    else f"unknown-{len(state.tool_call_buffers)}"
+                )
+            )
+            if buffer_key not in state.tool_call_buffers:
+                state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
+            if chunk_name:
+                state.tool_call_buffers[buffer_key]["name"] = chunk_name
+                if state.full_response:
+                    _write_newline()
+                console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
 
 
 def _process_message_chunk(
@@ -178,7 +164,7 @@ def _process_stream_chunk(
 
 
 def _make_hitl_decision(
-    action_request: dict[str, Any], console: Console
+    action_request: ActionRequest, console: Console
 ) -> dict[str, str]:
     """Make a HITL decision for an action request.
 
@@ -225,7 +211,7 @@ def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
 async def _stream_agent(
     agent: Pregel,
     stream_input: dict[str, Any] | Command,
-    config: dict[str, Any],
+    config: RunnableConfig,
     state: StreamState,
     console: Console,
     file_op_tracker: FileOpTracker,
@@ -235,7 +221,7 @@ async def _stream_agent(
         stream_input,
         stream_mode=["messages", "updates"],
         subgraphs=True,
-        config=cast("RunnableConfig", config),
+        config=config,
         durability="exit",
     ):
         _process_stream_chunk(chunk, state, console, file_op_tracker)
@@ -244,7 +230,7 @@ async def _stream_agent(
 async def _run_agent_loop(
     agent: Pregel,
     message: str,
-    config: dict[str, Any],
+    config: RunnableConfig,
     console: Console,
     file_op_tracker: FileOpTracker,
 ) -> None:
@@ -295,7 +281,7 @@ async def run_non_interactive(
     model = create_model(model_name)
     thread_id = generate_thread_id()
 
-    config = {
+    config: RunnableConfig = {
         "configurable": {"thread_id": thread_id},
         "metadata": {
             "assistant_id": assistant_id,

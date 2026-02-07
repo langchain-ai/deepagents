@@ -47,18 +47,22 @@ class StreamState:
     """Tracks state during agent stream processing."""
 
     full_response: list[str] = field(default_factory=list)
-    tool_call_buffers: dict[Any, dict[str, Any]] = field(default_factory=dict)
-    pending_interrupts: dict[str, Any] = field(default_factory=dict)
-    hitl_response: dict[str, Any] = field(default_factory=dict)
+    tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
+        default_factory=dict
+    )
+    pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
+    hitl_response: dict[str, dict[str, list[dict[str, str]]]] = field(
+        default_factory=dict
+    )
     interrupt_occurred: bool = False
 
 
 def _process_interrupts(
-    data: dict[str, Any],
+    data: dict[str, list[Interrupt]],
     state: StreamState,
 ) -> None:
     """Process interrupt data and update state."""
-    interrupts: list[Interrupt] = data["__interrupt__"]
+    interrupts = data["__interrupt__"]
     if interrupts:
         for interrupt_obj in interrupts:
             validated_request = _HITL_REQUEST_ADAPTER.validate_python(
@@ -122,7 +126,7 @@ def _process_ai_message(
 
 
 def _process_message_chunk(
-    data: tuple[Any, Any],
+    data: tuple[AIMessage | ToolMessage, dict[str, str]],
     state: StreamState,
     console: Console,
     file_op_tracker: FileOpTracker,

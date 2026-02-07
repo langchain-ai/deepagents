@@ -345,7 +345,7 @@ def _find_project_agent_md(project_root: Path) -> list[Path]:
     return paths
 
 
-def _parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
+def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
     """Parse shell allow-list from string.
 
     Args:
@@ -459,7 +459,7 @@ class Settings:
         # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
         # Special value "recommended" uses RECOMMENDED_SAFE_SHELL_COMMANDS
         shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
-        shell_allow_list = _parse_shell_allow_list(shell_allow_list_str)
+        shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
 
         return cls(
             openai_api_key=openai_key,
@@ -817,7 +817,7 @@ RECOMMENDED_SAFE_SHELL_COMMANDS = (
 )
 
 
-def _contains_dangerous_patterns(command: str) -> bool:
+def contains_dangerous_patterns(command: str) -> bool:
     """Check if a command contains dangerous shell patterns.
 
     These patterns can be used to bypass allow-list validation by embedding
@@ -866,15 +866,15 @@ def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool
 
     # SECURITY: Check for dangerous patterns BEFORE any parsing
     # This prevents injection attacks like: ls "$(rm -rf /)"
-    if _contains_dangerous_patterns(command):
+    if contains_dangerous_patterns(command):
         return False
 
     allow_set = set(allow_list)
 
     # Extract the first command token
     # Handle pipes and other shell operators by checking each command in the pipeline
-    # Split by common shell operators (pipes, semicolons, &&, ||)
-    segments = re.split(r"[|;&]|&&|\|\|", command)
+    # Split by compound operators first (&&, ||), then single-char operators (|, ;, &)
+    segments = re.split(r"&&|\|\||[|;&]", command)
 
     # Track if we found at least one valid command
     found_command = False

@@ -172,7 +172,7 @@ def parse_args() -> argparse.Namespace:
         "-n",
         "--non-interactive",
         dest="non_interactive_message",
-        help="Run a single task non-interactively and exit (auto-approves all actions)",
+        help="Run a single task non-interactively and exit (shell disabled unless --shell-allow-list is set)",
     )
 
     parser.add_argument(
@@ -326,9 +326,9 @@ def cli_main() -> None:
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if hasattr(args, "shell_allow_list") and args.shell_allow_list:
-            from deepagents_cli.config import _parse_shell_allow_list
+            from deepagents_cli.config import parse_shell_allow_list
 
-            settings.shell_allow_list = _parse_shell_allow_list(args.shell_allow_list)
+            settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         if args.command == "help":
             show_help()

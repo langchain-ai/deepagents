@@ -335,7 +335,11 @@ async def list_threads_command(
         console.print("[dim]Start a conversation with: deepagents[/dim]")
         return
 
-    title = f"Threads for '{agent_name}'" if agent_name else "All Threads"
+    title = (
+        f"Threads for '{agent_name}'"
+        if agent_name
+        else f"Recent Threads (last {limit})"
+    )
 
     table = Table(
         title=title, show_header=True, header_style=f"bold {COLORS['primary']}"

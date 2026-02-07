@@ -41,6 +41,9 @@ from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.subagents import list_subagents
 
+DEFAULT_AGENT_NAME = "agent"
+"""The default agent name used when no `-a` flag is provided."""
+
 
 def list_agents() -> None:
     """List all available agents."""
@@ -61,16 +64,20 @@ def list_agents() -> None:
         if agent_path.is_dir():
             agent_name = agent_path.name
             agent_md = agent_path / "AGENTS.md"
+            is_default = agent_name == DEFAULT_AGENT_NAME
+            default_label = " [dim](default)[/dim]" if is_default else ""
 
             bullet = get_glyphs().bullet
             if agent_md.exists():
                 console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]", style=COLORS["primary"]
+                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
+                    style=COLORS["primary"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
             else:
                 console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold] [dim](incomplete)[/dim]",
+                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
+                    " [dim](incomplete)[/dim]",
                     style=COLORS["tool"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])

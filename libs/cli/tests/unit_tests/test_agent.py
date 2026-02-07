@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_cli.agent import (
+    DEFAULT_AGENT_NAME,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
@@ -17,6 +18,7 @@ from deepagents_cli.agent import (
     _format_web_search_description,
     _format_write_file_description,
     get_system_prompt,
+    list_agents,
 )
 from deepagents_cli.config import get_glyphs
 
@@ -356,3 +358,77 @@ class TestGetSystemPromptModelIdentity:
         assert "You are running as model `test-model`." in prompt
         assert "(provider:" not in prompt
         assert "context window" not in prompt
+
+
+class TestListAgents:
+    """Tests for list_agents output."""
+
+    def test_default_agent_marked(self, tmp_path: Path) -> None:
+        """Test that the default agent is labeled as (default) in list output."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        # Create the default agent directory with AGENTS.md
+        default_dir = agents_dir / DEFAULT_AGENT_NAME
+        default_dir.mkdir()
+        (default_dir / "AGENTS.md").touch()
+
+        # Create a non-default agent
+        other_dir = agents_dir / "researcher"
+        other_dir.mkdir()
+        (other_dir / "AGENTS.md").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        output: list[str] = []
+
+        def capture_print(*args: Any, **_: Any) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            list_agents()
+
+        joined = "\n".join(output)
+        assert "(default)" in joined
+        # Only the default agent should be marked
+        assert joined.count("(default)") == 1
+        # The default agent name should appear with the (default) label
+        assert DEFAULT_AGENT_NAME in joined
+        # The other agent should NOT be marked as default
+        for line in output:
+            if "researcher" in line and "(default)" in line:
+                msg = "Non-default agent should not be marked as (default)"
+                raise AssertionError(msg)
+
+    def test_non_default_agent_not_marked(self, tmp_path: Path) -> None:
+        """Test that non-default agents are not labeled as (default)."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        # Only create a non-default agent
+        custom_dir = agents_dir / "researcher"
+        custom_dir.mkdir()
+        (custom_dir / "AGENTS.md").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        output: list[str] = []
+
+        def capture_print(*args: Any, **_: Any) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            list_agents()
+
+        joined = "\n".join(output)
+        assert "(default)" not in joined

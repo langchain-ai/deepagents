@@ -1,13 +1,19 @@
 """Unit tests for skills command sanitization and validation."""
 
+import io
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-from deepagents.middleware.skills import _parse_skill_metadata
+from deepagents.middleware.skills import SkillMetadata, _parse_skill_metadata
+from rich.console import Console
 
+from deepagents_cli.main import parse_args
 from deepagents_cli.skills.commands import (
+    _format_info_fields,
     _generate_template,
+    _info,
     _validate_name,
     _validate_skill_path,
 )
@@ -269,3 +275,314 @@ class TestGenerateTemplate:
         assert "when" in description, (
             "Description placeholder should guide users to include 'when to use' info"
         )
+
+
+def _make_skill(
+    *,
+    name: str = "test-skill",
+    description: str = "A test skill",
+    path: str = "/tmp/test-skill/SKILL.md",
+    skill_license: str | None = None,
+    compatibility: str | None = None,
+    metadata: dict[str, str] | None = None,
+    allowed_tools: list[str] | None = None,
+) -> SkillMetadata:
+    """Build a minimal `SkillMetadata` dict with overrides.
+
+    Args:
+        name: Skill identifier.
+        description: What the skill does.
+        path: Path to the SKILL.md file.
+        skill_license: License name or `None`.
+        compatibility: Environment requirements or `None`.
+        metadata: Arbitrary key-value pairs.
+        allowed_tools: Recommended tool names.
+
+    Returns:
+        A `SkillMetadata` TypedDict with the given values.
+    """
+    return SkillMetadata(
+        name=name,
+        description=description,
+        path=path,
+        license=skill_license,
+        compatibility=compatibility,
+        metadata=metadata if metadata is not None else {},
+        allowed_tools=allowed_tools if allowed_tools is not None else [],
+    )
+
+
+class TestFormatInfoFields:
+    """Tests for `_format_info_fields` optional metadata extraction."""
+
+    def test_all_fields_present(self) -> None:
+        """All four optional fields populated should produce four entries."""
+        skill = _make_skill(
+            skill_license="MIT",
+            compatibility="Python 3.10+",
+            allowed_tools=["Bash(git:*)", "Read"],
+            metadata={"author": "acme", "version": "1.0"},
+        )
+        result = _format_info_fields(skill)
+        labels = [label for label, _ in result]
+        assert labels == [
+            "License",
+            "Compatibility",
+            "Allowed Tools",
+            "Metadata",
+        ]
+        assert result[0] == ("License", "MIT")
+        assert result[1] == ("Compatibility", "Python 3.10+")
+        assert result[2] == ("Allowed Tools", "Bash(git:*), Read")
+        assert "author=acme" in result[3][1]
+        assert "version=1.0" in result[3][1]
+
+    def test_no_optional_fields(self) -> None:
+        """When all optional fields are None/empty, return empty list."""
+        skill = _make_skill()
+        result = _format_info_fields(skill)
+        assert result == []
+
+    def test_license_only(self) -> None:
+        """Only license set should return a single License entry."""
+        skill = _make_skill(skill_license="Apache-2.0")
+        result = _format_info_fields(skill)
+        assert len(result) == 1
+        assert result[0] == ("License", "Apache-2.0")
+
+    def test_compatibility_only(self) -> None:
+        """Only compatibility set should return a single Compatibility entry."""
+        skill = _make_skill(compatibility="Requires poppler")
+        result = _format_info_fields(skill)
+        assert len(result) == 1
+        assert result[0] == ("Compatibility", "Requires poppler")
+
+    def test_allowed_tools_only(self) -> None:
+        """Only allowed_tools populated should return entry."""
+        skill = _make_skill(allowed_tools=["Bash", "Read"])
+        result = _format_info_fields(skill)
+        assert len(result) == 1
+        assert result[0] == ("Allowed Tools", "Bash, Read")
+
+    def test_metadata_only(self) -> None:
+        """Only metadata populated should return a Metadata entry."""
+        skill = _make_skill(metadata={"author": "test-org"})
+        result = _format_info_fields(skill)
+        assert len(result) == 1
+        assert result[0] == ("Metadata", "author=test-org")
+
+    def test_field_order(self) -> None:
+        """Fields appear in order: License, Compatibility, Allowed Tools, Metadata."""
+        skill = _make_skill(
+            metadata={"k": "v"},
+            skill_license="GPL-3.0",
+            allowed_tools=["Write"],
+            compatibility="macOS only",
+        )
+        result = _format_info_fields(skill)
+        labels = [label for label, _ in result]
+        assert labels == [
+            "License",
+            "Compatibility",
+            "Allowed Tools",
+            "Metadata",
+        ]
+
+
+class TestSkillsHelpFlag:
+    """Test that `deepagents skills -h` shows skills-specific help."""
+
+    def test_skills_help_shows_subcommands(self) -> None:
+        """Running `deepagents skills -h` should show skills subcommands.
+
+        Regression: -h on the skills subcommand was falling through to the
+        global help screen, showing top-level options (--sandbox, --model, etc.)
+        instead of skills-specific commands (list, create, info).
+        """
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=120)
+
+        with (
+            patch("sys.argv", ["deepagents", "skills", "-h"]),
+            patch("deepagents_cli.ui.console", test_console),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+
+        assert exc_info.value.code in (0, None)
+        output = buf.getvalue()
+
+        # Should contain skills-specific content
+        assert "list" in output.lower()
+        assert "create" in output.lower()
+        assert "info" in output.lower()
+
+        # Should NOT contain global-only content
+        assert "Start interactive thread" not in output
+        assert "--sandbox" not in output
+        assert "--model" not in output
+
+    def test_skills_list_help_shows_list_options(self) -> None:
+        """Running `deepagents skills list -h` should show list-specific options."""
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=120)
+
+        with (
+            patch("sys.argv", ["deepagents", "skills", "list", "-h"]),
+            patch("deepagents_cli.ui.console", test_console),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+
+        assert exc_info.value.code in (0, None)
+        output = buf.getvalue()
+
+        # Should contain list-specific content
+        assert "--agent" in output
+        assert "--project" in output
+
+        # Should NOT contain global-only content
+        assert "Start interactive thread" not in output
+        assert "--sandbox" not in output
+
+
+class TestThreadsHelpFlag:
+    """Test that `deepagents threads -h` shows threads-specific help."""
+
+    def test_threads_help_shows_threads_content(self) -> None:
+        """Running `deepagents threads -h` should show threads subcommands.
+
+        Regression: same pattern as skills -- -h on the threads subcommand
+        should show threads-specific help, not the global help screen.
+        """
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=120)
+
+        with (
+            patch("sys.argv", ["deepagents", "threads", "-h"]),
+            patch("deepagents_cli.ui.console", test_console),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+
+        assert exc_info.value.code in (0, None)
+        output = buf.getvalue()
+
+        # Should contain threads-specific content
+        assert "list" in output.lower()
+        assert "delete" in output.lower()
+
+        # Should NOT contain global-only content
+        assert "Start interactive thread" not in output
+        assert "--sandbox" not in output
+        assert "--model" not in output
+
+
+class TestThreadsListAlias:
+    """Test that `deepagents threads ls` is parsed as a `list` alias."""
+
+    def test_threads_ls_alias_parsed(self) -> None:
+        """Verify `threads ls` sets threads_command to 'ls'."""
+        with patch("sys.argv", ["deepagents", "threads", "ls"]):
+            args = parse_args()
+        assert args.command == "threads"
+        assert args.threads_command == "ls"
+
+    def test_threads_list_still_works(self) -> None:
+        """Verify `threads list` still works after alias addition."""
+        with patch("sys.argv", ["deepagents", "threads", "list"]):
+            args = parse_args()
+        assert args.command == "threads"
+        assert args.threads_command == "list"
+
+
+class TestInfoShadowWarning:
+    """Test that `skills info` warns when a project skill shadows a user skill."""
+
+    def _make_skill_dir(self, parent: Path, name: str, description: str) -> None:
+        """Create a minimal skill directory with a valid SKILL.md.
+
+        Args:
+            parent: Parent skills directory.
+            name: Skill name (used as directory name and frontmatter name).
+            description: Skill description for frontmatter.
+        """
+        skill_dir = parent / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\nContent\n"
+        )
+
+    def test_shadow_note_shown_when_project_overrides_user(
+        self, tmp_path: Path
+    ) -> None:
+        """When a project skill shadows a user skill, info should note it."""
+        user_dir = tmp_path / "user_skills"
+        project_dir = tmp_path / "project_skills"
+        self._make_skill_dir(user_dir, "web-research", "User version")
+        self._make_skill_dir(project_dir, "web-research", "Project version")
+
+        mock_settings = patch(
+            "deepagents_cli.skills.commands.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_user_skills_dir": lambda _, _a: user_dir,
+                    "get_project_skills_dir": lambda _: project_dir,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _info("web-research", agent="agent")
+
+        joined = "\n".join(output)
+        assert "overrides" in joined.lower() or "shadows" in joined.lower()
+
+    def test_no_shadow_note_when_no_conflict(self, tmp_path: Path) -> None:
+        """When there is no name conflict, no shadow note should appear."""
+        user_dir = tmp_path / "user_skills"
+        project_dir = tmp_path / "project_skills"
+        self._make_skill_dir(user_dir, "web-research", "User only skill")
+
+        mock_settings = patch(
+            "deepagents_cli.skills.commands.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_user_skills_dir": lambda _, _a: user_dir,
+                    "get_project_skills_dir": lambda _: project_dir,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _info("web-research", agent="agent")
+
+        joined = "\n".join(output)
+        assert "overrides" not in joined.lower()
+        assert "shadows" not in joined.lower()

@@ -281,6 +281,7 @@ def _generate_template(skill_name: str) -> str:
     return f"""---
 name: {skill_name}
 description: "{description}"
+# (Warning: SKILL.md files exceeding 10 MB are silently skipped at load time.)
 # Optional fields per Agent Skills spec:
 # license: Apache-2.0
 # compatibility: Designed for Deep Agents CLI

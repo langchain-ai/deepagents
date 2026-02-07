@@ -252,8 +252,9 @@ def show_help() -> None:
         "  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)"  # noqa: E501
     )
     console.print(
-        "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"  # noqa: E501
+        "  -m, --message TEXT            Initial prompt to auto-submit on start"
     )
+    console.print("  -r, --resume [ID]             Resume thread: -r for most recent")
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])

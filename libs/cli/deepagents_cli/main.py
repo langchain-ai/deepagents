@@ -172,7 +172,8 @@ def parse_args() -> argparse.Namespace:
         "-n",
         "--non-interactive",
         dest="non_interactive_message",
-        help="Run a single task non-interactively and exit (shell disabled unless --shell-allow-list is set)",
+        help="Run a single task non-interactively and exit "
+        "(shell disabled unless --shell-allow-list is set)",
     )
 
     parser.add_argument(

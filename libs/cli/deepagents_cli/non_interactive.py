@@ -305,7 +305,9 @@ async def run_non_interactive(
     exit_stack = contextlib.ExitStack()
 
     if sandbox_type != "none":
-        from deepagents_cli.integrations.sandbox_factory import create_sandbox
+        from deepagents_cli.integrations.sandbox_factory import (  # noqa: PLC0415
+            create_sandbox,
+        )
 
         try:
             sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)

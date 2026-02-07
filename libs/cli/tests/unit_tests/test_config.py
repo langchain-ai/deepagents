@@ -10,8 +10,8 @@ from deepagents_cli.config import (
     Settings,
     _find_project_agent_md,
     _find_project_root,
-    parse_shell_allow_list,
     create_model,
+    parse_shell_allow_list,
     settings,
     validate_model_capabilities,
 )

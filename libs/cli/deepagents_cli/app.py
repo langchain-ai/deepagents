@@ -604,7 +604,7 @@ class DeepAgentsApp(App):
                 try:
                     messages = self.query_one("#messages", Container)
                     for command in approved_commands:
-                        auto_msg = SystemMessage(
+                        auto_msg = AppMessage(
                             f"✓ Auto-approved shell command (allow-list): {command}"
                         )
                         await messages.mount(auto_msg)

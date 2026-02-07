@@ -286,7 +286,7 @@ def _parse_skill_metadata(
         logger.warning("Skipping %s: frontmatter is not a mapping", skill_path)
         return None
 
-    name = frontmatter_data.get("name")
+    name = str(frontmatter_data.get("name", "")).strip()
     description = str(frontmatter_data.get("description", "")).strip()
     if not name or not description:
         logger.warning("Skipping %s: missing required 'name' or 'description'", skill_path)

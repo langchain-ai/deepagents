@@ -14,7 +14,7 @@ def jsonl_file(tmp_path):
     tasks = [
         {"id": "1", "description": "Analyze Q1 data"},
         {"id": "2", "description": "Analyze Q2 data", "type": "analyst"},
-        {"id": "3", "description": "Compare results", "blocked_by": ["1", "2"]},
+        {"id": "3", "description": "Summarize both analyses"},
     ]
     path.write_text("\n".join(json.dumps(t) for t in tasks))
     return path
@@ -25,10 +25,10 @@ def csv_file(tmp_path):
     """Create a sample CSV task file."""
     path = tmp_path / "tasks.csv"
     content = """\
-id,description,type,blocked_by
-1,Analyze Q1 data,,
-2,Analyze Q2 data,analyst,
-3,Compare results,writer,"1,2"
+id,description,type
+1,Analyze Q1 data,
+2,Analyze Q2 data,analyst
+3,Compare results,writer
 """
     path.write_text(content)
     return path
@@ -47,12 +47,6 @@ class TestParseJsonl:
 
         assert "type" not in tasks[0]
         assert tasks[1]["type"] == "analyst"
-
-    def test_parses_blocked_by(self, jsonl_file):
-        tasks = parse_task_file(jsonl_file)
-
-        assert "blocked_by" not in tasks[0]
-        assert tasks[2]["blocked_by"] == ["1", "2"]
 
     def test_parses_metadata(self, tmp_path):
         path = tmp_path / "tasks.jsonl"
@@ -73,6 +67,38 @@ class TestParseJsonl:
 
         assert len(tasks) == 2
 
+    def test_auto_generates_ids_for_missing_id(self, tmp_path):
+        path = tmp_path / "tasks.jsonl"
+        path.write_text(
+            '{"description": "Task 1"}\n'
+            '{"description": "Task 2"}\n'
+        )
+
+        tasks = parse_task_file(path)
+
+        assert [task["id"] for task in tasks] == ["auto-1", "auto-2"]
+
+    def test_supports_description_aliases(self, tmp_path):
+        path = tmp_path / "tasks.jsonl"
+        path.write_text(
+            '{"id": "a", "prompt": "Task from prompt"}\n'
+            '{"id": "b", "task": "Task from task"}\n'
+        )
+
+        tasks = parse_task_file(path)
+
+        assert tasks[0]["description"] == "Task from prompt"
+        assert tasks[1]["description"] == "Task from task"
+
+    def test_supports_string_entries(self, tmp_path):
+        path = tmp_path / "tasks.jsonl"
+        path.write_text('"Task from string"')
+
+        tasks = parse_task_file(path)
+
+        assert tasks[0]["id"] == "auto-1"
+        assert tasks[0]["description"] == "Task from string"
+
 
 class TestParseCsv:
     def test_parses_basic_tasks(self, csv_file):
@@ -88,12 +114,6 @@ class TestParseCsv:
         assert "type" not in tasks[0]
         assert tasks[1]["type"] == "analyst"
 
-    def test_parses_blocked_by_as_list(self, csv_file):
-        tasks = parse_task_file(csv_file)
-
-        assert "blocked_by" not in tasks[0]
-        assert tasks[2]["blocked_by"] == ["1", "2"]
-
 
 class TestValidation:
     def test_file_not_found(self, tmp_path):
@@ -105,13 +125,6 @@ class TestValidation:
         path.write_text("")
 
         with pytest.raises(TaskFileError, match="empty"):
-            parse_task_file(path)
-
-    def test_missing_id(self, tmp_path):
-        path = tmp_path / "bad.jsonl"
-        path.write_text('{"description": "No ID"}')
-
-        with pytest.raises(TaskFileError, match="missing required field 'id'"):
             parse_task_file(path)
 
     def test_missing_description(self, tmp_path):
@@ -131,11 +144,18 @@ class TestValidation:
         with pytest.raises(TaskFileError, match="Duplicate task ID"):
             parse_task_file(path)
 
-    def test_invalid_blocked_by_reference(self, tmp_path):
+    def test_blocked_by_is_not_supported(self, tmp_path):
         path = tmp_path / "bad.jsonl"
-        path.write_text('{"id": "1", "description": "Test", "blocked_by": ["999"]}')
+        path.write_text('{"id": "1", "description": "Test", "blocked_by": ["2"]}')
 
-        with pytest.raises(TaskFileError, match="non-existent task"):
+        with pytest.raises(TaskFileError, match="not supported"):
+            parse_task_file(path)
+
+    def test_csv_blocked_by_is_not_supported(self, tmp_path):
+        path = tmp_path / "bad.csv"
+        path.write_text("id,description,blocked_by\n1,Test,2\n")
+
+        with pytest.raises(TaskFileError, match="not supported"):
             parse_task_file(path)
 
     def test_invalid_json(self, tmp_path):
@@ -143,6 +163,13 @@ class TestValidation:
         path.write_text("not valid json")
 
         with pytest.raises(TaskFileError, match="Invalid JSON"):
+            parse_task_file(path)
+
+    def test_invalid_task_payload_type(self, tmp_path):
+        path = tmp_path / "bad.jsonl"
+        path.write_text("123")
+
+        with pytest.raises(TaskFileError, match="must be a JSON object or string"):
             parse_task_file(path)
 
 

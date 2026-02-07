@@ -8,7 +8,11 @@ from deepagents_cli.swarm.enrichment import (
     parse_enrichment_output,
     write_enriched_csv,
 )
-from deepagents_cli.swarm.executor import SwarmExecutor, get_default_output_dir
+from deepagents_cli.swarm.executor import (
+    SwarmExecutor,
+    generate_swarm_run_id,
+    get_default_output_dir,
+)
 from deepagents_cli.swarm.graph import CycleError, DependencyGraph
 from deepagents_cli.swarm.middleware import SwarmMiddleware, TaskBoardMiddleware
 from deepagents_cli.swarm.parser import TaskFileError, parse_task_file
@@ -43,6 +47,7 @@ __all__ = [
     "CycleError",
     "TaskFileError",
     "parse_task_file",
+    "generate_swarm_run_id",
     "get_default_output_dir",
     # CSV Enrichment
     "EnrichmentError",

@@ -1,5 +1,7 @@
 """Unit tests for SwarmMiddleware."""
 
+import json
+
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -9,7 +11,7 @@ from deepagents_cli.swarm.middleware import SwarmMiddleware
 class MockSubagent:
     """Mock subagent for testing."""
 
-    async def ainvoke(self, state: dict) -> dict:
+    async def ainvoke(self, _state: dict) -> dict:
         return {"messages": [AIMessage(content="Task completed")]}
 
 
@@ -66,7 +68,7 @@ class TestSwarmMiddleware:
         """Factory should only be called when subagent_graphs is accessed."""
         call_count = 0
 
-        def counting_factory():
+        def counting_factory() -> dict[str, MockSubagent]:
             nonlocal call_count
             call_count += 1
             return subagent_graphs
@@ -114,3 +116,56 @@ class TestSwarmMiddlewareConfiguration:
             timeout_seconds=600.0,
         )
         assert middleware.timeout_seconds == 600.0
+
+
+class TestSwarmMiddlewareParallelism:
+    @pytest.mark.asyncio
+    async def test_swarm_execute_uses_num_parallel(self, subagent_graphs, tmp_path):
+        """`num_parallel` should control executor worker count."""
+        middleware = SwarmMiddleware(
+            subagent_graphs=subagent_graphs,
+            max_concurrency=50,
+        )
+        task_file = tmp_path / "tasks.jsonl"
+        task_file.write_text('{"id": "1", "description": "Do one task"}\n')
+        output_dir = tmp_path / "batch"
+
+        tool = next(t for t in middleware.tools if t.name == "swarm_execute")
+        await tool.ainvoke(
+            {
+                "source": str(task_file),
+                "num_parallel": 7,
+                "output_dir": str(output_dir),
+            }
+        )
+
+        summary = json.loads((output_dir / "summary.json").read_text())
+        assert summary["concurrency"] == 7
+
+    @pytest.mark.asyncio
+    async def test_swarm_execute_prefers_num_parallel_over_concurrency(
+        self,
+        subagent_graphs,
+        tmp_path,
+    ):
+        """`num_parallel` should take precedence when both values are passed."""
+        middleware = SwarmMiddleware(
+            subagent_graphs=subagent_graphs,
+            max_concurrency=50,
+        )
+        task_file = tmp_path / "tasks.jsonl"
+        task_file.write_text('{"id": "1", "description": "Do one task"}\n')
+        output_dir = tmp_path / "batch"
+
+        tool = next(t for t in middleware.tools if t.name == "swarm_execute")
+        await tool.ainvoke(
+            {
+                "source": str(task_file),
+                "concurrency": 2,
+                "num_parallel": 9,
+                "output_dir": str(output_dir),
+            }
+        )
+
+        summary = json.loads((output_dir / "summary.json").read_text())
+        assert summary["concurrency"] == 9

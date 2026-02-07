@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -69,6 +70,8 @@ class TestBasicExecution:
 
         summary = await executor.execute(tasks, concurrency=1, output_dir=output_dir)
 
+        assert summary["run_id"]
+        assert summary["started_at"]
         assert summary["total"] == 1
         assert summary["succeeded"] == 1
         assert summary["failed"] == 0
@@ -106,6 +109,8 @@ class TestBasicExecution:
         assert summary_path.exists()
 
         summary = json.loads(summary_path.read_text())
+        assert summary["run_id"]
+        assert summary["started_at"]
         assert summary["total"] == 1
         assert summary["succeeded"] == 1
 
@@ -288,10 +293,9 @@ class TestConcurrency:
 
 
 class TestOutputDirectory:
-    def test_default_output_dir_is_timestamped(self):
+    def test_default_output_dir_is_timestamped_with_run_id(self):
         output_dir = get_default_output_dir()
 
         assert "batch_results" in str(output_dir)
-        # Should have a timestamp component
-        parts = output_dir.name.split("_")
-        assert len(parts) >= 2  # Date and time components
+        # Name is expected to be: YYYY-MM-DD_HHMMSS_<8hex_run_id>
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{6}_[0-9a-f]{8}", output_dir.name)

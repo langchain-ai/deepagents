@@ -1,6 +1,7 @@
 """Middleware for task board and swarm execution tools."""
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -17,7 +18,11 @@ from deepagents_cli.swarm.enrichment import (
     parse_enrichment_output,
     write_enriched_csv,
 )
-from deepagents_cli.swarm.executor import SwarmExecutor, get_default_output_dir
+from deepagents_cli.swarm.executor import (
+    SwarmExecutor,
+    generate_swarm_run_id,
+    get_default_output_dir,
+)
 from deepagents_cli.swarm.graph import CycleError
 from deepagents_cli.swarm.parser import TaskFileError, parse_task_file
 from deepagents_cli.swarm.task_store import TaskStore
@@ -219,7 +224,7 @@ Use for batch processing with explicit task definitions:
 ```
 {"id": "1", "description": "Analyze file A"}
 {"id": "2", "description": "Analyze file B"}
-{"id": "3", "description": "Compare results", "blocked_by": ["1", "2"]}
+{"id": "3", "description": "Analyze file C"}
 ```
 
 ### `swarm_enrich` - Fill in empty CSV columns
@@ -247,7 +252,7 @@ class SwarmMiddleware(AgentMiddleware):
     """Middleware that provides the swarm_execute tool for batch task execution.
 
     The swarm_execute tool allows the agent to run multiple tasks in parallel
-    using subagents, with optional dependency management.
+    using subagents.
 
     This middleware can be initialized in two ways:
 
@@ -361,16 +366,30 @@ def _create_swarm_tools(
                                 Used for lazy initialization.
     """
 
+    def _resolve_parallelism(
+        *,
+        concurrency: int,
+        num_parallel: int | None,
+    ) -> int:
+        """Resolve and clamp parallel worker configuration."""
+        requested_parallelism = num_parallel if num_parallel is not None else concurrency
+        return min(max(1, requested_parallelism), max_concurrency)
+
     async def swarm_execute(
         source: Annotated[
             str,
-            "Path to a JSONL or CSV file with task definitions. Required fields: 'id', "
-            "'description'. Optional: 'type' (subagent type), 'blocked_by', 'metadata'.",
+            "Path to a JSONL or CSV file with task definitions. Required field: "
+            "'description' (or alias: 'task'/'prompt'). Optional: 'id', 'type' "
+            "(subagent type), 'metadata'.",
         ],
         concurrency: Annotated[
             int,
             "Maximum number of parallel subagent executions. Higher = faster but more load.",
         ] = default_concurrency,
+        num_parallel: Annotated[
+            int | None,
+            "Alias for concurrency. Preferred for explicit swarm-style parallelism control.",
+        ] = None,
         output_dir: Annotated[
             str | None,
             "Directory to write results. Defaults to ./batch_results/<timestamp>/",
@@ -379,8 +398,8 @@ def _create_swarm_tools(
     ) -> str:
         """Execute a batch of tasks in parallel using subagents.
 
-        Tasks are defined in a JSONL or CSV file. Each task is executed by a subagent,
-        respecting any dependency ordering (blocked_by).
+        Tasks are defined in a JSONL or CSV file. Each task is executed by a subagent
+        independently.
 
         Results are written to:
         - summary.json: Overview and statistics
@@ -390,13 +409,17 @@ def _create_swarm_tools(
         Args:
             source: Path to task file (JSONL or CSV)
             concurrency: Max parallel workers (default: 10)
+            num_parallel: Alias for concurrency. Takes precedence when provided.
             output_dir: Results directory (default: ./batch_results/<timestamp>/)
 
         Returns:
             Summary string with statistics and file paths.
         """
         # Validate concurrency
-        actual_concurrency = min(max(1, concurrency), max_concurrency)
+        actual_concurrency = _resolve_parallelism(
+            concurrency=concurrency,
+            num_parallel=num_parallel,
+        )
 
         # Parse task file
         try:
@@ -406,11 +429,10 @@ def _create_swarm_tools(
         except TaskFileError as e:
             return f"Error parsing task file: {e}"
 
-        # Determine output directory
-        if output_dir:
-            out_path = Path(output_dir)
-        else:
-            out_path = get_default_output_dir()
+        # Determine run metadata and output directory
+        run_id = generate_swarm_run_id()
+        started_at = datetime.now().isoformat(timespec="seconds")
+        out_path = Path(output_dir) if output_dir else get_default_output_dir(run_id=run_id)
 
         # Get subagent graphs (lazy initialization)
         subagent_graphs = subagent_graphs_getter()
@@ -427,6 +449,8 @@ def _create_swarm_tools(
                 tasks=tasks,
                 concurrency=actual_concurrency,
                 output_dir=out_path,
+                run_id=run_id,
+                started_at=started_at,
                 progress_callback=progress_callback,
             )
         except CycleError as e:
@@ -434,7 +458,10 @@ def _create_swarm_tools(
 
         # Format response
         lines = [
-            f"Batch execution complete: {summary['total']} tasks in {summary['duration_seconds']}s",
+            f"Batch execution complete: run {summary['run_id']} "
+            f"({summary['started_at']}) - {summary['total']} tasks in "
+            f"{summary['duration_seconds']}s",
+            f"  Parallel workers: {summary['concurrency']}",
             f"  Succeeded: {summary['succeeded']}",
             f"  Failed: {summary['failed']}",
             f"  Skipped: {summary['skipped']}",
@@ -458,6 +485,10 @@ def _create_swarm_tools(
             int,
             "Maximum number of parallel research tasks. Higher = faster but more load.",
         ] = default_concurrency,
+        num_parallel: Annotated[
+            int | None,
+            "Alias for concurrency. Preferred for explicit swarm-style parallelism control.",
+        ] = None,
         output_path: Annotated[
             str | None,
             "Path for enriched CSV. Defaults to <original>_enriched.csv",
@@ -476,6 +507,7 @@ def _create_swarm_tools(
         Args:
             source: Path to CSV file with empty columns to fill
             concurrency: Max parallel workers (default: 10)
+            num_parallel: Alias for concurrency. Takes precedence when provided.
             output_path: Path for enriched output CSV
             id_column: Column to use as task ID (optional)
 
@@ -506,11 +538,16 @@ def _create_swarm_tools(
         else:
             enriched_path = source_path.with_stem(f"{source_path.stem}_enriched")
 
-        # Create temp output dir for task results
-        out_path = get_default_output_dir()
+        # Create run metadata and temp output dir for task results
+        run_id = generate_swarm_run_id()
+        started_at = datetime.now().isoformat(timespec="seconds")
+        out_path = get_default_output_dir(run_id=run_id)
 
         # Validate concurrency
-        actual_concurrency = min(max(1, concurrency), max_concurrency)
+        actual_concurrency = _resolve_parallelism(
+            concurrency=concurrency,
+            num_parallel=num_parallel,
+        )
 
         # Get subagent graphs
         subagent_graphs = subagent_graphs_getter()
@@ -527,6 +564,8 @@ def _create_swarm_tools(
                 tasks=tasks,
                 concurrency=actual_concurrency,
                 output_dir=out_path,
+                run_id=run_id,
+                started_at=started_at,
                 progress_callback=progress_callback,
             )
         except CycleError as e:
@@ -561,7 +600,8 @@ def _create_swarm_tools(
 
         # Format response
         lines = [
-            f"Enrichment complete: {len(rows)} rows processed",
+            f"Enrichment complete: run {summary['run_id']} ({summary['started_at']}) - "
+            f"{len(rows)} rows processed",
             f"  Tasks executed: {summary['total']}",
             f"  Succeeded: {summary['succeeded']}",
             f"  Failed: {summary['failed']}",
@@ -578,7 +618,7 @@ def _create_swarm_tools(
             coroutine=swarm_execute,
             description=(
                 "Execute a batch of tasks in parallel using subagents. "
-                "Tasks are defined in a JSONL/CSV file with optional dependency ordering."
+                "Tasks are defined in a JSONL/CSV file and run independently in parallel."
             ),
         ),
         StructuredTool.from_function(

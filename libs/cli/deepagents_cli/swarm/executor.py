@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,8 @@ class SwarmExecutor:
         *,
         concurrency: int = 10,
         output_dir: Path,
+        run_id: str | None = None,
+        started_at: str | None = None,
         progress_callback: Callable[[SwarmProgress], None] | None = None,
     ) -> SwarmSummary:
         """Execute a batch of tasks in parallel.
@@ -71,6 +74,8 @@ class SwarmExecutor:
             tasks: List of tasks to execute.
             concurrency: Maximum number of parallel workers.
             output_dir: Directory to write results.
+            run_id: Optional identifier for this swarm run.
+            started_at: Optional ISO timestamp for when the run was started.
             progress_callback: Optional callback for progress updates.
 
         Returns:
@@ -304,6 +309,8 @@ class SwarmExecutor:
 
         # Build summary
         summary = SwarmSummary(
+            run_id=run_id or generate_swarm_run_id(),
+            started_at=started_at or datetime.now().isoformat(timespec="seconds"),
             total=len(tasks),
             succeeded=len(completed),
             failed=len(failed),
@@ -342,10 +349,16 @@ def _result_to_dict(result: SwarmResult) -> dict[str, Any]:
     return d
 
 
-def get_default_output_dir() -> Path:
+def get_default_output_dir(run_id: str | None = None) -> Path:
     """Get the default output directory for batch results.
 
-    Returns a timestamped directory under ./batch_results/
+    Returns a timestamped directory under ./batch_results/.
     """
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    return Path.cwd() / "batch_results" / timestamp
+    resolved_run_id = run_id or generate_swarm_run_id()
+    return Path.cwd() / "batch_results" / f"{timestamp}_{resolved_run_id}"
+
+
+def generate_swarm_run_id() -> str:
+    """Generate a compact run ID for swarm executions."""
+    return uuid.uuid4().hex[:8]

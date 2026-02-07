@@ -3,6 +3,7 @@
 import csv
 import json
 from pathlib import Path
+from typing import Any
 
 from deepagents_cli.swarm.types import SwarmTask
 
@@ -51,10 +52,10 @@ def parse_task_file(path: str | Path) -> list[SwarmTask]:
 def _parse_jsonl(path: Path) -> list[SwarmTask]:
     """Parse a JSONL task file.
 
-    Expected format (one JSON object per line):
+    Expected format (one JSON object or string per line):
     {"id": "1", "description": "Task 1"}
     {"id": "2", "description": "Task 2", "type": "analyst"}
-    {"id": "3", "description": "Task 3", "blocked_by": ["1", "2"]}
+    "Task 4"
     """
     tasks: list[SwarmTask] = []
 
@@ -65,11 +66,16 @@ def _parse_jsonl(path: Path) -> list[SwarmTask]:
                 continue
 
             try:
-                data = json.loads(line)
+                raw_data = json.loads(line)
             except json.JSONDecodeError as e:
                 raise TaskFileError(f"Invalid JSON on line {line_num}: {e}")
 
-            task = _validate_and_convert_task(data, line_num)
+            data = _normalize_task_payload(raw_data, line_num)
+            task = _validate_and_convert_task(
+                data,
+                line_num,
+                default_id=f"auto-{line_num}",
+            )
             tasks.append(task)
 
     if not tasks:
@@ -83,10 +89,10 @@ def _parse_csv(path: Path) -> list[SwarmTask]:
     """Parse a CSV task file.
 
     Expected format:
-    id,description,type,blocked_by
+    id,description,type
     1,Task 1,,
     2,Task 2,analyst,
-    3,Task 3,writer,"1,2"
+    3,Task 3,writer
     """
     tasks: list[SwarmTask] = []
 
@@ -96,15 +102,24 @@ def _parse_csv(path: Path) -> list[SwarmTask]:
         if reader.fieldnames is None:
             raise TaskFileError("CSV file has no headers")
 
-        # Check required columns
-        required = {"id", "description"}
-        missing = required - set(reader.fieldnames)
+        # Check required columns (id is optional and auto-generated if missing)
+        required = {"description"}
+        description_aliases = {"task", "prompt"}
+        fieldnames = set(reader.fieldnames)
+        missing = required - fieldnames
+        if missing and fieldnames.intersection(description_aliases):
+            missing = set()
         if missing:
             raise TaskFileError(f"CSV missing required columns: {missing}")
 
         for line_num, row in enumerate(reader, start=2):  # Start at 2 (after header)
             data = _csv_row_to_dict(row)
-            task = _validate_and_convert_task(data, line_num)
+            data = _normalize_task_payload(data, line_num)
+            task = _validate_and_convert_task(
+                data,
+                line_num,
+                default_id=f"auto-{line_num}",
+            )
             tasks.append(task)
 
     if not tasks:
@@ -125,8 +140,11 @@ def _csv_row_to_dict(row: dict[str, str]) -> dict:
         value = value.strip()
 
         if key == "blocked_by":
-            # Parse comma-separated list
-            data[key] = [v.strip() for v in value.split(",") if v.strip()]
+            msg = (
+                "Field 'blocked_by' is not supported in simplified swarm mode. "
+                "All tasks run independently in parallel."
+            )
+            raise TaskFileError(msg)
         elif key == "metadata":
             # Parse JSON for metadata
             try:
@@ -139,21 +157,37 @@ def _csv_row_to_dict(row: dict[str, str]) -> dict:
     return data
 
 
-def _validate_and_convert_task(data: dict, line_num: int) -> SwarmTask:
+def _normalize_task_payload(raw_data: dict[str, Any] | str, line_num: int) -> dict[str, Any]:
+    """Normalize a task payload into canonical dict form."""
+    if isinstance(raw_data, str):
+        return {"description": raw_data}
+    if not isinstance(raw_data, dict):
+        msg = f"Line {line_num}: task entry must be a JSON object or string"
+        raise TaskFileError(msg)
+
+    data = dict(raw_data)
+    if "description" not in data:
+        for alias in ("task", "prompt"):
+            if alias in data:
+                data["description"] = data[alias]
+                break
+    return data
+
+
+def _validate_and_convert_task(
+    data: dict[str, Any], line_num: int, *, default_id: str
+) -> SwarmTask:
     """Validate task data and convert to SwarmTask."""
     # Check required fields
-    if "id" not in data:
-        raise TaskFileError(f"Line {line_num}: missing required field 'id'")
-    if "description" not in data:
+    if "description" not in data or not str(data["description"]).strip():
         raise TaskFileError(f"Line {line_num}: missing required field 'description'")
 
-    # Ensure id is a string
-    task_id = str(data["id"])
+    task_id = str(data.get("id", "")).strip() or default_id
 
     # Build the task
     task: SwarmTask = {
         "id": task_id,
-        "description": str(data["description"]),
+        "description": str(data["description"]).strip(),
     }
 
     # Optional fields
@@ -161,14 +195,11 @@ def _validate_and_convert_task(data: dict, line_num: int) -> SwarmTask:
         task["type"] = str(data["type"])
 
     if "blocked_by" in data:
-        blocked_by = data["blocked_by"]
-        if isinstance(blocked_by, str):
-            # Handle single ID as string
-            task["blocked_by"] = [blocked_by]
-        elif isinstance(blocked_by, list):
-            task["blocked_by"] = [str(b) for b in blocked_by]
-        else:
-            raise TaskFileError(f"Line {line_num}: blocked_by must be a list or string")
+        msg = (
+            f"Line {line_num}: field 'blocked_by' is not supported in simplified swarm mode. "
+            "All tasks run independently in parallel."
+        )
+        raise TaskFileError(msg)
 
     if "metadata" in data:
         if not isinstance(data["metadata"], dict):
@@ -179,18 +210,9 @@ def _validate_and_convert_task(data: dict, line_num: int) -> SwarmTask:
 
 
 def _validate_task_ids(tasks: list[SwarmTask]) -> None:
-    """Validate that all task IDs are unique and blocked_by references exist."""
+    """Validate that all task IDs are unique."""
     task_ids = set()
     for task in tasks:
         if task["id"] in task_ids:
             raise TaskFileError(f"Duplicate task ID: {task['id']}")
         task_ids.add(task["id"])
-
-    # Check blocked_by references
-    for task in tasks:
-        blocked_by = task.get("blocked_by", [])
-        for dep_id in blocked_by:
-            if dep_id not in task_ids:
-                raise TaskFileError(
-                    f"Task '{task['id']}' references non-existent task '{dep_id}' in blocked_by"
-                )

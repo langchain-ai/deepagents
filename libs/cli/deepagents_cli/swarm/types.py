@@ -124,6 +124,8 @@ class SwarmSummary(TypedDict):
     Written to summary.json in the output directory.
     """
 
+    run_id: str
+    started_at: str
     total: int
     succeeded: int
     failed: int

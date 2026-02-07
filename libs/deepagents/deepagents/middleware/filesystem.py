@@ -5,7 +5,8 @@ import base64
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from pathlib import Path
+from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -15,9 +16,10 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.types import Command
+from langgraph.runtime import Runtime
+from langgraph.types import Command, Overwrite
 from typing_extensions import TypedDict
 
 from deepagents.backends import StateBackend
@@ -52,6 +54,8 @@ IMAGE_MEDIA_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
+IMAGE_READING_TOOLS = frozenset({"read_file", "open_image"})
+MAX_INLINE_IMAGE_HISTORY = 6
 
 
 def _detect_model_provider(model_name: str | None) -> str:
@@ -70,43 +74,58 @@ def _detect_model_provider(model_name: str | None) -> str:
 
     if model_lower.startswith("openai:") or "gpt" in model_lower:
         return "openai"
-    elif model_lower.startswith("anthropic:") or "claude" in model_lower:
+    if model_lower.startswith("anthropic:") or "claude" in model_lower:
         return "anthropic"
-    elif model_lower.startswith("google:") or "gemini" in model_lower:
+    if model_lower.startswith("google:") or "gemini" in model_lower:
         return "openai"  # Google uses similar format to OpenAI
-    else:
-        return "anthropic"  # Default to Anthropic format
+    return "anthropic"  # Default to Anthropic format
 
 
 def _create_image_content_block(image_b64: str, media_type: str, provider: str = "anthropic") -> dict:
-    """Create image content block in the appropriate format for the model provider.
+    """Create a standard LangChain ImageContentBlock.
+
+    LangChain chat models normalize this schema into provider-specific payloads.
 
     Args:
-        image_b64: Base64-encoded image data
-        media_type: MIME type (e.g., "image/png")
-        provider: Model provider ("anthropic" or "openai")
+        image_b64: Base64-encoded image data.
+        media_type: MIME type (e.g., ``image/png``).
+        provider: Unused compatibility parameter retained for API stability.
 
     Returns:
-        Content block dict in the provider's expected format
+        Standard image content block.
     """
-    if provider == "openai":
-        # OpenAI format: image_url with data URL
-        return {
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:{media_type};base64,{image_b64}"
-            }
-        }
-    else:
-        # Anthropic format (default)
-        return {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": media_type,
-                "data": image_b64,
-            }
-        }
+    _ = provider  # Kept for backwards-compatible call signature.
+    return {
+        "type": "image",
+        "base64": image_b64,
+        "mime_type": media_type,
+    }
+
+
+def _is_inline_image_block(block: object) -> bool:
+    """Check whether a content block contains inline base64 image bytes."""
+    if not isinstance(block, dict):
+        return False
+
+    block_type = block.get("type")
+
+    # OpenAI-style image block with data URL
+    if block_type == "image_url":
+        image_url = block.get("image_url")
+        if isinstance(image_url, dict):
+            url = image_url.get("url")
+            return isinstance(url, str) and url.startswith("data:image/")
+        return False
+
+    # Anthropic-style image block
+    if block_type == "image":
+        source = block.get("source")
+        if isinstance(source, dict) and source.get("type") == "base64":
+            return True
+        # Also support LangChain standard content blocks: {"type":"image","base64":...}
+        return isinstance(block.get("base64"), str)
+
+    return False
 
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
@@ -251,7 +270,7 @@ LIST_FILES_TOOL_DESCRIPTION = """Lists all files and directories in a given dire
 **Usage:**
 - Requires an absolute path starting with /
 - Returns file and directory names in the specified path
-- Use this before read_file or edit_file to verify file locations"""
+- Use this before read_file, open_image, or edit_file to verify file locations"""
 
 READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
 
@@ -260,7 +279,6 @@ READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
 - Exploring unfamiliar codebases
 - Checking configuration files
 - Reading documentation
-- **Viewing images** (png, jpg, jpeg, gif, webp, bmp)
 - ALWAYS read a file before attempting to edit it
 
 **When NOT to Use:**
@@ -278,10 +296,8 @@ If you need to process these formats, use `execute()` with appropriate command-l
 
 **CRITICAL: You MUST read a file before editing it. The edit tool will fail if you haven't read the file first.**
 
-**Image Support:**
-- Images are returned as visual content you can see and analyze
-- Supported formats: PNG, JPG, JPEG, GIF, WebP
-- Use this to view screenshots, diagrams, charts, or any visual content
+**For image files (png, jpg, jpeg, gif, webp):**
+- Use `open_image(file_path=...)` for visual analysis
 
 **Pagination (IMPORTANT for large text files):**
 - By default, reads up to 100 lines from the beginning
@@ -289,7 +305,6 @@ If you need to process these formats, use `execute()` with appropriate command-l
   - First scan: `read_file(path, limit=100)` - See structure
   - Continue: `read_file(path, offset=100, limit=200)` - Next section
   - Full read: Only when necessary for immediate editing
-- Pagination parameters are ignored for images
 
 **When to paginate:**
 - Files >500 lines
@@ -298,13 +313,31 @@ If you need to process these formats, use `execute()` with appropriate command-l
 
 **Output format:**
 - Text files: cat -n format with line numbers starting at 1
-- Images: Visual content displayed directly
 - Lines >5,000 chars split into continuation lines (5.1, 5.2, etc.)
 - Empty files return a system reminder warning
 
 **Parallel reading:**
 - You can call multiple read_file tools in a single response
 - Read multiple potentially useful files in parallel to save time"""
+
+OPEN_IMAGE_TOOL_DESCRIPTION = """Opens an image file for visual analysis.
+
+**When to Use:**
+- Reading screenshots
+- Analyzing charts, diagrams, and plots
+- Inspecting UI mockups or rendered pages
+- Any task that requires understanding visual pixels
+
+**Supported Formats:**
+- PNG, JPG, JPEG, GIF, WebP
+
+**Parameters:**
+- `file_path`: Absolute path to the image file
+
+**Important:**
+- This tool is for images only
+- For text/code/config files, use `read_file`
+- No pagination parameters are needed"""
 
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
@@ -442,7 +475,7 @@ Usage notes:
   - Commands run in an isolated sandbox environment
   - Returns combined stdout/stderr output with exit code
   - If the output is very large, it may be truncated
-  - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
+  - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file for text files and open_image for image files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
     - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
@@ -456,7 +489,7 @@ Examples:
 
   Bad examples (avoid these):
     - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
-    - execute(command="cat file.txt")  # Use read_file tool instead
+    - execute(command="cat file.txt")  # Use read_file/open_image tools instead
     - execute(command="find . -name '*.py'")  # Use glob tool instead
     - execute(command="grep -r 'pattern' .")  # Use grep tool instead
 
@@ -469,14 +502,15 @@ You have access to these filesystem tools. All file paths must be absolute (star
 
 **Tool Overview:**
 - `ls`: List files in a directory
-- `read_file`: Read file contents (MUST read before editing)
+- `read_file`: Read text file contents (MUST read before editing)
+- `open_image`: Open image files for visual analysis
 - `write_file`: Create new files (prefer edit_file for existing files)
 - `edit_file`: Modify existing files via string replacement
 - `glob`: Find files by pattern (e.g., "**/*.py")
 - `grep`: Search for text within files
 
 **Key Rules:**
-1. ALWAYS read a file before editing it
+1. Use `open_image` for images, `read_file` for text files
 2. Use `glob` to find files, not shell commands like `find`
 3. Use `grep` tool to search content, not shell `grep`
 4. Prefer `edit_file` over `write_file` for existing files
@@ -522,7 +556,7 @@ def _supports_execution(backend: BackendProtocol) -> bool:
 #    matches are potentially more like noise and the LLM should be prompted to narrow
 #    its search criteria instead.
 #
-# 2. Tools with problematic truncation behavior (read_file):
+# 2. Tools with problematic truncation behavior (read_file, open_image):
 #    read_file is tricky to handle as the failure mode here is single long lines
 #    (e.g., imagine a jsonl file with very long payloads on each line). If we try to
 #    truncate the result of read_file, the agent may then attempt to re-read the
@@ -536,6 +570,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "glob",
     "grep",
     "read_file",
+    "open_image",
     "edit_file",
     "write_file",
 )
@@ -586,8 +621,8 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
 class FilesystemMiddleware(AgentMiddleware):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
-    This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
-    `edit_file`, `glob`, and `grep`.
+    This middleware adds filesystem tools to the agent: `ls`, `read_file`,
+    `open_image`, `write_file`, `edit_file`, `glob`, and `grep`.
 
     Files can be stored using any backend that implements the `BackendProtocol`.
 
@@ -671,6 +706,7 @@ class FilesystemMiddleware(AgentMiddleware):
         self.tools = [
             self._create_ls_tool(),
             self._create_read_file_tool(),
+            self._create_open_image_tool(),
             self._create_write_file_tool(),
             self._create_edit_file_tool(),
             self._create_glob_tool(),
@@ -690,6 +726,95 @@ class FilesystemMiddleware(AgentMiddleware):
         if callable(self.backend):
             return self.backend(runtime)
         return self.backend
+
+    @staticmethod
+    def _collect_recent_inline_image_indexes(messages: list[AnyMessage]) -> set[int]:
+        """Return indexes for the most recent inline image tool messages to preserve."""
+        keep_indexes: set[int] = set()
+        kept = 0
+
+        for idx in range(len(messages) - 1, -1, -1):
+            if kept >= MAX_INLINE_IMAGE_HISTORY:
+                break
+
+            message = messages[idx]
+            if not isinstance(message, ToolMessage):
+                continue
+            if message.name not in IMAGE_READING_TOOLS:
+                continue
+            if not isinstance(message.content, list):
+                continue
+            if not any(_is_inline_image_block(block) for block in message.content):
+                continue
+
+            keep_indexes.add(idx)
+            kept += 1
+
+        return keep_indexes
+
+    @staticmethod
+    def _compact_image_tool_message(message: ToolMessage) -> ToolMessage | None:
+        """Replace inline image blocks with a compact text note."""
+        if message.name not in IMAGE_READING_TOOLS or not isinstance(message.content, list):
+            return None
+
+        non_image_blocks: list[object] = []
+        image_block_count = 0
+        for block in message.content:
+            if _is_inline_image_block(block):
+                image_block_count += 1
+            else:
+                non_image_blocks.append(block)
+
+        if image_block_count == 0:
+            return None
+
+        path_hint = ""
+        file_path = (
+            message.additional_kwargs.get("open_image_path")
+            or message.additional_kwargs.get("read_file_path")
+            or message.additional_kwargs.get("image_file_path")
+        )
+        if isinstance(file_path, str) and file_path:
+            path_hint = f" Path: {file_path}."
+
+        compact_note = {
+            "type": "text",
+            "text": (
+                f"[{image_block_count} prior image block(s) omitted from history to preserve context."
+                " Re-run open_image on the same file if you need pixels again."
+                f"{path_hint}]"
+            ),
+        }
+        compact_content = [*non_image_blocks, compact_note]
+        return message.model_copy(update={"content": compact_content})
+
+    def _compact_historical_image_messages(
+        self,
+        messages: list[AnyMessage],
+    ) -> tuple[list[AnyMessage], bool]:
+        """Compact image tool results while preserving only recent inline images."""
+        if not messages:
+            return messages, False
+
+        keep_indexes = self._collect_recent_inline_image_indexes(messages)
+
+        compacted_messages: list[AnyMessage] = []
+        changed = False
+
+        for idx, message in enumerate(messages):
+            if isinstance(message, ToolMessage):
+                if idx in keep_indexes:
+                    compacted_messages.append(message)
+                    continue
+                compacted = self._compact_image_tool_message(message)
+                if compacted is not None:
+                    compacted_messages.append(compacted)
+                    changed = changed or compacted != message
+                    continue
+            compacted_messages.append(message)
+
+        return compacted_messages, changed
 
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
@@ -743,31 +868,15 @@ class FilesystemMiddleware(AgentMiddleware):
             validated_path = _validate_path(file_path)
 
             # Check if this is an image file
-            ext = os.path.splitext(validated_path)[1].lower()
+            ext = Path(validated_path).suffix.lower()
             if ext in IMAGE_EXTENSIONS:
-                # Download image as raw bytes
-                responses = resolved_backend.download_files([validated_path])
-                if responses and responses[0].content is not None:
-                    image_bytes = responses[0].content
-                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-                    # Create image content block for the appropriate provider
-                    image_block = _create_image_content_block(image_b64, media_type, model_provider)
-                    # Return multimodal content via Command
-                    return Command(
-                        update={
-                            "messages": [
-                                ToolMessage(
-                                    content=[image_block],
-                                    tool_call_id=runtime.tool_call_id,
-                                )
-                            ],
-                        }
-                    )
-                elif responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                else:
-                    return "Error reading image: unknown error"
+                return self._load_image_sync(
+                    resolved_backend=resolved_backend,
+                    validated_path=validated_path,
+                    tool_call_id=runtime.tool_call_id,
+                    tool_name="read_file",
+                    model_provider=model_provider,
+                )
 
             # Text file handling (original logic)
             result = resolved_backend.read(validated_path, offset=offset, limit=limit)
@@ -798,31 +907,15 @@ class FilesystemMiddleware(AgentMiddleware):
             validated_path = _validate_path(file_path)
 
             # Check if this is an image file
-            ext = os.path.splitext(validated_path)[1].lower()
+            ext = Path(validated_path).suffix.lower()
             if ext in IMAGE_EXTENSIONS:
-                # Download image as raw bytes
-                responses = await resolved_backend.adownload_files([validated_path])
-                if responses and responses[0].content is not None:
-                    image_bytes = responses[0].content
-                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-                    # Create image content block for the appropriate provider
-                    image_block = _create_image_content_block(image_b64, media_type, model_provider)
-                    # Return multimodal content via Command
-                    return Command(
-                        update={
-                            "messages": [
-                                ToolMessage(
-                                    content=[image_block],
-                                    tool_call_id=runtime.tool_call_id,
-                                )
-                            ],
-                        }
-                    )
-                elif responses and responses[0].error:
-                    return f"Error reading image: {responses[0].error}"
-                else:
-                    return "Error reading image: unknown error"
+                return await self._load_image_async(
+                    resolved_backend=resolved_backend,
+                    validated_path=validated_path,
+                    tool_call_id=runtime.tool_call_id,
+                    tool_name="read_file",
+                    model_provider=model_provider,
+                )
 
             # Text file handling (original logic)
             result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
@@ -848,6 +941,138 @@ class FilesystemMiddleware(AgentMiddleware):
             func=sync_read_file,
             coroutine=async_read_file,
         )
+
+    def _create_open_image_tool(self) -> BaseTool:
+        """Create the open_image tool."""
+        tool_description = self._custom_tool_descriptions.get("open_image") or OPEN_IMAGE_TOOL_DESCRIPTION
+        model_provider = self._model_provider
+
+        def sync_open_image(
+            file_path: Annotated[str, "Absolute path to the image file to open. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> Command | str:
+            """Synchronous wrapper for open_image tool."""
+            resolved_backend = self._get_backend(runtime)
+            validated_path = _validate_path(file_path)
+            ext = Path(validated_path).suffix.lower()
+            if ext not in IMAGE_EXTENSIONS:
+                return (
+                    "Error opening image: unsupported extension for open_image. "
+                    "Use open_image only for .png/.jpg/.jpeg/.gif/.webp files."
+                )
+            return self._load_image_sync(
+                resolved_backend=resolved_backend,
+                validated_path=validated_path,
+                tool_call_id=runtime.tool_call_id,
+                tool_name="open_image",
+                model_provider=model_provider,
+            )
+
+        async def async_open_image(
+            file_path: Annotated[str, "Absolute path to the image file to open. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> Command | str:
+            """Asynchronous wrapper for open_image tool."""
+            resolved_backend = self._get_backend(runtime)
+            validated_path = _validate_path(file_path)
+            ext = Path(validated_path).suffix.lower()
+            if ext not in IMAGE_EXTENSIONS:
+                return (
+                    "Error opening image: unsupported extension for open_image. "
+                    "Use open_image only for .png/.jpg/.jpeg/.gif/.webp files."
+                )
+            return await self._load_image_async(
+                resolved_backend=resolved_backend,
+                validated_path=validated_path,
+                tool_call_id=runtime.tool_call_id,
+                tool_name="open_image",
+                model_provider=model_provider,
+            )
+
+        return StructuredTool.from_function(
+            name="open_image",
+            description=tool_description,
+            func=sync_open_image,
+            coroutine=async_open_image,
+        )
+
+    @staticmethod
+    def _build_image_tool_message(
+        *,
+        image_bytes: bytes,
+        validated_path: str,
+        tool_call_id: str | None,
+        tool_name: str,
+        model_provider: str,
+    ) -> Command:
+        """Build a tool message command containing a normalized image block."""
+        ext = Path(validated_path).suffix.lower()
+        media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
+        image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+        image_block = _create_image_content_block(image_b64, media_type, model_provider)
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=[image_block],
+                        name=tool_name,
+                        tool_call_id=tool_call_id,
+                        additional_kwargs={
+                            "image_file_path": validated_path,
+                            "image_media_type": media_type,
+                            "read_file_path": validated_path,
+                            "open_image_path": validated_path,
+                        },
+                    )
+                ],
+            }
+        )
+
+    def _load_image_sync(
+        self,
+        *,
+        resolved_backend: BackendProtocol,
+        validated_path: str,
+        tool_call_id: str | None,
+        tool_name: str,
+        model_provider: str,
+    ) -> Command | str:
+        """Load an image from backend and return a tool message command."""
+        responses = resolved_backend.download_files([validated_path])
+        if responses and responses[0].content is not None:
+            return self._build_image_tool_message(
+                image_bytes=responses[0].content,
+                validated_path=validated_path,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                model_provider=model_provider,
+            )
+        if responses and responses[0].error:
+            return f"Error reading image: {responses[0].error}"
+        return "Error reading image: unknown error"
+
+    async def _load_image_async(
+        self,
+        *,
+        resolved_backend: BackendProtocol,
+        validated_path: str,
+        tool_call_id: str | None,
+        tool_name: str,
+        model_provider: str,
+    ) -> Command | str:
+        """Async variant for loading an image from backend."""
+        responses = await resolved_backend.adownload_files([validated_path])
+        if responses and responses[0].content is not None:
+            return self._build_image_tool_message(
+                image_bytes=responses[0].content,
+                validated_path=validated_path,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                model_provider=model_provider,
+            )
+        if responses and responses[0].error:
+            return f"Error reading image: {responses[0].error}"
+        return "Error reading image: unknown error"
 
     def _create_write_file_tool(self) -> BaseTool:
         """Create the write_file tool."""
@@ -1186,6 +1411,18 @@ class FilesystemMiddleware(AgentMiddleware):
 
         return handler(request)
 
+    def before_model(
+        self,
+        state: FilesystemState,
+        runtime: Runtime[Any],  # noqa: ARG002
+    ) -> dict[str, Any] | None:
+        """Compact historical inline image blocks before model invocation."""
+        messages = state.get("messages", [])
+        compacted_messages, changed = self._compact_historical_image_messages(messages)
+        if not changed:
+            return None
+        return {"messages": Overwrite(compacted_messages)}
+
     async def awrap_model_call(
         self,
         request: ModelRequest,
@@ -1233,6 +1470,18 @@ class FilesystemMiddleware(AgentMiddleware):
             request = request.override(system_message=new_system_message)
 
         return await handler(request)
+
+    async def abefore_model(
+        self,
+        state: FilesystemState,
+        runtime: Runtime[Any],  # noqa: ARG002
+    ) -> dict[str, Any] | None:
+        """Async variant of before_model for consistent compaction behavior."""
+        messages = state.get("messages", [])
+        compacted_messages, changed = self._compact_historical_image_messages(messages)
+        if not changed:
+            return None
+        return {"messages": Overwrite(compacted_messages)}
 
     def _process_large_message(
         self,

@@ -32,7 +32,9 @@ of all evicted messages.
 
 from __future__ import annotations
 
+import base64
 import logging
+import shlex
 import uuid
 import warnings
 from datetime import UTC, datetime
@@ -62,6 +64,7 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 logger = logging.getLogger(__name__)
+_APPEND_CHUNK_CHARS = 32_000
 
 
 class TruncateArgsSettings(TypedDict, total=False):
@@ -481,6 +484,12 @@ A condensed summary follows:
         timestamp = datetime.now(UTC).isoformat()
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
 
+        # For sandbox-like backends, append incrementally via execute to avoid
+        # reading/re-writing the full history file as it grows.
+        if self._append_section_via_execute(backend, path, new_section):
+            logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
+            return path
+
         # Read existing content (if any) and append
         # Note: We use download_files() instead of read() because read() returns
         # line-numbered content (for LLM consumption), but edit() expects raw content.
@@ -524,6 +533,76 @@ A condensed summary follows:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
             return path
 
+    @staticmethod
+    def _iter_text_chunks(text: str, chunk_size: int = _APPEND_CHUNK_CHARS) -> list[str]:
+        """Split text into bounded chunks for safer command execution payloads."""
+        if not text:
+            return [""]
+        return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+    @staticmethod
+    def _build_append_command(path: str, chunk: str, *, create_file: bool) -> str:
+        """Build a shell command that appends a text chunk to `path`."""
+        safe_path = shlex.quote(path)
+        marker = f"__DEEPAGENTS_HISTORY_{uuid.uuid4().hex}__"
+        chunk_b64 = base64.b64encode(chunk.encode("utf-8")).decode("ascii")
+
+        setup = ""
+        if create_file:
+            setup = f"""\
+parent_dir=$(dirname {safe_path})
+mkdir -p "$parent_dir" 2>/dev/null || true
+touch {safe_path}
+"""
+
+        return f"""\
+{setup}base64 -d <<'{marker}' >> {safe_path}
+{chunk_b64}
+{marker}
+"""
+
+    def _append_section_via_execute(
+        self,
+        backend: BackendProtocol,
+        path: str,
+        section: str,
+    ) -> bool:
+        """Append section via backend `execute` if available."""
+        execute_fn = getattr(backend, "execute", None)
+        if not callable(execute_fn):
+            return False
+
+        chunks = self._iter_text_chunks(section)
+        for i, chunk in enumerate(chunks):
+            cmd = self._build_append_command(path, chunk, create_file=(i == 0))
+            try:
+                result = execute_fn(cmd)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "Exception appending history via execute to %s (chunk %d/%d): %s: %s",
+                    path,
+                    i + 1,
+                    len(chunks),
+                    type(e).__name__,
+                    e,
+                )
+                return False
+
+            exit_code = getattr(result, "exit_code", None)
+            if exit_code != 0:
+                output = getattr(result, "output", "")
+                logger.debug(
+                    "Failed appending history via execute to %s (chunk %d/%d): exit=%s output=%s",
+                    path,
+                    i + 1,
+                    len(chunks),
+                    exit_code,
+                    str(output)[:500],
+                )
+                return False
+
+        return True
+
     async def _aoffload_to_backend(
         self,
         backend: BackendProtocol,
@@ -551,6 +630,12 @@ A condensed summary follows:
 
         timestamp = datetime.now(UTC).isoformat()
         new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
+
+        # For sandbox-like backends, append incrementally via execute to avoid
+        # reading/re-writing the full history file as it grows.
+        if await self._aappend_section_via_execute(backend, path, new_section):
+            logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
+            return path
 
         # Read existing content (if any) and append
         # Note: We use adownload_files() instead of aread() because read() returns
@@ -596,6 +681,48 @@ A condensed summary follows:
         else:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
             return path
+
+    async def _aappend_section_via_execute(
+        self,
+        backend: BackendProtocol,
+        path: str,
+        section: str,
+    ) -> bool:
+        """Append section via backend `aexecute` if available."""
+        execute_fn = getattr(backend, "aexecute", None)
+        if not callable(execute_fn):
+            return False
+
+        chunks = self._iter_text_chunks(section)
+        for i, chunk in enumerate(chunks):
+            cmd = self._build_append_command(path, chunk, create_file=(i == 0))
+            try:
+                result = await execute_fn(cmd)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "Exception appending history via aexecute to %s (chunk %d/%d): %s: %s",
+                    path,
+                    i + 1,
+                    len(chunks),
+                    type(e).__name__,
+                    e,
+                )
+                return False
+
+            exit_code = getattr(result, "exit_code", None)
+            if exit_code != 0:
+                output = getattr(result, "output", "")
+                logger.debug(
+                    "Failed appending history via aexecute to %s (chunk %d/%d): exit=%s output=%s",
+                    path,
+                    i + 1,
+                    len(chunks),
+                    exit_code,
+                    str(output)[:500],
+                )
+                return False
+
+        return True
 
     @override
     def before_model(

@@ -68,7 +68,7 @@ def create_deep_agent(
     By default, this agent has access to the following tools:
 
     - `write_todos`: manage a todo list
-    - `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`: file operations
+    - `ls`, `read_file`, `open_image`, `write_file`, `edit_file`, `glob`, `grep`: file operations
     - `execute`: run shell commands
     - `task`: call subagents
 
@@ -147,11 +147,11 @@ def create_deep_agent(
         and "max_input_tokens" in model.profile
         and isinstance(model.profile["max_input_tokens"], int)
     ):
-        # Trigger at 70% to leave headroom for large tool outputs
-        trigger = ("fraction", 0.70)
+        # Trigger at 75% to preserve more full-context headroom before summarizing
+        trigger = ("fraction", 0.75)
         keep = ("fraction", 0.10)
         truncate_args_settings = {
-            "trigger": ("fraction", 0.70),
+            "trigger": ("fraction", 0.75),
             "keep": ("fraction", 0.10),
         }
     else:

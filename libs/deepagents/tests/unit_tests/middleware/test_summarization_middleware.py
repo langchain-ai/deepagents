@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
+from deepagents.backends.protocol import BackendProtocol, EditResult, ExecuteResponse, FileDownloadResponse, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 if TYPE_CHECKING:
@@ -182,6 +182,28 @@ class MockBackend(BackendProtocol):
         return self.edit(path, old_string, new_string, replace_all)
 
 
+class MockSandboxBackend(MockBackend):
+    """Mock backend that also exposes execute/aexecute for append-path testing."""
+
+    def __init__(self, *, execute_should_fail: bool = False, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.execute_calls: list[str] = []
+        self.execute_should_fail = execute_should_fail
+
+    def execute(self, command: str) -> ExecuteResponse:
+        self.execute_calls.append(command)
+        if self.execute_should_fail:
+            return ExecuteResponse(output="mock execute failure", exit_code=1)
+        return ExecuteResponse(output="", exit_code=0)
+
+    async def aexecute(self, command: str) -> ExecuteResponse:
+        return self.execute(command)
+
+    @property
+    def id(self) -> str:
+        return "mock-sandbox"
+
+
 def make_mock_runtime() -> MagicMock:
     """Create a mock `Runtime`.
 
@@ -323,6 +345,54 @@ class TestOffloadingBasic:
         assert "## Summarized at 2024-01-01T00:00:00Z" in new_string
         expected_section_count = 2  # One existing + one new summarization section
         assert new_string.count("## Summarized at") == expected_section_count
+
+    def test_offload_prefers_execute_append_when_available(self) -> None:
+        """Test that sandbox backends append via execute instead of read/edit/write."""
+        backend = MockSandboxBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            result = middleware.before_model(state, runtime)
+
+        assert result is not None
+        assert len(backend.execute_calls) >= 1
+        assert len(backend.write_calls) == 0
+        assert len(backend.edit_calls) == 0
+        assert "/conversation_history/test-thread-123.md" in backend.execute_calls[0]
+
+    def test_offload_falls_back_to_write_when_execute_append_fails(self) -> None:
+        """Test fallback to legacy write path when execute append fails."""
+        backend = MockSandboxBackend(execute_should_fail=True)
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        result = middleware.before_model(state, runtime)
+
+        assert result is not None
+        assert len(backend.execute_calls) >= 1
+        # Fallback path should still offload via write when execute append fails.
+        assert len(backend.write_calls) == 1
 
     def test_typical_tool_heavy_conversation(self) -> None:
         """Test with a realistic tool-heavy conversation pattern.
@@ -779,6 +849,32 @@ class TestAsyncBehavior:
         # Should still produce summarization result despite backend failure
         assert result is not None
         assert "messages" in result
+
+    @pytest.mark.anyio
+    async def test_async_offload_prefers_aexecute_append_when_available(self) -> None:
+        """Test that async offload prefers aexecute append path for sandbox backends."""
+        backend = MockSandboxBackend()
+        mock_model = make_mock_model()
+        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            result = await middleware.abefore_model(state, runtime)
+
+        assert result is not None
+        assert len(backend.execute_calls) >= 1
+        assert len(backend.write_calls) == 0
+        assert len(backend.edit_calls) == 0
 
 
 class TestBackendFactoryInvocation:

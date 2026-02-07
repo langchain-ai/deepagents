@@ -11,6 +11,7 @@ def assert_all_deepagent_qualities(agent):
     assert "write_todos" in agent.nodes["tools"].bound._tools_by_name.keys()
     assert "ls" in agent.nodes["tools"].bound._tools_by_name.keys()
     assert "read_file" in agent.nodes["tools"].bound._tools_by_name.keys()
+    assert "open_image" in agent.nodes["tools"].bound._tools_by_name.keys()
     assert "write_file" in agent.nodes["tools"].bound._tools_by_name.keys()
     assert "edit_file" in agent.nodes["tools"].bound._tools_by_name.keys()
     assert "task" in agent.nodes["tools"].bound._tools_by_name.keys()

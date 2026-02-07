@@ -23,6 +23,7 @@ class TestFilesystemToolSchemas:
         expected_tools = {
             "ls": ["path"],
             "read_file": ["file_path", "offset", "limit"],
+            "open_image": ["file_path"],
             "write_file": ["file_path", "content"],
             "edit_file": ["file_path", "old_string", "new_string", "replace_all"],
             "glob": ["pattern", "path"],

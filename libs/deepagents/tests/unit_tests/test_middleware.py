@@ -4,6 +4,7 @@ from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import (
     AIMessage,
+    AnyMessage,
     HumanMessage,
     SystemMessage,
     ToolCall,
@@ -44,6 +45,7 @@ class TestAddMiddleware:
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
         assert "read_file" in agent_tools
+        assert "open_image" in agent_tools
         assert "write_file" in agent_tools
         assert "edit_file" in agent_tools
         assert "glob" in agent_tools
@@ -61,6 +63,7 @@ class TestAddMiddleware:
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
         assert "read_file" in agent_tools
+        assert "open_image" in agent_tools
         assert "write_file" in agent_tools
         assert "edit_file" in agent_tools
         assert "glob" in agent_tools
@@ -73,27 +76,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including open_image and execute
 
     def test_init_with_composite_backend(self):
         backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
         middleware = FilesystemMiddleware(backend=backend_factory)
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including open_image and execute
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including open_image and execute
 
     def test_init_custom_system_prompt_with_composite(self):
         backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
         middleware = FilesystemMiddleware(backend=backend_factory, system_prompt="Custom system prompt")
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including open_image and execute
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -1128,6 +1131,179 @@ class TestFilesystemMiddleware:
         # Should contain both blocks in the stringified output
         assert "'type': 'text'" in file_text
         assert "'type': 'image'" in file_text
+
+    def test_compact_historical_read_file_images_keeps_last_six(self):
+        """Compaction should preserve the six most recent inline image payloads."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+
+        messages: list[AnyMessage] = [HumanMessage(content="start")]
+        for i in range(7):
+            call_id = f"call_{i}"
+            path = f"/app/frames/frame_{i:03d}.jpg"
+            messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": path},
+                            "id": call_id,
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            )
+            messages.append(
+                ToolMessage(
+                    content=[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,DATA{i}"}}],
+                    tool_call_id=call_id,
+                    name="read_file",
+                    additional_kwargs={"read_file_path": path},
+                )
+            )
+
+        compacted, changed = middleware._compact_historical_image_messages(messages)
+
+        assert changed is True
+        compacted_oldest = compacted[2]
+        assert isinstance(compacted_oldest, ToolMessage)
+        assert "data:image/jpeg;base64,DATA0" not in str(compacted_oldest.content)
+        assert "omitted from history" in str(compacted_oldest.content)
+        assert "/app/frames/frame_000.jpg" in str(compacted_oldest.content)
+
+        for i in range(1, 7):
+            tool_idx = 2 + (i * 2)
+            kept_message = compacted[tool_idx]
+            assert isinstance(kept_message, ToolMessage)
+            assert f"data:image/jpeg;base64,DATA{i}" in str(kept_message.content)
+
+    def test_compact_historical_read_file_images_skips_compaction_at_six(self):
+        """No compaction should happen when there are six or fewer inline images."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        messages: list[AnyMessage] = [HumanMessage(content="start")]
+        for i in range(6):
+            call_id = f"call_six_{i}"
+            path = f"/app/frames/frame_six_{i:03d}.jpg"
+            messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "read_file", "args": {"file_path": path}, "id": call_id, "type": "tool_call"}],
+                )
+            )
+            messages.append(
+                ToolMessage(
+                    content=[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,SIX{i}"}}],
+                    tool_call_id=call_id,
+                    name="read_file",
+                    additional_kwargs={"read_file_path": path},
+                )
+            )
+
+        compacted, changed = middleware._compact_historical_image_messages(messages)
+        assert changed is False
+        assert compacted == messages
+
+    def test_compact_historical_read_file_images_handles_anthropic_blocks(self):
+        """Compaction should also work for Anthropic-style image source blocks."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        messages: list[AnyMessage] = [HumanMessage(content="start")]
+        for i in range(7):
+            call_id = f"call_a_{i}"
+            path = f"/app/frames/frame_a_{i:03d}.jpg"
+            messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": path},
+                            "id": call_id,
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            )
+            messages.append(
+                ToolMessage(
+                    content=[
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": f"PAYLOAD{i}",
+                            },
+                        }
+                    ],
+                    tool_call_id=call_id,
+                    name="read_file",
+                    additional_kwargs={"read_file_path": path},
+                )
+            )
+        compacted, changed = middleware._compact_historical_image_messages(messages)
+        assert changed is True
+        assert "source" not in str(compacted[2].content)
+        assert "omitted from history" in str(compacted[2].content)
+
+    def test_compact_historical_read_file_images_keeps_last_six_in_single_batch(self):
+        """When a single batch returns many images, keep only the newest six inline."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+
+        latest_ai = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "read_file", "args": {"file_path": f"/app/frames/frame_{i:03d}.jpg"}, "id": f"call_new_{i}", "type": "tool_call"}
+                for i in range(7)
+            ],
+        )
+        latest_tools = [
+            ToolMessage(
+                content=[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,IMAGE{i}"}}],
+                tool_call_id=f"call_new_{i}",
+                name="read_file",
+                additional_kwargs={"read_file_path": f"/app/frames/frame_{i:03d}.jpg"},
+            )
+            for i in range(7)
+        ]
+
+        compacted, changed = middleware._compact_historical_image_messages(
+            [HumanMessage(content="start"), latest_ai, *latest_tools]
+        )
+
+        assert changed is True
+        assert "data:image/jpeg;base64,IMAGE0" not in str(compacted[2].content)
+        assert "omitted from history" in str(compacted[2].content)
+        for i in range(1, 7):
+            assert f"data:image/jpeg;base64,IMAGE{i}" in str(compacted[2 + i].content)
+
+    def test_compact_historical_open_image_messages(self):
+        """open_image payloads should be compacted with the same keep-last-six policy."""
+        middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
+        messages: list[AnyMessage] = [HumanMessage(content="start")]
+        for i in range(7):
+            call_id = f"call_open_{i}"
+            path = f"/app/frames/open_{i:03d}.jpg"
+            messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "open_image", "args": {"file_path": path}, "id": call_id, "type": "tool_call"}],
+                )
+            )
+            messages.append(
+                ToolMessage(
+                    content=[{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,OPEN{i}"}}],
+                    tool_call_id=call_id,
+                    name="open_image",
+                    additional_kwargs={"open_image_path": path},
+                )
+            )
+
+        compacted, changed = middleware._compact_historical_image_messages(messages)
+        assert changed is True
+        assert "data:image/jpeg;base64,OPEN0" not in str(compacted[2].content)
+        assert "omitted from history" in str(compacted[2].content)
+        for i in range(1, 7):
+            assert f"data:image/jpeg;base64,OPEN{i}" in str(compacted[2 + (i * 2)].content)
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

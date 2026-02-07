@@ -23,6 +23,8 @@ from deepagents.middleware.skills import (
     _list_skills as list_skills_from_backend,
 )
 
+from deepagents_cli._version import __version__ as _cli_version
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,9 +90,16 @@ def list_skills(
                 backend=built_in_backend, source_path="."
             )
             for skill in built_in_skills:
+                # Inject the installed CLI version into built-in skill metadata
+                # so consumers can see which version shipped the skill.
+                enriched_metadata = {
+                    **skill["metadata"],
+                    "deepagents-cli-version": _cli_version,
+                }
                 # cast(): type checkers can't infer TypedDict from spread syntax
                 extended_skill = cast(
-                    "ExtendedSkillMetadata", {**skill, "source": "built-in"}
+                    "ExtendedSkillMetadata",
+                    {**skill, "source": "built-in", "metadata": enriched_metadata},
                 )
                 all_skills[skill["name"]] = extended_skill
         except OSError:

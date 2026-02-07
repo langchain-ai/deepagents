@@ -144,16 +144,7 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
     elif isinstance(model, str):
-        if model.startswith("openai:"):
-            # Use Responses API by default. To use chat completions, use
-            # `model=init_chat_model("openai:...")`
-            # To enable data retention with the Responses API, use
-            # `model=init_chat_model("openai:...", use_responses_api=True, store=True)``
-            model_init_params: dict = {"use_responses_api": True, "store": False}
-        else:
-            model_init_params = {}
-
-        model = init_chat_model(model, **model_init_params)
+        model = init_chat_model(model)
 
     # Compute summarization defaults based on model profile
     summarization_defaults = _compute_summarization_defaults(model)

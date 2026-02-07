@@ -10,7 +10,13 @@ from rich.style import Style
 from rich.text import Text
 from textual.widgets import Static
 
-from deepagents_cli.config import _is_editable_install, get_banner, get_glyphs, settings
+from deepagents_cli.config import (
+    COLORS,
+    _is_editable_install,
+    get_banner,
+    get_glyphs,
+    settings,
+)
 
 
 def _fetch_project_url(project_name: str) -> str | None:
@@ -20,7 +26,8 @@ def _fetch_project_url(project_name: str) -> str | None:
         Project URL string if found, None otherwise.
     """
     try:
-        from langsmith import Client
+        # Optional dep
+        from langsmith import Client  # noqa: PLC0415
 
         project = Client().read_project(project_name=project_name)
     except (OSError, ValueError, RuntimeError):
@@ -47,7 +54,8 @@ class WelcomeBanner(Static):
             thread_id: Optional thread ID to display in the banner.
             **kwargs: Additional arguments passed to parent.
         """
-        self._thread_id: str | None = thread_id
+        # Avoid collision with Widget._thread_id (Textual internal int)
+        self._cli_thread_id: str | None = thread_id
         self._project_name: str | None = None
 
         langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
@@ -88,12 +96,21 @@ class WelcomeBanner(Static):
     def _build_banner(self, project_url: str | None = None) -> Text:
         """Build the banner rich text.
 
+        When a `project_url` is provided and a thread ID is set, the thread ID
+        is rendered as a clickable hyperlink to the LangSmith thread view.
+
+        Args:
+            project_url: LangSmith project URL used for linking the project
+                name and thread ID. When `None`, text is rendered without links.
+
         Returns:
             Rich Text object containing the formatted banner.
         """
         banner = Text()
-        # Use orange for local install, green for production
-        banner_color = "#f97316" if _is_editable_install() else "#10b981"
+        # Use orange for local, green for production
+        banner_color = (
+            COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
+        )
         banner.append(get_banner() + "\n", style=Style(bold=True, color=banner_color))
 
         if self._project_name:
@@ -108,10 +125,21 @@ class WelcomeBanner(Static):
                 banner.append(f"'{self._project_name}'", style="cyan")
             banner.append("\n")
 
-        if self._thread_id:
-            banner.append(f"Thread: {self._thread_id}\n", style="dim")
+        if self._cli_thread_id:
+            if project_url:
+                thread_url = f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
+                thread_line = Text.assemble(
+                    ("Thread: ", "dim"),
+                    (self._cli_thread_id, Style(dim=True, link=thread_url)),
+                    ("\n", "dim"),
+                )
+                banner.append_text(thread_line)
+            else:
+                banner.append(f"Thread: {self._cli_thread_id}\n", style="dim")
 
-        banner.append("Ready to code! What would you like to build?\n", style="#10b981")
+        banner.append(
+            "Ready to code! What would you like to build?\n", style=COLORS["primary"]
+        )
         bullet = get_glyphs().bullet
         banner.append(
             f"Enter send {bullet} Ctrl+J newline {bullet} @ files {bullet} / commands",

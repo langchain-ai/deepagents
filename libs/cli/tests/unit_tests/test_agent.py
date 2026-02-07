@@ -13,7 +13,6 @@ from deepagents_cli.agent import (
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
-    _format_shell_description,
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
@@ -262,27 +261,6 @@ def test_format_task_description_truncates_long_description():
     assert len(description) < len(long_description) + 300
 
 
-def test_format_shell_description():
-    """Test shell command description formatting."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "shell",
-            "args": {
-                "command": "ls -la /tmp",
-            },
-            "id": "call-11",
-        },
-    )
-
-    description = _format_shell_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Shell Command: ls -la /tmp" in description
-    assert "Working Directory:" in description
-
-
 def test_format_execute_description():
     """Test execute command description formatting."""
     tool_call = cast(
@@ -301,7 +279,7 @@ def test_format_execute_description():
     )
 
     assert "Execute Command: python script.py" in description
-    assert "Location: Remote Sandbox" in description
+    assert "Working Directory:" in description
 
 
 class TestGetSystemPromptModelIdentity:

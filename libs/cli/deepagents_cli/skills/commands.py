@@ -157,8 +157,12 @@ def _list(agent: str, *, project: bool = False) -> None:
         if not skills:
             console.print("[yellow]No skills found.[/yellow]")
             console.print(
-                "[dim]Skills will be created in ~/.deepagents/agent/skills/ "
-                "when you add them.[/dim]",
+                "[dim]Skills are loaded from these directories "
+                "(lowest to highest precedence):\n"
+                "  1. ~/.deepagents/<agent>/skills/   (user, deepagents alias)\n"
+                "  2. ~/.agents/skills/               (user)\n"
+                "  3. .deepagents/skills/             (project, deepagents alias)\n"
+                "  4. .agents/skills/                 (project)[/dim]",
                 style=COLORS["dim"],
             )
             console.print(
@@ -201,6 +205,76 @@ def _list(agent: str, *, project: bool = False) -> None:
             console.print(f"    {skill['description']}", style=COLORS["dim"])
             console.print(f"    Location: {skill_path.parent}/", style=COLORS["dim"])
             console.print()
+
+
+def _generate_template(skill_name: str) -> str:
+    """Generate a `SKILL.md` template for a new skill.
+
+    The template follows the Agent Skills spec
+    (https://agentskills.io/specification) and the skill-creator guidance:
+    - Description includes "when to use" trigger information (not the body)
+    - Body contains only instructions loaded after the skill triggers
+
+    Args:
+        skill_name: Name of the skill (used in frontmatter and heading).
+
+    Returns:
+        Complete `SKILL.md` content with YAML frontmatter and markdown body.
+    """
+    title = skill_name.title().replace("-", " ")
+    description = (
+        "TODO: Explain what this skill does and when to use it. "
+        "Include specific triggers — scenarios, file types, or phrases "
+        "that should activate this skill. Example: 'Create and edit PDF "
+        "documents. Use when the user asks to merge, split, fill, or "
+        "annotate PDF files.'"
+    )
+    return f"""---
+name: {skill_name}
+description: "{description}"
+# Optional fields per Agent Skills spec:
+# license: Apache-2.0
+# compatibility: Designed for deepagents CLI
+# metadata:
+#   author: your-org
+#   version: "1.0"
+# allowed-tools: Bash(git:*) Read
+---
+
+# {title}
+
+## Overview
+
+[TODO: 1-2 sentences explaining what this skill enables]
+
+## Instructions
+
+### Step 1: [First Action]
+[Explain what to do first]
+
+### Step 2: [Second Action]
+[Explain what to do next]
+
+### Step 3: [Final Action]
+[Explain how to complete the task]
+
+## Best Practices
+
+- [Best practice 1]
+- [Best practice 2]
+- [Best practice 3]
+
+## Examples
+
+### Example 1: [Scenario Name]
+
+**User Request:** "[Example user request]"
+
+**Approach:**
+1. [Step-by-step breakdown]
+2. [Using tools and commands]
+3. [Expected outcome]
+"""
 
 
 def _create(skill_name: str, agent: str, project: bool = False) -> None:
@@ -262,82 +336,7 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
     # Create skill directory
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create template SKILL.md (per Agent Skills spec: https://agentskills.io/specification)
-    template = f"""---
-name: {skill_name}
-description: Brief description of what this skill does and when to use it.
-# Optional fields per Agent Skills spec:
-# license: Apache-2.0
-# compatibility: Designed for deepagents CLI
-# metadata:
-#   author: your-org
-#   version: "1.0"
-# allowed-tools: Bash(git:*) Read
----
-
-# {skill_name.title().replace("-", " ")} Skill
-
-## Description
-
-[Provide a detailed explanation of what this skill does and when it should be used]
-
-## When to Use
-
-- [Scenario 1: When the user asks...]
-- [Scenario 2: When you need to...]
-- [Scenario 3: When the task involves...]
-
-## How to Use
-
-### Step 1: [First Action]
-[Explain what to do first]
-
-### Step 2: [Second Action]
-[Explain what to do next]
-
-### Step 3: [Final Action]
-[Explain how to complete the task]
-
-## Best Practices
-
-- [Best practice 1]
-- [Best practice 2]
-- [Best practice 3]
-
-## Supporting Files
-
-This skill directory can include supporting files referenced in the instructions:
-- `helper.py` - Python scripts for automation
-- `config.json` - Configuration files
-- `reference.md` - Additional reference documentation
-
-## Examples
-
-### Example 1: [Scenario Name]
-
-**User Request:** "[Example user request]"
-
-**Approach:**
-1. [Step-by-step breakdown]
-2. [Using tools and commands]
-3. [Expected outcome]
-
-### Example 2: [Another Scenario]
-
-**User Request:** "[Another example]"
-
-**Approach:**
-1. [Different approach]
-2. [Relevant commands]
-3. [Expected result]
-
-## Notes
-
-- [Additional tips, warnings, or context]
-- [Known limitations or edge cases]
-- [Links to external resources if helpful]
-"""
-
+    template = _generate_template(skill_name)
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text(template)
 
@@ -450,10 +449,22 @@ def setup_skills_parser(
     Returns:
         The skills subparser for argument handling.
     """
+    skills_epilog = """\
+skill directories (lowest to highest precedence):
+  1. ~/.deepagents/<agent>/skills/   user skills (deepagents alias)
+  2. ~/.agents/skills/               user skills
+  3. .deepagents/skills/             project skills (deepagents alias)
+  4. .agents/skills/                 project skills
+
+When two directories contain a skill with the same name, the
+higher-precedence version wins. Project skills override user skills.
+"""
     skills_parser = subparsers.add_parser(
         "skills",
         help="Manage agent skills",
-        description="Manage agent skills - create, list, and view skill information",
+        description="Manage agent skills - create, list, and view skill information.",
+        epilog=skills_epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     skills_subparsers = skills_parser.add_subparsers(
         dest="skills_command", help="Skills command"
@@ -463,7 +474,10 @@ def setup_skills_parser(
     list_parser = skills_subparsers.add_parser(
         "list",
         help="List all available skills",
-        description="List all available skills",
+        description=(
+            "List skills from all four skill directories "
+            "(user, user alias, project, project alias)."
+        ),
     )
     list_parser.add_argument(
         "--agent",
@@ -480,7 +494,11 @@ def setup_skills_parser(
     create_parser = skills_subparsers.add_parser(
         "create",
         help="Create a new skill",
-        description="Create a new skill with a template SKILL.md file",
+        description=(
+            "Create a new skill with a template SKILL.md file. "
+            "By default, skills are created in ~/.deepagents/<agent>/skills/. "
+            "Use --project to create in the project's .deepagents/skills/ directory."
+        ),
     )
     create_parser.add_argument(
         "name", help="Name of the skill to create (e.g., web-research)"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 
 # S404: subprocess is required for git commands to detect project context
@@ -438,8 +439,6 @@ class LocalContextMiddleware(AgentMiddleware):
         # Node projects
         if (cwd / "package.json").exists():
             try:
-                import json
-
                 pkg = json.loads((cwd / "package.json").read_text())
                 if "scripts" in pkg and "test" in pkg["scripts"]:
                     return "npm test"

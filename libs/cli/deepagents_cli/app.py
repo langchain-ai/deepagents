@@ -437,19 +437,21 @@ class DeepAgentsApp(App):
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
 
-        # Load thread history if resuming a session
-        if self._lc_thread_id and self._agent:
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
-            )
-        # Auto-submit initial prompt if provided
-        # (but not when resuming - let user see history first)
-        elif self._initial_prompt and self._initial_prompt.strip():
+        # Auto-submit initial prompt if provided via -m flag.
+        # This check must come first because _lc_thread_id and _agent are
+        # always set (even for brand-new sessions), so an elif after the
+        # thread-history branch would never execute.
+        if self._initial_prompt and self._initial_prompt.strip():
             # Use call_after_refresh to ensure UI is fully mounted before submitting
             # Capture value for closure to satisfy type checker
             prompt = self._initial_prompt
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._handle_user_message(prompt))
+            )
+        # Load thread history if resuming a session (no initial prompt)
+        elif self._lc_thread_id and self._agent:
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._load_thread_history())
             )
 
     def on_resize(self, _event: Resize) -> None:
@@ -705,11 +707,17 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "Commands: /quit, /clear, /remember, /tokens, /threads, /help"
-                )
+            help_text = (
+                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+                "Interactive Features:\n"
+                "  Enter           Submit your message\n"
+                "  Ctrl+J          Insert newline\n"
+                "  Shift+Tab       Toggle auto-approve mode\n"
+                "  @filename       Auto-complete files and inject content\n"
+                "  /command        Slash commands (/help, /clear, /quit)\n"
+                "  !command        Run bash commands directly"
             )
+            await self._mount_message(AppMessage(help_text))
 
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
@@ -1163,7 +1171,7 @@ async def run_textual_app(
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
-) -> None:
+) -> int:
     """Run the Textual application.
 
     Args:
@@ -1174,6 +1182,9 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
+
+    Returns:
+        The app's return code (0 for success, non-zero for error).
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -1185,6 +1196,7 @@ async def run_textual_app(
         initial_prompt=initial_prompt,
     )
     await app.run_async()
+    return app.return_code or 0
 
 
 if __name__ == "__main__":

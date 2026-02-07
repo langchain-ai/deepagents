@@ -5,18 +5,22 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from deepagents_cli._version import __version__
+from deepagents_cli.backends import DEFAULT_EXECUTE_TIMEOUT
 from deepagents_cli.config import (
     COLORS,
     MAX_ARG_LENGTH,
+    _is_editable_install,
     console,
-    get_banner,
     get_glyphs,
 )
-from deepagents_cli.shell import _DEFAULT_SHELL_TIMEOUT
 
 
 def _format_timeout(seconds: int) -> str:
     """Format timeout in human-readable units (e.g., 300 -> '5m', 3600 -> '1h').
+
+    Args:
+        seconds: The timeout value in seconds to format.
 
     Returns:
         Human-readable timeout string (e.g., '5m', '1h', '300s').
@@ -57,7 +61,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     Examples:
         read_file(path="/long/path/file.py") → "<prefix> read_file(file.py)"
         web_search(query="how to code") → '<prefix> web_search("how to code")'
-        shell(command="pip install foo") → '<prefix> shell("pip install foo")'
+        execute(command="pip install foo") → '<prefix> execute("pip install foo")'
     """
     prefix = get_glyphs().tool_prefix
 
@@ -119,22 +123,15 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             pattern = truncate_value(pattern, 70)
             return f'{prefix} {tool_name}("{pattern}")'
 
-    elif tool_name == "shell":
-        # Shell: show the command, and timeout only if non-default
+    elif tool_name == "execute":
+        # Execute: show the command, and timeout only if non-default
         if "command" in tool_args:
             command = str(tool_args["command"])
             command = truncate_value(command, 120)
             timeout = tool_args.get("timeout")
-            if timeout is not None and timeout != _DEFAULT_SHELL_TIMEOUT:
+            if timeout is not None and timeout != DEFAULT_EXECUTE_TIMEOUT:
                 timeout_str = _format_timeout(timeout)
                 return f'{prefix} {tool_name}("{command}", timeout={timeout_str})'
-            return f'{prefix} {tool_name}("{command}")'
-
-    elif tool_name == "execute":
-        # Execute (sandbox shell): show the command being executed
-        if "command" in tool_args:
-            command = str(tool_args["command"])
-            command = truncate_value(command, 120)
             return f'{prefix} {tool_name}("{command}")'
 
     elif tool_name == "ls":
@@ -214,11 +211,17 @@ def format_tool_message_content(content: Any) -> str:
 
 
 def show_help() -> None:
-    """Show help information."""
+    """Show top-level help information for the deepagents CLI."""
+    install_type = " (local)" if _is_editable_install() else ""
+    banner_color = (
+        COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
+    )
     console.print()
-    console.print(get_banner(), style=f"bold {COLORS['primary']}")
+    console.print(
+        f"[bold {banner_color}]deepagents[/bold {banner_color}]"
+        f" v{__version__}{install_type}"
+    )
     console.print()
-
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
     console.print(
         "  deepagents [OPTIONS]                           Start interactive thread"
@@ -256,8 +259,9 @@ def show_help() -> None:
         "  --sandbox-id ID               Reuse existing sandbox (skips creation/cleanup)"  # noqa: E501
     )
     console.print(
-        "  -r, --resume [ID]             Resume thread: -r for most recent, -r <ID> for specific"  # noqa: E501
+        "  -m, --message TEXT            Initial prompt to auto-submit on start"
     )
+    console.print("  -r, --resume [ID]             Resume thread: -r for most recent")
     console.print()
 
     console.print("[bold]Examples:[/bold]", style=COLORS["primary"])
@@ -300,17 +304,4 @@ def show_help() -> None:
         "  deepagents threads delete <ID>          # Delete a thread",
         style=COLORS["dim"],
     )
-    console.print()
-
-    console.print("[bold]Interactive Features:[/bold]", style=COLORS["primary"])
-    console.print("  Enter           Submit your message", style=COLORS["dim"])
-    console.print("  Ctrl+J          Insert newline", style=COLORS["dim"])
-    console.print("  Shift+Tab       Toggle auto-approve mode", style=COLORS["dim"])
-    console.print(
-        "  @filename       Auto-complete files and inject content", style=COLORS["dim"]
-    )
-    console.print(
-        "  /command        Slash commands (/help, /clear, /quit)", style=COLORS["dim"]
-    )
-    console.print("  !command        Run bash commands directly", style=COLORS["dim"])
     console.print()

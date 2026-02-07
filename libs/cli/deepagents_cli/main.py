@@ -134,7 +134,7 @@ def parse_args() -> argparse.Namespace:
         "--limit",
         type=int,
         default=20,
-        help="Maximum number of threads to display",
+        help="Max number of threads to display (default: 20)",
     )
 
     # threads delete

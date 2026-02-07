@@ -447,6 +447,7 @@ class TestParseShellAllowList:
         result = parse_shell_allow_list("ls,recommended,mycmd")
         # Should have ls once (first occurrence), then all recommended commands
         # except ls (since it's already in), then mycmd
+        assert result is not None
         assert result[0] == "ls"
         # ls should not appear again
         assert result.count("ls") == 1

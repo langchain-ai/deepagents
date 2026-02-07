@@ -6,7 +6,7 @@ import contextlib
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import HITLRequest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -21,6 +21,7 @@ from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
 if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
@@ -120,9 +121,9 @@ def _process_ai_message(
         for block in message_obj.content_blocks:
             block_type = block.get("type")
             if block_type == "text":
-                _process_text_block(block, state)
+                _process_text_block(cast("dict[str, Any]", block), state)
             elif block_type in {"tool_call_chunk", "tool_call"}:
-                _process_tool_call_block(block, state, console)
+                _process_tool_call_block(cast("dict[str, Any]", block), state, console)
 
 
 def _process_message_chunk(
@@ -165,10 +166,15 @@ def _process_stream_chunk(
     if not is_main_agent:
         return
 
-    if stream_mode == "updates" and "__interrupt__" in data:
-        _process_interrupts(data, state)
+    if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
+        _process_interrupts(cast("dict[str, list[Interrupt]]", data), state)
     elif stream_mode == "messages":
-        _process_message_chunk(data, state, console, file_op_tracker)
+        _process_message_chunk(
+            cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),
+            state,
+            console,
+            file_op_tracker,
+        )
 
 
 def _make_hitl_decision(
@@ -229,7 +235,7 @@ async def _stream_agent(
         stream_input,
         stream_mode=["messages", "updates"],
         subgraphs=True,
-        config=config,
+        config=cast("RunnableConfig", config),
         durability="exit",
     ):
         _process_stream_chunk(chunk, state, console, file_op_tracker)

@@ -1,9 +1,11 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
+import base64
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
@@ -40,6 +42,23 @@ EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def _create_image_content_block(image_b64: str, media_type: str) -> dict:
+    """Create a standard LangChain image content block."""
+    return {
+        "type": "image",
+        "base64": image_b64,
+        "mime_type": media_type,
+    }
 
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
@@ -190,6 +209,7 @@ Usage:
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
+- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) are returned as multimodal image content blocks.
 - You should ALWAYS make sure a file has been read before editing it."""
 
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
@@ -484,6 +504,33 @@ class FilesystemMiddleware(AgentMiddleware):
             return self.backend(runtime)
         return self.backend
 
+    @staticmethod
+    def _build_image_tool_command(
+        *,
+        image_bytes: bytes,
+        media_type: str,
+        file_path: str,
+        tool_call_id: str,
+    ) -> Command:
+        """Build a ToolMessage Command for image read results."""
+        image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+        image_block = _create_image_content_block(image_b64, media_type)
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=[image_block],
+                        name="read_file",
+                        tool_call_id=tool_call_id,
+                        additional_kwargs={
+                            "read_file_path": file_path,
+                            "read_file_media_type": media_type,
+                        },
+                    )
+                ]
+            }
+        )
+
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
@@ -535,13 +582,29 @@ class FilesystemMiddleware(AgentMiddleware):
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> str:
+        ) -> Command | str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = _validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
+
+            ext = Path(validated_path).suffix.lower()
+            if ext in IMAGE_EXTENSIONS:
+                responses = resolved_backend.download_files([validated_path])
+                if responses and responses[0].content is not None:
+                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
+                    return self._build_image_tool_command(
+                        image_bytes=responses[0].content,
+                        media_type=media_type,
+                        file_path=validated_path,
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                if responses and responses[0].error:
+                    return f"Error reading image: {responses[0].error}"
+                return "Error reading image: unknown error"
+
             result = resolved_backend.read(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)
@@ -564,13 +627,29 @@ class FilesystemMiddleware(AgentMiddleware):
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> str:
+        ) -> Command | str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = _validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
+
+            ext = Path(validated_path).suffix.lower()
+            if ext in IMAGE_EXTENSIONS:
+                responses = await resolved_backend.adownload_files([validated_path])
+                if responses and responses[0].content is not None:
+                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
+                    return self._build_image_tool_command(
+                        image_bytes=responses[0].content,
+                        media_type=media_type,
+                        file_path=validated_path,
+                        tool_call_id=runtime.tool_call_id,
+                    )
+                if responses and responses[0].error:
+                    return f"Error reading image: {responses[0].error}"
+                return "Error reading image: unknown error"
+
             result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)

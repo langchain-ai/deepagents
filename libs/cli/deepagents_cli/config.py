@@ -33,6 +33,7 @@ from langchain_core.runnables import RunnableConfig  # noqa: E402
 # Color scheme
 COLORS = {
     "primary": "#10b981",
+    "primary_dev": "#f97316",
     "dim": "#6b7280",
     "user": "#ffffff",
     "agent": "#10b981",

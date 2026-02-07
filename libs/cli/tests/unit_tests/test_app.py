@@ -20,6 +20,33 @@ from deepagents_cli.app import (
 )
 
 
+class TestInitialPromptOnMount:
+    """Test that -m initial prompt is submitted on mount."""
+
+    @pytest.mark.asyncio
+    async def test_initial_prompt_triggers_handle_user_message(self) -> None:
+        """When initial_prompt is set, the prompt should be auto-submitted."""
+        mock_agent = MagicMock()
+        app = DeepAgentsApp(
+            agent=mock_agent,
+            thread_id="new-thread-123",
+            initial_prompt="hello world",
+        )
+        submitted: list[str] = []
+
+        async def capture(msg: str) -> None:
+            submitted.append(msg)
+
+        app._handle_user_message = capture  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            # Give call_after_refresh time to fire
+            await pilot.pause()
+            await pilot.pause()
+
+        assert submitted == ["hello world"]
+
+
 class TestAppCSSValidation:
     """Test that app CSS is valid and doesn't cause runtime errors."""
 

@@ -11,11 +11,11 @@ warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 import argparse
 import asyncio
 import contextlib
+import functools
 import importlib.util
 import os
 import sys
 import traceback
-import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,7 @@ from deepagents_cli.sessions import (
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
 from deepagents_cli.ui import (
+    build_help_parent,
     show_help,
     show_list_help,
     show_reset_help,
@@ -108,6 +109,11 @@ def parse_args() -> argparse.Namespace:
     ) -> type[argparse.Action]:
         """Create an argparse Action that displays *help_fn* and exits.
 
+        argparse requires a *class* (not a callable) for custom actions.
+        This factory uses a closure: the returned `_ShowHelp` class captures
+        *help_fn* from the enclosing scope so that each subcommand can wire `-h`
+        to its own Rich help screen.
+
         Args:
             help_fn: Callable that prints help text to the console.
 
@@ -138,19 +144,14 @@ def parse_args() -> argparse.Namespace:
                 values: str | Sequence[Any] | None,  # noqa: ARG002
                 option_string: str | None = None,  # noqa: ARG002
             ) -> None:
-                help_fn()
+                with contextlib.suppress(BrokenPipeError):
+                    help_fn()
                 parser.exit()
 
         return _ShowHelp
 
-    # Shared parent for subcommands that should show the global help
-    help_parent = argparse.ArgumentParser(add_help=False)
-    help_parent.add_argument("-h", "--help", action=_make_help_action(show_help))
-
-    # Threads subcommand gets its own help parent
-    threads_help_parent = argparse.ArgumentParser(add_help=False)
-    threads_help_parent.add_argument(
-        "-h", "--help", action=_make_help_action(show_threads_help)
+    help_parent = functools.partial(
+        build_help_parent, make_help_action=_make_help_action
     )
 
     parser = argparse.ArgumentParser(
@@ -164,29 +165,21 @@ def parse_args() -> argparse.Namespace:
         "help",
         help="Show help information",
         add_help=False,
-        parents=[help_parent],
+        parents=help_parent(show_help),
     )
 
-    list_help_parent = argparse.ArgumentParser(add_help=False)
-    list_help_parent.add_argument(
-        "-h", "--help", action=_make_help_action(show_list_help)
-    )
     subparsers.add_parser(
         "list",
         help="List all available agents",
         add_help=False,
-        parents=[list_help_parent],
+        parents=help_parent(show_list_help),
     )
 
-    reset_help_parent = argparse.ArgumentParser(add_help=False)
-    reset_help_parent.add_argument(
-        "-h", "--help", action=_make_help_action(show_reset_help)
-    )
     reset_parser = subparsers.add_parser(
         "reset",
         help="Reset an agent",
         add_help=False,
-        parents=[reset_help_parent],
+        parents=help_parent(show_reset_help),
     )
     reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
     reset_parser.add_argument(
@@ -199,20 +192,16 @@ def parse_args() -> argparse.Namespace:
         "threads",
         help="Manage conversation threads",
         add_help=False,
-        parents=[threads_help_parent],
+        parents=help_parent(show_threads_help),
     )
     threads_sub = threads_parser.add_subparsers(dest="threads_command")
 
-    threads_list_help_parent = argparse.ArgumentParser(add_help=False)
-    threads_list_help_parent.add_argument(
-        "-h", "--help", action=_make_help_action(show_threads_list_help)
-    )
     threads_list = threads_sub.add_parser(
         "list",
         aliases=["ls"],
         help="List threads",
         add_help=False,
-        parents=[threads_list_help_parent],
+        parents=help_parent(show_threads_list_help),
     )
     threads_list.add_argument(
         "--agent", default=None, help="Filter by agent name (default: show all)"
@@ -223,15 +212,11 @@ def parse_args() -> argparse.Namespace:
         default=20,
         help="Max number of threads to display (default: 20)",
     )
-    threads_delete_help_parent = argparse.ArgumentParser(add_help=False)
-    threads_delete_help_parent.add_argument(
-        "-h", "--help", action=_make_help_action(show_threads_delete_help)
-    )
     threads_delete = threads_sub.add_parser(
         "delete",
         help="Delete a thread",
         add_help=False,
-        parents=[threads_delete_help_parent],
+        parents=help_parent(show_threads_delete_help),
     )
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
 
@@ -435,6 +420,8 @@ def cli_main() -> None:
         elif args.command == "skills":
             execute_skills_command(args)
         elif args.command == "threads":
+            # "ls" is an argparse alias for "list" — argparse stores the
+            # alias as-is in the namespace, so we must match both values.
             if args.threads_command in {"list", "ls"}:
                 asyncio.run(
                     list_threads_command(

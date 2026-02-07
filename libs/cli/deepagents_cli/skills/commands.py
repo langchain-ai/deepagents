@@ -7,6 +7,7 @@ These commands are registered with the CLI via main.py:
 """
 
 import argparse
+import functools
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -17,6 +18,7 @@ from deepagents.middleware.skills import SkillMetadata
 from deepagents_cli.config import COLORS, Settings, console, get_glyphs
 from deepagents_cli.skills.load import list_skills
 from deepagents_cli.ui import (
+    build_help_parent,
     show_skills_create_help,
     show_skills_help,
     show_skills_info_help,
@@ -101,6 +103,10 @@ def _validate_skill_path(skill_dir: Path, base_dir: Path) -> tuple[bool, str]:
 def _format_info_fields(skill: SkillMetadata) -> list[tuple[str, str]]:
     """Extract non-empty optional metadata fields for display.
 
+    The upstream `_parse_skill_metadata` normalises empty/whitespace license
+    and compatibility values to `None`, so the truthy checks below are
+    sufficient.
+
     Args:
         skill: Skill metadata to extract display fields from.
 
@@ -117,9 +123,12 @@ def _format_info_fields(skill: SkillMetadata) -> list[tuple[str, str]]:
     if compat_val:
         fields.append(("Compatibility", compat_val))
     if skill.get("allowed_tools"):
-        fields.append(("Allowed Tools", ", ".join(skill["allowed_tools"])))
-    if skill.get("metadata"):
-        formatted = ", ".join(f"{k}={v}" for k, v in skill["metadata"].items())
+        fields.append(
+            ("Allowed Tools", ", ".join(str(t) for t in skill["allowed_tools"]))
+        )
+    meta = skill.get("metadata")
+    if meta and isinstance(meta, dict):
+        formatted = ", ".join(f"{k}={v}" for k, v in meta.items())
         fields.append(("Metadata", formatted))
     return fields
 
@@ -380,8 +389,9 @@ def _create(skill_name: str, agent: str, project: bool = False) -> None:
     skill_md = skill_dir / "SKILL.md"
     skill_md.write_text(template)
 
+    checkmark = get_glyphs().checkmark
     console.print(
-        f"\n[bold]{get_glyphs().checkmark} Skill '{skill_name}' created successfully![/bold]",  # noqa: E501
+        f"\n[bold]{checkmark} Skill '{skill_name}' created successfully![/bold]",
         style=COLORS["primary"],
     )
     console.print(f"Location: {skill_dir}\n", style=COLORS["dim"])
@@ -455,16 +465,23 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
     source_color = "green" if skill["source"] == "project" else "cyan"
 
-    # Check if this project skill shadows a user skill with the same name
+    # Check if this project skill shadows a user skill with the same name.
+    # This is a cosmetic hint — if the second list_skills() call fails
+    # (e.g. permission error reading user dirs) we silently skip the warning
+    # rather than crashing the entire `skills info` display.
     shadowed_user_skill = False
     if skill["source"] == "project" and not project:
-        user_only = list_skills(
-            user_skills_dir=user_skills_dir,
-            project_skills_dir=None,
-            user_agent_skills_dir=user_agent_skills_dir,
-            project_agent_skills_dir=None,
-        )
-        shadowed_user_skill = any(s["name"] == skill_name for s in user_only)
+        try:
+            user_only = list_skills(
+                user_skills_dir=user_skills_dir,
+                project_skills_dir=None,
+                user_agent_skills_dir=user_agent_skills_dir,
+                project_agent_skills_dir=None,
+            )
+            shadowed_user_skill = any(s["name"] == skill_name for s in user_only)
+        except Exception:  # noqa: BLE001, S110
+            # Intentionally swallowed — shadow detection is cosmetic
+            pass
 
     console.print(
         f"\n[bold]Skill: {skill['name']}[/bold] "
@@ -520,29 +537,16 @@ def setup_skills_parser(
     Returns:
         The skills subparser for argument handling.
     """
-
-    def _parent(
-        help_fn: Callable[[], None],
-    ) -> list[argparse.ArgumentParser]:
-        """Build a one-off parent parser wired to *help_fn*.
-
-        Args:
-            help_fn: Zero-argument callable that renders a Rich help screen.
-
-        Returns:
-            Single-element list suitable for the `parents` kwarg of
-            `add_parser`.
-        """
-        parent = argparse.ArgumentParser(add_help=False)
-        parent.add_argument("-h", "--help", action=make_help_action(help_fn))
-        return [parent]
+    help_parent = functools.partial(
+        build_help_parent, make_help_action=make_help_action
+    )
 
     skills_parser = subparsers.add_parser(
         "skills",
         help="Manage agent skills",
-        description=("Manage agent skills - create, list, and view skill information."),
+        description="Manage agent skills - create, list, and view skill information.",
         add_help=False,
-        parents=_parent(show_skills_help),
+        parents=help_parent(show_skills_help),
     )
     skills_subparsers = skills_parser.add_subparsers(
         dest="skills_command", help="Skills command"
@@ -558,7 +562,7 @@ def setup_skills_parser(
             "(user, user alias, project, project alias)."
         ),
         add_help=False,
-        parents=_parent(show_skills_list_help),
+        parents=help_parent(show_skills_list_help),
     )
     list_parser.add_argument(
         "--agent",
@@ -583,7 +587,7 @@ def setup_skills_parser(
             ".deepagents/skills/ directory."
         ),
         add_help=False,
-        parents=_parent(show_skills_create_help),
+        parents=help_parent(show_skills_create_help),
     )
     create_parser.add_argument(
         "name",
@@ -597,16 +601,16 @@ def setup_skills_parser(
     create_parser.add_argument(
         "--project",
         action="store_true",
-        help=("Create skill in project directory instead of user directory"),
+        help="Create skill in project directory instead of user directory",
     )
 
     # Skills info
     info_parser = skills_subparsers.add_parser(
         "info",
         help="Show detailed information about a skill",
-        description=("Show detailed information about a specific skill"),
+        description="Show detailed information about a specific skill",
         add_help=False,
-        parents=_parent(show_skills_info_help),
+        parents=help_parent(show_skills_info_help),
     )
     info_parser.add_argument("name", help="Name of the skill to show info for")
     info_parser.add_argument(
@@ -642,6 +646,8 @@ def execute_skills_command(args: argparse.Namespace) -> None:
             )
             return
 
+    # "ls" is an argparse alias for "list" — argparse stores the alias
+    # as-is in the namespace, so we must match both values.
     if args.skills_command in {"list", "ls"}:
         _list(agent=args.agent, project=args.project)
     elif args.skills_command == "create":

@@ -1,6 +1,8 @@
 """UI rendering and display utilities for the CLI."""
 
+import argparse
 import json
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,30 @@ from deepagents_cli.config import (
     console,
     get_glyphs,
 )
+
+
+def build_help_parent(
+    help_fn: Callable[[], None],
+    make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
+) -> list[argparse.ArgumentParser]:
+    """Build a parent parser whose `-h` invokes *help_fn*.
+
+    This eliminates boilerplate: without the helper every `add_parser`
+    call would need its own three-line parent-parser setup.  Used by both
+    `main.parse_args` and `skills.commands.setup_skills_parser`.
+
+    Args:
+        help_fn: Zero-argument callable that renders a Rich help screen.
+        make_help_action: Factory that turns *help_fn* into an argparse
+            Action class (see `main._make_help_action`).
+
+    Returns:
+        Single-element list suitable for the `parents` kwarg of
+        `add_parser`.
+    """
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument("-h", "--help", action=make_help_action(help_fn))
+    return [parent]
 
 
 def _format_timeout(seconds: int) -> str:
@@ -263,7 +289,10 @@ def show_help() -> None:
 
 
 def show_list_help() -> None:
-    """Show help information for the `list` subcommand."""
+    """Show help information for the `list` subcommand.
+
+    Invoked via the `-h` argparse action or directly from `cli_main`.
+    """
     console.print()
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
     console.print("  deepagents list")
@@ -308,7 +337,11 @@ def show_reset_help() -> None:
 
 
 def show_skills_help() -> None:
-    """Show help information for the `skills` subcommand."""
+    """Show help information for the `skills` subcommand.
+
+    Invoked via the `-h` argparse action or directly from
+    `execute_skills_command` when no subcommand is given.
+    """
     console.print()
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
     console.print("  deepagents skills <command> [options]")
@@ -334,6 +367,7 @@ def show_skills_help() -> None:
         "\n[dim]Create your first skill:\n  deepagents skills create my-skill[/dim]",
         style=COLORS["dim"],
     )
+    console.print()
 
 
 def show_skills_list_help() -> None:
@@ -382,7 +416,11 @@ def show_skills_info_help() -> None:
 
 
 def show_threads_help() -> None:
-    """Show help information for the `threads` subcommand."""
+    """Show help information for the `threads` subcommand.
+
+    Invoked via the `-h` argparse action or directly from `cli_main`
+    when no threads subcommand is given.
+    """
     console.print()
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
     console.print("  deepagents threads <command> [options]")

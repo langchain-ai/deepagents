@@ -496,6 +496,24 @@ class TestThreadsListAlias:
         assert args.threads_command == "list"
 
 
+class TestSkillsListAlias:
+    """Test that `deepagents skills ls` is parsed as a `list` alias."""
+
+    def test_skills_ls_alias_parsed(self) -> None:
+        """Verify `skills ls` sets skills_command to 'ls'."""
+        with patch("sys.argv", ["deepagents", "skills", "ls"]):
+            args = parse_args()
+        assert args.command == "skills"
+        assert args.skills_command == "ls"
+
+    def test_skills_list_still_works(self) -> None:
+        """Verify `skills list` still works after alias addition."""
+        with patch("sys.argv", ["deepagents", "skills", "list"]):
+            args = parse_args()
+        assert args.command == "skills"
+        assert args.skills_command == "list"
+
+
 class TestInfoShadowWarning:
     """Test that `skills info` warns when a project skill shadows a user skill."""
 

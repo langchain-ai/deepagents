@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 
+from deepagents_cli.agent import DEFAULT_AGENT_NAME
 from deepagents_cli.main import parse_args
 
 
@@ -131,6 +132,67 @@ class TestTopLevelHelp:
         assert args.command == "help"
 
 
+class TestSubcommandHelpFlags:
+    """Test that each subcommand's -h shows its own help screen (not global)."""
+
+    def _run_help(
+        self, argv: list[str], must_contain: str, must_not_contain: str
+    ) -> None:
+        """Run parse_args with *argv* and assert help output boundaries.
+
+        Args:
+            argv: sys.argv override.
+            must_contain: Substring that must be present in the output.
+            must_not_contain: Substring that must NOT be present.
+        """
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=120)
+
+        with (
+            patch.object(sys, "argv", argv),
+            patch("deepagents_cli.ui.console", test_console),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+
+        assert exc_info.value.code in (0, None)
+        output = buf.getvalue()
+        assert must_contain in output
+        assert must_not_contain not in output
+
+    def test_list_help(self) -> None:
+        """Running `deepagents list -h` should show list-specific help."""
+        self._run_help(
+            ["deepagents", "list", "-h"],
+            must_contain="List all agents",
+            must_not_contain="--sandbox",
+        )
+
+    def test_reset_help(self) -> None:
+        """Running `deepagents reset -h` should show reset-specific help."""
+        self._run_help(
+            ["deepagents", "reset", "-h"],
+            must_contain="--agent",
+            must_not_contain="Start interactive thread",
+        )
+
+    def test_threads_list_help(self) -> None:
+        """Running `deepagents threads list -h` should show threads list help."""
+        self._run_help(
+            ["deepagents", "threads", "list", "-h"],
+            must_contain="--limit",
+            must_not_contain="--sandbox",
+        )
+
+    def test_threads_delete_help(self) -> None:
+        """Running `deepagents threads delete -h` should show threads delete help."""
+        self._run_help(
+            ["deepagents", "threads", "delete", "-h"],
+            must_contain="delete",
+            must_not_contain="--sandbox",
+        )
+
+
 class TestShortFlags:
     """Test that short flag aliases (-a, -M, -v) parse correctly."""
 
@@ -145,6 +207,12 @@ class TestShortFlags:
         with patch.object(sys, "argv", ["deepagents", "-M", "gpt-4o"]):
             args = parse_args()
         assert args.model == "gpt-4o"
+
+    def test_agent_default_value(self) -> None:
+        """Verify -a defaults to DEFAULT_AGENT_NAME when omitted."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.agent == DEFAULT_AGENT_NAME
 
     def test_short_version_flag(self) -> None:
         """Verify -v shows version and exits."""

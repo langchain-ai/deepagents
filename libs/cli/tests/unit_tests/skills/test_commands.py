@@ -132,6 +132,56 @@ class TestValidateSkillName:
             assert not is_valid, f"Invalid character in '{name}' was accepted"
             assert error != ""
 
+    def test_unicode_lowercase_accepted(self) -> None:
+        """Unicode lowercase names should be accepted (matching SDK behavior).
+
+        The SDK's `_validate_skill_name` accepts any character where
+        ``c.isalpha() and c.islower()`` or ``c.isdigit()`` is True.
+        """
+        valid_unicode_names = [
+            "caf\u00e9",  # cafe with accent
+            "\u00fcber-tool",  # uber with umlaut
+            "resum\u00e9",  # resume with accent
+            "na\u00efve",  # naive with diaeresis
+        ]
+        for name in valid_unicode_names:
+            is_valid, error = _validate_name(name)
+            assert is_valid, f"Unicode lowercase name '{name}' was rejected: {error}"
+            assert error == ""
+
+    def test_unicode_uppercase_rejected(self) -> None:
+        """Unicode uppercase characters should be rejected."""
+        invalid_unicode_names = [
+            "Caf\u00e9",  # leading uppercase
+            "\u00dcber-tool",  # uppercase U-umlaut
+        ]
+        for name in invalid_unicode_names:
+            is_valid, error = _validate_name(name)
+            assert not is_valid, f"Unicode uppercase name '{name}' was accepted"
+            assert error != ""
+
+    def test_cjk_rejected(self) -> None:
+        """CJK characters should be rejected (not lowercase alpha)."""
+        cjk_names = [
+            "\u6280\u80fd",  # Chinese characters
+            "\u30b9\u30ad\u30eb",  # Japanese katakana
+        ]
+        for name in cjk_names:
+            is_valid, error = _validate_name(name)
+            assert not is_valid, f"CJK name '{name}' was accepted"
+            assert error != ""
+
+    def test_emoji_rejected(self) -> None:
+        """Emoji characters should be rejected."""
+        emoji_names = [
+            "skill-\U0001f680",
+            "\U0001f4dd-notes",
+        ]
+        for name in emoji_names:
+            is_valid, error = _validate_name(name)
+            assert not is_valid, f"Emoji name '{name}' was accepted"
+            assert error != ""
+
     def test_empty_names(self):
         """Test that empty or whitespace names are blocked."""
         malicious_names = [

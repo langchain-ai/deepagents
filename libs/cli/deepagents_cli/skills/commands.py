@@ -8,7 +8,6 @@ These commands are registered with the CLI via main.py:
 
 import argparse
 import functools
-import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -33,13 +32,19 @@ def _validate_name(name: str) -> tuple[bool, str]:
 
     Requirements (https://agentskills.io/specification):
     - Max 64 characters
-    - Lowercase alphanumeric and hyphens only (a-z, 0-9, -)
+    - Unicode lowercase alphanumeric and hyphens only
     - Cannot start or end with hyphen
     - No consecutive hyphens
     - No path traversal sequences
 
+    Unicode lowercase alphanumeric means any character where
+    `c.isalpha() and c.islower()` or `c.isdigit()` returns `True`,
+    which covers accented Latin characters (e.g., `'cafe'`,
+    `'uber-tool'`) and other scripts.  This matches the SDK's
+    `_validate_skill_name` implementation.
+
     Args:
-        name: The name to validate
+        name: The name to validate.
 
     Returns:
         Tuple of (is_valid, error_message). If valid, error_message is empty.
@@ -52,17 +57,28 @@ def _validate_name(name: str) -> tuple[bool, str]:
     if len(name) > MAX_SKILL_NAME_LENGTH:
         return False, "cannot exceed 64 characters"
 
-    # Check for path traversal sequences
+    # Check for path traversal sequences (CLI-specific; the SDK validates
+    # against the directory name instead, but the CLI accepts user input
+    # directly so we need explicit path-safety checks)
     if ".." in name or "/" in name or "\\" in name:
         return False, "cannot contain path components"
 
-    # Spec: lowercase alphanumeric and hyphens only
-    # Pattern ensures: no start/end hyphen, no consecutive hyphens
-    if not re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", name):
+    # Structural hyphen checks
+    if name.startswith("-") or name.endswith("-") or "--" in name:
         return (
             False,
-            "must be lowercase letters, numbers, and hyphens only "
-            + "(no uppercase, no underscores, cannot start/end with hyphen)",
+            "must be lowercase alphanumeric with single hyphens only",
+        )
+
+    # Character-by-character check (matches SDK's _validate_skill_name)
+    for c in name:
+        if c == "-":
+            continue
+        if (c.isalpha() and c.islower()) or c.isdigit():
+            continue
+        return (
+            False,
+            "must be lowercase alphanumeric with single hyphens only",
         )
 
     return True, ""

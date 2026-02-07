@@ -34,7 +34,8 @@ class TestInitialPromptOnMount:
         )
         submitted: list[str] = []
 
-        async def capture(msg: str) -> None:
+        # Must be async to match _handle_user_message's signature
+        async def capture(msg: str) -> None:  # noqa: RUF029
             submitted.append(msg)
 
         app._handle_user_message = capture  # type: ignore[assignment]

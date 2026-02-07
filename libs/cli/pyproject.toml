@@ -290,6 +290,22 @@ ignore-var-parameters = true
     "PLR2004",  # Magic value used in comparison
     "T201",     # `print` found
 ]
+"deepagents_cli/built_in_skills/skill-creator/scripts/init_skill.py" = [
+    "ANN001",   # Missing type annotation for function argument
+    "ANN201",   # Missing return type annotation for public function
+    "BLE001",   # Do not catch blind exception
+    "INP001",   # Implicit namespace package
+    "PLR2004",  # Magic value used in comparison
+    "T201",     # `print` found
+]
+"deepagents_cli/built_in_skills/skill-creator/scripts/quick_validate.py" = [
+    "ANN001",   # Missing type annotation for function argument
+    "ANN201",   # Missing return type annotation for public function
+    "INP001",   # Implicit namespace package
+    "N806",     # Variable in function should be lowercase
+    "PLR2004",  # Magic value used in comparison
+    "T201",     # `print` found
+]
 
 [tool.coverage.run]
 omit = ["tests/*"]

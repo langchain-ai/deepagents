@@ -17,10 +17,11 @@ from deepagents_cli.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    create_cli_agent,
     get_system_prompt,
     list_agents,
 )
-from deepagents_cli.config import get_glyphs
+from deepagents_cli.config import Settings, get_glyphs
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -444,3 +445,65 @@ class TestListAgents:
 
         joined = "\n".join(output)
         assert "(default)" not in joined
+
+
+class TestCreateCliAgentSkillsSources:
+    """Test that `create_cli_agent` wires built-in skills as first source."""
+
+    def test_built_in_dir_is_first_source(self, tmp_path: Path) -> None:
+        """Built-in skills dir should be the first (lowest-precedence) source.
+
+        SkillsMiddleware uses last-one-wins dedup, so first = lowest precedence.
+        """
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        built_in_dir = Settings.get_built_in_skills_dir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = built_in_dir
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = None
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        # Needed by get_system_prompt() which formats model identity
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_sources: list[list[str]] = []
+
+        class FakeSkillsMiddleware:
+            """Capture the sources arg passed to SkillsMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert len(captured_sources) == 1
+        sources = captured_sources[0]
+        # Built-in dir should be the first source
+        assert sources[0] == str(built_in_dir)
+        # User skills dir should follow
+        assert sources[1] == str(skills_dir)

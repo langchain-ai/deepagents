@@ -511,7 +511,9 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        sources = [str(skills_dir)]
+        # Built-in first (lowest precedence), then user, then project (highest)
+        sources = [str(settings.get_built_in_skills_dir())]
+        sources.append(str(skills_dir))
         if project_skills_dir:
             sources.append(str(project_skills_dir))
 

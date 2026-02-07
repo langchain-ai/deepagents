@@ -190,8 +190,9 @@ def _list(agent: str, *, project: bool = False) -> None:
         )
         console.print("\n[bold]Project Skills:[/bold]\n", style=COLORS["primary"])
     else:
-        # Load skills from all directories
+        # Load skills from all directories (including built-in)
         skills = list_skills(
+            built_in_skills_dir=settings.get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=user_agent_skills_dir,
@@ -208,7 +209,8 @@ def _list(agent: str, *, project: bool = False) -> None:
                 "  1. .agents/skills/                 project skills\n"
                 "  2. .deepagents/skills/             project skills (alias)\n"
                 "  3. ~/.agents/skills/               user skills\n"
-                "  4. ~/.deepagents/<agent>/skills/   user skills (alias)[/dim]",
+                "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
+                "  5. <package>/built_in_skills/      built-in skills[/dim]",
                 style=COLORS["dim"],
             )
             console.print(
@@ -223,6 +225,7 @@ def _list(agent: str, *, project: bool = False) -> None:
     # Group skills by source
     user_skills = [s for s in skills if s["source"] == "user"]
     project_skills_list = [s for s in skills if s["source"] == "project"]
+    built_in_skills_list = [s for s in skills if s["source"] == "built-in"]
 
     # Show user skills
     if user_skills and not project:
@@ -250,6 +253,21 @@ def _list(agent: str, *, project: bool = False) -> None:
             name = skill["name"]
             console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
             console.print(f"    {skill_path.parent}/", style=COLORS["dim"])
+            console.print()
+            console.print(f"    {skill['description']}", style=COLORS["dim"])
+            console.print()
+
+    # Show built-in skills
+    if built_in_skills_list and not project:
+        if user_skills or project_skills_list:
+            console.print()
+        console.print(
+            "[bold magenta]Built-in Skills:[/bold magenta]", style=COLORS["primary"]
+        )
+        bullet = get_glyphs().bullet
+        for skill in built_in_skills_list:
+            name = skill["name"]
+            console.print(f"  {bullet} [bold]{name}[/bold]", style=COLORS["primary"])
             console.print()
             console.print(f"    {skill['description']}", style=COLORS["dim"])
             console.print()
@@ -442,6 +460,7 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
         )
     else:
         skills = list_skills(
+            built_in_skills_dir=settings.get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=user_agent_skills_dir,
@@ -463,8 +482,12 @@ def _info(skill_name: str, *, agent: str = "agent", project: bool = False) -> No
     skill_content = skill_path.read_text(encoding="utf-8")
 
     # Determine source label
-    source_label = "Project Skill" if skill["source"] == "project" else "User Skill"
-    source_color = "green" if skill["source"] == "project" else "cyan"
+    source_labels = {
+        "project": ("Project Skill", "green"),
+        "user": ("User Skill", "cyan"),
+        "built-in": ("Built-in Skill", "magenta"),
+    }
+    source_label, source_color = source_labels.get(skill["source"], ("Skill", "dim"))
 
     # Check if this project skill shadows a user skill with the same name.
     # This is a cosmetic hint — if the second list_skills() call fails

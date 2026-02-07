@@ -1,5 +1,6 @@
 """Unit tests for skills command sanitization and validation."""
 
+import argparse
 import io
 import re
 from pathlib import Path
@@ -14,8 +15,10 @@ from deepagents_cli.skills.commands import (
     _format_info_fields,
     _generate_template,
     _info,
+    _list,
     _validate_name,
     _validate_skill_path,
+    execute_skills_command,
 )
 
 
@@ -546,6 +549,7 @@ class TestInfoShadowWarning:
                 "FakeSettings",
                 (),
                 {
+                    "get_built_in_skills_dir": staticmethod(lambda: None),
                     "get_user_skills_dir": lambda _, _a: user_dir,
                     "get_project_skills_dir": lambda _: project_dir,
                     "get_user_agent_skills_dir": lambda _: None,
@@ -581,6 +585,7 @@ class TestInfoShadowWarning:
                 "FakeSettings",
                 (),
                 {
+                    "get_built_in_skills_dir": staticmethod(lambda: None),
                     "get_user_skills_dir": lambda _, _a: user_dir,
                     "get_project_skills_dir": lambda _: project_dir,
                     "get_user_agent_skills_dir": lambda _: None,
@@ -604,3 +609,223 @@ class TestInfoShadowWarning:
         joined = "\n".join(output)
         assert "overrides" not in joined.lower()
         assert "shadows" not in joined.lower()
+
+
+class TestInfoBuiltInSkill:
+    """Test that `skills info` displays built-in skills correctly."""
+
+    def _make_skill_dir(self, parent: Path, name: str, description: str) -> None:
+        """Create a minimal skill directory with a valid SKILL.md.
+
+        Args:
+            parent: Parent skills directory.
+            name: Skill name (used as directory name and frontmatter name).
+            description: Skill description for frontmatter.
+        """
+        skill_dir = parent / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\nContent\n"
+        )
+
+    def test_built_in_skill_shows_correct_label(self, tmp_path: Path) -> None:
+        """Built-in skills should display '(Built-in Skill)' in magenta."""
+        built_in_dir = tmp_path / "built_in_skills"
+        self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
+
+        mock_settings = patch(
+            "deepagents_cli.skills.commands.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: None,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _info("test-builtin", agent="agent")
+
+        joined = "\n".join(output)
+        assert "Built-in Skill" in joined
+        assert "User Skill" not in joined
+
+    def test_built_in_skill_no_shadow_warning(self, tmp_path: Path) -> None:
+        """Built-in skills should never trigger a shadow warning."""
+        built_in_dir = tmp_path / "built_in_skills"
+        user_dir = tmp_path / "user_skills"
+        self._make_skill_dir(built_in_dir, "shared-skill", "Built-in version")
+        self._make_skill_dir(user_dir, "shared-skill", "User version")
+
+        mock_settings = patch(
+            "deepagents_cli.skills.commands.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: user_dir,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            # User overrides built-in; info shows user version, no shadow note
+            _info("shared-skill", agent="agent")
+
+        joined = "\n".join(output)
+        assert "overrides" not in joined.lower()
+        assert "shadows" not in joined.lower()
+
+
+class TestListBuiltInSkillsDisplay:
+    """Test that `skills list` renders built-in skills correctly."""
+
+    def _make_skill_dir(self, parent: Path, name: str, description: str) -> None:
+        """Create a minimal skill directory with a valid SKILL.md."""
+        skill_dir = parent / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\nContent\n"
+        )
+
+    def test_built_in_section_rendered(self, tmp_path: Path) -> None:
+        """Built-in skills should appear under 'Built-in Skills:' heading."""
+        built_in_dir = tmp_path / "built_in_skills"
+        self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
+
+        mock_settings = patch(
+            "deepagents_cli.skills.commands.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: None,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _list(agent="agent")
+
+        joined = "\n".join(output)
+        assert "Built-in Skills:" in joined
+        assert "test-builtin" in joined
+
+    def test_built_in_section_omits_path(self, tmp_path: Path) -> None:
+        """Built-in skills should not display a filesystem path."""
+        built_in_dir = tmp_path / "built_in_skills"
+        self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
+
+        mock_settings = patch(
+            "deepagents_cli.skills.commands.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: None,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _list(agent="agent")
+
+        joined = "\n".join(output)
+        # Built-in section should NOT contain the tmp_path directory
+        assert str(built_in_dir) not in joined
+
+
+class TestSkillsLsDispatch:
+    """Test that `execute_skills_command` dispatches 'ls' to `_list`."""
+
+    def test_ls_dispatches_to_list(self, tmp_path: Path) -> None:
+        """Verify `execute_skills_command` routes 'ls' to `_list()`."""
+        built_in_dir = tmp_path / "built_in_skills"
+        built_in_dir.mkdir()
+
+        mock_settings = patch(
+            "deepagents_cli.skills.commands.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: None,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        args = argparse.Namespace(skills_command="ls", agent="agent", project=False)
+
+        output: list[str] = []
+
+        def capture_print(*args_p: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args_p))
+
+        with (
+            mock_settings,
+            patch("deepagents_cli.skills.commands.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            execute_skills_command(args)
+
+        # Should have produced output (even if "No skills found")
+        # rather than falling through to show_skills_help()
+        joined = "\n".join(output)
+        assert "No skills found" in joined or "Available Skills" in joined

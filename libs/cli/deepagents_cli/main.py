@@ -131,7 +131,10 @@ def parse_args() -> argparse.Namespace:
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
     threads_list.add_argument(
-        "--limit", type=int, default=20, help="Max threads (default: 20)"
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of threads to display",
     )
 
     # threads delete

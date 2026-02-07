@@ -187,7 +187,7 @@ class BackendProtocol(abc.ABC):
             - `size` (optional): File size in bytes
             - `modified_at` (optional): ISO 8601 timestamp
         """
-        ...
+        raise NotImplementedError
 
     async def als_info(self, path: str) -> list["FileInfo"]:
         """Async version of ls_info."""
@@ -220,7 +220,7 @@ class BackendProtocol(abc.ABC):
             - ALWAYS read a file before editing it
             - If file exists but is empty, you'll receive a system reminder warning
         """
-        ...
+        raise NotImplementedError
 
     async def aread(
         self,
@@ -271,7 +271,7 @@ class BackendProtocol(abc.ABC):
 
             On error: str with error message (e.g., invalid path, permission denied)
         """
-        ...
+        raise NotImplementedError
 
     async def agrep_raw(
         self,
@@ -300,7 +300,7 @@ class BackendProtocol(abc.ABC):
         Returns:
             list of FileInfo
         """
-        ...
+        raise NotImplementedError
 
     async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
         """Async version of glob_info."""
@@ -322,7 +322,7 @@ class BackendProtocol(abc.ABC):
         Returns:
             WriteResult
         """
-        ...
+        raise NotImplementedError
 
     async def awrite(
         self,
@@ -354,7 +354,7 @@ class BackendProtocol(abc.ABC):
         Returns:
             EditResult
         """
-        ...
+        raise NotImplementedError
 
     async def aedit(
         self,
@@ -391,7 +391,7 @@ class BackendProtocol(abc.ABC):
             )
             ```
         """
-        ...
+        raise NotImplementedError
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Async version of upload_files."""
@@ -412,7 +412,7 @@ class BackendProtocol(abc.ABC):
             Response order matches input order (response[i] for paths[i]).
             Check the error field to determine success/failure per file.
         """
-        ...
+        raise NotImplementedError
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
@@ -437,13 +437,22 @@ class ExecuteResponse:
 
 
 class SandboxBackendProtocol(BackendProtocol):
-    """Protocol for sandboxed backends with isolated runtime.
+    """Extension of `BackendProtocol` that adds shell command execution.
 
-    Sandboxed backends run in isolated environments (e.g., separate processes,
-    containers) and communicate via defined interfaces.
+    Designed for backends running in isolated environments (containers, VMs,
+    remote hosts).
+
+    Adds `execute()`/`aexecute()` for shell commands and an `id` property.
+
+    See `BaseSandbox` for a base class that implements all inherited file
+    operations by delegating to `execute()`.
     """
 
-    @abc.abstractmethod
+    @property
+    def id(self) -> str:
+        """Unique identifier for the sandbox backend instance."""
+        raise NotImplementedError
+
     def execute(
         self,
         command: str,
@@ -458,7 +467,7 @@ class SandboxBackendProtocol(BackendProtocol):
         Returns:
             ExecuteResponse with combined output, exit code, optional signal, and truncation flag.
         """
-        ...
+        raise NotImplementedError
 
     async def aexecute(
         self,
@@ -466,12 +475,6 @@ class SandboxBackendProtocol(BackendProtocol):
     ) -> ExecuteResponse:
         """Async version of execute."""
         return await asyncio.to_thread(self.execute, command)
-
-    @property
-    @abc.abstractmethod
-    def id(self) -> str:
-        """Unique identifier for the sandbox backend instance."""
-        ...
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]

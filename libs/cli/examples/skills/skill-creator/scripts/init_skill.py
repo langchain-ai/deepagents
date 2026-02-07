@@ -158,7 +158,7 @@ Reference docs are ideal for:
 - Common patterns
 - Troubleshooting
 - Best practices
-"""
+"""  # noqa: E501
 
 EXAMPLE_ASSET = """# Example Asset File
 
@@ -184,11 +184,15 @@ Example asset files from other skills:
 - Data files: .csv, .json, .xml, .yaml
 
 Note: This is a text placeholder. Actual assets can be any file type.
-"""
+"""  # noqa: E501
 
 
 def title_case_skill_name(skill_name):
-    """Convert hyphenated skill name to Title Case for display."""
+    """Convert hyphenated skill name to Title Case for display.
+
+    Returns:
+        Skill name with each word capitalized.
+    """
     return " ".join(word.capitalize() for word in skill_name.split("-"))
 
 
@@ -220,7 +224,9 @@ def init_skill(skill_name, path):
 
     # Create SKILL.md from template
     skill_title = title_case_skill_name(skill_name)
-    skill_content = SKILL_TEMPLATE.format(skill_name=skill_name, skill_title=skill_title)
+    skill_content = SKILL_TEMPLATE.format(
+        skill_name=skill_name, skill_title=skill_title
+    )
 
     skill_md_path = skill_dir / "SKILL.md"
     try:
@@ -261,19 +267,22 @@ def init_skill(skill_name, path):
     print(f"\n✅ Skill '{skill_name}' initialized successfully at {skill_dir}")
     print("\nNext steps:")
     print("1. Edit SKILL.md to complete the TODO items and update the description")
-    print("2. Customize or delete the example files in scripts/, references/, and assets/")
+    print(
+        "2. Customize or delete the example files in scripts/, references/, and assets/"
+    )
     print("3. Run the validator when ready to check the skill structure")
 
     return skill_dir
 
 
 def main():
+    """Main entry point for the skill initialization script."""
     if len(sys.argv) < 4 or sys.argv[2] != "--path":
         print("Usage: init_skill.py <skill-name> --path <path>")
         print("\nSkill name requirements:")
         print(" - Hyphen-case identifier (e.g., 'data-analyzer')")
         print(" - Lowercase letters, digits, and hyphens only")
-        print(" - Max 40 characters")
+        print(" - Max 64 characters")
         print(" - Must match directory name exactly")
         print("\nExamples:")
         print(" init_skill.py my-new-skill --path skills/public")

@@ -1,4 +1,7 @@
-"""Tests for image utilities (clipboard detection, base64 encoding, multimodal content)."""
+"""Tests for image utilities.
+
+Covers clipboard detection, base64 encoding, and multimodal content.
+"""
 
 import base64
 import io
@@ -216,8 +219,14 @@ class TestGetClipboardImage:
 
     @patch("deepagents_cli.image_utils.sys.platform", "darwin")
     @patch("deepagents_cli.image_utils.subprocess.run")
-    def test_pngpaste_success(self, mock_run: MagicMock) -> None:
+    @patch("deepagents_cli.image_utils._get_executable")
+    def test_pngpaste_success(
+        self, mock_get_executable: MagicMock, mock_run: MagicMock
+    ) -> None:
         """Test successful image retrieval via pngpaste."""
+        # Mock _get_executable to return a path for pngpaste
+        mock_get_executable.return_value = "/usr/local/bin/pngpaste"
+
         # Create a small valid PNG
         img = Image.new("RGB", (10, 10), color="blue")
         buffer = io.BytesIO()
@@ -237,26 +246,32 @@ class TestGetClipboardImage:
 
     @patch("deepagents_cli.image_utils.sys.platform", "darwin")
     @patch("deepagents_cli.image_utils.subprocess.run")
-    def test_pngpaste_not_installed_falls_back(self, mock_run: MagicMock) -> None:
+    @patch("deepagents_cli.image_utils._get_executable")
+    def test_pngpaste_not_installed_falls_back(
+        self, mock_get_executable: MagicMock, mock_run: MagicMock
+    ) -> None:
         """Test fallback to osascript when pngpaste is not installed."""
-        # First call (pngpaste) raises FileNotFoundError
-        # Second call (osascript clipboard info) returns no image info
-        mock_run.side_effect = [
-            FileNotFoundError("pngpaste not found"),
-            MagicMock(returncode=0, stdout="text data"),  # clipboard info - no pngf
-        ]
+        # pngpaste not found, but osascript is available
+        mock_get_executable.side_effect = lambda name: (
+            "/usr/bin/osascript" if name == "osascript" else None
+        )
+
+        # osascript clipboard info returns no image info (no "pngf" in output)
+        mock_run.return_value = MagicMock(returncode=0, stdout="text data")
 
         result = get_clipboard_image()
 
         # Should return None since clipboard has no image
         assert result is None
-        # Should have tried both methods
-        assert mock_run.call_count == 2
+        # Should have tried osascript (clipboard info check)
+        assert mock_run.call_count == 1
 
     @patch("deepagents_cli.image_utils.sys.platform", "darwin")
     @patch("deepagents_cli.image_utils._get_clipboard_via_osascript")
     @patch("deepagents_cli.image_utils.subprocess.run")
-    def test_no_image_in_clipboard(self, mock_run: MagicMock, mock_osascript: MagicMock) -> None:
+    def test_no_image_in_clipboard(
+        self, mock_run: MagicMock, mock_osascript: MagicMock
+    ) -> None:
         """Test behavior when clipboard has no image."""
         # pngpaste fails
         mock_run.return_value = MagicMock(returncode=1, stdout=b"")

@@ -223,11 +223,13 @@ Examples:
 GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
 Searches for literal text (not regex) and returns matching files or content based on output_mode.
+Special characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
 - Search Python files only: `grep(pattern="import", glob="*.py")`
-- Show matching lines: `grep(pattern="error", output_mode="content")`"""
+- Show matching lines: `grep(pattern="error", output_mode="content")`
+- Search for code with special chars: `grep(pattern="def __init__(self):")`"""
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
@@ -343,13 +345,12 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
 
 
 TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
-You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-You can do this by specifying an offset and limit in the read_file tool call.
-For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
 
-Here is a preview showing the head and tail of the result (lines of the form
-... [N lines truncated] ...
-indicate omitted lines in the middle of the content):
+You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
+
+You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
+
+Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
 
 {content_sample}
 """
@@ -495,7 +496,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(path)
+            try:
+                validated_path = _validate_path(path)
+            except ValueError as e:
+                return f"Error: {e}"
             infos = resolved_backend.ls_info(validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
@@ -507,7 +511,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(path)
+            try:
+                validated_path = _validate_path(path)
+            except ValueError as e:
+                return f"Error: {e}"
             infos = await resolved_backend.als_info(validated_path)
             paths = [fi.get("path", "") for fi in infos]
             result = truncate_if_too_long(paths)
@@ -533,7 +540,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             result = resolved_backend.read(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)
@@ -559,7 +569,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)
@@ -595,7 +608,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> Command | str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
                 return res.error
@@ -621,7 +637,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> Command | str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
                 return res.error
@@ -661,7 +680,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> Command | str:
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
@@ -689,7 +711,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ) -> Command | str:
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
-            validated_path = _validate_path(file_path)
+            try:
+                validated_path = _validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error

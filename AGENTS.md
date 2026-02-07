@@ -24,7 +24,7 @@ deepagents/
 - `uv` – Fast Python package installer and resolver (replaces pip/poetry)
 - `make` – Task runner for common development commands. Feel free to look at the `Makefile` for available commands and usage patterns.
 - `ruff` – Fast Python linter and formatter
-- `mypy` – Static type checking
+- `ty` – Static type checking
 - `pytest` – Testing framework
 
 This monorepo uses `uv` for dependency management. Local development uses editable installs: `[tool.uv.sources]`
@@ -45,9 +45,6 @@ make lint
 
 # Format code
 make format
-
-# Type checking
-uv run --group lint mypy .
 ```
 
 #### Key config files
@@ -111,6 +108,8 @@ def filter_unknown_users(users: list[str], known_users: set[str]) -> list[str]:
 - Use descriptive, self-explanatory variable names.
 - Follow existing patterns in the codebase you're modifying
 - Attempt to break up complex functions (>20 lines) into smaller, focused functions where it makes sense
+- Avoid using the `any` type
+- Prefer single word variable names where possible
 
 ### Testing requirements
 
@@ -120,6 +119,8 @@ Every new feature or bugfix MUST be covered by unit tests.
 - Integration tests: `tests/integration_tests/` (network calls permitted)
 - We use `pytest` as the testing framework; if in doubt, check other existing tests for examples.
 - The testing file structure should mirror the source code structure.
+- Avoid mocks as much as possible
+- Test actual implementation, do not duplicate logic into tests
 
 **Checklist:**
 
@@ -168,6 +169,35 @@ def send_email(to: str, msg: str, *, priority: str = "normal") -> bool:
 - Document all parameters, return values, and exceptions
 - Keep descriptions concise but clear
 - Ensure American English spelling (e.g., "behavior", not "behaviour")
+- Do NOT use Sphinx-style double backtick formatting (` ``code`` `). Use single backticks (`` `code` ``) for inline code references in docstrings and comments.
+
+## Package-specific guidance
+
+### Deep Agents CLI (`libs/cli/`)
+
+`deepagents-cli` uses [Textual](https://textual.textualize.io/) for its terminal UI framework.
+
+**Key Textual resources:**
+
+- **Guide:** https://textual.textualize.io/guide/
+- **Widget gallery:** https://textual.textualize.io/widget_gallery/
+- **CSS reference:** https://textual.textualize.io/styles/
+- **API reference:** https://textual.textualize.io/api/
+
+**Textual patterns used in this codebase:**
+
+- **Workers** (`@work` decorator) for async operations - see [Workers guide](https://textual.textualize.io/guide/workers/)
+- **Message passing** for widget communication - see [Events guide](https://textual.textualize.io/guide/events/)
+- **Reactive attributes** for state management - see [Reactivity guide](https://textual.textualize.io/guide/reactivity/)
+
+**Building chat/streaming interfaces:**
+
+- Blog post: [Anatomy of a Textual User Interface](https://textual.textualize.io/blog/2024/09/15/anatomy-of-a-textual-user-interface/) - demonstrates building an AI chat interface with streaming responses
+
+**Testing Textual apps:**
+
+- Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
+- Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
 
 ## Additional resources
 

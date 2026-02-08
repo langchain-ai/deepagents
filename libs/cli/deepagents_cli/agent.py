@@ -359,7 +359,12 @@ def _format_execute_description(
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
-    """Configure human-in-the-loop interrupt_on settings for destructive tools.
+    """Configure human-in-the-loop interrupt settings for all gated tools.
+
+    Every tool that can have side effects or access external resources
+    (shell execution, file writes/edits, web search, URL fetch, task
+    delegation) is gated behind an approval prompt unless auto-approve
+    is enabled.
 
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
@@ -437,10 +442,12 @@ def create_cli_agent(
         system_prompt: Override the default system prompt.
 
             If `None`, generates one based on `sandbox_type` and `assistant_id`.
-        auto_approve: If `True`, automatically approves all tool calls without
-            human confirmation.
+        auto_approve: If `True`, no tools trigger human-in-the-loop
+            interrupts — all calls (shell execution, file writes/edits,
+            web search, URL fetch) run automatically.
 
-            Useful for automated workflows.
+            If `False`, tools pause for user confirmation via the approval menu.
+            See `_add_interrupt_on` for the full list of gated tools.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `CLIShellBackend`

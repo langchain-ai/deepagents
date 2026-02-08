@@ -652,7 +652,13 @@ class DeepAgentsApp(App):
         return result_future
 
     def _on_auto_approve_enabled(self) -> None:
-        """Callback when auto-approve mode is enabled via HITL."""
+        """Handle auto-approve being enabled via the HITL approval menu.
+
+        Called when the user selects "Auto-approve all" from an approval
+        dialog. Syncs the auto-approve state across the app flag, status
+        bar indicator, and session state so subsequent tool calls skip
+        the approval prompt.
+        """
         self._auto_approve = True
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=True)
@@ -1130,7 +1136,12 @@ class DeepAgentsApp(App):
         super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:
-        """Toggle auto-approve mode."""
+        """Toggle auto-approve mode for the current session.
+
+        When enabled, all tool calls (shell execution, file writes/edits,
+        web search, URL fetch) run without prompting. Updates the status
+        bar indicator and session state.
+        """
         self._auto_approve = not self._auto_approve
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=self._auto_approve)

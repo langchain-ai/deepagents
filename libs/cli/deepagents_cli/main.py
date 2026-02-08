@@ -269,7 +269,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--auto-approve",
         action="store_true",
-        help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
+        help=(
+            "Auto-approve all tool calls without prompting "
+            "(disables human-in-the-loop). Affected tools: shell "
+            "execution, file writes/edits, web search, and URL fetch. "
+            "Use with caution — the agent can execute arbitrary commands."
+        ),
     )
 
     parser.add_argument(

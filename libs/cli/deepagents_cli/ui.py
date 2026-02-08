@@ -274,7 +274,7 @@ def show_help() -> None:
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-4o)")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print(
-        "  --auto-approve             Auto-approve tool usage without prompting"
+        "  --auto-approve             Auto-approve all tool calls (toggle: Shift+Tab)"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(

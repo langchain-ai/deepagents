@@ -9,6 +9,10 @@ set, shell is disabled and all other tool calls are auto-approved via the
 all tool calls (shell and non-shell) pass through HITL, where non-shell
 tools are approved unconditionally and shell commands are validated against
 the list.
+
+Note: in non-interactive mode (`-n`), auto-approval is determined solely by
+whether a `--shell-allow-list` is present, not by the `--auto-approve` CLI
+flag. See `run_non_interactive` for details.
 """
 
 from __future__ import annotations

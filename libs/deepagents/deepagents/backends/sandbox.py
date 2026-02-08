@@ -30,6 +30,41 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 
+
+class SandboxError(Exception):
+    """Base exception for sandbox provider operations.
+
+    Provider implementations may raise provider-specific exceptions, but when
+    normalizing errors for callers, prefer raising `SandboxError` (or a subclass)
+    and chain the original exception.
+
+    The recommended pattern is:
+
+    ```python
+    try:
+        ...
+    except Exception as e:
+        raise SandboxError("...") from e
+    ```
+    """
+
+    @property
+    def original_exc(self) -> BaseException | None:
+        """Original exception this error was raised from.
+
+        This is populated when raised using exception chaining:
+
+        ```python
+        raise SandboxError("...") from e
+        ```
+        """
+        return self.__cause__
+
+
+class SandboxNotFoundError(SandboxError):
+    """Raised when a sandbox_id is provided but the sandbox does not exist."""
+
+
 # Type variable for provider-specific metadata
 MetadataT = TypeVar("MetadataT", covariant=True)
 """Type variable for sandbox metadata.

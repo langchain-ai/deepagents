@@ -1,8 +1,10 @@
 """Configuration, constants, and model creation for the CLI."""
 
 import json
+import logging
 import os
 import re
+import shlex
 import sys
 import uuid
 from dataclasses import dataclass
@@ -14,6 +16,8 @@ import dotenv
 from rich.console import Console
 
 from deepagents_cli._version import __version__
+
+logger = logging.getLogger(__name__)
 
 dotenv.load_dotenv()
 
@@ -33,6 +37,7 @@ from langchain_core.runnables import RunnableConfig  # noqa: E402
 # Color scheme
 COLORS = {
     "primary": "#10b981",
+    "primary_dev": "#f97316",
     "dim": "#6b7280",
     "user": "#ffffff",
     "agent": "#10b981",
@@ -215,12 +220,14 @@ def reset_glyphs_cache() -> None:
 # Text art banners (Unicode and ASCII variants)
 
 _UNICODE_BANNER = f"""
-██████╗  ███████╗ ███████╗ ██████╗
-██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
-██║  ██║ █████╗   █████╗   ██████╔╝
-██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝
-██████╔╝ ███████╗ ███████╗ ██║
-╚═════╝  ╚══════╝ ╚══════╝ ╚═╝
+██████╗  ███████╗ ███████╗ ██████╗    ▄▓▓▄
+██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗  ▓•███▙
+██║  ██║ █████╗   █████╗   ██████╔╝  ░▀▀████▙▖
+██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝      █▓████▙▖
+██████╔╝ ███████╗ ███████╗ ██║          ▝█▓█████▙
+╚═════╝  ╚══════╝ ╚══════╝ ╚═╝           ░▜█▓████▙
+                                          ░█▀█▛▀▀▜▙▄
+                                        ░▀░▀▒▛░░  ▝▀▘
 
  █████╗   ██████╗  ███████╗ ███╗   ██╗ ████████╗ ███████╗
 ██╔══██╗ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝ ██╔════╝
@@ -230,7 +237,6 @@ _UNICODE_BANNER = f"""
 ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
                                                   v{__version__}
 """
-
 _ASCII_BANNER = f"""
  ____  ____  ____  ____
 |  _ \\| ___|| ___||  _ \\
@@ -252,7 +258,7 @@ def get_banner() -> str:
 
     Returns:
         The text art banner string (Unicode or ASCII based on charset mode).
-        Includes "(local install)" suffix when installed in editable mode.
+        Includes "(local)" suffix when installed in editable mode.
     """
     if _detect_charset_mode() == CharsetMode.ASCII:
         banner = _ASCII_BANNER
@@ -260,13 +266,10 @@ def get_banner() -> str:
         banner = _UNICODE_BANNER
 
     if _is_editable_install():
-        banner = banner.replace(f"v{__version__}", f"v{__version__} (local install)")
+        banner = banner.replace(f"v{__version__}", f"v{__version__} (local)")
 
     return banner
 
-
-# Legacy alias for backwards compatibility
-DEEP_AGENTS_ASCII = _UNICODE_BANNER
 
 # Interactive commands
 COMMANDS = {
@@ -343,6 +346,46 @@ def _find_project_agent_md(project_root: Path) -> list[Path]:
     return paths
 
 
+def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
+    """Parse shell allow-list from string.
+
+    Args:
+        allow_list_str: Comma-separated list of commands, or "recommended" for
+            safe defaults.
+
+            Can also include "recommended" in the list to merge with custom commands.
+
+    Returns:
+        List of allowed commands, or None if no allow-list configured.
+    """
+    if not allow_list_str:
+        return None
+
+    # Special value "recommended" uses our curated safe list
+    if allow_list_str.strip().lower() == "recommended":
+        return list(RECOMMENDED_SAFE_SHELL_COMMANDS)
+
+    # Split by comma and strip whitespace
+    commands = [cmd.strip() for cmd in allow_list_str.split(",") if cmd.strip()]
+
+    # If "recommended" is in the list, merge with recommended commands
+    result = []
+    for cmd in commands:
+        if cmd.lower() == "recommended":
+            result.extend(RECOMMENDED_SAFE_SHELL_COMMANDS)
+        else:
+            result.append(cmd)
+
+    # Remove duplicates while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for cmd in result:
+        if cmd not in seen:
+            seen.add(cmd)
+            unique.append(cmd)
+    return unique
+
+
 @dataclass
 class Settings:
     """Global settings and environment detection for deepagents-cli.
@@ -354,15 +397,22 @@ class Settings:
     - File system paths
 
     Attributes:
-        project_root: Current project root directory (if in a git project)
-
-        openai_api_key: OpenAI API key if available
-        anthropic_api_key: Anthropic API key if available
-        tavily_api_key: Tavily API key if available
+        openai_api_key: OpenAI API key if available.
+        anthropic_api_key: Anthropic API key if available.
+        google_api_key: Google API key if available.
+        tavily_api_key: Tavily API key if available.
+        google_cloud_project: Google Cloud project ID for VertexAI
+            authentication.
         deepagents_langchain_project: LangSmith project name for deepagents
-            agent tracing
+            agent tracing.
         user_langchain_project: Original LANGSMITH_PROJECT from environment
-            (for user code)
+            (for user code).
+        model_name: Currently active model name (set after model creation).
+        model_provider: Provider identifier (e.g. openai, anthropic, google,
+            vertexai).
+        model_context_limit: Maximum input token count from the model profile.
+        project_root: Current project root directory (if in a git project).
+        shell_allow_list: List of shell commands that don't require approval.
     """
 
     # API keys
@@ -385,6 +435,9 @@ class Settings:
 
     # Project information
     project_root: Path | None = None
+
+    # Shell command allow-list for auto-approval
+    shell_allow_list: list[str] | None = None
 
     @classmethod
     def from_environment(cls, *, start_path: Path | None = None) -> "Settings":
@@ -414,6 +467,12 @@ class Settings:
         # Detect project
         project_root = _find_project_root(start_path)
 
+        # Parse shell command allow-list from environment
+        # Format: comma-separated list of commands (e.g., "ls,cat,grep,pwd")
+        # Special value "recommended" uses RECOMMENDED_SAFE_SHELL_COMMANDS
+        shell_allow_list_str = os.environ.get("DEEPAGENTS_SHELL_ALLOW_LIST")
+        shell_allow_list = parse_shell_allow_list(shell_allow_list_str)
+
         return cls(
             openai_api_key=openai_key,
             anthropic_api_key=anthropic_key,
@@ -423,6 +482,7 @@ class Settings:
             deepagents_langchain_project=deepagents_langchain_project,
             user_langchain_project=user_langchain_project,
             project_root=project_root,
+            shell_allow_list=shell_allow_list,
         )
 
     @property
@@ -667,19 +727,40 @@ class Settings:
             return None
         return self.project_root / ".agents" / "skills"
 
+    @staticmethod
+    def get_built_in_skills_dir() -> Path:
+        """Get the directory containing built-in skills that ship with the CLI.
+
+        Returns:
+            Path to the `built_in_skills/` directory within the package.
+        """
+        return Path(__file__).parent / "built_in_skills"
+
 
 # Global settings instance (initialized once)
 settings = Settings.from_environment()
 
 
 class SessionState:
-    """Holds mutable session state (auto-approve mode, etc)."""
+    """Mutable session state shared across the app, adapter, and agent.
+
+    Tracks runtime flags like auto-approve that can be toggled during a
+    session via keybindings or the HITL approval menu's "Auto-approve all"
+    option.
+
+    The `auto_approve` flag controls whether tool calls (shell execution, file
+    writes/edits, web search, URL fetch) require user confirmation before running.
+    """
 
     def __init__(self, auto_approve: bool = False, no_splash: bool = False) -> None:
         """Initialize session state with optional flags.
 
         Args:
-            auto_approve: Whether to auto-approve tool calls without prompting.
+            auto_approve: Whether to auto-approve tool calls without
+                prompting.
+
+                Can be toggled at runtime via Shift+Tab or the HITL
+                approval menu.
             no_splash: Whether to skip displaying the splash screen on startup.
         """
         self.auto_approve = auto_approve
@@ -689,13 +770,245 @@ class SessionState:
         self.thread_id = str(uuid.uuid4())
 
     def toggle_auto_approve(self) -> bool:
-        """Toggle auto-approve and return new state.
+        """Toggle auto-approve and return the new state.
+
+        Called by the Shift+Tab keybinding in the Textual app.
+
+        When auto-approve is on, all tool calls execute without prompting.
 
         Returns:
-            The new auto_approve state.
+            The new `auto_approve` state after toggling.
         """
         self.auto_approve = not self.auto_approve
         return self.auto_approve
+
+
+SHELL_TOOL_NAMES: frozenset[str] = frozenset({"bash", "shell", "execute"})
+"""Tool names recognized as shell/command-execution tools.
+
+Only `'execute'` is registered by the SDK and CLI backends in practice.
+`'bash'` and `'shell'` are legacy names carried over and kept as
+backwards-compatible aliases.
+"""
+
+DANGEROUS_SHELL_PATTERNS = (
+    "$(",  # Command substitution
+    "`",  # Backtick command substitution
+    "$'",  # ANSI-C quoting (can encode dangerous chars via escape sequences)
+    "\n",  # Newline (command injection)
+    "\r",  # Carriage return (command injection)
+    "\t",  # Tab (can be used for injection in some shells)
+    "<(",  # Process substitution (input)
+    ">(",  # Process substitution (output)
+    "<<<",  # Here-string
+    "<<",  # Here-doc (can embed commands)
+    ">>",  # Append redirect
+    ">",  # Output redirect
+    "<",  # Input redirect
+    "${",  # Variable expansion with braces (can run commands via ${var:-$(cmd)})
+)
+
+# Recommended safe shell commands for non-interactive mode.
+# These commands are primarily read-only and do not modify the filesystem
+# when used without shell redirection operators (which the dangerous-patterns
+# check blocks).
+#
+# EXCLUDED (dangerous - listed on GTFOBins/LOOBins or can modify system):
+# - All shells: bash, sh, zsh, fish, dash, ksh, csh, tcsh, etc.
+# - Editors: vim, vi, nano, emacs, ed, etc. (can spawn shells)
+# - Interpreters: python, perl, ruby, node, php, lua, awk, gawk, etc.
+# - Package managers: pip, npm, gem, apt, yum, brew, etc.
+# - Compilers: gcc, cc, make, cmake, etc.
+# - Network tools: curl, wget, nc, ssh, scp, ftp, telnet, etc.
+# - Archivers with shell escape: tar, zip, 7z, etc.
+# - System modifiers: chmod, chown, chattr, mv, rm, cp, dd, etc.
+# - Privilege tools: sudo, su, doas, pkexec, etc.
+# - Process tools: env, xargs, find (with -exec), etc.
+# - Git (can run hooks), docker, kubectl, etc.
+#
+# SAFE commands included below are primarily readers/formatters. File write and
+# injection are prevented by the dangerous-patterns check that blocks redirects,
+# command substitution, and other shell metacharacters.
+RECOMMENDED_SAFE_SHELL_COMMANDS = (
+    # Directory listing
+    "ls",
+    "dir",
+    # File content viewing (read-only)
+    "cat",
+    "head",
+    "tail",
+    # Text searching (read-only)
+    "grep",
+    "wc",
+    "strings",
+    # Text processing (read-only, no shell execution)
+    "cut",
+    "tr",
+    "diff",
+    "md5sum",
+    "sha256sum",
+    # Path utilities
+    "pwd",
+    "which",
+    # System info (read-only)
+    "uname",
+    "hostname",
+    "whoami",
+    "id",
+    "groups",
+    "uptime",
+    "nproc",
+    "lscpu",
+    "lsmem",
+    # Process viewing (read-only)
+    "ps",
+)
+
+
+def contains_dangerous_patterns(command: str) -> bool:
+    """Check if a command contains dangerous shell patterns.
+
+    These patterns can be used to bypass allow-list validation by embedding
+    arbitrary commands within seemingly safe commands. The check includes
+    both literal substring patterns (redirects, substitution operators, etc.)
+    and regex patterns for bare variable expansion (`$VAR`) and the background
+    operator (`&`).
+
+    Args:
+        command: The shell command to check.
+
+    Returns:
+        True if dangerous patterns are found, False otherwise.
+    """
+    if any(pattern in command for pattern in DANGEROUS_SHELL_PATTERNS):
+        return True
+
+    # Bare variable expansion ($VAR without braces) can leak sensitive paths.
+    # We already block ${ and $( above; this catches plain $HOME, $IFS, etc.
+    if re.search(r"\$[A-Za-z_]", command):
+        return True
+
+    # Standalone & (background execution) changes the execution model and
+    # should not be allowed.  We check for & that is NOT part of &&.
+    return bool(re.search(r"(?<![&])&(?![&])", command))
+
+
+def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool:
+    """Check if a shell command is in the allow-list.
+
+    The allow-list matches against the first token of the command (the executable name).
+    This allows read-only commands like ls, cat, grep, etc. to be auto-approved.
+
+    SECURITY: This function rejects commands containing dangerous shell patterns
+    (command substitution, redirects, process substitution, etc.) BEFORE parsing,
+    to prevent injection attacks that could bypass the allow-list.
+
+    Args:
+        command: The full shell command to check
+        allow_list: List of allowed command names (e.g., ["ls", "cat", "grep"])
+
+    Returns:
+        True if the command is allowed, False otherwise.
+    """
+    if not allow_list or not command or not command.strip():
+        return False
+
+    # SECURITY: Check for dangerous patterns BEFORE any parsing
+    # This prevents injection attacks like: ls "$(rm -rf /)"
+    if contains_dangerous_patterns(command):
+        return False
+
+    allow_set = set(allow_list)
+
+    # Extract the first command token
+    # Handle pipes and other shell operators by checking each command in the pipeline
+    # Split by compound operators first (&&, ||), then single-char operators (|, ;).
+    # Note: standalone & (background) is blocked by contains_dangerous_patterns above.
+    segments = re.split(r"&&|\|\||[|;]", command)
+
+    # Track if we found at least one valid command
+    found_command = False
+
+    for raw_segment in segments:
+        segment = raw_segment.strip()
+        if not segment:
+            continue
+
+        try:
+            # Try to parse as shell command to extract the executable name
+            tokens = shlex.split(segment)
+            if tokens:
+                found_command = True
+                cmd_name = tokens[0]
+                # Check if this command is in the allow set
+                if cmd_name not in allow_set:
+                    return False
+        except ValueError:
+            # If we can't parse it, be conservative and require approval
+            return False
+
+    # All segments are allowed (and we found at least one command)
+    return found_command
+
+
+def get_langsmith_project_name() -> str | None:
+    """Resolve the LangSmith project name if tracing is configured.
+
+    Checks for the required API key and tracing environment variables.
+    When both are present, resolves the project name with priority:
+    `settings.deepagents_langchain_project` (from
+    `DEEPAGENTS_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
+    environment (note: this may already have been overridden at import
+    time to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
+
+    Returns:
+        Project name string when LangSmith tracing is active, None otherwise.
+    """
+    langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
+        "LANGCHAIN_API_KEY"
+    )
+    langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
+        "LANGCHAIN_TRACING_V2"
+    )
+    if not (langsmith_key and langsmith_tracing):
+        return None
+
+    return (
+        settings.deepagents_langchain_project
+        or os.environ.get("LANGSMITH_PROJECT")
+        or "default"
+    )
+
+
+def fetch_langsmith_project_url(project_name: str) -> str | None:
+    """Fetch the LangSmith project URL via the LangSmith client.
+
+    This is a blocking network call. In async contexts, run it in a thread
+    (e.g. via `asyncio.to_thread`).
+
+    Returns None (with a debug log) on any expected failure: missing
+    `langsmith` package, network errors, invalid project names, or client
+    initialization issues.
+
+    Args:
+        project_name: LangSmith project name to look up.
+
+    Returns:
+        Project URL string if found, None otherwise.
+    """
+    try:
+        from langsmith import Client
+
+        project = Client().read_project(project_name=project_name)
+    except (ImportError, OSError, ValueError, RuntimeError):
+        logger.debug(
+            "Could not fetch LangSmith project URL for '%s'",
+            project_name,
+            exc_info=True,
+        )
+        return None
+    else:
+        return project.url or None
 
 
 def get_default_coding_instructions() -> str:

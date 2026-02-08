@@ -13,6 +13,8 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 
+from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
+
 if TYPE_CHECKING:
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
 from langchain.agents.middleware import (
@@ -37,8 +39,10 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
-from deepagents_cli.shell import ShellMiddleware
 from deepagents_cli.subagents import list_subagents
+
+DEFAULT_AGENT_NAME = "agent"
+"""The default agent name used when no `-a` flag is provided."""
 
 
 def list_agents() -> None:
@@ -60,16 +64,20 @@ def list_agents() -> None:
         if agent_path.is_dir():
             agent_name = agent_path.name
             agent_md = agent_path / "AGENTS.md"
+            is_default = agent_name == DEFAULT_AGENT_NAME
+            default_label = " [dim](default)[/dim]" if is_default else ""
 
             bullet = get_glyphs().bullet
             if agent_md.exists():
                 console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]", style=COLORS["primary"]
+                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
+                    style=COLORS["primary"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
             else:
                 console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold] [dim](incomplete)[/dim]",
+                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
+                    " [dim](incomplete)[/dim]",
                     style=COLORS["tool"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
@@ -337,19 +345,6 @@ def _format_task_description(
     )
 
 
-def _format_shell_description(
-    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
-) -> str:
-    """Format shell tool call for approval prompt.
-
-    Returns:
-        Formatted description string for the shell tool call.
-    """
-    args = tool_call["args"]
-    command = args.get("command", "N/A")
-    return f"Shell Command: {command}\nWorking Directory: {Path.cwd()}"
-
-
 def _format_execute_description(
     tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
 ) -> str:
@@ -360,20 +355,20 @@ def _format_execute_description(
     """
     args = tool_call["args"]
     command = args.get("command", "N/A")
-    return f"Execute Command: {command}\nLocation: Remote Sandbox"
+    return f"Execute Command: {command}\nWorking Directory: {Path.cwd()}"
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
-    """Configure human-in-the-loop interrupt_on settings for destructive tools.
+    """Configure human-in-the-loop interrupt settings for all gated tools.
+
+    Every tool that can have side effects or access external resources
+    (shell execution, file writes/edits, web search, URL fetch, task
+    delegation) is gated behind an approval prompt unless auto-approve
+    is enabled.
 
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
     """
-    shell_interrupt_config: InterruptOnConfig = {
-        "allowed_decisions": ["approve", "reject"],
-        "description": _format_shell_description,  # type: ignore[typeddict-item]
-    }
-
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_execute_description,  # type: ignore[typeddict-item]
@@ -403,8 +398,8 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "allowed_decisions": ["approve", "reject"],
         "description": _format_task_description,  # type: ignore[typeddict-item]
     }
+
     return {
-        "shell": shell_interrupt_config,
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
@@ -447,14 +442,16 @@ def create_cli_agent(
         system_prompt: Override the default system prompt.
 
             If `None`, generates one based on `sandbox_type` and `assistant_id`.
-        auto_approve: If `True`, automatically approves all tool calls without
-            human confirmation.
+        auto_approve: If `True`, no tools trigger human-in-the-loop
+            interrupts — all calls (shell execution, file writes/edits,
+            web search, URL fetch) run automatically.
 
-            Useful for automated workflows.
+            If `False`, tools pause for user confirmation via the approval menu.
+            See `_add_interrupt_on` for the full list of gated tools.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
-        enable_shell: Enable `ShellMiddleware` for local shell execution
-            (only in local mode)
+        enable_shell: Enable shell execution via `CLIShellBackend`
+            (only in local mode). When enabled, the `execute` tool is available.
         checkpointer: Optional checkpointer for session persistence.
 
             If `None`, uses `InMemorySaver` (no persistence across
@@ -522,7 +519,9 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        sources = [str(skills_dir)]
+        # Built-in first (lowest precedence), then user, then project (highest)
+        sources = [str(settings.get_built_in_skills_dir())]
+        sources.append(str(skills_dir))
         if project_skills_dir:
             sources.append(str(project_skills_dir))
 
@@ -536,12 +535,6 @@ def create_cli_agent(
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     if sandbox is None:
         # ========== LOCAL MODE ==========
-        backend = FilesystemBackend()
-
-        # Local context middleware (git info, directory tree, etc.)
-        agent_middleware.append(LocalContextMiddleware())
-
-        # Add shell middleware (only in local mode)
         if enable_shell:
             # Create environment for shell commands
             # Restore user's original LANGSMITH_PROJECT so their code traces separately
@@ -549,12 +542,20 @@ def create_cli_agent(
             if settings.user_langchain_project:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
 
-            agent_middleware.append(
-                ShellMiddleware(
-                    workspace_root=str(Path.cwd()),
-                    env=shell_env,
-                )
+            # Use CLIShellBackend for filesystem + shell execution.
+            # Provides `execute` tool via FilesystemMiddleware with per-command
+            # timeout support.
+            backend = CLIShellBackend(
+                root_dir=Path.cwd(),
+                inherit_env=True,
+                env=shell_env,
             )
+        else:
+            # No shell access - use plain FilesystemBackend
+            backend = FilesystemBackend()
+
+        # Local context middleware (git info, directory tree, etc.)
+        agent_middleware.append(LocalContextMiddleware())
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalBackend, etc.)
@@ -605,6 +606,11 @@ def create_cli_agent(
 
     # Create the agent
     # Use provided checkpointer or fallback to InMemorySaver
+    if sandbox is None and enable_shell:
+        # Patch FilesystemMiddleware so the SDK constructs our subclass with
+        # per-command timeout support on the execute tool. Only needed in local
+        # shell mode -- remote sandbox backends do not accept the timeout kwarg.
+        patch_filesystem_middleware()
     final_checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
     agent = create_deep_agent(
         model=model,

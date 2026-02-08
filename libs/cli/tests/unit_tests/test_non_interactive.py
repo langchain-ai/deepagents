@@ -24,14 +24,15 @@ class TestMakeHitlDecision:
         )
         assert result == {"type": "approve"}
 
-    def test_shell_without_allow_list_approved(self, console: Console) -> None:
-        """Shell commands should be approved when no allow-list is configured."""
+    def test_shell_without_allow_list_rejected(self, console: Console) -> None:
+        """Shell commands should be rejected when no allow-list is configured."""
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = None
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "rm -rf /"}}, console
             )
-            assert result == {"type": "approve"}
+            assert result["type"] == "reject"
+            assert "not permitted" in result["message"]
 
     def test_shell_allowed_command_approved(self, console: Console) -> None:
         """Shell commands in the allow-list should be approved."""

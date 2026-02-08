@@ -645,3 +645,36 @@ class TestContainsDangerousPatterns:
     def test_multiple_dangerous_patterns(self) -> None:
         """Commands with multiple dangerous patterns should be detected."""
         assert contains_dangerous_patterns("cat $(cmd) > /tmp/out")
+
+
+class TestFindExecLimitation:
+    """Document that `find -exec` is NOT caught by `contains_dangerous_patterns`.
+
+    `find -exec` enables arbitrary command execution but uses a flag rather than
+    a shell metacharacter, so the substring-based pattern check cannot detect it.
+    This is why `find` is excluded from `RECOMMENDED_SAFE_SHELL_COMMANDS`. Users
+    who add `find` to a custom allow-list accept this risk.
+    """
+
+    def test_find_exec_not_caught_by_dangerous_patterns(self) -> None:
+        """Find -exec bypasses dangerous-pattern detection (known limitation)."""
+        # The `-exec` flag is not a shell metacharacter, so the pattern
+        # checker cannot detect it.
+        assert not contains_dangerous_patterns("find . -exec rm {} +")
+
+    def test_find_exec_plus_allowed_when_find_in_allow_list(self) -> None:
+        """Find -exec ... + is allowed if find is in the custom allow-list.
+
+        This is a known limitation: the `+` variant of `-exec` does not
+        trigger any operator or dangerous-pattern check, so the allow-list
+        gate is the only protection.
+        """
+        assert is_shell_command_allowed("find . -exec rm {} +", ["find"])
+
+    def test_find_exec_rejected_when_find_not_in_allow_list(self) -> None:
+        """Find -exec is rejected when find is not in the allow-list."""
+        assert not is_shell_command_allowed("find . -exec rm {} +", ["ls", "cat"])
+
+    def test_find_delete_not_caught_by_dangerous_patterns(self) -> None:
+        """Find -delete bypasses dangerous-pattern detection (known limitation)."""
+        assert not contains_dangerous_patterns("find . -name '*.tmp' -delete")

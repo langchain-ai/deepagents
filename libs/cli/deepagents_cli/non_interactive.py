@@ -3,8 +3,12 @@
 Provides `run_non_interactive` which runs a single user task against the
 agent graph, streams results to stdout, and exits with an appropriate code.
 
-Shell commands are gated by an optional allow-list; all other tool calls are
-auto-approved so that the agent can operate without a human in the loop.
+Shell commands are gated by an optional allow-list. When no allow-list is
+set, shell is disabled and all other tool calls are auto-approved via the
+`auto_approve` flag. When an allow-list is provided, shell is enabled and
+all tool calls (shell and non-shell) pass through HITL, where non-shell
+tools are approved unconditionally and shell commands are validated against
+the list.
 """
 
 from __future__ import annotations
@@ -266,11 +270,11 @@ def _make_hitl_decision(
 ) -> dict[str, str]:
     """Decide whether to approve or reject a single action request.
 
-    When a `shell_allow_list` is configured and the action is a shell tool,
-    the command is validated against the allow-list. All other actions
-    (non-shell tools, or shell when no allow-list is set) are approved
-    unconditionally -- the allow-list is the **only** gating mechanism in
-    non-interactive mode.
+    Shell tools are always gated: if an allow-list is configured, the command
+    is validated against it; if no allow-list is configured, shell commands
+    are rejected outright (defense-in-depth -- the caller should disable
+    shell tools when no allow-list is present, but this function fails
+    closed regardless). Non-shell tools are approved unconditionally.
 
     Args:
         action_request: The action-request dict emitted by the HITL middleware.
@@ -284,7 +288,22 @@ def _make_hitl_decision(
     """
     action_name = action_request.get("name", "")
 
-    if action_name in SHELL_TOOL_NAMES and settings.shell_allow_list:
+    if action_name in SHELL_TOOL_NAMES:
+        if not settings.shell_allow_list:
+            command = action_request.get("args", {}).get("command", "")
+            console.print(
+                f"\n[red]Shell command rejected (no allow-list configured): "
+                f"{command}[/red]"
+            )
+            return {
+                "type": "reject",
+                "message": (
+                    "Shell commands are not permitted in non-interactive mode "
+                    "without a --shell-allow-list. Use --shell-allow-list to "
+                    "specify allowed commands."
+                ),
+            }
+
         command = action_request.get("args", {}).get("command", "")
 
         if is_shell_command_allowed(command, settings.shell_allow_list):

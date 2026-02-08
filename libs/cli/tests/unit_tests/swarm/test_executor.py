@@ -8,8 +8,12 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from deepagents_cli.swarm.executor import SwarmExecutor, get_default_output_dir
-from deepagents_cli.swarm.types import SwarmProgress, SwarmTask
+from deepagents_cli.swarm.middleware import (
+    SwarmExecutor,
+    SwarmProgress,
+    SwarmTask,
+    get_default_output_dir,
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import Runnable

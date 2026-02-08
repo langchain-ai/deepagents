@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from deepagents_cli.swarm.parser import TaskFileError, parse_task_file
+from deepagents_cli.swarm.middleware import TaskFileError, parse_task_file
 
 
 @pytest.fixture

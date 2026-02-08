@@ -7,7 +7,6 @@ import logging
 import os
 
 # S404: subprocess is required for user-initiated shell commands via ! prefix
-import os
 import subprocess  # noqa: S404
 import uuid
 from contextlib import suppress

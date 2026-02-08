@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass
 from typing import Any, Never
 
@@ -248,7 +249,6 @@ def test_store_backend_namespace_isolation() -> None:
 
 def test_store_backend_namespace_error_handling() -> None:
     """Test that factory errors propagate correctly."""
-    import pytest
 
     def bad_factory(_ctx: BackendContext[Any, Any]) -> Never:
         msg = "user_id"
@@ -271,8 +271,6 @@ def test_store_backend_namespace_error_handling() -> None:
 
 def test_store_backend_namespace_legacy_mode() -> None:
     """Test that legacy mode still works when no namespace is provided, but emits deprecation warning."""
-    import warnings
-
     store = InMemoryStore()
     rt = ToolRuntime(
         state={"messages": []},

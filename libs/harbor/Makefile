@@ -48,7 +48,7 @@ run-terminal-bench-runloop:
 
 # Define a variable for Python and notebook files.
 lint format: PYTHON_FILES=deepagents_harbor/ tests/
-lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
+lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
 
 lint lint_diff:
 	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff format $(PYTHON_FILES) --diff

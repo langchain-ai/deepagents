@@ -3,6 +3,7 @@
 import requests
 import responses
 
+import deepagents_cli.tools as tools_module
 from deepagents_cli.tools import fetch_url
 
 
@@ -70,3 +71,52 @@ def test_fetch_url_connection_error() -> None:
     assert "error" in result
     assert "Fetch URL error" in result["error"]
     assert result["url"] == "http://example.com/error"
+
+
+@responses.activate
+def test_fetch_url_markdownify_recursion_falls_back(monkeypatch) -> None:
+    """Test fallback behavior when markdownify hits recursion limits."""
+    responses.add(
+        responses.GET,
+        "http://example.com/recursive",
+        body="<html><body><h1>Hello</h1><p>World</p></body></html>",
+        status=200,
+    )
+
+    def _raise_recursion(_html: str) -> str:
+        msg = "maximum recursion depth exceeded"
+        raise RecursionError(msg)
+
+    monkeypatch.setattr(tools_module, "markdownify", _raise_recursion)
+
+    result = fetch_url("http://example.com/recursive")
+
+    assert result["status_code"] == 200
+    assert "conversion_warning" in result
+    assert "RecursionError" in result["conversion_warning"]
+    assert "Hello" in result["markdown_content"]
+    assert "World" in result["markdown_content"]
+
+
+@responses.activate
+def test_fetch_url_markdownify_value_error_falls_back(monkeypatch) -> None:
+    """Test fallback behavior when markdownify raises ValueError."""
+    responses.add(
+        responses.GET,
+        "http://example.com/invalid",
+        body="<html><body><div>Safe fallback</div></body></html>",
+        status=200,
+    )
+
+    def _raise_value_error(_html: str) -> str:
+        msg = "invalid character reference"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(tools_module, "markdownify", _raise_value_error)
+
+    result = fetch_url("http://example.com/invalid")
+
+    assert result["status_code"] == 200
+    assert "conversion_warning" in result
+    assert "ValueError" in result["conversion_warning"]
+    assert "Safe fallback" in result["markdown_content"]

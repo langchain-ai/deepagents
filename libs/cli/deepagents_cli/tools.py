@@ -1,5 +1,7 @@
 """Custom tools for the CLI agent."""
 
+import html
+import re
 from typing import Any, Literal
 
 import requests
@@ -19,6 +21,32 @@ from deepagents_cli.config import settings
 tavily_client = (
     TavilyClient(api_key=settings.tavily_api_key) if settings.has_tavily else None
 )
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_SCRIPT_STYLE_RE = re.compile(
+    r"<(script|style)\b[^>]*>.*?</\1>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _fallback_html_to_text(html_content: str) -> str:
+    """Convert HTML to plain text without parser recursion risk.
+
+    Args:
+        html_content: Raw HTML document.
+
+    Returns:
+        Plain text approximation of the HTML content.
+    """
+    without_script_style = _SCRIPT_STYLE_RE.sub(" ", html_content)
+    without_tags = _TAG_RE.sub(" ", without_script_style)
+    unescaped = html.unescape(without_tags)
+    normalized = _WHITESPACE_RE.sub(" ", unescaped).strip()
+    if normalized:
+        return normalized
+    return html_content[:50_000]
 
 
 def http_request(
@@ -182,15 +210,26 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
             headers={"User-Agent": "Mozilla/5.0 (compatible; DeepAgents/1.0)"},
         )
         response.raise_for_status()
-
-        # Convert HTML content to markdown
-        markdown_content = markdownify(response.text)
-
-        return {
-            "url": str(response.url),
-            "markdown_content": markdown_content,
-            "status_code": response.status_code,
-            "content_length": len(markdown_content),
-        }
     except requests.exceptions.RequestException as e:
         return {"error": f"Fetch URL error: {e!s}", "url": url}
+
+    # Convert HTML content to markdown; fall back for malformed/deeply nested pages.
+    conversion_warning: str | None = None
+    try:
+        markdown_content = markdownify(response.text)
+    except (RecursionError, ValueError) as exc:
+        markdown_content = _fallback_html_to_text(response.text)
+        conversion_warning = (
+            "Used plain-text fallback due to markdown conversion error "
+            f"({type(exc).__name__}: {exc})."
+        )
+
+    result: dict[str, Any] = {
+        "url": str(response.url),
+        "markdown_content": markdown_content,
+        "status_code": response.status_code,
+        "content_length": len(markdown_content),
+    }
+    if conversion_warning is not None:
+        result["conversion_warning"] = conversion_warning
+    return result

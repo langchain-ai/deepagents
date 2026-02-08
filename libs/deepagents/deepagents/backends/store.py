@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
 from langgraph.config import get_config
+
+if TYPE_CHECKING:
+    from langchain.tools import ToolRuntime
 from langgraph.store.base import BaseStore, Item
 from langgraph.typing import ContextT, StateT
 
@@ -187,7 +190,7 @@ class StoreBackend(BackendProtocol):
             return (namespace,)
 
         try:
-            assistant_id = cfg.get("metadata", {}).get("assistant_id")  # type: ignore[assignment]
+            assistant_id = cfg.get("metadata", {}).get("assistant_id")
         except Exception:
             assistant_id = None
 
@@ -529,7 +532,7 @@ class StoreBackend(BackendProtocol):
     def grep_raw(
         self,
         pattern: str,
-        path: str = "/",
+        path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
         store = self._get_store()

@@ -4,13 +4,15 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
+    ContextT,
     ModelRequest,
     ModelResponse,
+    ResponseT,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -383,7 +385,7 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     return head_sample + truncation_notice + tail_sample
 
 
-class FilesystemMiddleware(AgentMiddleware):
+class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
     """Middleware for providing filesystem and optional execution tools to an agent.
 
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
@@ -471,7 +473,7 @@ class FilesystemMiddleware(AgentMiddleware):
             self._create_execute_tool(),
         ]
 
-    def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
+    def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
 
         Args:
@@ -839,7 +841,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 )
 
             try:
-                result = resolved_backend.execute(command)
+                result = resolved_backend.execute(command)  # ty: ignore[unresolved-attribute]
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -872,7 +874,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 )
 
             try:
-                result = await resolved_backend.aexecute(command)
+                result = await resolved_backend.aexecute(command)  # ty: ignore[unresolved-attribute]
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -898,9 +900,9 @@ class FilesystemMiddleware(AgentMiddleware):
 
     def wrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
         """Update the system prompt and filter tools based on backend capabilities.
 
         Args:
@@ -916,7 +918,7 @@ class FilesystemMiddleware(AgentMiddleware):
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
             backend_supports_execution = _supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out
@@ -946,9 +948,9 @@ class FilesystemMiddleware(AgentMiddleware):
 
     async def awrap_model_call(
         self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
         """(async) Update the system prompt and filter tools based on backend capabilities.
 
         Args:
@@ -964,7 +966,7 @@ class FilesystemMiddleware(AgentMiddleware):
         backend_supports_execution = False
         if has_execute_tool:
             # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
             backend_supports_execution = _supports_execution(backend)
 
             # If execute tool exists but backend doesn't support it, filter it out

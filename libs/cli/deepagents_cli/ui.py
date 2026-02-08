@@ -294,6 +294,21 @@ def show_help() -> None:
     console.print("  -h, --help                 Show this help message and exit")
     console.print()
 
+    console.print("[bold]Non-Interactive Mode:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  deepagents -n 'Summarize README.md'     # Run task (no local shell access)",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",  # noqa: E501
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Specify list",
+        style=COLORS["dim"],
+    )
+    console.print()
+
 
 def show_list_help() -> None:
     """Show help information for the `list` subcommand.
@@ -376,31 +391,6 @@ def show_skills_help() -> None:
         style=COLORS["dim"],
     )
     console.print()
-
-    console.print("[bold]Non-Interactive Mode:[/bold]", style=COLORS["primary"])
-    console.print(
-        "  deepagents -n 'Summarize README.md'     # Run task (no local shell access)",
-        style=COLORS["dim"],
-    )
-    console.print(
-        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",  # noqa: E501
-        style=COLORS["dim"],
-    )
-    console.print(
-        "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Or specify your own list",  # noqa: E501
-        style=COLORS["dim"],
-    )
-    console.print()
-
-    console.print("[bold]Thread Management:[/bold]", style=COLORS["primary"])
-    console.print(
-        "  deepagents threads list                 # List all sessions",
-        style=COLORS["dim"],
-    )
-    console.print(
-        "  deepagents threads delete <ID>          # Delete a session",
-        style=COLORS["dim"],
-    )
 
 
 def show_skills_list_help() -> None:

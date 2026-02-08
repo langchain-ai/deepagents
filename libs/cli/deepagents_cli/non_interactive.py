@@ -192,7 +192,9 @@ def _process_message_chunk(
 
     message_obj, metadata = data
 
-    # Skip summarization chunks
+    # The summarization middleware injects synthetic messages to compress
+    # conversation history for the LLM. These are internal bookkeeping and
+    # should not be rendered to the user.
     if metadata and metadata.get("lc_source") == "summarization":
         return
 

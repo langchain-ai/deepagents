@@ -253,9 +253,6 @@ def show_help() -> None:
         "  deepagents [OPTIONS]                           Start interactive thread"
     )
     console.print(
-        "  deepagents -n 'MESSAGE'                        Run non-interactively"
-    )
-    console.print(
         "  deepagents list                                List all available agents"
     )
     console.print(

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from langchain.agents.middleware.human_in_the_loop import HITLRequest
+from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter
@@ -17,7 +17,6 @@ from rich.console import Console
 from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.config import create_model, is_shell_command_allowed, settings
 from deepagents_cli.file_ops import FileOpTracker
-from deepagents_cli.integrations.sandbox_factory import create_sandbox
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
@@ -49,18 +48,22 @@ class StreamState:
     """Tracks state during agent stream processing."""
 
     full_response: list[str] = field(default_factory=list)
-    tool_call_buffers: dict[Any, dict[str, Any]] = field(default_factory=dict)
-    pending_interrupts: dict[str, Any] = field(default_factory=dict)
-    hitl_response: dict[str, Any] = field(default_factory=dict)
+    tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
+        default_factory=dict
+    )
+    pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
+    hitl_response: dict[str, dict[str, list[dict[str, str]]]] = field(
+        default_factory=dict
+    )
     interrupt_occurred: bool = False
 
 
 def _process_interrupts(
-    data: dict[str, Any],
+    data: dict[str, list[Interrupt]],
     state: StreamState,
 ) -> None:
     """Process interrupt data and update state."""
-    interrupts: list[Interrupt] = data["__interrupt__"]
+    interrupts = data["__interrupt__"]
     if interrupts:
         for interrupt_obj in interrupts:
             validated_request = _HITL_REQUEST_ADAPTER.validate_python(
@@ -70,64 +73,47 @@ def _process_interrupts(
             state.interrupt_occurred = True
 
 
-def _process_text_block(block: dict[str, Any], state: StreamState) -> None:
-    """Process a text block from the stream."""
-    text = block.get("text", "")
-    if text:
-        _write_text(text)
-        state.full_response.append(text)
-
-
-def _process_tool_call_block(
-    block: dict[str, Any],
-    state: StreamState,
-    console: Console,
-) -> None:
-    """Process a tool call block from the stream."""
-    chunk_name = block.get("name")
-    chunk_id = block.get("id")
-    chunk_index = block.get("index")
-
-    buffer_key = (
-        chunk_index
-        if chunk_index is not None
-        else (
-            chunk_id
-            if chunk_id is not None
-            else f"unknown-{len(state.tool_call_buffers)}"
-        )
-    )
-
-    if buffer_key not in state.tool_call_buffers:
-        state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
-
-    if chunk_name:
-        state.tool_call_buffers[buffer_key]["name"] = chunk_name
-        if state.full_response:
-            _write_newline()
-        console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
-
-
 def _process_ai_message(
     message_obj: AIMessage,
     state: StreamState,
     console: Console,
 ) -> None:
     """Process an AI message from the stream."""
-    if hasattr(message_obj, "content_blocks"):
-        for block in message_obj.content_blocks:
-            if not isinstance(block, dict):
-                continue
-            typed_block = cast("dict[str, Any]", block)
-            block_type = typed_block.get("type")
-            if block_type == "text":
-                _process_text_block(typed_block, state)
-            elif block_type in {"tool_call_chunk", "tool_call"}:
-                _process_tool_call_block(typed_block, state, console)
+    if not hasattr(message_obj, "content_blocks"):
+        return
+    for block in message_obj.content_blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text", "")
+            if text:
+                _write_text(text)
+                state.full_response.append(text)
+        elif block_type in {"tool_call_chunk", "tool_call"}:
+            chunk_name = block.get("name")
+            chunk_id = block.get("id")
+            chunk_index = block.get("index")
+            buffer_key = (
+                chunk_index
+                if chunk_index is not None
+                else (
+                    chunk_id
+                    if chunk_id is not None
+                    else f"unknown-{len(state.tool_call_buffers)}"
+                )
+            )
+            if buffer_key not in state.tool_call_buffers:
+                state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
+            if chunk_name:
+                state.tool_call_buffers[buffer_key]["name"] = chunk_name
+                if state.full_response:
+                    _write_newline()
+                console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
 
 
 def _process_message_chunk(
-    data: tuple[Any, Any],
+    data: tuple[AIMessage | ToolMessage, dict[str, str]],
     state: StreamState,
     console: Console,
     file_op_tracker: FileOpTracker,
@@ -167,15 +153,18 @@ def _process_stream_chunk(
         return
 
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
-        _process_interrupts(cast("dict[str, Any]", data), state)
-    elif stream_mode == "messages" and isinstance(data, tuple):
+        _process_interrupts(cast("dict[str, list[Interrupt]]", data), state)
+    elif stream_mode == "messages":
         _process_message_chunk(
-            cast("tuple[Any, Any]", data), state, console, file_op_tracker
+            cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),
+            state,
+            console,
+            file_op_tracker,
         )
 
 
 def _make_hitl_decision(
-    action_request: dict[str, Any], console: Console
+    action_request: ActionRequest, console: Console
 ) -> dict[str, str]:
     """Make a HITL decision for an action request.
 
@@ -308,6 +297,10 @@ async def run_non_interactive(
     exit_stack = contextlib.ExitStack()
 
     if sandbox_type != "none":
+        from deepagents_cli.integrations.sandbox_factory import (  # noqa: PLC0415
+            create_sandbox,
+        )
+
         try:
             sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
             sandbox_backend = exit_stack.enter_context(sandbox_cm)

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from deepagents_cli.config import _parse_shell_allow_list
+from deepagents_cli.config import parse_shell_allow_list
 from deepagents_cli.main import parse_args
 
 MockArgvType = Callable[..., AbstractContextManager[object]]
@@ -75,5 +75,5 @@ def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> N
 )
 def test_shell_allow_list_string_parsing(input_str: str, expected: list[str]) -> None:
     """Test parsing shell-allow-list string into list using actual config function."""
-    result = _parse_shell_allow_list(input_str)
+    result = parse_shell_allow_list(input_str)
     assert result == expected

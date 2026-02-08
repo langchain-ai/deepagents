@@ -10,8 +10,8 @@ from deepagents_cli.config import (
     Settings,
     _find_project_agent_md,
     _find_project_root,
-    _parse_shell_allow_list,
     create_model,
+    parse_shell_allow_list,
     settings,
     validate_model_capabilities,
 )
@@ -394,60 +394,60 @@ class TestParseShellAllowList:
 
     def test_none_input_returns_none(self) -> None:
         """Test that None input returns None."""
-        result = _parse_shell_allow_list(None)
+        result = parse_shell_allow_list(None)
         assert result is None
 
     def test_empty_string_returns_none(self) -> None:
         """Test that empty string returns None."""
-        result = _parse_shell_allow_list("")
+        result = parse_shell_allow_list("")
         assert result is None
 
     def test_recommended_only(self) -> None:
         """Test that 'recommended' returns the full recommended list."""
-        result = _parse_shell_allow_list("recommended")
+        result = parse_shell_allow_list("recommended")
         assert result == list(RECOMMENDED_SAFE_SHELL_COMMANDS)
 
     def test_recommended_case_insensitive(self) -> None:
         """Test that 'RECOMMENDED', 'Recommended', etc. all work."""
         for variant in ["RECOMMENDED", "Recommended", "ReCoMmEnDeD", "  recommended  "]:
-            result = _parse_shell_allow_list(variant)
+            result = parse_shell_allow_list(variant)
             assert result == list(RECOMMENDED_SAFE_SHELL_COMMANDS)
 
     def test_custom_commands_only(self) -> None:
         """Test parsing custom commands without 'recommended'."""
-        result = _parse_shell_allow_list("ls,cat,grep")
+        result = parse_shell_allow_list("ls,cat,grep")
         assert result == ["ls", "cat", "grep"]
 
     def test_custom_commands_with_whitespace(self) -> None:
         """Test parsing custom commands with whitespace."""
-        result = _parse_shell_allow_list("ls , cat , grep")
+        result = parse_shell_allow_list("ls , cat , grep")
         assert result == ["ls", "cat", "grep"]
 
     def test_recommended_merged_with_custom_commands(self) -> None:
         """Test that 'recommended' in list merges with custom commands."""
-        result = _parse_shell_allow_list("recommended,mycmd,myothercmd")
+        result = parse_shell_allow_list("recommended,mycmd,myothercmd")
         expected = [*list(RECOMMENDED_SAFE_SHELL_COMMANDS), "mycmd", "myothercmd"]
         assert result == expected
 
     def test_custom_commands_before_recommended(self) -> None:
         """Test custom commands before 'recommended' keyword."""
-        result = _parse_shell_allow_list("mycmd,recommended,myothercmd")
+        result = parse_shell_allow_list("mycmd,recommended,myothercmd")
         # mycmd first, then all recommended, then myothercmd
         expected = ["mycmd", *list(RECOMMENDED_SAFE_SHELL_COMMANDS), "myothercmd"]
         assert result == expected
 
     def test_duplicate_removal(self) -> None:
         """Test that duplicates are removed while preserving order."""
-        result = _parse_shell_allow_list("ls,cat,ls,grep,cat")
+        result = parse_shell_allow_list("ls,cat,ls,grep,cat")
         assert result == ["ls", "cat", "grep"]
 
     def test_duplicate_removal_with_recommended(self) -> None:
         """Test that duplicates from recommended are removed."""
         # 'ls' is in RECOMMENDED_SAFE_SHELL_COMMANDS
-        result = _parse_shell_allow_list("ls,recommended,mycmd")
-        assert result is not None
+        result = parse_shell_allow_list("ls,recommended,mycmd")
         # Should have ls once (first occurrence), then all recommended commands
         # except ls (since it's already in), then mycmd
+        assert result is not None
         assert result[0] == "ls"
         # ls should not appear again
         assert result.count("ls") == 1
@@ -459,5 +459,5 @@ class TestParseShellAllowList:
 
     def test_empty_commands_ignored(self) -> None:
         """Test that empty strings from split are ignored."""
-        result = _parse_shell_allow_list("ls,,cat,,,grep,")
+        result = parse_shell_allow_list("ls,,cat,,,grep,")
         assert result == ["ls", "cat", "grep"]

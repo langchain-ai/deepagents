@@ -2,7 +2,7 @@
 
 import pytest
 
-from deepagents_cli.config import is_shell_command_allowed
+from deepagents_cli.config import contains_dangerous_patterns, is_shell_command_allowed
 
 
 @pytest.fixture
@@ -154,12 +154,16 @@ def test_semicolon_separated_commands_some_not_allowed(
     [
         ("ls && cat file", True),
         ("ls && rm file", False),
+        ("ls -la && grep pattern file && cat output.txt", True),
+        ("ls && cat file && grep test", True),
+        ("cat a.txt && cat b.txt && cat c.txt", True),
+        ("ls && rm -rf /", False),
     ],
 )
 def test_and_operator_commands(
     command: str, *, expected: bool, basic_allow_list: list[str]
 ) -> None:
-    """Test commands with && operator."""
+    """Test commands with && operator (commonly used by Claude for chaining)."""
     assert is_shell_command_allowed(command, basic_allow_list) == expected
 
 
@@ -516,3 +520,57 @@ class TestShellInjectionPrevention:
     ) -> None:
         """ANSI-C quoting $'...' with escape sequences must be blocked."""
         assert not is_shell_command_allowed(command, injection_allow_list)
+
+
+class TestContainsDangerousPatterns:
+    """Direct tests for contains_dangerous_patterns()."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls -la",
+            "cat file.txt",
+            "grep pattern file",
+            "wc -l file.txt",
+            "head -n 10 file.txt",
+            "echo hello world",
+        ],
+    )
+    def test_safe_commands_pass(self, command: str) -> None:
+        """Safe commands should not be flagged as dangerous."""
+        assert not contains_dangerous_patterns(command)
+
+    @pytest.mark.parametrize(
+        ("command", "description"),
+        [
+            ("ls $(whoami)", "command substitution with $()"),
+            ("cat `whoami`", "backtick command substitution"),
+            ("echo $'\\x41'", "ANSI-C quoting"),
+            ("ls\nrm -rf /", "newline injection"),
+            ("ls\rrm -rf /", "carriage return injection"),
+            ("ls\trm", "tab injection"),
+            ("cat <(ls)", "process substitution (input)"),
+            ("cat >(ls)", "process substitution (output)"),
+            ("cat <<EOF", "here-doc"),
+            ("cat <<<word", "here-string"),
+            ("ls >> file", "append redirect"),
+            ("ls > file", "output redirect"),
+            ("cat < file", "input redirect"),
+            ("echo ${PATH}", "variable expansion with braces"),
+        ],
+    )
+    def test_dangerous_patterns_detected(self, command: str, description: str) -> None:
+        """Dangerous shell patterns should be detected."""
+        assert contains_dangerous_patterns(command), f"Failed to detect: {description}"
+
+    def test_empty_command(self) -> None:
+        """Empty command should not be flagged."""
+        assert not contains_dangerous_patterns("")
+
+    def test_pattern_in_middle_of_command(self) -> None:
+        """Dangerous patterns embedded within arguments should be detected."""
+        assert contains_dangerous_patterns("echo foo$(bar)baz")
+
+    def test_multiple_dangerous_patterns(self) -> None:
+        """Commands with multiple dangerous patterns should be detected."""
+        assert contains_dangerous_patterns("cat $(cmd) > /tmp/out")

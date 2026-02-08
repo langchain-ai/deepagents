@@ -1079,9 +1079,7 @@ class DeepAgentsApp(App):
 
             # Mount the queued user message to chat
             # (so user sees it appear as if they just submitted it)
-            await self._mount_message(
-                UserMessage(msg.text)
-            )
+            await self._mount_message(UserMessage(msg.text))
 
             # Process the message (this will set _agent_running = True)
             await self._process_message(msg.text, msg.mode)
@@ -1333,7 +1331,7 @@ class DeepAgentsApp(App):
             preview = msg.text[:60]
             if len(msg.text) > 60:
                 preview += "..."
-            preview_lines.append(f"{i+1}. {preview}")
+            preview_lines.append(f"{i + 1}. {preview}")
 
         if count > 3:
             preview_lines.append(f"... and {count - 3} more")

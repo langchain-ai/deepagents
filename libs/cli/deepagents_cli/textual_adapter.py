@@ -104,7 +104,11 @@ class TextualUIAdapter:
     """Async callback that returns a Future for HITL approval."""
 
     _on_auto_approve_enabled: Callable[[], None] | None
-    """Callback invoked when auto-approve is enabled."""
+    """Callback invoked when auto-approve is enabled via the HITL approval menu.
+
+    Fired when the user selects "Auto-approve all" from an approval dialog,
+    allowing the app to sync its status bar and session state.
+    """
 
     _scroll_to_bottom: Callable[[], None] | None
     """Callback to scroll chat to bottom."""
@@ -144,7 +148,10 @@ class TextualUIAdapter:
             mount_message: Async callable to mount a message widget.
             update_status: Callable to update the status bar message.
             request_approval: Async callable that returns a Future for HITL approval.
-            on_auto_approve_enabled: Callback when auto-approve is enabled.
+            on_auto_approve_enabled: Callback fired when the user selects
+                "Auto-approve all" from an approval dialog.
+
+                Used by the app to sync the status bar indicator and session state.
             scroll_to_bottom: Callback to scroll chat to bottom.
             set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
             set_active_message: Callback to set the active streaming message ID.

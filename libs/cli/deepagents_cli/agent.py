@@ -41,6 +41,9 @@ from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.subagents import list_subagents
 
+DEFAULT_AGENT_NAME = "agent"
+"""The default agent name used when no `-a` flag is provided."""
+
 
 def list_agents() -> None:
     """List all available agents."""
@@ -61,16 +64,20 @@ def list_agents() -> None:
         if agent_path.is_dir():
             agent_name = agent_path.name
             agent_md = agent_path / "AGENTS.md"
+            is_default = agent_name == DEFAULT_AGENT_NAME
+            default_label = " [dim](default)[/dim]" if is_default else ""
 
             bullet = get_glyphs().bullet
             if agent_md.exists():
                 console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]", style=COLORS["primary"]
+                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
+                    style=COLORS["primary"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
             else:
                 console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold] [dim](incomplete)[/dim]",
+                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
+                    " [dim](incomplete)[/dim]",
                     style=COLORS["tool"],
                 )
                 console.print(f"    {agent_path}", style=COLORS["dim"])
@@ -352,7 +359,12 @@ def _format_execute_description(
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
-    """Configure human-in-the-loop interrupt_on settings for destructive tools.
+    """Configure human-in-the-loop interrupt settings for all gated tools.
+
+    Every tool that can have side effects or access external resources
+    (shell execution, file writes/edits, web search, URL fetch, task
+    delegation) is gated behind an approval prompt unless auto-approve
+    is enabled.
 
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
@@ -386,6 +398,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "allowed_decisions": ["approve", "reject"],
         "description": _format_task_description,  # type: ignore[typeddict-item]
     }
+
     return {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
@@ -429,10 +442,12 @@ def create_cli_agent(
         system_prompt: Override the default system prompt.
 
             If `None`, generates one based on `sandbox_type` and `assistant_id`.
-        auto_approve: If `True`, automatically approves all tool calls without
-            human confirmation.
+        auto_approve: If `True`, no tools trigger human-in-the-loop
+            interrupts — all calls (shell execution, file writes/edits,
+            web search, URL fetch) run automatically.
 
-            Useful for automated workflows.
+            If `False`, tools pause for user confirmation via the approval menu.
+            See `_add_interrupt_on` for the full list of gated tools.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `CLIShellBackend`
@@ -504,7 +519,9 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        sources = [str(skills_dir)]
+        # Built-in first (lowest precedence), then user, then project (highest)
+        sources = [str(settings.get_built_in_skills_dir())]
+        sources.append(str(skills_dir))
         if project_skills_dir:
             sources.append(str(project_skills_dir))
 

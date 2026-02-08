@@ -844,15 +844,28 @@ def contains_dangerous_patterns(command: str) -> bool:
     """Check if a command contains dangerous shell patterns.
 
     These patterns can be used to bypass allow-list validation by embedding
-    arbitrary commands within seemingly safe commands.
+    arbitrary commands within seemingly safe commands. The check includes
+    both literal substring patterns (redirects, substitution operators, etc.)
+    and regex patterns for bare variable expansion (`$VAR`) and the background
+    operator (`&`).
 
     Args:
-        command: The shell command to check
+        command: The shell command to check.
 
     Returns:
-        True if dangerous patterns are found, False otherwise
+        True if dangerous patterns are found, False otherwise.
     """
-    return any(pattern in command for pattern in DANGEROUS_SHELL_PATTERNS)
+    if any(pattern in command for pattern in DANGEROUS_SHELL_PATTERNS):
+        return True
+
+    # Bare variable expansion ($VAR without braces) can leak sensitive paths.
+    # We already block ${ and $( above; this catches plain $HOME, $IFS, etc.
+    if re.search(r"\$[A-Za-z_]", command):
+        return True
+
+    # Standalone & (background execution) changes the execution model and
+    # should not be allowed.  We check for & that is NOT part of &&.
+    return bool(re.search(r"(?<![&])&(?![&])", command))
 
 
 def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool:
@@ -896,8 +909,9 @@ def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool
 
     # Extract the first command token
     # Handle pipes and other shell operators by checking each command in the pipeline
-    # Split by compound operators first (&&, ||), then single-char operators (|, ;, &)
-    segments = re.split(r"&&|\|\||[|;&]", command)
+    # Split by compound operators first (&&, ||), then single-char operators (|, ;).
+    # Note: standalone & (background) is blocked by contains_dangerous_patterns above.
+    segments = re.split(r"&&|\|\||[|;]", command)
 
     # Track if we found at least one valid command
     found_command = False

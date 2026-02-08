@@ -522,6 +522,70 @@ class TestShellInjectionPrevention:
         assert not is_shell_command_allowed(command, injection_allow_list)
 
 
+class TestBackgroundOperatorBlocking:
+    """Tests for standalone & (background operator) detection."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls &",
+            "cat file.txt & echo done",
+            "sleep 10 &",
+        ],
+    )
+    def test_background_operator_blocked(
+        self, command: str, basic_allow_list: list[str]
+    ) -> None:
+        """Standalone & (background execution) must be blocked."""
+        assert not is_shell_command_allowed(command, basic_allow_list)
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("ls && cat file", True),
+            ("ls && grep test file", True),
+        ],
+    )
+    def test_double_ampersand_still_works(
+        self, command: str, *, expected: bool, basic_allow_list: list[str]
+    ) -> None:
+        """Double && (AND operator) should still be allowed."""
+        assert is_shell_command_allowed(command, basic_allow_list) == expected
+
+
+class TestBareVariableBlocking:
+    """Tests for bare $VARIABLE expansion detection."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls $HOME",
+            "cat $PATH",
+            "echo $USER",
+            "grep $IFS file.txt",
+        ],
+    )
+    def test_bare_variable_blocked(
+        self, command: str, basic_allow_list: list[str]
+    ) -> None:
+        """Bare $VARIABLE expansion must be blocked to prevent info leaks."""
+        assert not is_shell_command_allowed(command, basic_allow_list)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ls -la",
+            "cat file.txt",
+            "grep pattern file",
+        ],
+    )
+    def test_commands_without_variables_still_work(
+        self, command: str, basic_allow_list: list[str]
+    ) -> None:
+        """Commands without variable expansion should still be allowed."""
+        assert is_shell_command_allowed(command, basic_allow_list)
+
+
 class TestContainsDangerousPatterns:
     """Direct tests for contains_dangerous_patterns()."""
 
@@ -557,11 +621,18 @@ class TestContainsDangerousPatterns:
             ("ls > file", "output redirect"),
             ("cat < file", "input redirect"),
             ("echo ${PATH}", "variable expansion with braces"),
+            ("ls $HOME", "bare variable expansion"),
+            ("ls &", "background operator"),
+            ("sleep 10 &", "trailing background operator"),
         ],
     )
     def test_dangerous_patterns_detected(self, command: str, description: str) -> None:
         """Dangerous shell patterns should be detected."""
         assert contains_dangerous_patterns(command), f"Failed to detect: {description}"
+
+    def test_double_ampersand_not_flagged(self) -> None:
+        """Double && should not be flagged as dangerous (it's a safe operator)."""
+        assert not contains_dangerous_patterns("ls && cat file")
 
     def test_empty_command(self) -> None:
         """Empty command should not be flagged."""

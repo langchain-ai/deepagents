@@ -6,8 +6,15 @@ from unittest.mock import Mock, patch
 import pytest
 
 from deepagents_cli.config import (
+    RECOMMENDED_SAFE_SHELL_COMMANDS,
+    Settings,
     _find_project_agent_md,
     _find_project_root,
+    create_model,
+    fetch_langsmith_project_url,
+    get_langsmith_project_name,
+    parse_shell_allow_list,
+    settings,
     validate_model_capabilities,
 )
 
@@ -232,3 +239,342 @@ class TestValidateModelCapabilities:
         validate_model_capabilities(model, "empty-profile-model")
 
         mock_console.print.assert_not_called()
+
+
+class TestAgentsAliasDirectories:
+    """Tests for .agents directory alias methods."""
+
+    def test_user_agents_dir(self) -> None:
+        """Test user_agents_dir returns ~/.agents."""
+        settings = Settings.from_environment()
+        expected = Path.home() / ".agents"
+        assert settings.user_agents_dir == expected
+
+    def test_get_user_agent_skills_dir(self) -> None:
+        """Test get_user_agent_skills_dir returns ~/.agents/skills."""
+        settings = Settings.from_environment()
+        expected = Path.home() / ".agents" / "skills"
+        assert settings.get_user_agent_skills_dir() == expected
+
+    def test_get_project_agent_skills_dir_with_project(self, tmp_path: Path) -> None:
+        """Test get_project_agent_skills_dir returns .agents/skills in project."""
+        # Create a mock project with .git
+        project_root = tmp_path / "my-project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+
+        settings = Settings.from_environment(start_path=project_root)
+        expected = project_root / ".agents" / "skills"
+        assert settings.get_project_agent_skills_dir() == expected
+
+    def test_get_project_agent_skills_dir_without_project(self, tmp_path: Path) -> None:
+        """Test get_project_agent_skills_dir returns None when not in a project."""
+        # Create a directory without .git
+        no_project = tmp_path / "no-project"
+        no_project.mkdir()
+
+        settings = Settings.from_environment(start_path=no_project)
+        assert settings.get_project_agent_skills_dir() is None
+
+
+class TestCreateModelProfileExtraction:
+    """Tests for profile extraction in create_model."""
+
+    def setup_method(self) -> None:
+        """Reset settings before each test."""
+        settings.model_context_limit = None
+        settings.model_name = None
+        settings.model_provider = None
+
+    def _patch_settings_for_anthropic(self) -> dict[str, str | None]:
+        """Return original settings and set up for Anthropic-only."""
+        original = {
+            "anthropic_api_key": settings.anthropic_api_key,
+            "openai_api_key": settings.openai_api_key,
+            "google_api_key": settings.google_api_key,
+            "google_cloud_project": settings.google_cloud_project,
+        }
+        settings.anthropic_api_key = "test-key"
+        settings.openai_api_key = None
+        settings.google_api_key = None
+        settings.google_cloud_project = None
+        return original
+
+    def _restore_settings(self, original: dict[str, str | None]) -> None:
+        """Restore original settings."""
+        settings.anthropic_api_key = original["anthropic_api_key"]
+        settings.openai_api_key = original["openai_api_key"]
+        settings.google_api_key = original["google_api_key"]
+        settings.google_cloud_project = original["google_cloud_project"]
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_extracts_context_limit_from_profile(self, mock_chat_class: Mock) -> None:
+        """Test that model_context_limit is extracted from model profile."""
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit == 200000
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_missing_profile_gracefully(self, mock_chat_class: Mock) -> None:
+        """Test that missing profile attribute leaves context_limit as None."""
+        mock_model = Mock(spec=["invoke"])  # No profile attribute
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_none_profile(self, mock_chat_class: Mock) -> None:
+        """Test that profile=None leaves context_limit as None."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_non_dict_profile(self, mock_chat_class: Mock) -> None:
+        """Test that non-dict profile is handled safely."""
+        mock_model = Mock()
+        mock_model.profile = "not a dict"
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_non_int_max_input_tokens(self, mock_chat_class: Mock) -> None:
+        """Test that string max_input_tokens is ignored."""
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": "200000"}  # String, not int
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+    @patch("langchain_anthropic.ChatAnthropic")
+    def test_handles_missing_max_input_tokens_key(self, mock_chat_class: Mock) -> None:
+        """Test that profile without max_input_tokens key is handled."""
+        mock_model = Mock()
+        mock_model.profile = {"tool_calling": True}  # No max_input_tokens
+        mock_chat_class.return_value = mock_model
+
+        original = self._patch_settings_for_anthropic()
+        try:
+            create_model("claude-sonnet-4-5-20250929")
+            assert settings.model_context_limit is None
+        finally:
+            self._restore_settings(original)
+
+
+class TestParseShellAllowList:
+    """Test parsing shell allow-list strings."""
+
+    def test_none_input_returns_none(self) -> None:
+        """Test that None input returns None."""
+        result = parse_shell_allow_list(None)
+        assert result is None
+
+    def test_empty_string_returns_none(self) -> None:
+        """Test that empty string returns None."""
+        result = parse_shell_allow_list("")
+        assert result is None
+
+    def test_recommended_only(self) -> None:
+        """Test that 'recommended' returns the full recommended list."""
+        result = parse_shell_allow_list("recommended")
+        assert result == list(RECOMMENDED_SAFE_SHELL_COMMANDS)
+
+    def test_recommended_case_insensitive(self) -> None:
+        """Test that 'RECOMMENDED', 'Recommended', etc. all work."""
+        for variant in ["RECOMMENDED", "Recommended", "ReCoMmEnDeD", "  recommended  "]:
+            result = parse_shell_allow_list(variant)
+            assert result == list(RECOMMENDED_SAFE_SHELL_COMMANDS)
+
+    def test_custom_commands_only(self) -> None:
+        """Test parsing custom commands without 'recommended'."""
+        result = parse_shell_allow_list("ls,cat,grep")
+        assert result == ["ls", "cat", "grep"]
+
+    def test_custom_commands_with_whitespace(self) -> None:
+        """Test parsing custom commands with whitespace."""
+        result = parse_shell_allow_list("ls , cat , grep")
+        assert result == ["ls", "cat", "grep"]
+
+    def test_recommended_merged_with_custom_commands(self) -> None:
+        """Test that 'recommended' in list merges with custom commands."""
+        result = parse_shell_allow_list("recommended,mycmd,myothercmd")
+        expected = [*list(RECOMMENDED_SAFE_SHELL_COMMANDS), "mycmd", "myothercmd"]
+        assert result == expected
+
+    def test_custom_commands_before_recommended(self) -> None:
+        """Test custom commands before 'recommended' keyword."""
+        result = parse_shell_allow_list("mycmd,recommended,myothercmd")
+        # mycmd first, then all recommended, then myothercmd
+        expected = ["mycmd", *list(RECOMMENDED_SAFE_SHELL_COMMANDS), "myothercmd"]
+        assert result == expected
+
+    def test_duplicate_removal(self) -> None:
+        """Test that duplicates are removed while preserving order."""
+        result = parse_shell_allow_list("ls,cat,ls,grep,cat")
+        assert result == ["ls", "cat", "grep"]
+
+    def test_duplicate_removal_with_recommended(self) -> None:
+        """Test that duplicates from recommended are removed."""
+        # 'ls' is in RECOMMENDED_SAFE_SHELL_COMMANDS
+        result = parse_shell_allow_list("ls,recommended,mycmd")
+        # Should have ls once (first occurrence), then all recommended commands
+        # except ls (since it's already in), then mycmd
+        assert result is not None
+        assert result[0] == "ls"
+        # ls should not appear again
+        assert result.count("ls") == 1
+        # mycmd should appear once at the end
+        assert result[-1] == "mycmd"
+        # Total should be: 1 (ls) + len(recommended) - 1 (duplicate ls) + 1 (mycmd)
+        # Which simplifies to: len(recommended) + 1
+        assert len(result) == len(RECOMMENDED_SAFE_SHELL_COMMANDS) + 1
+
+    def test_empty_commands_ignored(self) -> None:
+        """Test that empty strings from split are ignored."""
+        result = parse_shell_allow_list("ls,,cat,,,grep,")
+        assert result == ["ls", "cat", "grep"]
+
+
+class TestGetLangsmithProjectName:
+    """Tests for get_langsmith_project_name()."""
+
+    def test_returns_none_without_api_key(self) -> None:
+        """Should return None when no LangSmith API key is set."""
+        env = {
+            "LANGSMITH_API_KEY": "",
+            "LANGCHAIN_API_KEY": "",
+            "LANGSMITH_TRACING": "true",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            assert get_langsmith_project_name() is None
+
+    def test_returns_none_without_tracing(self) -> None:
+        """Should return None when tracing is not enabled."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "",
+            "LANGCHAIN_TRACING_V2": "",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            assert get_langsmith_project_name() is None
+
+    def test_returns_project_from_settings(self) -> None:
+        """Should prefer settings.deepagents_langchain_project."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "env-project",
+        }
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_cli.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = "settings-project"
+            assert get_langsmith_project_name() == "settings-project"
+
+    def test_falls_back_to_env_project(self) -> None:
+        """Should fall back to LANGSMITH_PROJECT env var."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "env-project",
+        }
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_cli.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            assert get_langsmith_project_name() == "env-project"
+
+    def test_falls_back_to_default(self) -> None:
+        """Should fall back to 'default' when no project name configured."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+        }
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_cli.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            assert get_langsmith_project_name() == "default"
+
+    def test_accepts_langchain_api_key(self) -> None:
+        """Should accept LANGCHAIN_API_KEY as alternative to LANGSMITH_API_KEY."""
+        env = {
+            "LANGSMITH_API_KEY": "",
+            "LANGCHAIN_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+        }
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_cli.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            assert get_langsmith_project_name() == "default"
+
+
+class TestFetchLangsmithProjectUrl:
+    """Tests for fetch_langsmith_project_url()."""
+
+    def test_returns_url_on_success(self) -> None:
+        """Should return the project URL from the LangSmith client."""
+
+        class FakeProject:
+            url = "https://smith.langchain.com/o/org/projects/p/proj"
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result == "https://smith.langchain.com/o/org/projects/p/proj"
+
+    def test_returns_none_on_error(self) -> None:
+        """Should return None when the LangSmith client raises."""
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = OSError("timeout")
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result is None
+
+    def test_returns_none_when_url_is_none(self) -> None:
+        """Should return None when the project has no URL."""
+
+        class FakeProject:
+            url = None
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result is None

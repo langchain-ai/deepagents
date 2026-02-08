@@ -29,10 +29,10 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
 
     def bind_tools(
         self,
-        _tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
         *,
-        _tool_choice: str | None = None,
-        **_kwargs: Any,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
         return self
@@ -80,6 +80,11 @@ def mock_settings(
         mock_settings_obj.get_project_agent_md_path.return_value = None
         mock_settings_obj.get_agent_dir = get_agent_dir
         mock_settings_obj.project_root = None
+
+        # Model identity settings (used in system prompt generation)
+        mock_settings_obj.model_name = None
+        mock_settings_obj.model_provider = None
+        mock_settings_obj.model_context_limit = None
 
         yield agent_dir
 

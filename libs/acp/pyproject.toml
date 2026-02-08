@@ -7,7 +7,7 @@ name = "deepagents-acp"
 version = "0.0.1"
 description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
 ]
@@ -23,15 +23,13 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "agent-client-protocol>=0.6.2",
+    "agent-client-protocol>=0.7.1",
     "deepagents",
-    "deepagents-cli",
+    "python-dotenv>=1.2.1",
 ]
 
 [dependency-groups]
-dev = [
-    "batrachian-toad>=0.5.2",
-    "dirty-equals>=0.11",
+test = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
@@ -53,8 +51,10 @@ Issues = "https://github.com/langchain-ai/deepagents/issues"
 Twitter = "https://x.com/LangChain"
 
 [project.scripts]
-deepacp = "deepagents_acp.server:cli_main"
+deepagents-acp = "deepagents_acp.__main__:main"
 
+[tool.uv]
+package = true
 
 [tool.ruff]
 line-length = 100

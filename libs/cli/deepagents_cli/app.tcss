@@ -60,6 +60,12 @@ Screen {
     margin-bottom: 0;
 }
 
+.approval-menu .approval-command {
+    height: auto;
+    margin: 0 0 1 0;
+    padding: 0 1;
+}
+
 .approval-menu .approval-info {
     height: auto;
     color: $text-muted;

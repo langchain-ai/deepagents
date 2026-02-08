@@ -1,10 +1,12 @@
 """Tests for local context middleware."""
 
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from deepagents_cli.local_context import LocalContextMiddleware
+from deepagents_cli.local_context import LocalContextMiddleware, LocalContextState
 
 
 class TestLocalContextMiddleware:
@@ -110,7 +112,7 @@ class TestLocalContextMiddleware:
         self,
         mock_run: Mock,
         mock_get_git: Mock,
-        tmp_path: pytest.TempPathFactory,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test before_agent returns git context when in git repo."""
@@ -142,8 +144,8 @@ class TestLocalContextMiddleware:
         mock_run.side_effect = mock_subprocess_run
 
         middleware = LocalContextMiddleware()
-        state = {}
-        runtime = Mock()
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
 
         result = middleware.before_agent(state, runtime)
 
@@ -158,7 +160,7 @@ class TestLocalContextMiddleware:
     def test_before_agent_not_in_git_repo(
         self,
         mock_run: Mock,
-        tmp_path: pytest.TempPathFactory,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test before_agent returns local context without git info."""
@@ -174,8 +176,8 @@ class TestLocalContextMiddleware:
         mock_run.return_value = mock_result
 
         middleware = LocalContextMiddleware()
-        state = {}
-        runtime = Mock()
+        state: LocalContextState = {"messages": []}
+        runtime: Any = Mock()
 
         result = middleware.before_agent(state, runtime)
 

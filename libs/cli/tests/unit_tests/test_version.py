@@ -36,7 +36,7 @@ def test_cli_version_flag() -> None:
     )
     # argparse exits with 0 for --version
     assert result.returncode == 0
-    assert f"deepagents {__version__}" in result.stdout
+    assert f"deepagents-cli {__version__}" in result.stdout
 
 
 def test_version_slash_command_message_format() -> None:
@@ -59,3 +59,47 @@ def test_help_mentions_version_flag() -> None:
     assert result.returncode == 0
     # Help output should mention --version
     assert "--version" in result.stdout
+
+
+def test_cli_help_flag() -> None:
+    """Verify that --help flag shows help and exits with code 0."""
+    result = subprocess.run(
+        [sys.executable, "-m", "deepagents_cli.main", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # --help should exit with 0
+    assert result.returncode == 0
+    # Help output should mention key options
+    assert "--version" in result.stdout
+    assert "--agent" in result.stdout
+
+
+def test_cli_help_flag_short() -> None:
+    """Verify that -h flag shows help and exits with code 0."""
+    result = subprocess.run(
+        [sys.executable, "-m", "deepagents_cli.main", "-h"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # -h should exit with 0
+    assert result.returncode == 0
+    # Help output should mention key options
+    assert "--version" in result.stdout
+    assert "--agent" in result.stdout
+
+
+def test_help_excludes_interactive_features() -> None:
+    """Verify that --help does not contain Interactive Features section."""
+    result = subprocess.run(
+        [sys.executable, "-m", "deepagents_cli.main", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # Help should succeed
+    assert result.returncode == 0
+    # Help should NOT contain Interactive Features section
+    assert "Interactive Features" not in result.stdout

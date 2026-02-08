@@ -17,9 +17,16 @@ from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_OFF,
     _ITERM_CURSOR_GUIDE_ON,
     DeepAgentsApp,
+    QueuedMessage,
     _write_iterm_escape,
 )
-from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
+from deepagents_cli.widgets.chat_input import ChatInput
+from deepagents_cli.widgets.messages import (
+    AppMessage,
+    ErrorMessage,
+    QueuedUserMessage,
+    UserMessage,
+)
 
 
 class TestInitialPromptOnMount:
@@ -314,3 +321,171 @@ class TestMountMessageNoMatches:
 
             # Should not raise
             await app._mount_message(ErrorMessage("Agent error: something"))
+
+
+class TestQueuedMessage:
+    """Test QueuedMessage dataclass."""
+
+    def test_frozen(self) -> None:
+        """QueuedMessage should be immutable."""
+        msg = QueuedMessage(text="hello", mode="normal")
+        with pytest.raises(AttributeError):
+            msg.text = "changed"  # type: ignore[misc]
+
+    def test_fields(self) -> None:
+        """QueuedMessage should store text and mode."""
+        msg = QueuedMessage(text="hello", mode="bash")
+        assert msg.text == "hello"
+        assert msg.mode == "bash"
+
+
+class TestMessageQueue:
+    """Test message queue behavior in DeepAgentsApp."""
+
+    @pytest.mark.asyncio
+    async def test_message_queued_when_agent_running(self) -> None:
+        """Messages should be queued when agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("queued msg", "normal"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "queued msg"
+            assert app._pending_messages[0].mode == "normal"
+
+    @pytest.mark.asyncio
+    async def test_queued_widget_mounted(self) -> None:
+        """Queued messages should produce a QueuedUserMessage widget."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("test msg", "normal"))
+            await pilot.pause()
+
+            widgets = app.query(QueuedUserMessage)
+            assert len(widgets) == 1
+            assert len(app._queued_widgets) == 1
+
+    @pytest.mark.asyncio
+    async def test_immediate_processing_when_agent_idle(self) -> None:
+        """Messages should process immediately when agent is not running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app._agent_running
+
+            app.post_message(ChatInput.Submitted("direct msg", "normal"))
+            await pilot.pause()
+
+            # Should not be queued
+            assert len(app._pending_messages) == 0
+            # Should be mounted as a regular UserMessage
+            user_msgs = app.query(UserMessage)
+            assert any(w._content == "direct msg" for w in user_msgs)
+
+    @pytest.mark.asyncio
+    async def test_fifo_order(self) -> None:
+        """Queued messages should process in FIFO order."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("first", "normal"))
+            await pilot.pause()
+            app.post_message(ChatInput.Submitted("second", "normal"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 2
+            assert app._pending_messages[0].text == "first"
+            assert app._pending_messages[1].text == "second"
+
+    @pytest.mark.asyncio
+    async def test_queue_cleared_on_interrupt(self) -> None:
+        """Interrupt should clear the message queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            # Simulate a worker so action_interrupt has something to cancel
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            app.post_message(ChatInput.Submitted("msg1", "normal"))
+            await pilot.pause()
+            app.post_message(ChatInput.Submitted("msg2", "normal"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 2
+
+            # Interrupt (escape key handler)
+            app.action_interrupt()
+
+            assert len(app._pending_messages) == 0
+            assert len(app._queued_widgets) == 0
+            mock_worker.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_queue_cleared_on_ctrl_c(self) -> None:
+        """Ctrl+C should clear the message queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            mock_worker = MagicMock()
+            app._agent_worker = mock_worker
+
+            app.post_message(ChatInput.Submitted("msg", "normal"))
+            await pilot.pause()
+
+            app.action_quit_or_interrupt()
+
+            assert len(app._pending_messages) == 0
+            assert len(app._queued_widgets) == 0
+
+    @pytest.mark.asyncio
+    async def test_process_next_from_queue_removes_widget(self) -> None:
+        """Processing a queued message should remove its ephemeral widget."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Manually enqueue
+            app._pending_messages.append(QueuedMessage(text="test", mode="normal"))
+            widget = QueuedUserMessage("test")
+            messages = app.query_one("#messages", Container)
+            await messages.mount(widget)
+            app._queued_widgets.append(widget)
+
+            await app._process_next_from_queue()
+            await pilot.pause()
+
+            assert len(app._queued_widgets) == 0
+
+    @pytest.mark.asyncio
+    async def test_bash_command_continues_chain(self) -> None:
+        """Bash/command messages should not break the queue processing chain."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Queue a bash command followed by a normal message
+            app._pending_messages.append(QueuedMessage(text="!echo hi", mode="bash"))
+            app._pending_messages.append(
+                QueuedMessage(text="hello agent", mode="normal")
+            )
+
+            await app._process_next_from_queue()
+            await pilot.pause()
+            await pilot.pause()
+
+            # The bash command should have been processed and the normal
+            # message should also have been picked up (mounted as UserMessage)
+            user_msgs = app.query(UserMessage)
+            assert any(w._content == "hello agent" for w in user_msgs)

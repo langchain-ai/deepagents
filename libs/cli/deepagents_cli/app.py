@@ -8,13 +8,12 @@ import os
 
 # S404: subprocess is required for user-initiated shell commands via ! prefix
 import subprocess  # noqa: S404
-import time
 import uuid
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from textual.app import App
@@ -124,19 +123,20 @@ if _IS_ITERM:
     atexit.register(_restore_cursor_guide)
 
 
+InputMode = Literal["normal", "bash", "command"]
+
+
 @dataclass(frozen=True, slots=True)
 class QueuedMessage:
     """Represents a queued user message awaiting processing.
 
     Attributes:
         text: The message text content.
-        mode: Input mode - "normal", "bash", or "command".
-        queued_at: Timestamp when message was queued.
+        mode: The input mode that determines message routing.
     """
 
     text: str
-    mode: str
-    queued_at: float
+    mode: InputMode
 
 
 class TextualTokenTracker:
@@ -410,14 +410,8 @@ class DeepAgentsApp(App):
         self._token_tracker: TextualTokenTracker | None = None
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
+        self._queued_widgets: deque[QueuedUserMessage] = deque()
         self._processing_pending = False
-        # Message virtualization store
-        self._message_store = MessageStore()
-        # User message queue for sequential processing
-        self._pending_messages: deque[QueuedMessage] = deque()
-        self._processing_pending = False
-        # Track queued message widgets (ephemeral, removed when dequeued)
-        self._queued_message_widgets: dict[str, QueuedUserMessage] = {}
         # Message virtualization store
         self._message_store = MessageStore()
 
@@ -803,51 +797,39 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
-    async def _process_message(self, value: str, mode: str) -> None:
-        """Process a single message (immediate or from queue).
+    async def _process_message(self, value: str, mode: InputMode) -> None:
+        """Route a message to the appropriate handler based on mode.
 
         Args:
             value: The message text to process.
-            mode: Input mode - "normal", "bash", or "command".
+            mode: The input mode that determines message routing.
         """
         if mode == "bash":
-            # Bash command - strip the ! prefix
             await self._handle_bash_command(value.removeprefix("!"))
         elif mode == "command":
-            # Slash command
             await self._handle_command(value)
+        elif mode == "normal":
+            await self._handle_user_message(value)
         else:
-            # Normal message - will be sent to agent
+            logger.warning("Unrecognized input mode %r, treating as normal", mode)
             await self._handle_user_message(value)
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
         value = event.value
-        mode = event.mode
+        mode: InputMode = event.mode  # type: ignore[assignment]
 
         # Reset quit pending state on any input
         self._quit_pending = False
 
         # If agent is running, enqueue message instead of processing immediately
         if self._agent_running:
-            msg = QueuedMessage(
-                text=value,
-                mode=mode,
-                queued_at=time.time(),
-            )
-            self._pending_messages.append(msg)
-
-            # Mount a grey/dimmed user message widget (ephemeral)
+            self._pending_messages.append(QueuedMessage(text=value, mode=mode))
             queued_widget = QueuedUserMessage(value)
+            self._queued_widgets.append(queued_widget)
             await self._mount_message(queued_widget)
-
-            # Track it so we can remove it when dequeued
-            # Use timestamp as unique key
-            widget_key = f"{msg.queued_at}"
-            self._queued_message_widgets[widget_key] = queued_widget
             return
 
-        # Otherwise process immediately
         await self._process_message(value, mode)
 
     def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
@@ -960,6 +942,8 @@ class DeepAgentsApp(App):
             except Exception:
                 await self._mount_message(AppMessage("deepagents version: unknown"))
         elif cmd == "/clear":
+            self._pending_messages.clear()
+            self._queued_widgets.clear()
             await self._clear_messages()
             if self._token_tracker:
                 self._token_tracker.reset()
@@ -1024,18 +1008,19 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(message))
 
         # Scroll to bottom when user sends a new message
-        chat = self.query_one("#chat", VerticalScroll)
-        if chat.max_scroll_y > 0:
-            chat.scroll_end(animate=False)
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            if chat.max_scroll_y > 0:
+                chat.scroll_end(animate=False)
+        except NoMatches:
+            pass
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
             self._agent_running = True
 
-            # Disable submission while agent is working (user can still type)
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
-                self._chat_input.set_submit_enabled(enabled=False)
 
             # Use run_worker to avoid blocking the main event loop
             # This allows the UI to remain responsive during agent execution
@@ -1077,32 +1062,35 @@ class DeepAgentsApp(App):
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
 
-        This is called after the current agent task completes to automatically
-        process queued messages in FIFO order.
-
-        Prevents recursive calls with `_processing_pending` flag.
+        Dequeues and processes the next pending message in FIFO order.
+        Uses the `_processing_pending` flag to prevent reentrant execution.
         """
-        # Guard against recursive calls
         if self._processing_pending or not self._pending_messages:
             return
 
         self._processing_pending = True
         try:
-            # Dequeue next message
             msg = self._pending_messages.popleft()
 
-            # Remove the grey queued message widget (ephemeral)
-            widget_key = f"{msg.queued_at}"
-            if widget_key in self._queued_message_widgets:
-                queued_widget = self._queued_message_widgets.pop(widget_key)
-                await queued_widget.remove()
+            # Remove the ephemeral queued-message widget
+            if self._queued_widgets:
+                widget = self._queued_widgets.popleft()
+                await widget.remove()
 
-            # Process the message (this will set _agent_running = True)
-            # Note: _process_message -> _handle_user_message already mounts
-            # the UserMessage
             await self._process_message(msg.text, msg.mode)
+        except Exception:
+            logger.exception("Failed to process queued message")
+            await self._mount_message(
+                ErrorMessage(f"Failed to process queued message: {msg.text[:60]}")
+            )
         finally:
             self._processing_pending = False
+
+        # Bash/command mode messages complete synchronously without spawning
+        # a worker, so _cleanup_agent_task won't fire again. Continue
+        # draining the queue if no worker was started.
+        if not self._agent_running and self._pending_messages:
+            await self._process_next_from_queue()
 
     async def _cleanup_agent_task(self) -> None:
         """Clean up after agent task completes or is cancelled."""
@@ -1112,10 +1100,8 @@ class DeepAgentsApp(App):
         # Remove spinner if present
         await self._set_spinner(None)
 
-        # Re-enable submission now that agent is done
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
-            self._chat_input.set_submit_enabled(enabled=True)
 
         # Ensure token display is restored (in case of early cancellation)
         if self._token_tracker:
@@ -1339,27 +1325,6 @@ class DeepAgentsApp(App):
             is_streaming=False,
         )
 
-    async def _mount_queue_status_widget(self) -> None:
-        """Display queue status to user showing queued messages."""
-        count = len(self._pending_messages)
-
-        # Show first 3 messages in queue
-        preview_lines = []
-        for i, msg in enumerate(list(self._pending_messages)[:3]):
-            preview = msg.text[:60]
-            if len(msg.text) > 60:
-                preview += "..."
-            preview_lines.append(f"{i + 1}. {preview}")
-
-        if count > 3:
-            preview_lines.append(f"... and {count - 3} more")
-
-        preview_text = "\n".join(preview_lines)
-
-        await self._mount_message(
-            AppMessage(f"Messages in queue ({count}):\n{preview_text}")
-        )
-
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
         # Clear the message store first
@@ -1380,8 +1345,10 @@ class DeepAgentsApp(App):
         3. If double press (quit_pending), quit
         4. Otherwise show quit hint
         """
-        # If agent is running, interrupt it
+        # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            self._pending_messages.clear()
+            self._queued_widgets.clear()
             self._agent_worker.cancel()
             self._quit_pending = False
             return
@@ -1409,8 +1376,10 @@ class DeepAgentsApp(App):
             self.screen.dismiss(None)
             return
 
-        # If agent is running, interrupt it
+        # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            self._pending_messages.clear()
+            self._queued_widgets.clear()
             self._agent_worker.cancel()
             return
 

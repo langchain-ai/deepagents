@@ -376,8 +376,13 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
             result.append(cmd)
 
     # Remove duplicates while preserving order
-    seen = set()
-    return [cmd for cmd in result if not (cmd in seen or seen.add(cmd))]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for cmd in result:
+        if cmd not in seen:
+            seen.add(cmd)
+            unique.append(cmd)
+    return unique
 
 
 @dataclass

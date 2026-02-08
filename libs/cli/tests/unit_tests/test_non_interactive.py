@@ -29,7 +29,7 @@ class TestMakeHitlDecision:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = None
             result = _make_hitl_decision(
-                {"name": "shell", "args": {"command": "rm -rf /"}}, console
+                {"name": "execute", "args": {"command": "rm -rf /"}}, console
             )
             assert result == {"type": "approve"}
 
@@ -38,7 +38,7 @@ class TestMakeHitlDecision:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls", "cat", "grep"]
             result = _make_hitl_decision(
-                {"name": "shell", "args": {"command": "ls -la"}}, console
+                {"name": "execute", "args": {"command": "ls -la"}}, console
             )
             assert result == {"type": "approve"}
 
@@ -47,7 +47,7 @@ class TestMakeHitlDecision:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls", "cat", "grep"]
             result = _make_hitl_decision(
-                {"name": "shell", "args": {"command": "rm -rf /"}}, console
+                {"name": "execute", "args": {"command": "rm -rf /"}}, console
             )
             assert result["type"] == "reject"
             assert "rm -rf /" in result["message"]
@@ -60,7 +60,7 @@ class TestMakeHitlDecision:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls", "cat"]
             result = _make_hitl_decision(
-                {"name": "shell", "args": {"command": "whoami"}}, console
+                {"name": "execute", "args": {"command": "whoami"}}, console
             )
             assert "ls" in result["message"]
             assert "cat" in result["message"]
@@ -75,7 +75,7 @@ class TestMakeHitlDecision:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls", "grep"]
             result = _make_hitl_decision(
-                {"name": "shell", "args": {"command": "ls | grep test"}}, console
+                {"name": "execute", "args": {"command": "ls | grep test"}}, console
             )
             assert result == {"type": "approve"}
 
@@ -86,7 +86,7 @@ class TestMakeHitlDecision:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls"]
             result = _make_hitl_decision(
-                {"name": "shell", "args": {"command": "ls | rm file"}}, console
+                {"name": "execute", "args": {"command": "ls | rm file"}}, console
             )
             assert result["type"] == "reject"
 
@@ -95,6 +95,18 @@ class TestMakeHitlDecision:
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls"]
             result = _make_hitl_decision(
-                {"name": "shell", "args": {"command": "ls $(whoami)"}}, console
+                {"name": "execute", "args": {"command": "ls $(whoami)"}}, console
+            )
+            assert result["type"] == "reject"
+
+    @pytest.mark.parametrize("tool_name", ["bash", "shell", "execute"])
+    def test_all_shell_tool_names_recognised(
+        self, tool_name: str, console: Console
+    ) -> None:
+        """All SHELL_TOOL_NAMES variants should be gated by the allow-list."""
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.shell_allow_list = ["ls"]
+            result = _make_hitl_decision(
+                {"name": tool_name, "args": {"command": "rm -rf /"}}, console
             )
             assert result["type"] == "reject"

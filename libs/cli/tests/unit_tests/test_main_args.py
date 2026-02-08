@@ -77,3 +77,32 @@ def test_shell_allow_list_string_parsing(input_str: str, expected: list[str]) ->
     """Test parsing shell-allow-list string into list using actual config function."""
     result = parse_shell_allow_list(input_str)
     assert result == expected
+
+
+class TestNonInteractiveArgument:
+    """Tests for -n / --non-interactive argument parsing."""
+
+    def test_short_flag(self, mock_argv: MockArgvType) -> None:
+        """Test -n flag stores the message."""
+        with mock_argv("-n", "run tests"):
+            parsed = parse_args()
+            assert parsed.non_interactive_message == "run tests"
+
+    def test_long_flag(self, mock_argv: MockArgvType) -> None:
+        """Test --non-interactive flag stores the message."""
+        with mock_argv("--non-interactive", "fix the bug"):
+            parsed = parse_args()
+            assert parsed.non_interactive_message == "fix the bug"
+
+    def test_not_specified_is_none(self, mock_argv: MockArgvType) -> None:
+        """Test non_interactive_message is None when not provided."""
+        with mock_argv():
+            parsed = parse_args()
+            assert parsed.non_interactive_message is None
+
+    def test_combined_with_shell_allow_list(self, mock_argv: MockArgvType) -> None:
+        """Test -n works alongside --shell-allow-list."""
+        with mock_argv("-n", "deploy app", "--shell-allow-list", "ls,cat"):
+            parsed = parse_args()
+            assert parsed.non_interactive_message == "deploy app"
+            assert parsed.shell_allow_list == "ls,cat"

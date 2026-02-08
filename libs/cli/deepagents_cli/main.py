@@ -316,7 +316,7 @@ async def run_textual_cli_async(
     assistant_id: str,
     *,
     auto_approve: bool = False,
-    sandbox_type: str = "none",
+    sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
     model_name: str | None = None,
     thread_id: str | None = None,
@@ -426,7 +426,7 @@ def cli_main() -> None:
         args = parse_args()
 
         # Apply shell-allow-list from command line if provided (overrides env var)
-        if hasattr(args, "shell_allow_list") and args.shell_allow_list:
+        if args.shell_allow_list:
             from deepagents_cli.config import parse_shell_allow_list
 
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
@@ -454,7 +454,7 @@ def cli_main() -> None:
             else:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
-        elif getattr(args, "non_interactive_message", None):
+        elif args.non_interactive_message:
             # Non-interactive mode - execute single task and exit
             from deepagents_cli.non_interactive import run_non_interactive
 

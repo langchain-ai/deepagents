@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -118,6 +119,12 @@ class TextualUIAdapter:
     Pass `None` to hide, or a status string to show.
     """
 
+    _set_active_message: Callable[[str | None], None] | None
+    """Callback to set the active streaming message ID (pass `None` to clear)."""
+
+    _sync_message_content: Callable[[str, str], None] | None
+    """Callback to sync final message content back to the store after streaming."""
+
     _current_tool_messages: dict[str, ToolCallMessage]
     """Map of tool call IDs to their message widgets."""
 
@@ -132,6 +139,8 @@ class TextualUIAdapter:
         on_auto_approve_enabled: Callable[[], None] | None = None,
         scroll_to_bottom: Callable[[], None] | None = None,
         set_spinner: Callable[[str | None], Awaitable[None]] | None = None,
+        set_active_message: Callable[[str | None], None] | None = None,
+        sync_message_content: Callable[[str, str], None] | None = None,
     ) -> None:
         """Initialize the adapter.
 
@@ -145,6 +154,9 @@ class TextualUIAdapter:
                 Used by the app to sync the status bar indicator and session state.
             scroll_to_bottom: Callback to scroll chat to bottom.
             set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
+            set_active_message: Callback to set the active streaming message ID.
+            sync_message_content: Callback to sync final content back to the
+                message store after streaming completes.
         """
         self._mount_message = mount_message
         self._update_status = update_status
@@ -152,6 +164,8 @@ class TextualUIAdapter:
         self._on_auto_approve_enabled = on_auto_approve_enabled
         self._scroll_to_bottom = scroll_to_bottom
         self._set_spinner = set_spinner
+        self._set_active_message = set_active_message
+        self._sync_message_content = sync_message_content
 
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
@@ -469,7 +483,15 @@ async def execute_task_textual(
                                     # Hide spinner when assistant starts responding
                                     if adapter._set_spinner:
                                         await adapter._set_spinner(None)
-                                    current_msg = AssistantMessage()
+                                    msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+                                    # Mark active BEFORE mounting so pruning
+                                    # (triggered by mount) won't remove it
+                                    # (_mount_message can trigger
+                                    # _prune_old_messages if the window exceeds
+                                    # WINDOW_SIZE.)
+                                    if adapter._set_active_message:
+                                        adapter._set_active_message(msg_id)
+                                    current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
 
@@ -722,6 +744,13 @@ async def execute_task_textual(
                 break
 
     except asyncio.CancelledError:
+        # Clear active message immediately so it won't block pruning
+        # If we don't do this, the store still thinks it's actice and protects
+        # from pruning, which breaks get_messages_to_prune(), potentially
+        # blocking all future pruning
+        if adapter._set_active_message:
+            adapter._set_active_message(None)
+
         await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
@@ -756,6 +785,14 @@ async def execute_task_textual(
         return
 
     except KeyboardInterrupt:
+        # Clear active message immediately so it won't block pruning
+        # Clear active message immediately so it won't block pruning
+        # If we don't do this, the store still thinks it's actice and protects
+        # from pruning, which breaks get_messages_to_prune(), potentially
+        # blocking all future pruning
+        if adapter._set_active_message:
+            adapter._set_active_message(None)
+
         await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
@@ -811,10 +848,25 @@ async def _flush_assistant_text_ns(
     current_msg = assistant_message_by_namespace.get(ns_key)
     if current_msg is None:
         # No message was created during streaming - create one with full content
-        current_msg = AssistantMessage(text)
+        msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+        current_msg = AssistantMessage(text, id=msg_id)
         await adapter._mount_message(current_msg)
         await current_msg.write_initial_content()
         assistant_message_by_namespace[ns_key] = current_msg
     else:
         # Stop the stream to finalize the content
         await current_msg.stop_stream()
+
+    # When the AssistantMessage was first mounted and recorded in the
+    # MessageStore, it had empty content (streaming hadn't started yet).
+    # Now that streaming is done, the widget holds the full text in
+    # `_content`, but the store's MessageData still has `content=""`.
+    # If the message is later pruned and re-hydrated, `to_widget()` would
+    # recreate it from that stale empty string. This call copies the
+    # widget's final content back into the store so re-hydration works.
+    if adapter._sync_message_content and current_msg.id:
+        adapter._sync_message_content(current_msg.id, current_msg._content)
+
+    # Clear active message since streaming is done
+    if adapter._set_active_message:
+        adapter._set_active_message(None)

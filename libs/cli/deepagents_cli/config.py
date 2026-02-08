@@ -796,8 +796,9 @@ DANGEROUS_SHELL_PATTERNS = (
 # - Process tools: env, xargs, find (with -exec), etc.
 # - Git (can run hooks), docker, kubectl, etc.
 #
-# SAFE commands included below are pure readers/formatters with no shell escape,
-# no network access, no file write capability, and no code execution.
+# SAFE commands included below are primarily readers/formatters. File write and
+# injection are prevented by the dangerous-patterns check that blocks redirects,
+# command substitution, and other shell metacharacters.
 RECOMMENDED_SAFE_SHELL_COMMANDS = (
     # Directory listing
     "ls",

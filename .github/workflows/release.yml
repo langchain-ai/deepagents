@@ -5,8 +5,8 @@
 # - Manually via workflow_dispatch
 #
 # Flow:
-# - CLI: build -> test-pypi -> pre-release-checks -> DRAFT release (PyPI publish happens when draft is published)
-# - Other packages: build -> test-pypi -> pre-release-checks -> publish -> release
+# - CLI: build -> pre-release-checks -> test-pypi -> DRAFT release (PyPI publish happens when draft is published)
+# - Other packages: build -> pre-release-checks -> test-pypi -> publish -> release
 
 name: "🚀 Package Release"
 run-name: "Release ${{ inputs.package }}"
@@ -16,7 +16,7 @@ on:
       package:
         required: true
         type: string
-        description: "Package to release (deepagents, deepagents-cli, deepagents-acp, or deepagents-harbor)"
+        description: "Package to release"
   workflow_dispatch:
     inputs:
       package:
@@ -28,6 +28,7 @@ on:
           - deepagents-cli
           - deepagents-acp
           - deepagents-harbor
+          - langchain-daytona
         default: deepagents
       dangerous-nonmaster-release:
         required: false
@@ -70,9 +71,12 @@ jobs:
             deepagents-harbor)
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
+            daytona)
+              echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona"
               exit 1
               ;;
           esac
@@ -410,6 +414,7 @@ jobs:
     needs:
       - setup
       - build
+      - pre-release-checks
     runs-on: ubuntu-latest
     permissions:
       # This permission is used for trusted publishing:
@@ -447,7 +452,6 @@ jobs:
     needs:
       - setup
       - build
-      - test-pypi-publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -593,6 +597,8 @@ jobs:
       # This permission is needed by `ncipollo/release-action` to
       # create the GitHub release/tag
       contents: write
+      # This permission is needed to update release PR labels
+      pull-requests: write
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
@@ -625,3 +631,25 @@ jobs:
           makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' }}
           # CLI uses draft releases for manual review before PyPI publish
           draft: ${{ needs.build.outputs.pkg-name == 'deepagents-cli' }}
+
+      # Mark the release PR as tagged so release-please knows it's been released
+      # This is required because skip-github-release is true in release-please config
+      - name: Update release PR label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the release PR that was merged (look for PR associated with this commit)
+          PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          if [ -n "$PR_NUMBER" ]; then
+            # Only update label if this is actually a release PR (has autorelease: pending label)
+            # This prevents accidentally labeling feature PRs when workflow is manually triggered
+            HAS_PENDING=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | grep -q "autorelease: pending" && echo "true" || echo "false")
+            if [ "$HAS_PENDING" = "true" ]; then
+              echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
+              gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" || true
+            else
+              echo "PR #$PR_NUMBER does not have 'autorelease: pending' label, skipping (not a release PR)"
+            fi
+          else
+            echo "No PR found for commit ${{ github.sha }}, skipping label update"
+          fi

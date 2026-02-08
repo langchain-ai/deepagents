@@ -6,7 +6,7 @@ import contextlib
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.human_in_the_loop import HITLRequest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -17,10 +17,12 @@ from rich.console import Console
 from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.config import create_model, is_shell_command_allowed, settings
 from deepagents_cli.file_ops import FileOpTracker
+from deepagents_cli.integrations.sandbox_factory import create_sandbox
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
 if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
@@ -114,11 +116,14 @@ def _process_ai_message(
     """Process an AI message from the stream."""
     if hasattr(message_obj, "content_blocks"):
         for block in message_obj.content_blocks:
-            block_type = block.get("type")
+            if not isinstance(block, dict):
+                continue
+            typed_block = cast("dict[str, Any]", block)
+            block_type = typed_block.get("type")
             if block_type == "text":
-                _process_text_block(block, state)
+                _process_text_block(typed_block, state)
             elif block_type in {"tool_call_chunk", "tool_call"}:
-                _process_tool_call_block(block, state, console)
+                _process_tool_call_block(typed_block, state, console)
 
 
 def _process_message_chunk(
@@ -161,10 +166,12 @@ def _process_stream_chunk(
     if not is_main_agent:
         return
 
-    if stream_mode == "updates" and "__interrupt__" in data:
-        _process_interrupts(data, state)
-    elif stream_mode == "messages":
-        _process_message_chunk(data, state, console, file_op_tracker)
+    if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
+        _process_interrupts(cast("dict[str, Any]", data), state)
+    elif stream_mode == "messages" and isinstance(data, tuple):
+        _process_message_chunk(
+            cast("tuple[Any, Any]", data), state, console, file_op_tracker
+        )
 
 
 def _make_hitl_decision(
@@ -215,7 +222,7 @@ def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
 async def _stream_agent(
     agent: Pregel,
     stream_input: dict[str, Any] | Command,
-    config: dict[str, Any],
+    config: RunnableConfig,
     state: StreamState,
     console: Console,
     file_op_tracker: FileOpTracker,
@@ -234,7 +241,7 @@ async def _stream_agent(
 async def _run_agent_loop(
     agent: Pregel,
     message: str,
-    config: dict[str, Any],
+    config: RunnableConfig,
     console: Console,
     file_op_tracker: FileOpTracker,
 ) -> None:
@@ -285,7 +292,7 @@ async def run_non_interactive(
     model = create_model(model_name)
     thread_id = generate_thread_id()
 
-    config = {
+    config: RunnableConfig = {
         "configurable": {"thread_id": thread_id},
         "metadata": {
             "assistant_id": assistant_id,
@@ -301,8 +308,6 @@ async def run_non_interactive(
     exit_stack = contextlib.ExitStack()
 
     if sandbox_type != "none":
-        from deepagents_cli.integrations.sandbox_factory import create_sandbox
-
         try:
             sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
             sandbox_backend = exit_stack.enter_context(sandbox_cm)

@@ -7,6 +7,7 @@ import pytest
 
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
+    Settings,
     _find_project_agent_md,
     _find_project_root,
     _parse_shell_allow_list,
@@ -238,6 +239,42 @@ class TestValidateModelCapabilities:
         mock_console.print.assert_not_called()
 
 
+class TestAgentsAliasDirectories:
+    """Tests for .agents directory alias methods."""
+
+    def test_user_agents_dir(self) -> None:
+        """Test user_agents_dir returns ~/.agents."""
+        settings = Settings.from_environment()
+        expected = Path.home() / ".agents"
+        assert settings.user_agents_dir == expected
+
+    def test_get_user_agent_skills_dir(self) -> None:
+        """Test get_user_agent_skills_dir returns ~/.agents/skills."""
+        settings = Settings.from_environment()
+        expected = Path.home() / ".agents" / "skills"
+        assert settings.get_user_agent_skills_dir() == expected
+
+    def test_get_project_agent_skills_dir_with_project(self, tmp_path: Path) -> None:
+        """Test get_project_agent_skills_dir returns .agents/skills in project."""
+        # Create a mock project with .git
+        project_root = tmp_path / "my-project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+
+        settings = Settings.from_environment(start_path=project_root)
+        expected = project_root / ".agents" / "skills"
+        assert settings.get_project_agent_skills_dir() == expected
+
+    def test_get_project_agent_skills_dir_without_project(self, tmp_path: Path) -> None:
+        """Test get_project_agent_skills_dir returns None when not in a project."""
+        # Create a directory without .git
+        no_project = tmp_path / "no-project"
+        no_project.mkdir()
+
+        settings = Settings.from_environment(start_path=no_project)
+        assert settings.get_project_agent_skills_dir() is None
+
+
 class TestCreateModelProfileExtraction:
     """Tests for profile extraction in create_model."""
 
@@ -408,6 +445,7 @@ class TestParseShellAllowList:
         """Test that duplicates from recommended are removed."""
         # 'ls' is in RECOMMENDED_SAFE_SHELL_COMMANDS
         result = _parse_shell_allow_list("ls,recommended,mycmd")
+        assert result is not None
         # Should have ls once (first occurrence), then all recommended commands
         # except ls (since it's already in), then mycmd
         assert result[0] == "ls"

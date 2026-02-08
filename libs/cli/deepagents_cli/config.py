@@ -1,11 +1,14 @@
 """Configuration, constants, and model creation for the CLI."""
 
+import json
 import os
 import re
 import shlex
 import sys
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 import dotenv
@@ -24,12 +27,14 @@ if _deepagents_project:
     # Override LANGSMITH_PROJECT for agent traces
     os.environ["LANGSMITH_PROJECT"] = _deepagents_project
 
-# Now safe to import LangChain modules
+# E402: Now safe to import LangChain modules
 from langchain_core.language_models import BaseChatModel  # noqa: E402
+from langchain_core.runnables import RunnableConfig  # noqa: E402
 
 # Color scheme
 COLORS = {
     "primary": "#10b981",
+    "primary_dev": "#f97316",
     "dim": "#6b7280",
     "user": "#ffffff",
     "agent": "#10b981",
@@ -37,31 +42,240 @@ COLORS = {
     "tool": "#fbbf24",
 }
 
-# ASCII art banner
 
-DEEP_AGENTS_ASCII = f"""
- ██████╗  ███████╗ ███████╗ ██████╗
- ██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
- ██║  ██║ █████╗   █████╗   ██████╔╝
- ██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝
- ██████╔╝ ███████╗ ███████╗ ██║
- ╚═════╝  ╚══════╝ ╚══════╝ ╚═╝
+# Charset mode configuration
+class CharsetMode(StrEnum):
+    """Character set mode for TUI display."""
 
-  █████╗   ██████╗  ███████╗ ███╗   ██╗ ████████╗ ███████╗
- ██╔══██╗ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝ ██╔════╝
- ███████║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║    ███████╗
- ██╔══██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║    ╚════██║
- ██║  ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║    ███████║
- ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
-                                              v{__version__}
+    UNICODE = "unicode"
+    ASCII = "ascii"
+    AUTO = "auto"
+
+
+@dataclass(frozen=True)
+class Glyphs:
+    """Character glyphs for TUI display."""
+
+    tool_prefix: str  # ⏺ vs (*)
+    ellipsis: str  # … vs ...
+    checkmark: str  # ✓ vs [OK]
+    error: str  # ✗ vs [X]
+    circle_empty: str  # ○ vs [ ]
+    circle_filled: str  # ● vs [*]
+    output_prefix: str  # ⎿ vs L
+    spinner_frames: tuple[str, ...]  # Braille vs ASCII spinner
+    pause: str  # ⏸ vs ||
+    newline: str  # ⏎ vs \\n
+    warning: str  # ⚠ vs [!]
+    arrow_up: str  # up arrow vs ^
+    arrow_down: str  # down arrow vs v
+    bullet: str  # bullet vs -
+    cursor: str  # cursor vs >
+
+    # Box-drawing characters
+    box_vertical: str  # │ vs |
+    box_horizontal: str  # ─ vs -
+    box_double_horizontal: str  # ═ vs =
+
+    # Diff-specific
+    gutter_bar: str  # ▌ vs |
+
+    # Tree connectors (full prefixes for tree display)
+    tree_branch: str  # "├── " vs "+-- "
+    tree_last: str  # "└── " vs "`-- "
+    tree_vertical: str  # "│   " vs "|   "
+
+
+UNICODE_GLYPHS = Glyphs(
+    tool_prefix="⏺",
+    ellipsis="…",
+    checkmark="✓",
+    error="✗",
+    circle_empty="○",
+    circle_filled="●",
+    output_prefix="⎿",
+    spinner_frames=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
+    pause="⏸",
+    newline="⏎",
+    warning="⚠",
+    arrow_up="↑",
+    arrow_down="↓",
+    bullet="•",
+    cursor="›",  # noqa: RUF001
+    # Box-drawing characters
+    box_vertical="│",
+    box_horizontal="─",
+    box_double_horizontal="═",
+    gutter_bar="▌",
+    tree_branch="├── ",
+    tree_last="└── ",
+    tree_vertical="│   ",
+)
+
+ASCII_GLYPHS = Glyphs(
+    tool_prefix="(*)",
+    ellipsis="...",
+    checkmark="[OK]",
+    error="[X]",
+    circle_empty="[ ]",
+    circle_filled="[*]",
+    output_prefix="L",
+    spinner_frames=("(-)", "(\\)", "(|)", "(/)"),
+    pause="||",
+    newline="\\n",
+    warning="[!]",
+    arrow_up="^",
+    arrow_down="v",
+    bullet="-",
+    cursor=">",
+    # Box-drawing characters
+    box_vertical="|",
+    box_horizontal="-",
+    box_double_horizontal="=",
+    gutter_bar="|",
+    tree_branch="+-- ",
+    tree_last="`-- ",
+    tree_vertical="|   ",
+)
+
+# Module-level cache for detected glyphs
+_glyphs_cache: Glyphs | None = None
+
+# Module-level cache for editable install detection
+_editable_cache: bool | None = None
+
+
+def _is_editable_install() -> bool:
+    """Check if deepagents-cli is installed in editable mode.
+
+    Uses PEP 610 direct_url.json metadata to detect editable installs.
+
+    Returns:
+        True if installed in editable mode, False otherwise.
+    """
+    global _editable_cache  # noqa: PLW0603
+    if _editable_cache is not None:
+        return _editable_cache
+
+    try:
+        dist = distribution("deepagents-cli")
+        direct_url = dist.read_text("direct_url.json")
+        if direct_url:
+            data = json.loads(direct_url)
+            _editable_cache = data.get("dir_info", {}).get("editable", False)
+        else:
+            _editable_cache = False
+    except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
+        _editable_cache = False
+
+    return _editable_cache
+
+
+def _detect_charset_mode() -> CharsetMode:
+    """Auto-detect terminal charset capabilities.
+
+    Returns:
+        The detected CharsetMode based on environment and terminal encoding.
+    """
+    env_mode = os.environ.get("UI_CHARSET_MODE", "auto").lower()
+    if env_mode == "unicode":
+        return CharsetMode.UNICODE
+    if env_mode == "ascii":
+        return CharsetMode.ASCII
+
+    # Auto: check stdout encoding and LANG
+    encoding = getattr(sys.stdout, "encoding", "") or ""
+    if "utf" in encoding.lower():
+        return CharsetMode.UNICODE
+    lang = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
+    if "utf" in lang.lower():
+        return CharsetMode.UNICODE
+    return CharsetMode.ASCII
+
+
+def get_glyphs() -> Glyphs:
+    """Get the glyph set for the current charset mode.
+
+    Returns:
+        The appropriate Glyphs instance based on charset mode detection.
+    """
+    global _glyphs_cache  # noqa: PLW0603
+    if _glyphs_cache is not None:
+        return _glyphs_cache
+
+    mode = _detect_charset_mode()
+    _glyphs_cache = ASCII_GLYPHS if mode == CharsetMode.ASCII else UNICODE_GLYPHS
+    return _glyphs_cache
+
+
+def reset_glyphs_cache() -> None:
+    """Reset the glyphs cache (for testing)."""
+    global _glyphs_cache  # noqa: PLW0603
+    _glyphs_cache = None
+
+
+# Text art banners (Unicode and ASCII variants)
+
+_UNICODE_BANNER = f"""
+██████╗  ███████╗ ███████╗ ██████╗
+██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
+██║  ██║ █████╗   █████╗   ██████╔╝
+██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝
+██████╔╝ ███████╗ ███████╗ ██║
+╚═════╝  ╚══════╝ ╚══════╝ ╚═╝
+
+ █████╗   ██████╗  ███████╗ ███╗   ██╗ ████████╗ ███████╗
+██╔══██╗ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝ ██╔════╝
+███████║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║    ███████╗
+██╔══██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║    ╚════██║
+██║  ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║    ███████║
+╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
+                                                  v{__version__}
 """
+
+_ASCII_BANNER = f"""
+ ____  ____  ____  ____
+|  _ \\| ___|| ___||  _ \\
+| | | | |_  | |_  | |_) |
+| |_| |  _| |  _| |  __/
+|____/|____||____||_|
+
+    _    ____  ____  _   _  _____  ____
+   / \\  / ___|| ___|| \\ | ||_   _|/ ___|
+  / _ \\| |  _ | |_  |  \\| |  | |  \\___ \\
+ / ___ \\ |_| ||  _| | |\\  |  | |   ___) |
+/_/   \\_\\____||____||_| \\_|  |_|  |____/
+                                  v{__version__}
+"""
+
+
+def get_banner() -> str:
+    """Get the appropriate banner for the current charset mode.
+
+    Returns:
+        The text art banner string (Unicode or ASCII based on charset mode).
+        Includes "(local)" suffix when installed in editable mode.
+    """
+    if _detect_charset_mode() == CharsetMode.ASCII:
+        banner = _ASCII_BANNER
+    else:
+        banner = _UNICODE_BANNER
+
+    if _is_editable_install():
+        banner = banner.replace(f"v{__version__}", f"v{__version__} (local)")
+
+    return banner
+
+
+# Legacy alias for backwards compatibility
+DEEP_AGENTS_ASCII = _UNICODE_BANNER
 
 # Interactive commands
 COMMANDS = {
     "clear": "Clear screen and reset conversation",
     "help": "Show help information",
     "remember": "Review conversation and update memory/skills",
-    "tokens": "Show token usage for current session",
+    "tokens": "Show token usage for current thread",
     "quit": "Exit the CLI",
     "exit": "Exit the CLI",
 }
@@ -71,7 +285,7 @@ COMMANDS = {
 MAX_ARG_LENGTH = 150
 
 # Agent configuration
-config = {"recursion_limit": 1000}
+config: RunnableConfig = {"recursion_limit": 1000}
 
 # Rich console instance
 console = Console(highlight=False)
@@ -469,6 +683,46 @@ class Settings:
         if not self.project_root:
             return None
         return self.project_root / ".deepagents" / "agents"
+
+    @property
+    def user_agents_dir(self) -> Path:
+        """Get the base user-level `.agents` directory (`~/.agents`).
+
+        Returns:
+            Path to `~/.agents`
+        """
+        return Path.home() / ".agents"
+
+    def get_user_agent_skills_dir(self) -> Path:
+        """Get user-level `~/.agents/skills/` directory.
+
+        This is a generic alias path for skills that is tool-agnostic.
+
+        Returns:
+            Path to `~/.agents/skills/`
+        """
+        return self.user_agents_dir / "skills"
+
+    def get_project_agent_skills_dir(self) -> Path | None:
+        """Get project-level `.agents/skills/` directory.
+
+        This is a generic alias path for skills that is tool-agnostic.
+
+        Returns:
+            Path to `{project_root}/.agents/skills/`, or `None` if not in a project
+        """
+        if not self.project_root:
+            return None
+        return self.project_root / ".agents" / "skills"
+
+    @staticmethod
+    def get_built_in_skills_dir() -> Path:
+        """Get the directory containing built-in skills that ship with the CLI.
+
+        Returns:
+            Path to the `built_in_skills/` directory within the package.
+        """
+        return Path(__file__).parent / "built_in_skills"
 
 
 # Global settings instance (initialized once)

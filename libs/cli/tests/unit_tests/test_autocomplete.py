@@ -8,6 +8,7 @@ import pytest
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionController,
+    CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
@@ -242,6 +243,28 @@ class TestSlashCommandController:
         controller.reset()
 
         mock_view.clear_completion_suggestions.assert_called()
+
+    def test_enter_applies_completion_without_submit(self, controller, mock_view):
+        """Enter should accept selected slash completion without submitting."""
+        controller.on_text_changed("/sw", 3)
+        event = MagicMock()
+        event.key = "enter"
+
+        result = controller.on_key(event, "/sw", 3)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once()
+
+    def test_tab_applies_completion(self, controller, mock_view):
+        """Tab should also accept selected slash completion."""
+        controller.on_text_changed("/sw", 3)
+        event = MagicMock()
+        event.key = "tab"
+
+        result = controller.on_key(event, "/sw", 3)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once()
 
 
 class TestFuzzyFileControllerCanHandle:

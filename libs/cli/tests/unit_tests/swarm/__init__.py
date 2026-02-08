@@ -1,1 +1,1 @@
-"""Tests for swarm/task board functionality."""
+"""Tests for minimal swarm JSONL execution."""

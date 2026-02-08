@@ -9,7 +9,6 @@ def test_parse_swarm_default_num_parallel() -> None:
 
     assert error is None
     assert parsed is not None
-    assert parsed.enrich_mode is False
     assert parsed.file_path == "tasks.jsonl"
     assert parsed.num_parallel == 10
 
@@ -23,33 +22,30 @@ def test_parse_swarm_num_parallel_flag() -> None:
     assert parsed.num_parallel == 6
 
 
-def test_parse_swarm_concurrency_compat_flag() -> None:
-    """Should keep backward compatibility with --concurrency."""
-    parsed, error = _parse_swarm_command("/swarm tasks.jsonl --concurrency 4")
-
-    assert error is None
-    assert parsed is not None
-    assert parsed.num_parallel == 4
-
-
-def test_parse_swarm_enrich_mode() -> None:
-    """Should parse enrich-specific options."""
+def test_parse_swarm_output_dir() -> None:
+    """Should parse output directory override."""
     parsed, error = _parse_swarm_command(
-        "/swarm --enrich companies.csv --num-parallel 3 --output enriched.csv --id-column ticker"
+        "/swarm tasks.jsonl --num-parallel 3 --output-dir ./out"
     )
 
     assert error is None
     assert parsed is not None
-    assert parsed.enrich_mode is True
-    assert parsed.file_path == "companies.csv"
-    assert parsed.num_parallel == 3
-    assert parsed.output_path == "enriched.csv"
-    assert parsed.id_column == "ticker"
+    assert parsed.output_dir == "./out"
+
+
+def test_parse_swarm_rejects_removed_enrich_mode() -> None:
+    """Should return a clear error when --enrich is provided."""
+    parsed, error = _parse_swarm_command("/swarm --enrich companies.csv")
+
+    assert parsed is None
+    assert error is not None
+    assert "--enrich was removed" in error
 
 
 def test_parse_swarm_missing_file_path() -> None:
     """Should surface a clear error for missing file path."""
-    parsed, error = _parse_swarm_command("/swarm --enrich")
+    parsed, error = _parse_swarm_command("/swarm")
 
     assert parsed is None
-    assert error == "Error: No file path provided"
+    assert error is not None
+    assert "Usage:" in error

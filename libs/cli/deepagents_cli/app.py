@@ -301,50 +301,24 @@ Call the `swarm_execute` tool with these parameters:
 - `num_parallel`: number of parallel subagents
 - `output_dir`: output directory (if provided)
 
+Important:
+- If a task includes `type`, it must match a configured subagent type.
+- If unsure, omit `type` and use the default subagent.
+
 Use the tool directly to run tasks in parallel.
 After execution, summarize the results for me.
 """
 
-# Prompt template for /swarm --enrich command
-SWARM_ENRICH_TEMPLATE = """Enrich a CSV by filling in empty columns using swarm_enrich.
-
-**CSV file:** `{file_path}`
-**num_parallel:** {num_parallel}
-{output_path_line}
-{id_column_line}
-
-Call the `swarm_enrich` tool with these parameters:
-- `source`: CSV file path
-- `num_parallel`: number of parallel subagents
-- `output_path`: output file path (if provided)
-- `id_column`: ID column (if provided)
-
-This will:
-1. Read the CSV and identify empty columns in each row
-2. Research the missing values using filled columns as context
-3. Write an enriched CSV with the results
-
-After enrichment, tell me how many cells were filled and where the output was saved.
-"""
-
-SWARM_USAGE = (
-    "Usage:\n"
-    "  /swarm <file.jsonl|file.csv> [--num-parallel N] [--concurrency N] [--output-dir DIR]\n"
-    "  /swarm --enrich <file.csv> [--num-parallel N] [--concurrency N] [--output PATH] "
-    "[--id-column COL]"
-)
+SWARM_USAGE = "Usage:\n  /swarm <file.jsonl> [--num-parallel N] [--output-dir DIR]"
 
 
 @dataclass
 class ParsedSwarmCommand:
     """Parsed options for /swarm slash command."""
 
-    enrich_mode: bool
     file_path: str
     num_parallel: int = 10
     output_dir: str | None = None
-    output_path: str | None = None
-    id_column: str | None = None
 
 
 def _parse_swarm_command(command: str) -> tuple[ParsedSwarmCommand | None, str | None]:
@@ -357,32 +331,25 @@ def _parse_swarm_command(command: str) -> tuple[ParsedSwarmCommand | None, str |
     if not args:
         return None, SWARM_USAGE
 
-    enrich_mode = "--enrich" in args
-    if enrich_mode:
-        args = [arg for arg in args if arg != "--enrich"]
+    if "--enrich" in args:
+        return (
+            None,
+            "Error: --enrich was removed. Use /swarm <file.jsonl> with JSONL tasks.",
+        )
 
     if not args:
         return None, "Error: No file path provided"
 
-    parsed = ParsedSwarmCommand(
-        enrich_mode=enrich_mode,
-        file_path=args[0],
-    )
+    parsed = ParsedSwarmCommand(file_path=args[0])
 
     i = 1
     while i < len(args):
-        if args[i] in {"--num-parallel", "--concurrency"} and i + 1 < len(args):
+        if args[i] == "--num-parallel" and i + 1 < len(args):
             with suppress(ValueError):
                 parsed.num_parallel = int(args[i + 1])
             i += 2
         elif args[i] == "--output-dir" and i + 1 < len(args):
             parsed.output_dir = args[i + 1]
-            i += 2
-        elif args[i] == "--output" and i + 1 < len(args):
-            parsed.output_path = args[i + 1]
-            i += 2
-        elif args[i] == "--id-column" and i + 1 < len(args):
-            parsed.id_column = args[i + 1]
             i += 2
         else:
             i += 1
@@ -809,7 +776,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = (
-                "Commands: /quit, /clear, /remember, /swarm, /tokens, /threads, /help\n\n"
+                "Commands: /quit, /clear, /remember, /swarm, /tokens, /threads, "
+                "/help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -889,30 +857,17 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage(parse_error or SWARM_USAGE))
                 return
 
-            if parsed.enrich_mode:
-                # Build enrichment prompt
-                output_path_line = (
-                    f"**Output path:** `{parsed.output_path}`" if parsed.output_path else ""
-                )
-                id_column_line = (
-                    f"**ID column:** `{parsed.id_column}`" if parsed.id_column else ""
-                )
-                final_prompt = SWARM_ENRICH_TEMPLATE.format(
-                    file_path=parsed.file_path,
-                    num_parallel=parsed.num_parallel,
-                    output_path_line=output_path_line,
-                    id_column_line=id_column_line,
-                )
-            else:
-                # Build execution prompt
-                output_dir_line = (
-                    f"**Output directory:** `{parsed.output_dir}`" if parsed.output_dir else ""
-                )
-                final_prompt = SWARM_PROMPT_TEMPLATE.format(
-                    file_path=parsed.file_path,
-                    num_parallel=parsed.num_parallel,
-                    output_dir_line=output_dir_line,
-                )
+            # Build execution prompt
+            output_dir_line = (
+                f"**Output directory:** `{parsed.output_dir}`"
+                if parsed.output_dir
+                else ""
+            )
+            final_prompt = SWARM_PROMPT_TEMPLATE.format(
+                file_path=parsed.file_path,
+                num_parallel=parsed.num_parallel,
+                output_dir_line=output_dir_line,
+            )
 
             await self._handle_user_message(final_prompt)
             return

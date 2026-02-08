@@ -8,22 +8,27 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend
+from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.sandbox import SandboxBackendProtocol
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 from deepagents_cli.backends import CLIShellBackend, patch_filesystem_middleware
 
 if TYPE_CHECKING:
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from langchain.agents import create_agent
 from langchain.agents.middleware import (
     InterruptOnConfig,
+    TodoListMiddleware,
 )
 from langchain.agents.middleware.types import AgentState
+from langchain.chat_models import init_chat_model
 from langchain.messages import ToolCall
 from langchain.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.pregel import Pregel
@@ -40,7 +45,6 @@ from deepagents_cli.config import (
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.local_context import LocalContextMiddleware
 from deepagents_cli.subagents import list_subagents
-from deepagents_cli.swarm import TaskBoardMiddleware
 from deepagents_cli.swarm.middleware import SwarmMiddleware
 
 DEFAULT_AGENT_NAME = "agent"
@@ -202,12 +206,14 @@ The filesystem backend is currently operating in: `{cwd}`
         + f"""### Skills Directory
 
 Your skills are stored at: `{agent_dir_path}/skills/`
-Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:
+Skills may contain scripts or supporting files.
+When executing skill scripts with bash, use the real filesystem path:
 Example: `bash python {agent_dir_path}/skills/web-research/script.py`
 
 ### Human-in-the-Loop Tool Approval
 
-Some tool calls require user approval before execution. When a tool call is rejected by the user:
+Some tool calls require user approval before execution.
+When a tool call is rejected by the user:
 1. Accept their decision immediately - do NOT retry the same command
 2. Explain that you understand they rejected the action
 3. Suggest an alternative approach or ask for clarification
@@ -223,9 +229,11 @@ When you use the web_search tool:
 3. NEVER show raw JSON or tool results directly to the user
 4. Synthesize the information from multiple sources into a coherent answer
 5. Cite your sources by mentioning page titles or URLs when relevant
-6. If the search doesn't find what you need, explain what you found and ask clarifying questions
+6. If the search doesn't find what you need, explain what you found and ask
+   clarifying questions
 
-The user only sees your text responses - not tool results. Always provide a complete, natural language answer after using web_search.
+The user only sees your text responses - not tool results.
+Always provide a complete, natural language answer after using web_search.
 
 ### Todo List Management
 
@@ -234,44 +242,17 @@ When using the write_todos tool:
 2. Only create todos for complex, multi-step tasks that truly need tracking
 3. Break down work into clear, actionable items without over-fragmenting
 4. For simple tasks (1-2 steps), just do them directly without creating todos
-5. When first creating a todo list for a task, ALWAYS ask the user if the plan looks good before starting work
+5. When first creating a todo list for a task, ALWAYS ask the user if the
+   plan looks good before starting work
    - Create the todos, let them render, then ask: "Does this plan look good?" or similar
    - Wait for the user's response before marking the first todo as in_progress
    - If they want changes, adjust the plan accordingly
 6. Update todo status promptly as you complete each item
 
-The todo list is a planning tool - use it judiciously to avoid overwhelming the user with excessive task tracking.
+The todo list is a planning tool - use it judiciously to avoid
+overwhelming the user with excessive task tracking.
 
-### Task Board (Multi-Agent Coordination)
-
-You have Task Board tools for tracking work items with dependencies when coordinating complex multi-step work:
-
-**Tools:**
-- `TaskCreate(subject, description)` - Create a task (starts as 'pending')
-- `TaskGet(task_id)` - Get task details
-- `TaskUpdate(task_id, status?, add_blocked_by?)` - Update status or dependencies
-- `TaskList()` - See all tasks with status
-
-**Workflow:** pending → in_progress → completed
-
-**Dependencies:** Use `add_blocked_by` to make tasks wait for others:
-```
-TaskCreate(subject="Build frontend") → #1
-TaskCreate(subject="Build backend") → #2
-TaskCreate(subject="Integration tests") → #3
-TaskUpdate(task_id="3", add_blocked_by=["1", "2"])
-```
-
-**Key Insight:** The Task Board is for YOU (the main agent) to track work. Subagents do NOT have access to the Task Board - they can only coordinate via shared files.
-
-**When to Use:**
-- Complex multi-step projects with dependencies between tasks
-- When you need to track what's blocked and what's ready
-- Coordinating work that will involve multiple subagent calls
-
-**When NOT to Use:**
-- Simple 1-3 step tasks (use write_todos or just do them)
-- Tasks without dependencies between them"""
+"""
     )
 
 
@@ -528,37 +509,35 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware = []
 
-    # Add task board middleware (always enabled for main agent)
-    agent_middleware.append(TaskBoardMiddleware())
-
     # Add swarm middleware for batch task execution
     # The subagent factory is called lazily when swarm_execute is first invoked
-    def _create_swarm_subagent_factory():
+    def _create_swarm_subagent_factory() -> Callable[[], dict[str, Runnable]]:
         """Factory that creates subagent graphs for swarm execution.
 
         This is called lazily when swarm_execute is first used, avoiding
         overhead if swarm execution is never needed.
-        """
-        from langchain.agents import create_agent
-        from langchain.agents.middleware import TodoListMiddleware
-        from langchain.chat_models import init_chat_model
-        from deepagents.middleware.filesystem import FilesystemMiddleware
-        from deepagents.backends import StateBackend
 
-        def build_subagent_graphs():
+        Returns:
+            Callable that builds subagent graph instances on demand.
+        """
+
+        def build_subagent_graphs() -> dict[str, Runnable]:
             # Use the same model as the main agent
             swarm_model = init_chat_model(model) if isinstance(model, str) else model
 
             # Build minimal middleware stack for swarm subagents
             swarm_middleware = [
                 TodoListMiddleware(),
-                FilesystemMiddleware(backend=lambda rt: StateBackend(rt)),
+                FilesystemMiddleware(backend=StateBackend),
             ]
 
             # Create general-purpose subagent
             general_purpose = create_agent(
                 swarm_model,
-                system_prompt="You are a helpful assistant completing a specific task. Focus on the task description and return a concise result.",
+                system_prompt=(
+                    "You are a helpful assistant completing a specific task. "
+                    "Focus on the task description and return a concise result."
+                ),
                 tools=tools or [],
                 middleware=swarm_middleware,
                 name="general-purpose",

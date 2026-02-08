@@ -22,6 +22,7 @@ from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
+    SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
     is_shell_command_allowed,
@@ -584,7 +585,7 @@ class DeepAgentsApp(App):
             approved_commands = []
 
             for req in action_requests:
-                if req.get("name") == "shell":
+                if req.get("name") in SHELL_TOOL_NAMES:
                     command = req.get("args", {}).get("command", "")
                     if is_shell_command_allowed(command, settings.shell_allow_list):
                         approved_commands.append(command)
@@ -609,8 +610,8 @@ class DeepAgentsApp(App):
                         )
                         await messages.mount(auto_msg)
                     self._scroll_chat_to_bottom()
-                except Exception:  # noqa: S110
-                    pass  # Don't fail if we can't show the message
+                except NoMatches:
+                    pass  # UI container not mounted yet; approval still proceeded
 
                 return result_future
 

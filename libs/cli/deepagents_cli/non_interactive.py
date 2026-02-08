@@ -15,7 +15,12 @@ from pydantic import TypeAdapter
 from rich.console import Console
 
 from deepagents_cli.agent import create_cli_agent
-from deepagents_cli.config import create_model, is_shell_command_allowed, settings
+from deepagents_cli.config import (
+    SHELL_TOOL_NAMES,
+    create_model,
+    is_shell_command_allowed,
+    settings,
+)
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.tools import fetch_url, http_request, web_search
@@ -173,7 +178,7 @@ def _make_hitl_decision(
     """
     action_name = action_request.get("name", "")
 
-    if action_name == "shell" and settings.shell_allow_list:
+    if action_name in SHELL_TOOL_NAMES and settings.shell_allow_list:
         command = action_request.get("args", {}).get("command", "")
 
         if is_shell_command_allowed(command, settings.shell_allow_list):

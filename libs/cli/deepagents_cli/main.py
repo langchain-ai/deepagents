@@ -258,9 +258,23 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "-n",
+        "--non-interactive",
+        dest="non_interactive_message",
+        metavar="TEXT",
+        help="Run a single task non-interactively and exit "
+        "(shell disabled unless --shell-allow-list is set)",
+    )
+
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
-        help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
+        help=(
+            "Auto-approve all tool calls without prompting "
+            "(disables human-in-the-loop). Affected tools: shell "
+            "execution, file writes/edits, web search, and URL fetch. "
+            "Use with caution — the agent can execute arbitrary commands."
+        ),
     )
 
     parser.add_argument(
@@ -282,6 +296,13 @@ def parse_args() -> argparse.Namespace:
         metavar="PATH",
         help="Path to setup script to run in sandbox after creation",
     )
+    parser.add_argument(
+        "--shell-allow-list",
+        metavar="LIST",
+        help="Comma-separated list of shell commands to auto-approve, "
+        "or 'recommended' for safe defaults. "
+        "Applies to both -n and interactive modes.",
+    )
 
     parser.add_argument(
         "-v",
@@ -302,8 +323,9 @@ async def run_textual_cli_async(
     assistant_id: str,
     *,
     auto_approve: bool = False,
-    sandbox_type: str = "none",
+    sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_setup: str | None = None,
     model_name: str | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
@@ -317,6 +339,8 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse
+        sandbox_setup: Optional path to setup script to run in the sandbox
+            after creation.
         model_name: Optional model name to use
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
@@ -349,7 +373,11 @@ async def run_textual_cli_async(
         if sandbox_type != "none":
             try:
                 # Create sandbox context manager but keep it open
-                sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
+                sandbox_cm = create_sandbox(
+                    sandbox_type,
+                    sandbox_id=sandbox_id,
+                    setup_script_path=sandbox_setup,
+                )
                 sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
@@ -411,6 +439,12 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
+        # Apply shell-allow-list from command line if provided (overrides env var)
+        if args.shell_allow_list:
+            from deepagents_cli.config import parse_shell_allow_list
+
+            settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
+
         if args.command == "help":
             show_help()
         elif args.command == "list":
@@ -434,6 +468,21 @@ def cli_main() -> None:
             else:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
+        elif args.non_interactive_message:
+            # Non-interactive mode - execute single task and exit
+            from deepagents_cli.non_interactive import run_non_interactive
+
+            exit_code = asyncio.run(
+                run_non_interactive(
+                    message=args.non_interactive_message,
+                    assistant_id=args.agent,
+                    model_name=getattr(args, "model", None),
+                    sandbox_type=args.sandbox,
+                    sandbox_id=args.sandbox_id,
+                    sandbox_setup=getattr(args, "sandbox_setup", None),
+                )
+            )
+            sys.exit(exit_code)
         else:
             # Interactive mode - handle thread resume
             thread_id = None
@@ -506,6 +555,7 @@ def cli_main() -> None:
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
+                        sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         thread_id=thread_id,
                         is_resumed=is_resumed,

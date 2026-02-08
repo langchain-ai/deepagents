@@ -1,6 +1,8 @@
 """Tests for non-interactive mode HITL decision logic."""
 
-from unittest.mock import patch
+from collections.abc import AsyncIterator, Generator
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
 from rich.console import Console
@@ -11,6 +13,7 @@ from deepagents_cli.non_interactive import (
     _build_non_interactive_header,
     _get_thread_url,
     _make_hitl_decision,
+    run_non_interactive,
 )
 
 
@@ -256,3 +259,87 @@ class TestGetThreadUrl:
             result = _get_thread_url("abc")
 
         assert result == "https://smith.langchain.com/o/org/projects/p/proj/t/abc"
+
+
+class TestSandboxSetupForwarding:
+    """Test that sandbox_setup is forwarded to create_sandbox."""
+
+    @pytest.mark.asyncio
+    async def test_sandbox_setup_passed_to_create_sandbox(self) -> None:
+        """run_non_interactive should forward sandbox_setup to create_sandbox.
+
+        When both --sandbox and --sandbox-setup are provided, the
+        setup_script_path must reach create_sandbox so the setup script
+        actually runs inside the sandbox.
+        """
+        mock_backend = MagicMock()
+        mock_backend.id = "sandbox-123"
+
+        # Capture kwargs passed to create_sandbox
+        captured_kwargs: list[dict[str, object]] = []
+
+        @contextmanager
+        def fake_create_sandbox(
+            _provider: str,
+            *,
+            sandbox_id: str | None = None,  # noqa: ARG001 # match create_sandbox signature
+            setup_script_path: str | None = None,
+        ) -> Generator[MagicMock, None, None]:
+            captured_kwargs.append({"setup_script_path": setup_script_path})
+            yield mock_backend
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.integrations.sandbox_factory.create_sandbox",
+                side_effect=fake_create_sandbox,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+            ) as mock_checkpointer,
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            # Make the checkpointer async context manager return a mock
+            mock_cp = MagicMock()
+            mock_checkpointer.return_value.__aenter__ = MagicMock(return_value=mock_cp)
+            mock_checkpointer.return_value.__aexit__ = MagicMock(return_value=None)
+
+            # Make create_cli_agent return a mock agent that immediately finishes
+            mock_agent = MagicMock()
+            mock_agent.astream = MagicMock(return_value=_async_iter([]))
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(
+                message="test task",
+                sandbox_type="modal",
+                sandbox_setup="/path/to/setup.sh",
+            )
+
+        assert len(captured_kwargs) == 1
+        assert captured_kwargs[0]["setup_script_path"] == "/path/to/setup.sh"
+
+
+async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029
+    """Create an async iterator from a list for testing."""
+    for item in items:
+        yield item

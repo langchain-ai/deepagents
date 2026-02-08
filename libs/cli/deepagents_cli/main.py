@@ -320,6 +320,7 @@ async def run_textual_cli_async(
     auto_approve: bool = False,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_setup: str | None = None,
     model_name: str | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
@@ -333,6 +334,8 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse
+        sandbox_setup: Optional path to setup script to run in the sandbox
+            after creation.
         model_name: Optional model name to use
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
@@ -365,7 +368,11 @@ async def run_textual_cli_async(
         if sandbox_type != "none":
             try:
                 # Create sandbox context manager but keep it open
-                sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
+                sandbox_cm = create_sandbox(
+                    sandbox_type,
+                    sandbox_id=sandbox_id,
+                    setup_script_path=sandbox_setup,
+                )
                 sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
@@ -467,6 +474,7 @@ def cli_main() -> None:
                     model_name=getattr(args, "model", None),
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
+                    sandbox_setup=getattr(args, "sandbox_setup", None),
                 )
             )
             sys.exit(exit_code)
@@ -542,6 +550,7 @@ def cli_main() -> None:
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
+                        sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         thread_id=thread_id,
                         is_resumed=is_resumed,

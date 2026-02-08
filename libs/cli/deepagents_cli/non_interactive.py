@@ -502,6 +502,7 @@ async def run_non_interactive(
     model_name: str | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_setup: str | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -518,6 +519,8 @@ async def run_non_interactive(
         sandbox_type: Type of sandbox (`'none'`, `'modal'`,
             `'runloop'`, `'daytona'`).
         sandbox_id: Optional existing sandbox ID to reuse.
+        sandbox_setup: Optional path to setup script to run in the sandbox
+            after creation.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -549,7 +552,11 @@ async def run_non_interactive(
         )
 
         try:
-            sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
+            sandbox_cm = create_sandbox(
+                sandbox_type,
+                sandbox_id=sandbox_id,
+                setup_script_path=sandbox_setup,
+            )
             sandbox_backend = exit_stack.enter_context(sandbox_cm)
         except (ImportError, ValueError, RuntimeError) as e:
             console.print(f"[red]❌ Sandbox creation failed: {e}[/red]")

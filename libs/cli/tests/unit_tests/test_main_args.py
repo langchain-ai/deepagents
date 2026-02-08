@@ -106,3 +106,18 @@ class TestNonInteractiveArgument:
             parsed = parse_args()
             assert parsed.non_interactive_message == "deploy app"
             assert parsed.shell_allow_list == "ls,cat"
+
+    def test_combined_with_sandbox_setup(self, mock_argv: MockArgvType) -> None:
+        """Test -n works alongside --sandbox and --sandbox-setup."""
+        with mock_argv(
+            "-n",
+            "run task",
+            "--sandbox",
+            "modal",
+            "--sandbox-setup",
+            "/path/to/setup.sh",
+        ):
+            parsed = parse_args()
+            assert parsed.non_interactive_message == "run task"
+            assert parsed.sandbox == "modal"
+            assert parsed.sandbox_setup == "/path/to/setup.sh"

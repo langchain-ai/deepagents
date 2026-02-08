@@ -257,11 +257,11 @@ def parse_args() -> argparse.Namespace:
         help="Initial prompt to auto-submit when session starts",
     )
 
-    # Non-interactive mode - execute single task and exit
     parser.add_argument(
         "-n",
         "--non-interactive",
         dest="non_interactive_message",
+        metavar="TEXT",
         help="Run a single task non-interactively and exit "
         "(shell disabled unless --shell-allow-list is set)",
     )
@@ -293,6 +293,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--shell-allow-list",
+        metavar="LIST",
         help="Comma-separated list of shell commands to allow, or 'recommended' for safe defaults",  # noqa: E501
     )
 

@@ -609,7 +609,7 @@ class DeepAgentsApp(App):
                         )
                         await messages.mount(auto_msg)
                     self._scroll_chat_to_bottom()
-                except Exception:
+                except Exception:  # noqa: S110
                     pass  # Don't fail if we can't show the message
 
                 return result_future

@@ -41,6 +41,7 @@ from deepagents_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
+    QueuedUserMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -412,6 +413,10 @@ class DeepAgentsApp(App):
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
         self._processing_pending = False
+        # Track queued message widgets (ephemeral, removed when dequeued)
+        self._queued_message_widgets: dict[str, QueuedUserMessage] = {}
+        # Message virtualization store
+        self._message_store = MessageStore()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -828,7 +833,15 @@ class DeepAgentsApp(App):
                 queued_at=time.time(),
             )
             self._pending_messages.append(msg)
-            await self._mount_queue_status_widget()
+
+            # Mount a grey/dimmed user message widget (ephemeral)
+            queued_widget = QueuedUserMessage(value)
+            await self._mount_message(queued_widget)
+
+            # Track it so we can remove it when dequeued
+            # Use timestamp as unique key
+            widget_key = f"{msg.queued_at}"
+            self._queued_message_widgets[widget_key] = queued_widget
             return
 
         # Otherwise process immediately
@@ -1075,15 +1088,14 @@ class DeepAgentsApp(App):
             # Dequeue next message
             msg = self._pending_messages.popleft()
 
-            # Update queue status widget if more messages remain
-            if self._pending_messages:
-                await self._mount_queue_status_widget()
-
-            # Mount the queued user message to chat
-            # (so user sees it appear as if they just submitted it)
-            await self._mount_message(UserMessage(msg.text))
+            # Remove the grey queued message widget (ephemeral)
+            widget_key = f"{msg.queued_at}"
+            if widget_key in self._queued_message_widgets:
+                queued_widget = self._queued_message_widgets.pop(widget_key)
+                await queued_widget.remove()
 
             # Process the message (this will set _agent_running = True)
+            # Note: _process_message -> _handle_user_message already mounts the UserMessage
             await self._process_message(msg.text, msg.mode)
         finally:
             self._processing_pending = False
@@ -1323,26 +1335,6 @@ class DeepAgentsApp(App):
             is_streaming=False,
         )
 
-    async def _mount_queue_status_widget(self) -> None:
-        """Display queue status to user showing queued messages."""
-        count = len(self._pending_messages)
-
-        # Show first 3 messages in queue
-        preview_lines = []
-        for i, msg in enumerate(list(self._pending_messages)[:3]):
-            preview = msg.text[:60]
-            if len(msg.text) > 60:
-                preview += "..."
-            preview_lines.append(f"{i + 1}. {preview}")
-
-        if count > 3:
-            preview_lines.append(f"... and {count - 3} more")
-
-        preview_text = "\n".join(preview_lines)
-
-        await self._mount_message(
-            AppMessage(f"Messages in queue ({count}):\n{preview_text}")
-        )
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""

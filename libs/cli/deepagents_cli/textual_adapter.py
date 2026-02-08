@@ -194,7 +194,7 @@ def _build_interrupted_ai_message(
 
     # Reconstruct tool_calls from displayed tool messages
     tool_calls = []
-    for tool_id, tool_widget in current_tool_messages.items():
+    for tool_id, tool_widget in list(current_tool_messages.items()):
         tool_calls.append(
             {
                 "id": tool_id,
@@ -629,7 +629,7 @@ async def execute_task_textual(
             if interrupt_occurred:
                 any_rejected = False
 
-                for interrupt_id, hitl_request in pending_interrupts.items():
+                for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
 
                     if session_state.auto_approve:
@@ -639,7 +639,7 @@ async def execute_task_textual(
                         ]
                         hitl_response[interrupt_id] = {"decisions": decisions}
                         # Mark all tools as running
-                        for tool_msg in adapter._current_tool_messages.values():
+                        for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
                     else:
                         # Batch approval - one dialog for all parallel tool calls
@@ -662,7 +662,10 @@ async def execute_task_textual(
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_running()
                                 # Mark file ops as approved
                                 for action_request in action_requests:
@@ -680,7 +683,10 @@ async def execute_task_textual(
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_running()
                                 # Mark file ops as approved
                                 for action_request in action_requests:
@@ -698,7 +704,10 @@ async def execute_task_textual(
                                     RejectDecision(type="reject")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True

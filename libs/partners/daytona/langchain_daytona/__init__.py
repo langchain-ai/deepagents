@@ -1,4 +1,4 @@
-"""Daytona sandbox integration for deepagents."""
+"""Daytona sandbox integration for Deep Agents."""
 
 from langchain_daytona.sandbox import DaytonaBackend, DaytonaProvider
 

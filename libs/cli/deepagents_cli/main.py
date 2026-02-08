@@ -11,12 +11,14 @@ warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
 import argparse
 import asyncio
 import contextlib
+import functools
 import importlib.util
 import os
 import sys
 import traceback
-import warnings
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -26,7 +28,12 @@ from rich.text import Text
 from deepagents_cli._version import __version__
 
 # Now safe to import agent (which imports LangChain modules)
-from deepagents_cli.agent import create_cli_agent, list_agents, reset_agent
+from deepagents_cli.agent import (
+    DEFAULT_AGENT_NAME,
+    create_cli_agent,
+    list_agents,
+    reset_agent,
+)
 
 # CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import (
@@ -47,7 +54,15 @@ from deepagents_cli.sessions import (
 )
 from deepagents_cli.skills import execute_skills_command, setup_skills_parser
 from deepagents_cli.tools import fetch_url, http_request, web_search
-from deepagents_cli.ui import show_help
+from deepagents_cli.ui import (
+    build_help_parent,
+    show_help,
+    show_list_help,
+    show_reset_help,
+    show_threads_delete_help,
+    show_threads_help,
+    show_threads_list_help,
+)
 
 
 def check_cli_dependencies() -> None:
@@ -84,68 +99,129 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+
+    # Factory that builds an argparse Action whose __call__ invokes the
+    # supplied *help_fn* instead of argparse's default help text.  Each
+    # subcommand can pass its own Rich-formatted help screen so that
+    # `deepagents <subcommand> -h` shows context-specific help.
+    def _make_help_action(
+        help_fn: Callable[[], None],
+    ) -> type[argparse.Action]:
+        """Create an argparse Action that displays *help_fn* and exits.
+
+        argparse requires a *class* (not a callable) for custom actions.
+        This factory uses a closure: the returned `_ShowHelp` class captures
+        *help_fn* from the enclosing scope so that each subcommand can wire `-h`
+        to its own Rich help screen.
+
+        Args:
+            help_fn: Callable that prints help text to the console.
+
+        Returns:
+            An argparse Action class wired to the given help function.
+        """
+
+        class _ShowHelp(argparse.Action):
+            def __init__(
+                self,
+                option_strings: list[str],
+                dest: str = argparse.SUPPRESS,
+                default: str = argparse.SUPPRESS,
+                **kwargs: Any,
+            ) -> None:
+                super().__init__(
+                    option_strings=option_strings,
+                    dest=dest,
+                    default=default,
+                    nargs=0,
+                    **kwargs,
+                )
+
+            def __call__(
+                self,
+                parser: argparse.ArgumentParser,
+                namespace: argparse.Namespace,  # noqa: ARG002
+                values: str | Sequence[Any] | None,  # noqa: ARG002
+                option_string: str | None = None,  # noqa: ARG002
+            ) -> None:
+                with contextlib.suppress(BrokenPipeError):
+                    help_fn()
+                parser.exit()
+
+        return _ShowHelp
+
+    help_parent = functools.partial(
+        build_help_parent, make_help_action=_make_help_action
+    )
+
     parser = argparse.ArgumentParser(
         description="Deep Agents - AI Coding Assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
-    parser.add_argument(
-        "-h",
-        "--help",
-        action="store_true",
-        help="Show this help message and exit",
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"deepagents {__version__}",
-    )
-
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
-    # List command
-    subparsers.add_parser("list", help="List all available agents")
+    subparsers.add_parser(
+        "help",
+        help="Show help information",
+        add_help=False,
+        parents=help_parent(show_help),
+    )
 
-    # Help command
-    subparsers.add_parser("help", help="Show help information")
+    subparsers.add_parser(
+        "list",
+        help="List all available agents",
+        add_help=False,
+        parents=help_parent(show_list_help),
+    )
 
-    # Reset command
-    reset_parser = subparsers.add_parser("reset", help="Reset an agent")
+    reset_parser = subparsers.add_parser(
+        "reset",
+        help="Reset an agent",
+        add_help=False,
+        parents=help_parent(show_reset_help),
+    )
     reset_parser.add_argument("--agent", required=True, help="Name of agent to reset")
     reset_parser.add_argument(
         "--target", dest="source_agent", help="Copy prompt from another agent"
     )
 
-    # Skills command - setup delegated to skills module
-    setup_skills_parser(subparsers)
+    setup_skills_parser(subparsers, make_help_action=_make_help_action)
 
-    # Threads command
     threads_parser = subparsers.add_parser(
-        "threads", help="Manage conversation threads"
+        "threads",
+        help="Manage conversation threads",
+        add_help=False,
+        parents=help_parent(show_threads_help),
     )
     threads_sub = threads_parser.add_subparsers(dest="threads_command")
 
-    # threads list
-    threads_list = threads_sub.add_parser("list", help="List threads")
+    threads_list = threads_sub.add_parser(
+        "list",
+        aliases=["ls"],
+        help="List threads",
+        add_help=False,
+        parents=help_parent(show_threads_list_help),
+    )
     threads_list.add_argument(
         "--agent", default=None, help="Filter by agent name (default: show all)"
     )
     threads_list.add_argument(
-        "--limit", type=int, default=20, help="Max threads (default: 20)"
+        "--limit",
+        type=int,
+        default=20,
+        help="Max number of threads to display (default: 20)",
     )
-
-    # threads delete
-    threads_delete = threads_sub.add_parser("delete", help="Delete a thread")
+    threads_delete = threads_sub.add_parser(
+        "delete",
+        help="Delete a thread",
+        add_help=False,
+        parents=help_parent(show_threads_delete_help),
+    )
     threads_delete.add_argument("thread_id", help="Thread ID to delete")
 
-    # Default interactive mode
-    parser.add_argument(
-        "--agent",
-        default="agent",
-        help="Agent identifier for separate memory stores (default: agent).",
-    )
-
-    # Thread resume argument - matches PR #638: -r for most recent, -r <ID> for specific
+    # Default interactive mode — argument order here determines the
+    # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
         "-r",
         "--resume",
@@ -153,41 +229,93 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         const="__MOST_RECENT__",
         default=None,
+        metavar="ID",
         help="Resume thread: -r for most recent, -r <ID> for specific thread",
     )
 
-    # Initial prompt - auto-submit when session starts
+    parser.add_argument(
+        "-a",
+        "--agent",
+        default=DEFAULT_AGENT_NAME,
+        metavar="NAME",
+        help="Agent to use (e.g., coder, researcher).",
+    )
+
+    parser.add_argument(
+        "-M",
+        "--model",
+        metavar="MODEL",
+        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5.2). "
+        "Provider is auto-detected from model name.",
+    )
+
     parser.add_argument(
         "-m",
         "--message",
         dest="initial_prompt",
+        metavar="TEXT",
         help="Initial prompt to auto-submit when session starts",
     )
 
     parser.add_argument(
-        "--model",
-        help="Model to use (e.g., claude-sonnet-4-5-20250929, gpt-5.2). "
-        "Provider is auto-detected from model name.",
+        "-n",
+        "--non-interactive",
+        dest="non_interactive_message",
+        metavar="TEXT",
+        help="Run a single task non-interactively and exit "
+        "(shell disabled unless --shell-allow-list is set)",
     )
+
     parser.add_argument(
         "--auto-approve",
         action="store_true",
-        help="Auto-approve tool usage without prompting (disables human-in-the-loop)",
+        help=(
+            "Auto-approve all tool calls without prompting "
+            "(disables human-in-the-loop). Affected tools: shell "
+            "execution, file writes/edits, web search, and URL fetch. "
+            "Use with caution — the agent can execute arbitrary commands."
+        ),
     )
+
     parser.add_argument(
         "--sandbox",
         choices=["none", "modal", "daytona", "runloop", "langsmith"],
         default="none",
+        metavar="TYPE",
         help="Remote sandbox for code execution (default: none - local only)",
     )
+
     parser.add_argument(
         "--sandbox-id",
+        metavar="ID",
         help="Existing sandbox ID to reuse (skips creation and cleanup)",
     )
+
     parser.add_argument(
         "--sandbox-setup",
+        metavar="PATH",
         help="Path to setup script to run in sandbox after creation",
     )
+    parser.add_argument(
+        "--shell-allow-list",
+        metavar="LIST",
+        help="Comma-separated list of shell commands to auto-approve, "
+        "or 'recommended' for safe defaults. "
+        "Applies to both -n and interactive modes.",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"deepagents-cli {__version__}",
+    )
+    parser.add_argument(
+        "-h",
+        "--help",
+        action=_make_help_action(show_help),
+    )
+
     return parser.parse_args()
 
 
@@ -195,8 +323,9 @@ async def run_textual_cli_async(
     assistant_id: str,
     *,
     auto_approve: bool = False,
-    sandbox_type: str = "none",
+    sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
+    sandbox_setup: str | None = None,
     model_name: str | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
@@ -210,6 +339,8 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse
+        sandbox_setup: Optional path to setup script to run in the sandbox
+            after creation.
         model_name: Optional model name to use
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
@@ -224,9 +355,13 @@ async def run_textual_cli_async(
 
     # Show thread info
     if is_resumed:
-        console.print(f"[green]Resuming thread:[/green] {thread_id}")
+        msg = Text("Resuming thread: ", style="green")
+        msg.append(str(thread_id))
+        console.print(msg)
     else:
-        console.print(f"[dim]Starting with thread: {thread_id}[/dim]")
+        msg = Text("Starting with thread: ", style="dim")
+        msg.append(str(thread_id), style="dim")
+        console.print(msg)
 
     # Use async context manager for checkpointer
     async with get_checkpointer() as checkpointer:
@@ -242,7 +377,11 @@ async def run_textual_cli_async(
         if sandbox_type != "none":
             try:
                 # Create sandbox context manager but keep it open
-                sandbox_cm = create_sandbox(sandbox_type, sandbox_id=sandbox_id)
+                sandbox_cm = create_sandbox(
+                    sandbox_type,
+                    sandbox_id=sandbox_id,
+                    setup_script_path=sandbox_setup,
+                )
                 sandbox_backend = sandbox_cm.__enter__()  # noqa: PLC2801
             except (ImportError, ValueError, RuntimeError, NotImplementedError) as e:
                 console.print()
@@ -304,10 +443,11 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
-        # Handle -h/--help flag (custom help display)
-        if getattr(args, "help", False):
-            show_help()
-            sys.exit(0)
+        # Apply shell-allow-list from command line if provided (overrides env var)
+        if args.shell_allow_list:
+            from deepagents_cli.config import parse_shell_allow_list
+
+            settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         if args.command == "help":
             show_help()
@@ -318,7 +458,9 @@ def cli_main() -> None:
         elif args.command == "skills":
             execute_skills_command(args)
         elif args.command == "threads":
-            if args.threads_command == "list":
+            # "ls" is an argparse alias for "list" — argparse stores the
+            # alias as-is in the namespace, so we must match both values.
+            if args.threads_command in {"list", "ls"}:
                 asyncio.run(
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),
@@ -328,9 +470,23 @@ def cli_main() -> None:
             elif args.threads_command == "delete":
                 asyncio.run(delete_thread_command(args.thread_id))
             else:
-                console.print(
-                    "[yellow]Usage: deepagents threads <list|delete>[/yellow]"
+                # No subcommand provided, show threads help screen
+                show_threads_help()
+        elif args.non_interactive_message:
+            # Non-interactive mode - execute single task and exit
+            from deepagents_cli.non_interactive import run_non_interactive
+
+            exit_code = asyncio.run(
+                run_non_interactive(
+                    message=args.non_interactive_message,
+                    assistant_id=args.agent,
+                    model_name=getattr(args, "model", None),
+                    sandbox_type=args.sandbox,
+                    sandbox_id=args.sandbox_id,
+                    sandbox_setup=getattr(args, "sandbox_setup", None),
                 )
+            )
+            sys.exit(exit_code)
         else:
             # Interactive mode - handle thread resume
             thread_id = None
@@ -340,7 +496,7 @@ def cli_main() -> None:
                 # -r (no ID): Get most recent thread
                 # If --agent specified, filter by that agent; otherwise get
                 # most recent overall
-                agent_filter = args.agent if args.agent != "agent" else None
+                agent_filter = args.agent if args.agent != DEFAULT_AGENT_NAME else None
                 thread_id = asyncio.run(get_most_recent(agent_filter))
                 if thread_id:
                     is_resumed = True
@@ -361,7 +517,7 @@ def cli_main() -> None:
                 if asyncio.run(thread_exists(args.resume_thread)):
                     thread_id = args.resume_thread
                     is_resumed = True
-                    if args.agent == "agent":
+                    if args.agent == DEFAULT_AGENT_NAME:
                         agent_name = asyncio.run(get_thread_agent(thread_id))
                         if agent_name:
                             args.agent = agent_name
@@ -377,7 +533,9 @@ def cli_main() -> None:
                         console.print()
                         console.print("[yellow]Did you mean?[/yellow]")
                         for tid in similar:
-                            console.print(f"  [cyan]deepagents -r {tid}[/cyan]")
+                            hint = Text("  deepagents -r ", style="cyan")
+                            hint.append(str(tid), style="cyan")
+                            console.print(hint)
                         console.print()
 
                     console.print(
@@ -403,6 +561,7 @@ def cli_main() -> None:
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
+                        sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         thread_id=thread_id,
                         is_resumed=is_resumed,
@@ -410,15 +569,19 @@ def cli_main() -> None:
                     )
                 )
             except Exception as e:
-                console.print(f"\n[red]Application error:[/red] {e}")
-                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                error_msg = Text("\nApplication error: ", style="red")
+                error_msg.append(str(e))
+                console.print(error_msg)
+                console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
 
             # Show resume hint on exit (only for new threads with successful exit)
             if thread_id and not is_resumed and return_code == 0:
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
-                console.print(f"[cyan]deepagents -r {thread_id}[/cyan]")
+                hint = Text("deepagents -r ", style="cyan")
+                hint.append(str(thread_id), style="cyan")
+                console.print(hint)
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

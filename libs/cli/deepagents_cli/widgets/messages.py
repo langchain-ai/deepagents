@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import ast
+import json
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +15,7 @@ from textual.containers import Vertical
 from textual.widgets import Markdown, Static
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
+from deepagents_cli.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.ui import format_tool_display
 from deepagents_cli.widgets.diff import format_diff_textual
 
@@ -101,7 +106,37 @@ class UserMessage(Static):
         """
         text = Text()
         text.append("> ", style="bold #10b981")
-        text.append(self._content)
+
+        # Highlight @mentions and /commands in the content
+        content = self._content
+        last_end = 0
+        for match in INPUT_HIGHLIGHT_PATTERN.finditer(content):
+            start, end = match.span()
+            token = match.group()
+
+            # Skip @mentions that look like email addresses
+            if token.startswith("@") and start > 0:
+                char_before = content[start - 1]
+                if EMAIL_PREFIX_PATTERN.match(char_before):
+                    continue
+
+            # Add text before the match (unstyled)
+            if start > last_end:
+                text.append(content[last_end:start])
+
+            # The regex only matches tokens starting with / or @
+            if token.startswith("/") and start == 0:
+                # /command at start - yellow/gold
+                text.append(token, style="bold #fbbf24")
+            elif token.startswith("@"):
+                # @file mention - green
+                text.append(token, style="bold #10b981")
+            last_end = end
+
+        # Add remaining text after last match
+        if last_end < len(content):
+            text.append(content[last_end:])
+
         yield Static(text)
 
 
@@ -310,6 +345,10 @@ class ToolCallMessage(Vertical):
         self._spinner_position = 0
         self._start_time: float | None = None
         self._animation_timer: Timer | None = None
+        # Deferred state for hydration (set by MessageData.to_widget)
+        self._deferred_status: str | None = None
+        self._deferred_output: str | None = None
+        self._deferred_expanded: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout.
@@ -353,6 +392,61 @@ class ToolCallMessage(Vertical):
         self._preview_widget.display = False
         self._hint_widget.display = False
         self._full_widget.display = False
+
+        # Restore deferred state if this widget was hydrated from data
+        self._restore_deferred_state()
+
+    def _restore_deferred_state(self) -> None:
+        """Restore state from deferred values (used when hydrating from data)."""
+        if self._deferred_status is None:
+            return
+
+        status = self._deferred_status
+        output = self._deferred_output or ""
+        self._expanded = self._deferred_expanded
+
+        # Clear deferred values
+        self._deferred_status = None
+        self._deferred_output = None
+        self._deferred_expanded = False
+
+        # Restore based on status (don't restart animations for running tools)
+        match status:
+            case "success":
+                self._status = "success"
+                self._output = output
+                self._update_output_display()
+            case "error":
+                self._status = "error"
+                self._output = output
+                if self._status_widget:
+                    self._status_widget.add_class("error")
+                    self._status_widget.update("[red]✗ Error[/red]")
+                    self._status_widget.display = True
+                self._update_output_display()
+            case "rejected":
+                self._status = "rejected"
+                if self._status_widget:
+                    self._status_widget.add_class("rejected")
+                    self._status_widget.update("[yellow]✗ Rejected[/yellow]")
+                    self._status_widget.display = True
+            case "skipped":
+                self._status = "skipped"
+                if self._status_widget:
+                    self._status_widget.add_class("rejected")
+                    self._status_widget.update("[dim]- Skipped[/dim]")
+                    self._status_widget.display = True
+            case "running":
+                # For running tools, show static "Running..." without animation
+                # (animations shouldn't be restored for archived tools)
+                self._status = "running"
+                if self._status_widget:
+                    self._status_widget.add_class("pending")
+                    self._status_widget.update("[yellow]⠿ Running...[/yellow]")
+                    self._status_widget.display = True
+            case _:
+                # pending or unknown - leave as default
+                pass
 
     def set_running(self) -> None:
         """Mark the tool as running (approved and executing).
@@ -573,9 +667,6 @@ class ToolCallMessage(Vertical):
         Returns:
             List of todo items, or None if parsing fails.
         """
-        import ast
-        import re
-
         list_match = re.search(r"\[(\{.*\})\]", output.replace("\n", " "), re.DOTALL)
         if list_match:
             try:
@@ -643,9 +734,6 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with directory listing and optional truncation info.
         """
-        import ast
-        from pathlib import Path
-
         # Try to parse as a Python list (common format)
         try:
             items = ast.literal_eval(output)
@@ -707,9 +795,6 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with search results and optional truncation info.
         """
-        import ast
-        from pathlib import Path
-
         # Try to parse as a Python list (glob returns list of paths)
         try:
             items = ast.literal_eval(output.strip())
@@ -801,9 +886,6 @@ class ToolCallMessage(Vertical):
         Returns:
             Parsed dict if successful, None otherwise.
         """
-        import ast
-        import json
-
         try:
             if output.strip().startswith("{"):
                 return json.loads(output)
@@ -1089,6 +1171,8 @@ class ErrorMessage(Static):
             error: The error message
             **kwargs: Additional arguments passed to parent
         """
+        # Store raw content for serialization
+        self._content = error
         # Use Text object to combine styled prefix with unstyled error content
         text = Text("Error: ", style="bold red")
         text.append(error)
@@ -1120,5 +1204,7 @@ class AppMessage(Static):
             message: The system message
             **kwargs: Additional arguments passed to parent
         """
+        # Store raw content for serialization
+        self._content = message
         # Use Text object to safely render message without markup parsing
         super().__init__(Text(message, style="dim italic"), **kwargs)

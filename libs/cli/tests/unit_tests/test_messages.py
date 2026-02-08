@@ -2,6 +2,7 @@
 
 import pytest
 
+from deepagents_cli.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_cli.widgets.messages import (
     AppMessage,
     ErrorMessage,
@@ -189,3 +190,50 @@ class TestToolCallMessageShellCommand:
         # Subsequent lines starting with $ should NOT be dimmed
         assert "$ not a command" in result.content
         assert "[dim]$ not a command" not in result.content
+
+
+class TestUserMessageHighlighting:
+    """Test UserMessage highlighting of `@mentions` and `/commands`."""
+
+    def test_at_mention_highlighted(self) -> None:
+        """`@file` mentions should be styled in the output."""
+        content = "look at @README.md please"
+        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
+        assert len(matches) == 1
+        assert matches[0].group() == "@README.md"
+
+    def test_slash_command_highlighted_at_start(self) -> None:
+        """Slash commands at start should be detected."""
+        content = "/help me with something"
+        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
+        assert len(matches) == 1
+        assert matches[0].group() == "/help"
+        assert matches[0].start() == 0
+
+    def test_slash_command_not_matched_mid_text(self) -> None:
+        """Slash in middle of text should not match as command due to ^ anchor."""
+        content = "check the /usr/bin path"
+        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
+        # The ^ anchor means /usr doesn't match when not at start of string
+        assert len(matches) == 0
+
+    def test_multiple_at_mentions(self) -> None:
+        """Multiple `@mentions` should all be detected."""
+        content = "compare @file1.py with @file2.py"
+        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
+        assert len(matches) == 2
+        assert matches[0].group() == "@file1.py"
+        assert matches[1].group() == "@file2.py"
+
+    def test_at_mention_with_path(self) -> None:
+        """`@mentions` with paths should be fully captured."""
+        content = "read @src/utils/helpers.py"
+        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
+        assert len(matches) == 1
+        assert matches[0].group() == "@src/utils/helpers.py"
+
+    def test_no_matches_in_plain_text(self) -> None:
+        """Plain text without `@` or `/` should have no matches."""
+        content = "just some normal text here"
+        matches = list(INPUT_HIGHLIGHT_PATTERN.finditer(content))
+        assert len(matches) == 0

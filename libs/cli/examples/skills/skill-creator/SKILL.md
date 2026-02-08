@@ -16,12 +16,26 @@ equipped with procedural knowledge and domain expertise.
 
 ### Skill Location for Deepagents
 
-In deepagents CLI, skills are stored in `~/.deepagents/<agent>/skills/` where `<agent>` is your agent configuration name (default is `agent`). For example, with the default configuration, skills live at:
+The deepagents CLI loads skills from four directories, listed here from lowest to highest precedence:
+
+| # | Directory | Scope | Notes |
+|---|-----------|-------|-------|
+| 1 | `~/.deepagents/<agent>/skills/` | User (deepagents alias) | Default for `deepagents skills create` |
+| 2 | `~/.agents/skills/` | User | Shared across agent tools |
+| 3 | `.deepagents/skills/` | Project (deepagents alias) | Default for `deepagents skills create --project` |
+| 4 | `.agents/skills/` | Project | Shared across agent tools |
+
+`<agent>` is the agent configuration name (default: `agent`). When two directories contain a skill with the same name, the higher-precedence version wins — project skills override user skills.
+
+Example directory layout:
 
 ```
-~/.deepagents/agent/skills/
+~/.deepagents/agent/skills/     # user skills (lowest precedence)
 ├── skill-name-1/
 │   └── SKILL.md
+└── ...
+
+<project-root>/.deepagents/skills/   # project skills (higher precedence)
 ├── skill-name-2/
 │   └── SKILL.md
 └── ...
@@ -133,7 +147,7 @@ Skills use a three-level loading system to manage context efficiently:
 
 #### Progressive Disclosure Patterns
 
-Keep SKILL.md body to the essentials and under 500 lines to minimize context bloat. Split content into separate files when approaching this limit. When splitting out content into other files, it is very important to reference them from SKILL.md and describe clearly when to read them, to ensure the reader of the skill knows they exist and when to use them.
+Keep SKILL.md body to the essentials and under 500 lines to minimize context bloat. SKILL.md files exceeding 10 MB are silently skipped by the agent runtime. Split content into separate files when approaching the line limit. When splitting out content into other files, it is very important to reference them from SKILL.md and describe clearly when to read them, to ensure the reader of the skill knows they exist and when to use them.
 
 **Key principle:** When a skill supports multiple variations, frameworks, or options, keep only the core workflow and selection guidance in SKILL.md. Move variant-specific details (patterns, examples, configuration) into separate reference files.
 
@@ -271,7 +285,11 @@ At this point, it is time to actually create the skill.
 
 Skip this step only if the skill being developed already exists, and iteration or packaging is needed. In this case, continue to the next step.
 
-When creating a new skill from scratch, always run the `init_skill.py` script. The script conveniently generates a new template skill directory that automatically includes everything a skill requires, making the skill creation process much more efficient and reliable.
+There are two ways to create a new skill:
+
+#### Option A: `init_skill.py` (recommended for rich skills)
+
+When creating a new skill from scratch, run the `init_skill.py` script. The script generates a new template skill directory that automatically includes everything a skill requires, making the skill creation process much more efficient and reliable.
 
 Usage:
 
@@ -279,10 +297,14 @@ Usage:
 scripts/init_skill.py <skill-name> --path <output-directory>
 ```
 
-For deepagents CLI, use the agent's skills directory:
+For deepagents CLI, use any of the skill directories listed in "Skill Location for Deepagents" above:
 
 ```bash
+# User skills (default)
 scripts/init_skill.py <skill-name> --path ~/.deepagents/agent/skills
+
+# Project skills
+scripts/init_skill.py <skill-name> --path .deepagents/skills
 ```
 
 The script:
@@ -293,6 +315,20 @@ The script:
 - Adds example files in each directory that can be customized or deleted
 
 After initialization, customize or remove the generated SKILL.md and example files as needed.
+
+#### Option B: `deepagents skills create` (quick start)
+
+The built-in CLI command creates a minimal skill with just a `SKILL.md` template — no resource directories. Use this for simple skills that only need instructions and no bundled scripts, references, or assets.
+
+```bash
+# Create in user skills directory
+deepagents skills create <skill-name>
+
+# Create in project skills directory
+deepagents skills create <skill-name> --project
+```
+
+Use `init_skill.py` when the skill will include bundled resources (`scripts/`, `references/`, `assets/`). Use `deepagents skills create` for a quick, minimal starting point.
 
 ### Step 4: Edit the Skill
 
@@ -349,7 +385,7 @@ The validation script checks:
 - Skill naming conventions (hyphen-case, max 64 characters)
 - Description completeness (no angle brackets, max 1024 characters)
 - Required fields: `name` and `description`
-- Allowed frontmatter properties only: `name`, `description`, `license`, `allowed-tools`, `metadata`
+- Allowed frontmatter properties only: `name`, `description`, `license`, `compatibility`, `allowed-tools`, `metadata`
 
 If validation fails, fix the reported errors and run the validation command again.
 

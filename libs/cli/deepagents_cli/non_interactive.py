@@ -39,6 +39,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class HITLIterationLimitError(RuntimeError):
+    """Raised when the HITL interrupt loop exceeds the safety cap."""
+
+
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 
 _STREAM_CHUNK_LENGTH = 3
@@ -101,12 +106,14 @@ class StreamState:
 def _process_interrupts(
     data: dict[str, list[Interrupt]],
     state: StreamState,
+    console: Console,
 ) -> None:
     """Extract HITL interrupts from an `updates` chunk and record them.
 
     Args:
         data: The `updates` dict that contains an `__interrupt__` key.
         state: Stream state to update with new pending interrupts.
+        console: Rich console for user-visible warnings.
     """
     interrupts = data["__interrupt__"]
     if interrupts:
@@ -116,7 +123,15 @@ def _process_interrupts(
                     interrupt_obj.value
                 )
             except ValidationError:
-                logger.warning("Skipping malformed HITL interrupt %s", interrupt_obj.id)
+                logger.warning(
+                    "Skipping malformed HITL interrupt %s (raw value: %r)",
+                    interrupt_obj.id,
+                    interrupt_obj.value,
+                )
+                console.print(
+                    f"[yellow]Warning: Received malformed tool approval "
+                    f"request (interrupt {interrupt_obj.id}). Skipping.[/yellow]"
+                )
                 continue
             state.pending_interrupts[interrupt_obj.id] = validated_request
             state.interrupt_occurred = True
@@ -236,7 +251,7 @@ def _process_stream_chunk(
         return
 
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
-        _process_interrupts(cast("dict[str, list[Interrupt]]", data), state)
+        _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "messages":
         _process_message_chunk(
             cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),
@@ -362,7 +377,7 @@ async def _run_agent_loop(
         file_op_tracker: Tracker for file-operation diffs.
 
     Raises:
-        RuntimeError: If the HITL iteration limit is exceeded.
+        HITLIterationLimitError: If the HITL iteration limit is exceeded.
     """
     state = StreamState()
     stream_input: dict[str, Any] | Command = {
@@ -381,7 +396,7 @@ async def _run_agent_loop(
                 f"Exceeded {_MAX_HITL_ITERATIONS} HITL interrupt rounds. "
                 "The agent may be stuck retrying rejected commands."
             )
-            raise RuntimeError(msg)
+            raise HITLIterationLimitError(msg)
         state.interrupt_occurred = False
         state.hitl_response.clear()
         _process_hitl_interrupts(state, console)
@@ -491,15 +506,28 @@ async def run_non_interactive(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
+    except HITLIterationLimitError as e:
+        console.print(f"\n[red]{e}[/red]")
+        console.print(
+            "[yellow]Hint: The agent may be repeatedly attempting commands "
+            "that are not in the allow-list. Consider expanding the "
+            "--shell-allow-list or adjusting the task.[/yellow]"
+        )
+        return 1
     except (ValueError, OSError) as e:
+        logger.exception("Error during non-interactive execution")
         console.print(f"\n[red]❌ Error: {e}[/red]")
         return 1
-    except (RuntimeError, TypeError) as e:
+    except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
-        console.print(f"\n[red]❌ Unexpected error: {e}[/red]")
+        console.print(f"\n[red]❌ Unexpected error ({type(e).__name__}): {e}[/red]")
         return 1
     finally:
         try:
             exit_stack.close()
-        except Exception:
-            logger.warning("Failed to clean up resources during exit", exc_info=True)
+        except (OSError, RuntimeError) as cleanup_err:
+            msg = "Failed to clean up resources during exit"
+            logger.warning("%s: %s", msg, cleanup_err, exc_info=True)
+            console.print(
+                f"[yellow]Warning: Resource cleanup failed: {cleanup_err}[/yellow]"
+            )

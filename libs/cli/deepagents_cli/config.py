@@ -764,8 +764,8 @@ SHELL_TOOL_NAMES: frozenset[str] = frozenset({"bash", "shell", "execute"})
 """Tool names recognized as shell/command-execution tools.
 
 Only `'execute'` is registered by the SDK and CLI backends in practice.
-`'bash'` and `'shell'` are legacy names carried over from the original
-`_MINIMAL_TOOLS` set and kept as backwards-compatible aliases.
+`'bash'` and `'shell'` are legacy names carried over and kept as
+backwards-compatible aliases.
 """
 
 DANGEROUS_SHELL_PATTERNS = (
@@ -883,19 +883,7 @@ def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool
         allow_list: List of allowed command names (e.g., ["ls", "cat", "grep"])
 
     Returns:
-        True if the command is allowed, False otherwise
-
-    Examples:
-        >>> is_shell_command_allowed("ls -la", ["ls", "cat"])
-        True
-        >>> is_shell_command_allowed("cat file.txt", ["ls", "cat"])
-        True
-        >>> is_shell_command_allowed("rm file.txt", ["ls", "cat"])
-        False
-        >>> is_shell_command_allowed("ls | grep test", ["ls", "grep"])
-        True
-        >>> is_shell_command_allowed("ls $(rm -rf /)", ["ls"])  # Injection blocked
-        False
+        True if the command is allowed, False otherwise.
     """
     if not allow_list or not command or not command.strip():
         return False

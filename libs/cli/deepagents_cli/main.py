@@ -294,7 +294,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--shell-allow-list",
         metavar="LIST",
-        help="Comma-separated list of shell commands to allow, or 'recommended' for safe defaults",  # noqa: E501
+        help="Comma-separated list of shell commands to auto-approve, "
+        "or 'recommended' for safe defaults. "
+        "Applies to both -n and interactive modes.",
     )
 
     parser.add_argument(

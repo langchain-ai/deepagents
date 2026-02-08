@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 # S404: subprocess is required for user-initiated shell commands via ! prefix
@@ -50,6 +51,8 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
     from textual.worker import Worker
+
+logger = logging.getLogger(__name__)
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -611,7 +614,12 @@ class DeepAgentsApp(App):
                         await messages.mount(auto_msg)
                     self._scroll_chat_to_bottom()
                 except NoMatches:
-                    pass  # UI container not mounted yet; approval still proceeded
+                    # Cosmetic only: approval already granted via result_future.
+                    logger.warning(
+                        "Could not find #messages container to display "
+                        "auto-approval notification for commands: %s",
+                        approved_commands,
+                    )
 
                 return result_future
 

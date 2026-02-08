@@ -1095,7 +1095,8 @@ class DeepAgentsApp(App):
                 await queued_widget.remove()
 
             # Process the message (this will set _agent_running = True)
-            # Note: _process_message -> _handle_user_message already mounts the UserMessage
+            # Note: _process_message -> _handle_user_message already mounts
+            # the UserMessage
             await self._process_message(msg.text, msg.mode)
         finally:
             self._processing_pending = False
@@ -1334,7 +1335,6 @@ class DeepAgentsApp(App):
             content=content,
             is_streaming=False,
         )
-
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""

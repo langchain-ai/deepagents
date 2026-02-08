@@ -197,7 +197,7 @@ class StatusBar(Horizontal):
             # Try to use ~ for home directory
             home = Path.home()
             if path.is_relative_to(home):
-                return "~/" + str(path.relative_to(home))
+                return "~/" + path.relative_to(home).as_posix()
         except (ValueError, RuntimeError):
             pass
         return str(path)

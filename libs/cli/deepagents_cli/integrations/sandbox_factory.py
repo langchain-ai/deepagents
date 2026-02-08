@@ -6,6 +6,7 @@ import string
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.backends.sandbox import SandboxProvider
@@ -68,6 +69,7 @@ def create_sandbox(
     *,
     sandbox_id: str | None = None,
     setup_script_path: str | None = None,
+    **kwargs: Any,
 ) -> Generator[SandboxBackendProtocol, None, None]:
     """Create or connect to a sandbox of the specified provider.
 
@@ -77,19 +79,25 @@ def create_sandbox(
         provider: Sandbox provider ("daytona", "langsmith", "modal", "runloop")
         sandbox_id: Optional existing sandbox ID to reuse
         setup_script_path: Optional path to setup script to run after sandbox starts
+        **kwargs: Additional provider-specific parameters
 
     Yields:
         SandboxBackendProtocol instance
     """
+    # Extract provider initialization kwargs (e.g., api_key)
+    provider_init_kwargs = {}
+    if "api_key" in kwargs:
+        provider_init_kwargs["api_key"] = kwargs.pop("api_key")
+
     # Get provider instance
-    provider_obj = _get_provider(provider)
+    provider_obj = _get_provider(provider, **provider_init_kwargs)
 
     # Determine if we should cleanup (only cleanup if we created it)
     should_cleanup = sandbox_id is None
 
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
-    backend = provider_obj.get_or_create(sandbox_id=sandbox_id)
+    backend = provider_obj.get_or_create(sandbox_id=sandbox_id, **kwargs)
     glyphs = get_glyphs()
     console.print(
         f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "
@@ -149,11 +157,12 @@ def get_default_working_dir(provider: str) -> str:
     raise ValueError(msg)
 
 
-def _get_provider(provider_name: str) -> SandboxProvider:
+def _get_provider(provider_name: str, **kwargs: Any) -> SandboxProvider:
     """Get a SandboxProvider instance for the specified provider (internal).
 
     Args:
         provider_name: Name of the provider ("daytona", "langsmith", "modal", "runloop")
+        **kwargs: Provider-specific initialization parameters (e.g., api_key for langsmith)
 
     Returns:
         SandboxProvider instance
@@ -164,7 +173,9 @@ def _get_provider(provider_name: str) -> SandboxProvider:
     if provider_name == "daytona":
         return DaytonaProvider()
     if provider_name == "langsmith":
-        return LangSmithProvider()
+        # Extract langsmith-specific kwargs
+        api_key = kwargs.get("api_key")
+        return LangSmithProvider(api_key=api_key)
     if provider_name == "modal":
         return ModalProvider()
     if provider_name == "runloop":

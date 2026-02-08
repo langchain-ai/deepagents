@@ -926,6 +926,55 @@ def is_shell_command_allowed(command: str, allow_list: list[str] | None) -> bool
     return found_command
 
 
+def get_langsmith_project_name() -> str | None:
+    """Resolve the LangSmith project name if tracing is configured.
+
+    Checks for the required API key and tracing environment variables.
+    When both are present, resolves the project name from
+    `DEEPAGENTS_LANGSMITH_PROJECT`, `LANGSMITH_PROJECT`, or falls
+    back to `'default'`.
+
+    Returns:
+        Project name string when LangSmith tracing is active, None otherwise.
+    """
+    langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
+        "LANGCHAIN_API_KEY"
+    )
+    langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
+        "LANGCHAIN_TRACING_V2"
+    )
+    if not (langsmith_key and langsmith_tracing):
+        return None
+
+    return (
+        settings.deepagents_langchain_project
+        or os.environ.get("LANGSMITH_PROJECT")
+        or "default"
+    )
+
+
+def fetch_langsmith_project_url(project_name: str) -> str | None:
+    """Fetch the LangSmith project URL via the LangSmith client.
+
+    This is a blocking network call. In async contexts, run it in a thread
+    (e.g. via `asyncio.to_thread`).
+
+    Args:
+        project_name: LangSmith project name to look up.
+
+    Returns:
+        Project URL string if found, None otherwise.
+    """
+    try:
+        from langsmith import Client
+
+        project = Client().read_project(project_name=project_name)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    else:
+        return project.url or None
+
+
 def get_default_coding_instructions() -> str:
     """Get the default coding agent instructions.
 

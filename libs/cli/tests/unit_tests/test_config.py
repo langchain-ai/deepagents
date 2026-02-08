@@ -11,6 +11,8 @@ from deepagents_cli.config import (
     _find_project_agent_md,
     _find_project_root,
     create_model,
+    fetch_langsmith_project_url,
+    get_langsmith_project_name,
     parse_shell_allow_list,
     settings,
     validate_model_capabilities,
@@ -461,3 +463,118 @@ class TestParseShellAllowList:
         """Test that empty strings from split are ignored."""
         result = parse_shell_allow_list("ls,,cat,,,grep,")
         assert result == ["ls", "cat", "grep"]
+
+
+class TestGetLangsmithProjectName:
+    """Tests for get_langsmith_project_name()."""
+
+    def test_returns_none_without_api_key(self) -> None:
+        """Should return None when no LangSmith API key is set."""
+        env = {
+            "LANGSMITH_API_KEY": "",
+            "LANGCHAIN_API_KEY": "",
+            "LANGSMITH_TRACING": "true",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            assert get_langsmith_project_name() is None
+
+    def test_returns_none_without_tracing(self) -> None:
+        """Should return None when tracing is not enabled."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "",
+            "LANGCHAIN_TRACING_V2": "",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            assert get_langsmith_project_name() is None
+
+    def test_returns_project_from_settings(self) -> None:
+        """Should prefer settings.deepagents_langchain_project."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "env-project",
+        }
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_cli.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = "settings-project"
+            assert get_langsmith_project_name() == "settings-project"
+
+    def test_falls_back_to_env_project(self) -> None:
+        """Should fall back to LANGSMITH_PROJECT env var."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "env-project",
+        }
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_cli.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            assert get_langsmith_project_name() == "env-project"
+
+    def test_falls_back_to_default(self) -> None:
+        """Should fall back to 'default' when no project name configured."""
+        env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+        }
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_cli.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            assert get_langsmith_project_name() == "default"
+
+    def test_accepts_langchain_api_key(self) -> None:
+        """Should accept LANGCHAIN_API_KEY as alternative to LANGSMITH_API_KEY."""
+        env = {
+            "LANGSMITH_API_KEY": "",
+            "LANGCHAIN_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+        }
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_cli.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            assert get_langsmith_project_name() == "default"
+
+
+class TestFetchLangsmithProjectUrl:
+    """Tests for fetch_langsmith_project_url()."""
+
+    def test_returns_url_on_success(self) -> None:
+        """Should return the project URL from the LangSmith client."""
+
+        class FakeProject:
+            url = "https://smith.langchain.com/o/org/projects/p/proj"
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result == "https://smith.langchain.com/o/org/projects/p/proj"
+
+    def test_returns_none_on_error(self) -> None:
+        """Should return None when the LangSmith client raises."""
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = OSError("timeout")
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result is None
+
+    def test_returns_none_when_url_is_none(self) -> None:
+        """Should return None when the project has no URL."""
+
+        class FakeProject:
+            url = None
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            result = fetch_langsmith_project_url("my-project")
+
+        assert result is None

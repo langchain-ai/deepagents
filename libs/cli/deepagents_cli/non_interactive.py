@@ -25,11 +25,15 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 from rich.console import Console
+from rich.style import Style
+from rich.text import Text
 
-from deepagents_cli.agent import create_cli_agent
+from deepagents_cli.agent import DEFAULT_AGENT_NAME, create_cli_agent
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     create_model,
+    fetch_langsmith_project_url,
+    get_langsmith_project_name,
     is_shell_command_allowed,
     settings,
 )
@@ -430,6 +434,68 @@ async def _run_agent_loop(
     console.print("\n[green]✓ Task completed[/green]")
 
 
+def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
+    """Build the non-interactive mode header with model, agent, and thread info.
+
+    The thread ID is rendered as a clickable hyperlink when LangSmith tracing
+    is configured.
+
+    Args:
+        assistant_id: Agent identifier.
+        thread_id: Thread identifier.
+
+    Returns:
+        Rich Text object with the formatted header line.
+    """
+    default_label = " (default)" if assistant_id == DEFAULT_AGENT_NAME else ""
+    parts: list[tuple[str, str | Style]] = [
+        (f"Agent: {assistant_id}{default_label}", "dim"),
+    ]
+
+    if settings.model_name:
+        parts.extend([(" | ", "dim"), (f"Model: {settings.model_name}", "dim")])
+
+    parts.append((" | ", "dim"))
+
+    # Attempt to build a clickable thread link via LangSmith
+    thread_url = _get_thread_url(thread_id)
+    if thread_url:
+        parts.extend(
+            [
+                ("Thread: ", "dim"),
+                (thread_id, Style(dim=True, link=thread_url)),
+            ]
+        )
+    else:
+        parts.append((f"Thread: {thread_id}", "dim"))
+
+    return Text.assemble(*parts)
+
+
+def _get_thread_url(thread_id: str) -> str | None:
+    """Build a LangSmith thread URL if tracing is configured.
+
+    Delegates to shared helpers in `config` for env-var checks and the
+    LangSmith client call, avoiding duplication with the interactive
+    welcome banner.
+
+    Args:
+        thread_id: Thread identifier to build the URL for.
+
+    Returns:
+        Full thread URL string, or None if LangSmith is not configured.
+    """
+    project_name = get_langsmith_project_name()
+    if not project_name:
+        return None
+
+    project_url = fetch_langsmith_project_url(project_name)
+    if not project_url:
+        return None
+
+    return f"{project_url.rstrip('/')}/t/{thread_id}"
+
+
 async def run_non_interactive(
     message: str,
     assistant_id: str = "agent",
@@ -470,7 +536,9 @@ async def run_non_interactive(
     }
 
     console.print("[dim]Running task non-interactively...[/dim]")
-    console.print(f"[dim]Agent: {assistant_id} | Thread: {thread_id}[/dim]\n")
+    header = _build_non_interactive_header(assistant_id, thread_id)
+    console.print(header)
+    console.print()
 
     sandbox_backend = None
     exit_stack = contextlib.ExitStack()

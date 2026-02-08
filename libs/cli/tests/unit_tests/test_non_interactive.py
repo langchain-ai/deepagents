@@ -4,8 +4,14 @@ from unittest.mock import patch
 
 import pytest
 from rich.console import Console
+from rich.style import Style
+from rich.text import Text
 
-from deepagents_cli.non_interactive import _make_hitl_decision
+from deepagents_cli.non_interactive import (
+    _build_non_interactive_header,
+    _get_thread_url,
+    _make_hitl_decision,
+)
 
 
 @pytest.fixture
@@ -111,3 +117,142 @@ class TestMakeHitlDecision:
                 {"name": tool_name, "args": {"command": "rm -rf /"}}, console
             )
             assert result["type"] == "reject"
+
+
+class TestBuildNonInteractiveHeader:
+    """Tests for _build_non_interactive_header()."""
+
+    def test_includes_agent_id(self) -> None:
+        """Header should contain the agent identifier."""
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.model_name = None
+            with patch(
+                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+            ):
+                header = _build_non_interactive_header("my-agent", "abc123")
+        assert "Agent: my-agent" in header.plain
+        # Non-default agent should not have "(default)" label
+        assert "(default)" not in header.plain
+
+    def test_default_agent_label(self) -> None:
+        """Header should show '(default)' for the default agent name."""
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.model_name = None
+            with patch(
+                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+            ):
+                header = _build_non_interactive_header("agent", "abc123")
+        assert "Agent: agent (default)" in header.plain
+
+    def test_includes_model_name(self) -> None:
+        """Header should display model name when available."""
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.model_name = "gpt-5"
+            with patch(
+                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+            ):
+                header = _build_non_interactive_header("agent", "abc123")
+        assert "Model: gpt-5" in header.plain
+
+    def test_omits_model_when_none(self) -> None:
+        """Header should not include model section when model_name is None."""
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.model_name = None
+            with patch(
+                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+            ):
+                header = _build_non_interactive_header("agent", "abc123")
+        assert "Model:" not in header.plain
+
+    def test_includes_thread_id(self) -> None:
+        """Header should contain the thread ID."""
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.model_name = None
+            with patch(
+                "deepagents_cli.non_interactive._get_thread_url", return_value=None
+            ):
+                header = _build_non_interactive_header("agent", "deadbeef")
+        assert "Thread: deadbeef" in header.plain
+
+    def test_thread_clickable_when_url_available(self) -> None:
+        """Thread ID should be a hyperlink when LangSmith URL is available."""
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc123"
+        with patch("deepagents_cli.non_interactive.settings") as mock_settings:
+            mock_settings.model_name = None
+            with patch(
+                "deepagents_cli.non_interactive._get_thread_url", return_value=url
+            ):
+                header = _build_non_interactive_header("agent", "abc123")
+        # Find the span containing the thread ID and verify it has a link
+        for start, end, style in header._spans:
+            text = header.plain[start:end]
+            if text == "abc123" and isinstance(style, Style) and style.link:
+                assert style.link == url
+                break
+        else:
+            pytest.fail("Thread ID span with hyperlink not found")
+
+
+class TestGetThreadUrl:
+    """Tests for _get_thread_url().
+
+    The function delegates to ``get_langsmith_project_name`` and
+    ``fetch_langsmith_project_url`` from config, so we mock those
+    rather than env vars / the LangSmith client directly.
+    """
+
+    def test_returns_none_when_langsmith_not_configured(self) -> None:
+        """Should return None when get_langsmith_project_name returns None."""
+        with patch(
+            "deepagents_cli.non_interactive.get_langsmith_project_name",
+            return_value=None,
+        ):
+            assert _get_thread_url("abc123") is None
+
+    def test_returns_none_when_project_url_unavailable(self) -> None:
+        """Should return None when fetch_langsmith_project_url returns None."""
+        with (
+            patch(
+                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                return_value="my-project",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.fetch_langsmith_project_url",
+                return_value=None,
+            ),
+        ):
+            assert _get_thread_url("abc123") is None
+
+    def test_returns_url_when_configured(self) -> None:
+        """Should return a full thread URL when LangSmith is configured."""
+        project_url = "https://smith.langchain.com/o/org/projects/p/proj"
+        with (
+            patch(
+                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                return_value="my-project",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.fetch_langsmith_project_url",
+                return_value=project_url,
+            ),
+        ):
+            result = _get_thread_url("thread42")
+
+        assert result == f"{project_url}/t/thread42"
+
+    def test_strips_trailing_slash_from_project_url(self) -> None:
+        """Should strip trailing slash before appending thread path."""
+        project_url = "https://smith.langchain.com/o/org/projects/p/proj/"
+        with (
+            patch(
+                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                return_value="default",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.fetch_langsmith_project_url",
+                return_value=project_url,
+            ),
+        ):
+            result = _get_thread_url("abc")
+
+        assert result == "https://smith.langchain.com/o/org/projects/p/proj/t/abc"

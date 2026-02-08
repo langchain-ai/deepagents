@@ -55,26 +55,64 @@ class DaytonaSandbox(BaseSandbox):
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files from the sandbox."""
-        download_requests = [FileDownloadRequest(source=path) for path in paths]
-        daytona_responses = self._sandbox.fs.download_files(download_requests)
+        download_requests: list[FileDownloadRequest] = []
+        response_indexes: list[int] = []
+        responses: list[FileDownloadResponse] = []
 
-        return [
-            FileDownloadResponse(
-                path=resp.source,
-                content=resp.result,
-                error=None,
-            )
-            for resp in daytona_responses
-        ]
+        for i, path in enumerate(paths):
+            if not path.startswith("/"):
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="invalid_path")
+                )
+                continue
+            response_indexes.append(i)
+            download_requests.append(FileDownloadRequest(source=path))
+            responses.append(FileDownloadResponse(path=path, content=None, error=None))
+
+        if not download_requests:
+            return responses
+
+        daytona_responses = self._sandbox.fs.download_files(download_requests)
+        for resp in daytona_responses:
+            content = resp.result
+            if content is None:
+                mapped = FileDownloadResponse(
+                    path=resp.source,
+                    content=None,
+                    error="file_not_found",
+                )
+            else:
+                mapped = FileDownloadResponse(
+                    path=resp.source,
+                    content=content,
+                    error=None,
+                )
+
+            try:
+                idx = paths.index(resp.source)
+            except ValueError:
+                responses.append(mapped)
+            else:
+                responses[idx] = mapped
+
+        return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload files into the sandbox."""
-        upload_requests = [
-            FileUpload(source=content, destination=path) for path, content in files
-        ]
-        self._sandbox.fs.upload_files(upload_requests)
+        upload_requests: list[FileUpload] = []
+        responses: list[FileUploadResponse] = []
 
-        return [FileUploadResponse(path=path, error=None) for path, _ in files]
+        for path, content in files:
+            if not path.startswith("/"):
+                responses.append(FileUploadResponse(path=path, error="invalid_path"))
+                continue
+            upload_requests.append(FileUpload(source=content, destination=path))
+            responses.append(FileUploadResponse(path=path, error=None))
+
+        if upload_requests:
+            self._sandbox.fs.upload_files(upload_requests)
+
+        return responses
 
 
 DaytonaBackend = DaytonaSandbox

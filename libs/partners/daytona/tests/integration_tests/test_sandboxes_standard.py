@@ -10,6 +10,10 @@ from tests.integration_tests.sandboxes import SandboxClientIntegrationTests
 
 
 class TestDaytonaSandboxClientStandard(SandboxClientIntegrationTests):
+    @property
+    def supports_distinct_download_errors(self) -> bool:
+        return False
+
     @pytest.fixture(scope="class")
     def sandbox_provider(self) -> SandboxClient:
         api_key = os.environ.get("DAYTONA_API_KEY")

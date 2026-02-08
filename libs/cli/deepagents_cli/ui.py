@@ -274,7 +274,7 @@ def show_help() -> None:
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-4o)")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print(
-        "  --auto-approve             Auto-approve tool usage without prompting"
+        "  --auto-approve             Auto-approve all tool calls (toggle: Shift+Tab)"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
@@ -283,8 +283,27 @@ def show_help() -> None:
     console.print(
         "  --sandbox-setup PATH       Setup script to run in sandbox after creation"
     )
+    console.print("  -n, --non-interactive MSG  Run a single task and exit")
+    console.print(
+        "  --shell-allow-list CMDS    Comma-separated local shell commands to allow"
+    )
     console.print("  -v, --version              Show deepagents CLI version")
     console.print("  -h, --help                 Show this help message and exit")
+    console.print()
+
+    console.print("[bold]Non-Interactive Mode:[/bold]", style=COLORS["primary"])
+    console.print(
+        "  deepagents -n 'Summarize README.md'     # Run task (no local shell access)",
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -n 'List files' --shell-allow-list recommended  # Use safe commands",  # noqa: E501
+        style=COLORS["dim"],
+    )
+    console.print(
+        "  deepagents -n 'Search logs' --shell-allow-list ls,cat,grep # Specify list",
+        style=COLORS["dim"],
+    )
     console.print()
 
 

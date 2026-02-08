@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser = argparse.ArgumentParser(
-        description="Deep Agents - AI Coding Assistant",
+        description=("Deep Agents - AI Coding Assistant"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )

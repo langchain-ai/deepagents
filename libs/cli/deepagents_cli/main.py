@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser = argparse.ArgumentParser(
-        description="Deep Agents - AI Coding Assistant",
+        description=("Deep Agents - AI Coding Assistant"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
@@ -355,9 +355,13 @@ async def run_textual_cli_async(
 
     # Show thread info
     if is_resumed:
-        console.print(f"[green]Resuming thread:[/green] {thread_id}")
+        msg = Text("Resuming thread: ", style="green")
+        msg.append(str(thread_id))
+        console.print(msg)
     else:
-        console.print(f"[dim]Starting with thread: {thread_id}[/dim]")
+        msg = Text("Starting with thread: ", style="dim")
+        msg.append(str(thread_id), style="dim")
+        console.print(msg)
 
     # Use async context manager for checkpointer
     async with get_checkpointer() as checkpointer:
@@ -529,7 +533,9 @@ def cli_main() -> None:
                         console.print()
                         console.print("[yellow]Did you mean?[/yellow]")
                         for tid in similar:
-                            console.print(f"  [cyan]deepagents -r {tid}[/cyan]")
+                            hint = Text("  deepagents -r ", style="cyan")
+                            hint.append(str(tid), style="cyan")
+                            console.print(hint)
                         console.print()
 
                     console.print(
@@ -563,15 +569,19 @@ def cli_main() -> None:
                     )
                 )
             except Exception as e:
-                console.print(f"\n[red]Application error:[/red] {e}")
-                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                error_msg = Text("\nApplication error: ", style="red")
+                error_msg.append(str(e))
+                console.print(error_msg)
+                console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
 
             # Show resume hint on exit (only for new threads with successful exit)
             if thread_id and not is_resumed and return_code == 0:
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
-                console.print(f"[cyan]deepagents -r {thread_id}[/cyan]")
+                hint = Text("deepagents -r ", style="cyan")
+                hint.append(str(thread_id), style="cyan")
+                console.print(hint)
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C - suppress ugly traceback
         console.print("\n\n[yellow]Interrupted[/yellow]")

@@ -41,6 +41,7 @@ from deepagents_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
+    QueuedUserMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -410,6 +411,13 @@ class DeepAgentsApp(App):
         # User message queue for sequential processing
         self._pending_messages: deque[QueuedMessage] = deque()
         self._processing_pending = False
+        # Message virtualization store
+        self._message_store = MessageStore()
+        # User message queue for sequential processing
+        self._pending_messages: deque[QueuedMessage] = deque()
+        self._processing_pending = False
+        # Track queued message widgets (ephemeral, removed when dequeued)
+        self._queued_message_widgets: dict[str, QueuedUserMessage] = {}
         # Message virtualization store
         self._message_store = MessageStore()
 
@@ -828,7 +836,15 @@ class DeepAgentsApp(App):
                 queued_at=time.time(),
             )
             self._pending_messages.append(msg)
-            await self._mount_queue_status_widget()
+
+            # Mount a grey/dimmed user message widget (ephemeral)
+            queued_widget = QueuedUserMessage(value)
+            await self._mount_message(queued_widget)
+
+            # Track it so we can remove it when dequeued
+            # Use timestamp as unique key
+            widget_key = f"{msg.queued_at}"
+            self._queued_message_widgets[widget_key] = queued_widget
             return
 
         # Otherwise process immediately
@@ -927,7 +943,8 @@ class DeepAgentsApp(App):
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
-                "  !command        Run bash commands directly"
+                "  !command        Run bash commands directly\n\n"
+                "Docs: https://docs.langchain.com/oss/python/deepagents/cli"
             )
             await self._mount_message(AppMessage(help_text))
 
@@ -1074,15 +1091,15 @@ class DeepAgentsApp(App):
             # Dequeue next message
             msg = self._pending_messages.popleft()
 
-            # Update queue status widget if more messages remain
-            if self._pending_messages:
-                await self._mount_queue_status_widget()
-
-            # Mount the queued user message to chat
-            # (so user sees it appear as if they just submitted it)
-            await self._mount_message(UserMessage(msg.text))
+            # Remove the grey queued message widget (ephemeral)
+            widget_key = f"{msg.queued_at}"
+            if widget_key in self._queued_message_widgets:
+                queued_widget = self._queued_message_widgets.pop(widget_key)
+                await queued_widget.remove()
 
             # Process the message (this will set _agent_running = True)
+            # Note: _process_message -> _handle_user_message already mounts
+            # the UserMessage
             await self._process_message(msg.text, msg.mode)
         finally:
             self._processing_pending = False

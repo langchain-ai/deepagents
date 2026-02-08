@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 
 # S404: subprocess is required for user-initiated shell commands via ! prefix
@@ -17,10 +18,17 @@ from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.css.query import NoMatches
+from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_cli.clipboard import copy_selection_to_clipboard
-from deepagents_cli.config import CharsetMode, _detect_charset_mode
+from deepagents_cli.config import (
+    SHELL_TOOL_NAMES,
+    CharsetMode,
+    _detect_charset_mode,
+    is_shell_command_allowed,
+    settings,
+)
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -43,6 +51,8 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
     from textual.worker import Worker
+
+logger = logging.getLogger(__name__)
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -436,19 +446,21 @@ class DeepAgentsApp(App):
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
 
-        # Load thread history if resuming a session
-        if self._lc_thread_id and self._agent:
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
-            )
-        # Auto-submit initial prompt if provided
-        # (but not when resuming - let user see history first)
-        elif self._initial_prompt and self._initial_prompt.strip():
+        # Auto-submit initial prompt if provided via -m flag.
+        # This check must come first because _lc_thread_id and _agent are
+        # always set (even for brand-new sessions), so an elif after the
+        # thread-history branch would never execute.
+        if self._initial_prompt and self._initial_prompt.strip():
             # Use call_after_refresh to ensure UI is fully mounted before submitting
             # Capture value for closure to satisfy type checker
             prompt = self._initial_prompt
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._handle_user_message(prompt))
+            )
+        # Load thread history if resuming a session (no initial prompt)
+        elif self._lc_thread_id and self._agent:
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._load_thread_history())
             )
 
     def on_resize(self, _event: Resize) -> None:
@@ -548,7 +560,7 @@ class DeepAgentsApp(App):
 
     async def _request_approval(
         self,
-        action_request: Any,
+        action_requests: Any,
         assistant_id: str | None,
     ) -> asyncio.Future:
         """Request user approval inline in the messages area.
@@ -558,11 +570,58 @@ class DeepAgentsApp(App):
 
         If another approval is already pending, queue this one.
 
+        Auto-approves shell commands that are in the configured allow-list.
+
+        Args:
+            action_requests: List of action request dicts to approve
+            assistant_id: The assistant ID for display purposes
+
         Returns:
             A Future that resolves to the user's decision.
         """
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
+
+        # Check if ALL actions in the batch are auto-approvable shell commands
+        if settings.shell_allow_list and action_requests:
+            all_auto_approved = True
+            approved_commands = []
+
+            for req in action_requests:
+                if req.get("name") in SHELL_TOOL_NAMES:
+                    command = req.get("args", {}).get("command", "")
+                    if is_shell_command_allowed(command, settings.shell_allow_list):
+                        approved_commands.append(command)
+                    else:
+                        all_auto_approved = False
+                        break
+                else:
+                    # Non-shell commands need normal approval
+                    all_auto_approved = False
+                    break
+
+            if all_auto_approved and approved_commands:
+                # Auto-approve all commands in the batch
+                result_future.set_result({"type": "approve"})
+
+                # Mount system messages showing the auto-approvals
+                try:
+                    messages = self.query_one("#messages", Container)
+                    for command in approved_commands:
+                        auto_msg = AppMessage(
+                            f"✓ Auto-approved shell command (allow-list): {command}"
+                        )
+                        await messages.mount(auto_msg)
+                    self._scroll_chat_to_bottom()
+                except NoMatches:
+                    # Cosmetic only: approval already granted via result_future.
+                    logger.warning(
+                        "Could not find #messages container to display "
+                        "auto-approval notification for commands: %s",
+                        approved_commands,
+                    )
+
+                return result_future
 
         # If there's already a pending approval, wait for it to complete first
         if self._pending_approval_widget is not None:
@@ -571,7 +630,7 @@ class DeepAgentsApp(App):
 
         # Create menu with unique ID to avoid conflicts
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
-        menu = ApprovalMenu(action_request, assistant_id, id=unique_id)
+        menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
         menu.set_future(result_future)
 
         # Store reference
@@ -586,6 +645,10 @@ class DeepAgentsApp(App):
             # Focus approval menu
             self.call_after_refresh(menu.focus)
         except Exception as e:
+            logger.exception(
+                "Failed to mount approval menu (id=%s) in messages container",
+                unique_id,
+            )
             self._pending_approval_widget = None
             if not result_future.done():
                 result_future.set_exception(e)
@@ -593,7 +656,13 @@ class DeepAgentsApp(App):
         return result_future
 
     def _on_auto_approve_enabled(self) -> None:
-        """Callback when auto-approve mode is enabled via HITL."""
+        """Handle auto-approve being enabled via the HITL approval menu.
+
+        Called when the user selects "Auto-approve all" from an approval
+        dialog. Syncs the auto-approve state across the app flag, status
+        bar indicator, and session state so subsequent tool calls skip
+        the approval prompt.
+        """
         self._auto_approve = True
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=True)
@@ -704,11 +773,17 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "Commands: /quit, /clear, /remember, /tokens, /threads, /help"
-                )
+            help_text = (
+                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+                "Interactive Features:\n"
+                "  Enter           Submit your message\n"
+                "  Ctrl+J          Insert newline\n"
+                "  Shift+Tab       Toggle auto-approve mode\n"
+                "  @filename       Auto-complete files and inject content\n"
+                "  /command        Slash commands (/help, /clear, /quit)\n"
+                "  !command        Run bash commands directly"
             )
+            await self._mount_message(AppMessage(help_text))
 
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
@@ -1022,10 +1097,15 @@ class DeepAgentsApp(App):
             self.notify("Press Ctrl+C again to quit", timeout=3)
 
     def action_interrupt(self) -> None:
-        """Handle escape key - interrupt agent or reject approval.
+        """Handle escape key - interrupt agent, reject approval, or dismiss modal.
 
         This is the primary way to stop a running agent.
         """
+        # If a modal screen is active, dismiss it
+        if isinstance(self.screen, ModalScreen):
+            self.screen.dismiss(None)
+            return
+
         # If agent is running, interrupt it
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
@@ -1060,7 +1140,12 @@ class DeepAgentsApp(App):
         super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:
-        """Toggle auto-approve mode."""
+        """Toggle auto-approve mode for the current session.
+
+        When enabled, all tool calls (shell execution, file writes/edits,
+        web search, URL fetch) run without prompting. Updates the status
+        bar indicator and session state.
+        """
         self._auto_approve = not self._auto_approve
         if self._status_bar:
             self._status_bar.set_auto_approve(enabled=self._auto_approve)
@@ -1157,7 +1242,7 @@ async def run_textual_app(
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
-) -> None:
+) -> int:
     """Run the Textual application.
 
     Args:
@@ -1168,6 +1253,9 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
+
+    Returns:
+        The app's return code (0 for success, non-zero for error).
     """
     app = DeepAgentsApp(
         agent=agent,
@@ -1179,6 +1267,7 @@ async def run_textual_app(
         initial_prompt=initial_prompt,
     )
     await app.run_async()
+    return app.return_code or 0
 
 
 if __name__ == "__main__":

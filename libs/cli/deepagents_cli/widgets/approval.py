@@ -18,8 +18,12 @@ if TYPE_CHECKING:
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.widgets.tool_renderers import get_renderer
 
-# Tools that support expandable command display (must be subset of _SHELL_TOOLS)
 _SHELL_TOOLS: set[str] = {"bash", "shell", "execute"}
+"""Tool names recognized as shell/command-execution tools for display purposes.
+
+Only `execute` is registered in practice. `bash` and `shell` are legacy names
+carried over from the original `_MINIMAL_TOOLS` set and kept as defensive aliases.
+"""
 
 # Max length for truncated shell command display
 _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120

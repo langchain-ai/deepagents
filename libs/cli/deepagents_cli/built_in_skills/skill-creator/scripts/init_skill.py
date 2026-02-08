@@ -16,6 +16,8 @@ For deepagents CLI:
 import sys
 from pathlib import Path
 
+MAX_SKILL_NAME_LENGTH = 64
+
 SKILL_TEMPLATE = """---
 name: {skill_name}
 description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
@@ -187,6 +189,39 @@ Note: This is a text placeholder. Actual assets can be any file type.
 """  # noqa: E501
 
 
+def _validate_name(name: str) -> tuple[bool, str]:
+    """Validate skill name per Agent Skills spec.
+
+    Requirements (https://agentskills.io/specification):
+    - 1-64 characters
+    - Unicode lowercase alphanumeric and hyphens only
+    - Cannot start or end with hyphen
+    - No consecutive hyphens
+
+    Unicode lowercase alphanumeric means any character where
+    `c.isalpha() and c.islower()` or `c.isdigit()` returns `True`.
+
+    Args:
+        name: The skill name to validate.
+
+    Returns:
+        Tuple of (is_valid, error_message). If valid, error_message is empty.
+    """
+    if not name or not name.strip():
+        return False, "cannot be empty"
+    if len(name) > MAX_SKILL_NAME_LENGTH:
+        return False, "cannot exceed 64 characters"
+    if name.startswith("-") or name.endswith("-") or "--" in name:
+        return False, "must be lowercase alphanumeric with single hyphens only"
+    for c in name:
+        if c == "-":
+            continue
+        if (c.isalpha() and c.islower()) or c.isdigit():
+            continue
+        return False, "must be lowercase alphanumeric with single hyphens only"
+    return True, ""
+
+
 def title_case_skill_name(skill_name):
     """Convert hyphenated skill name to Title Case for display.
 
@@ -206,6 +241,15 @@ def init_skill(skill_name, path):
     Returns:
         Path to created skill directory, or None if error
     """
+    is_valid, error_msg = _validate_name(skill_name)
+    if not is_valid:
+        print(f"Error: Invalid skill name: {error_msg}")
+        print(
+            "Skill names must be lowercase alphanumeric with hyphens only.\n"
+            "Examples: web-research, code-review, data-analysis"
+        )
+        return None
+
     # Determine skill directory path
     skill_dir = Path(path).resolve() / skill_name
 
@@ -295,7 +339,18 @@ def main():
     skill_name = sys.argv[1]
     path = sys.argv[3]
 
-    print(f"🚀 Initializing skill: {skill_name}")
+    # Early validation for fast feedback
+    is_valid, error_msg = _validate_name(skill_name)
+    if not is_valid:
+        print(f"Error: Invalid skill name '{skill_name}': {error_msg}")
+        print("\nSkill name requirements:")
+        print(" - Lowercase letters, digits, and hyphens only")
+        print(" - Cannot start or end with hyphen")
+        print(" - No consecutive hyphens")
+        print(" - Max 64 characters")
+        sys.exit(1)
+
+    print(f"Initializing skill: {skill_name}")
     print(f"   Location: {path}")
     print()
 

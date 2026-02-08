@@ -1,6 +1,8 @@
 ---
 name: skill-creator
 description: "Guide for creating effective skills that extend agent capabilities with specialized knowledge, workflows, or tool integrations. Use this skill when the user asks to: (1) create a new skill, (2) make a skill, (3) build a skill, (4) set up a skill, (5) initialize a skill, (6) scaffold a skill, (7) update or modify an existing skill, (8) validate a skill, (9) learn about skill structure, (10) understand how skills work, or (11) get guidance on skill design patterns. Trigger on phrases like \"create a skill\", \"new skill\", \"make a skill\", \"skill for X\", \"how do I create a skill\", or \"help me build a skill\"."
+license: MIT
+compatibility: designed for deepagents-cli
 ---
 
 # Skill Creator
@@ -16,16 +18,17 @@ equipped with procedural knowledge and domain expertise.
 
 ### Skill Location for Deepagents
 
-The deepagents CLI loads skills from four directories, listed here from lowest to highest precedence:
+The deepagents CLI loads skills from five sources, listed here from lowest to highest precedence:
 
 | # | Directory | Scope | Notes |
 |---|-----------|-------|-------|
+| 0 | `<package>/built_in_skills/` | Built-in | Ships with deepagents CLI |
 | 1 | `~/.deepagents/<agent>/skills/` | User (deepagents alias) | Default for `deepagents skills create` |
 | 2 | `~/.agents/skills/` | User | Shared across agent tools |
 | 3 | `.deepagents/skills/` | Project (deepagents alias) | Default for `deepagents skills create --project` |
 | 4 | `.agents/skills/` | Project | Shared across agent tools |
 
-`<agent>` is the agent configuration name (default: `agent`). When two directories contain a skill with the same name, the higher-precedence version wins — project skills override user skills.
+`<agent>` is the agent configuration name (default: `agent`). When two directories contain a skill with the same name, the higher-precedence version wins — project skills override user skills, and any user or project skill overrides built-in skills.
 
 Example directory layout:
 
@@ -135,7 +138,7 @@ A skill should only contain essential files that directly support its functional
 - CHANGELOG.md
 - etc.
 
-The skill should only contain the information needed for an AI agent to do the job at hand. It should not contain auxilary context about the process that went into creating it, setup and testing procedures, user-facing documentation, etc. Creating additional documentation files just adds clutter and confusion.
+The skill should only contain the information needed for an AI agent to do the job at hand. It should not contain auxiliary context about the process that went into creating it, setup and testing procedures, user-facing documentation, etc. Creating additional documentation files just adds clutter and confusion.
 
 ### Progressive Disclosure Design Principle
 
@@ -336,12 +339,7 @@ When editing the (newly-generated or existing) skill, remember that the skill is
 
 #### Learn Proven Design Patterns
 
-Consult these helpful guides based on your skill's needs:
-
-- **Multi-step processes**: See references/workflows.md for sequential workflows and conditional logic
-- **Specific output formats or quality standards**: See references/output-patterns.md for template and example patterns
-
-These files contain established best practices for effective skill design.
+Refer to the "Progressive Disclosure Design Principle" and "Core Principles" sections above for established patterns around sequential workflows, conditional logic, and output formatting.
 
 #### Start with Reusable Skill Contents
 
@@ -365,7 +363,7 @@ Write the YAML frontmatter with `name` and `description`:
   - Include all "when to use" information here - Not in the body. The body is only loaded after triggering, so "When to Use This Skill" sections in the body are not helpful to the agent.
   - Example description for a `docx` skill: "Comprehensive document creation, editing, and analysis with support for tracked changes, comments, formatting preservation, and text extraction. Use when working with professional documents (.docx files) for: (1) Creating new documents, (2) Modifying or editing content, (3) Working with tracked changes, (4) Adding comments, or any other document tasks"
 
-Do not include any other fields in YAML frontmatter.
+The only other allowed fields in YAML frontmatter are optional properties per the Agent Skills spec: `license`, `compatibility`, `allowed-tools`, and `metadata`. Do not include any fields beyond these.
 
 ##### Body
 
@@ -382,7 +380,7 @@ scripts/quick_validate.py <path/to/skill-folder>
 The validation script checks:
 
 - YAML frontmatter format and required fields
-- Skill naming conventions (hyphen-case, max 64 characters)
+- Skill naming conventions (Unicode lowercase alphanumeric with hyphens, max 64 characters)
 - Description completeness (no angle brackets, max 1024 characters)
 - Required fields: `name` and `description`
 - Allowed frontmatter properties only: `name`, `description`, `license`, `compatibility`, `allowed-tools`, `metadata`

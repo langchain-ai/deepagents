@@ -40,6 +40,38 @@ HITLDecision = ApproveDecision | EditDecision | RejectDecision
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
 
 
+def _build_stream_config(
+    thread_id: str,
+    assistant_id: str | None,
+) -> dict[str, Any]:
+    """Build the LangGraph stream config dict.
+
+    The `thread_id` in `configurable` is automatically propagated as run
+    metadata by LangGraph, so it can be used for LangSmith filtering without
+    a separate metadata key.
+
+    Args:
+        thread_id: The CLI session thread identifier.
+        assistant_id: The agent/assistant identifier, if any.
+
+    Returns:
+        Config dict with `configurable` and `metadata` keys.
+    """
+    metadata: dict[str, str] = {}
+    if assistant_id:
+        metadata.update(
+            {
+                "assistant_id": assistant_id,
+                "agent_name": assistant_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    return {
+        "configurable": {"thread_id": thread_id},
+        "metadata": metadata,
+    }
+
+
 def _is_summarization_chunk(metadata: dict | None) -> bool:
     """Check if a message chunk is from summarization middleware.
 
@@ -71,7 +103,11 @@ class TextualUIAdapter:
     """Async callback that returns a Future for HITL approval."""
 
     _on_auto_approve_enabled: Callable[[], None] | None
-    """Callback invoked when auto-approve is enabled."""
+    """Callback invoked when auto-approve is enabled via the HITL approval menu.
+
+    Fired when the user selects "Auto-approve all" from an approval dialog,
+    allowing the app to sync its status bar and session state.
+    """
 
     _scroll_to_bottom: Callable[[], None] | None
     """Callback to scroll chat to bottom."""
@@ -103,7 +139,10 @@ class TextualUIAdapter:
             mount_message: Async callable to mount a message widget.
             update_status: Callable to update the status bar message.
             request_approval: Async callable that returns a Future for HITL approval.
-            on_auto_approve_enabled: Callback when auto-approve is enabled.
+            on_auto_approve_enabled: Callback fired when the user selects
+                "Auto-approve all" from an approval dialog.
+
+                Used by the app to sync the status bar indicator and session state.
             scroll_to_bottom: Callback to scroll chat to bottom.
             set_spinner: Callback to show/hide loading spinner (pass `None` to hide).
         """
@@ -230,16 +269,7 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = {
-        "configurable": {"thread_id": thread_id},
-        "metadata": {
-            "assistant_id": assistant_id,
-            "agent_name": assistant_id,
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
-        if assistant_id
-        else {},
-    }
+    config = _build_stream_config(thread_id, assistant_id)
 
     captured_input_tokens = 0
     captured_output_tokens = 0

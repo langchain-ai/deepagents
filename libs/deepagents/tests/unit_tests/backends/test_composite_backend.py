@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
@@ -13,6 +15,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime(tid: str = "tc"):
@@ -380,11 +383,6 @@ def test_composite_backend_ls_trailing_slash(tmp_path: Path):
 
 
 def test_composite_backend_intercept_large_tool_result():
-    from langchain_core.messages import ToolMessage
-    from langgraph.types import Command
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime("t10")
 
     middleware = FilesystemMiddleware(
@@ -402,10 +400,6 @@ def test_composite_backend_intercept_large_tool_result():
 
 def test_composite_backend_intercept_large_tool_result_routed_to_store():
     """Test that large tool results can be routed to a specific backend like StoreBackend."""
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime("t11")
 
     middleware = FilesystemMiddleware(

@@ -1,3 +1,5 @@
+import warnings
+
 import pytest
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
@@ -313,8 +315,6 @@ class TestSubagentMiddleware:
 
     def test_new_api_no_deprecation_warning(self):
         """Test that using only new API args does not emit deprecation warning."""
-        import warnings
-
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             middleware = SubAgentMiddleware(

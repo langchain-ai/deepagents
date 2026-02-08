@@ -130,7 +130,7 @@ class QueuedMessage:
     Attributes:
         text: The message text content.
         mode: Input mode - "normal", "bash", or "command".
-        queued_at: Timestamp when message was queued (from time.time()).
+        queued_at: Timestamp when message was queued.
     """
 
     text: str
@@ -1061,8 +1061,9 @@ class DeepAgentsApp(App):
         """Process the next message from the queue if any exist.
 
         This is called after the current agent task completes to automatically
-        process queued messages in FIFO order. Prevents recursive calls with
-        the _processing_pending flag.
+        process queued messages in FIFO order.
+
+        Prevents recursive calls with `_processing_pending` flag.
         """
         # Guard against recursive calls
         if self._processing_pending or not self._pending_messages:

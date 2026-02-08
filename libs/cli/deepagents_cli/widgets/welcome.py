@@ -10,7 +10,13 @@ from rich.style import Style
 from rich.text import Text
 from textual.widgets import Static
 
-from deepagents_cli.config import _is_editable_install, get_banner, get_glyphs, settings
+from deepagents_cli.config import (
+    COLORS,
+    _is_editable_install,
+    get_banner,
+    get_glyphs,
+    settings,
+)
 
 
 def _fetch_project_url(project_name: str) -> str | None:
@@ -102,7 +108,9 @@ class WelcomeBanner(Static):
         """
         banner = Text()
         # Use orange for local, green for production
-        banner_color = "#f97316" if _is_editable_install() else "#10b981"
+        banner_color = (
+            COLORS["primary_dev"] if _is_editable_install() else COLORS["primary"]
+        )
         banner.append(get_banner() + "\n", style=Style(bold=True, color=banner_color))
 
         if self._project_name:
@@ -129,7 +137,9 @@ class WelcomeBanner(Static):
             else:
                 banner.append(f"Thread: {self._cli_thread_id}\n", style="dim")
 
-        banner.append("Ready to code! What would you like to build?\n", style="#10b981")
+        banner.append(
+            "Ready to code! What would you like to build?\n", style=COLORS["primary"]
+        )
         bullet = get_glyphs().bullet
         banner.append(
             f"Enter send {bullet} Ctrl+J newline {bullet} @ files {bullet} / commands",

@@ -437,19 +437,21 @@ class DeepAgentsApp(App):
         # Size the spacer to fill remaining viewport below input
         self.call_after_refresh(self._size_initial_spacer)
 
-        # Load thread history if resuming a session
-        if self._lc_thread_id and self._agent:
-            self.call_after_refresh(
-                lambda: asyncio.create_task(self._load_thread_history())
-            )
-        # Auto-submit initial prompt if provided
-        # (but not when resuming - let user see history first)
-        elif self._initial_prompt and self._initial_prompt.strip():
+        # Auto-submit initial prompt if provided via -m flag.
+        # This check must come first because _lc_thread_id and _agent are
+        # always set (even for brand-new sessions), so an elif after the
+        # thread-history branch would never execute.
+        if self._initial_prompt and self._initial_prompt.strip():
             # Use call_after_refresh to ensure UI is fully mounted before submitting
             # Capture value for closure to satisfy type checker
             prompt = self._initial_prompt
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._handle_user_message(prompt))
+            )
+        # Load thread history if resuming a session (no initial prompt)
+        elif self._lc_thread_id and self._agent:
+            self.call_after_refresh(
+                lambda: asyncio.create_task(self._load_thread_history())
             )
 
     def on_resize(self, _event: Resize) -> None:

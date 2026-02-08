@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
   # Framework
-  "deepagents==0.3.10",
+  "deepagents==0.3.12",
   "langchain>=1.2.7,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
   "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -78,9 +78,9 @@ test = [
     "build>=1.0.0,<2.0.0",
     "ruff>=0.14.0,<1.0.0",
     "ty>=0.0.1,<1.0.0",
-    "pytest>=8.3.4,<9.0.0",
-    "pytest-asyncio>=0.25.3,<1.0.0",
-    "pytest-cov>=6.0.0,<7.0.0",
+    "pytest>=8.3.4,<10.0.0",
+    "pytest-asyncio>=0.25.3,<2.0.0",
+    "pytest-cov>=6.0.0,<8.0.0",
     "pytest-mock>=3.14.0,<4.0.0",
     "pytest-socket>=0.7.0,<1.0.0",
     "pytest-timeout>=2.3.1,<3.0.0",
@@ -286,6 +286,22 @@ ignore-var-parameters = true
 "examples/skills/skill-creator/scripts/quick_validate.py" = [
     "ANN001",   # Missing type annotation for function argument
     "ANN201",   # Missing return type annotation for public function
+    "N806",     # Variable in function should be lowercase
+    "PLR2004",  # Magic value used in comparison
+    "T201",     # `print` found
+]
+"deepagents_cli/built_in_skills/skill-creator/scripts/init_skill.py" = [
+    "ANN001",   # Missing type annotation for function argument
+    "ANN201",   # Missing return type annotation for public function
+    "BLE001",   # Do not catch blind exception
+    "INP001",   # Implicit namespace package
+    "PLR2004",  # Magic value used in comparison
+    "T201",     # `print` found
+]
+"deepagents_cli/built_in_skills/skill-creator/scripts/quick_validate.py" = [
+    "ANN001",   # Missing type annotation for function argument
+    "ANN201",   # Missing return type annotation for public function
+    "INP001",   # Implicit namespace package
     "N806",     # Variable in function should be lowercase
     "PLR2004",  # Magic value used in comparison
     "T201",     # `print` found

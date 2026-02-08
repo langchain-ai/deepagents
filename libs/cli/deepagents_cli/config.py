@@ -33,6 +33,7 @@ from langchain_core.runnables import RunnableConfig  # noqa: E402
 # Color scheme
 COLORS = {
     "primary": "#10b981",
+    "primary_dev": "#f97316",
     "dim": "#6b7280",
     "user": "#ffffff",
     "agent": "#10b981",
@@ -666,6 +667,15 @@ class Settings:
         if not self.project_root:
             return None
         return self.project_root / ".agents" / "skills"
+
+    @staticmethod
+    def get_built_in_skills_dir() -> Path:
+        """Get the directory containing built-in skills that ship with the CLI.
+
+        Returns:
+            Path to the `built_in_skills/` directory within the package.
+        """
+        return Path(__file__).parent / "built_in_skills"
 
 
 # Global settings instance (initialized once)

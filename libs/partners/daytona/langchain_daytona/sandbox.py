@@ -56,16 +56,16 @@ class DaytonaSandbox(BaseSandbox):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files from the sandbox."""
         download_requests: list[FileDownloadRequest] = []
-        response_indexes: list[int] = []
+        download_paths: list[str] = []
         responses: list[FileDownloadResponse] = []
 
-        for i, path in enumerate(paths):
+        for path in paths:
             if not path.startswith("/"):
                 responses.append(
                     FileDownloadResponse(path=path, content=None, error="invalid_path")
                 )
                 continue
-            response_indexes.append(i)
+            download_paths.append(path)
             download_requests.append(FileDownloadRequest(source=path))
             responses.append(FileDownloadResponse(path=path, content=None, error=None))
 
@@ -73,27 +73,35 @@ class DaytonaSandbox(BaseSandbox):
             return responses
 
         daytona_responses = self._sandbox.fs.download_files(download_requests)
+
+        mapped_responses: list[FileDownloadResponse] = []
         for resp in daytona_responses:
             content = resp.result
             if content is None:
-                mapped = FileDownloadResponse(
-                    path=resp.source,
-                    content=None,
-                    error="file_not_found",
+                mapped_responses.append(
+                    FileDownloadResponse(
+                        path=resp.source,
+                        content=None,
+                        error="file_not_found",
+                    )
                 )
             else:
-                mapped = FileDownloadResponse(
-                    path=resp.source,
-                    content=content,
-                    error=None,
+                mapped_responses.append(
+                    FileDownloadResponse(
+                        path=resp.source,
+                        content=content,
+                        error=None,
+                    )
                 )
 
-            try:
-                idx = paths.index(resp.source)
-            except ValueError:
-                responses.append(mapped)
-            else:
-                responses[idx] = mapped
+        mapped_iter = iter(mapped_responses)
+        for i, path in enumerate(paths):
+            if not path.startswith("/"):
+                continue
+            responses[i] = next(
+                mapped_iter,
+                FileDownloadResponse(path=path, content=None, error="file_not_found"),
+            )
 
         return responses
 

@@ -1,8 +1,28 @@
 """Unit tests for skills loading functionality."""
 
 from pathlib import Path
+from unittest.mock import patch
 
+from deepagents_cli._version import __version__ as _cli_version
+from deepagents_cli.config import Settings
 from deepagents_cli.skills.load import list_skills
+
+
+def _create_skill(skill_dir: Path, name: str, description: str) -> None:
+    """Create a minimal skill directory with a valid `SKILL.md`.
+
+    Args:
+        skill_dir: Directory to create the skill in (will be created if needed).
+        name: Skill name for frontmatter.
+        description: Skill description for frontmatter.
+    """
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(f"""---
+name: {name}
+description: {description}
+---
+Content
+""")
 
 
 class TestListSkillsSingleDirectory:
@@ -295,28 +315,18 @@ Content
 class TestListSkillsAliasDirectories:
     """Test `list_skills` with `.agents` alias directories."""
 
-    def _create_skill(self, skill_dir: Path, name: str, description: str) -> None:
-        """Helper to create a skill directory with `SKILL.md`."""
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        (skill_dir / "SKILL.md").write_text(f"""---
-name: {name}
-description: {description}
----
-Content
-""")
-
     def test_user_agent_skills_dir_precedence(self, tmp_path: Path) -> None:
         """Test that `~/.agents/skills` overrides `~/.deepagents/agent/skills`."""
         user_deepagents_dir = tmp_path / "user_deepagents_skills"
         user_agent_dir = tmp_path / "user_agent_skills"
 
         # Create same skill in both directories
-        self._create_skill(
+        _create_skill(
             user_deepagents_dir / "shared-skill",
             "shared-skill",
             "From deepagents user dir",
         )
-        self._create_skill(
+        _create_skill(
             user_agent_dir / "shared-skill",
             "shared-skill",
             "From agents user dir",
@@ -340,12 +350,12 @@ Content
         project_agent_dir = tmp_path / "project_agent_skills"
 
         # Create same skill in both directories
-        self._create_skill(
+        _create_skill(
             project_deepagents_dir / "shared-skill",
             "shared-skill",
             "From deepagents project dir",
         )
-        self._create_skill(
+        _create_skill(
             project_agent_dir / "shared-skill",
             "shared-skill",
             "From agents project dir",
@@ -371,22 +381,22 @@ Content
         project_agent_dir = tmp_path / "project_agent_skills"
 
         # Create same skill in all 4 directories
-        self._create_skill(
+        _create_skill(
             user_deepagents_dir / "shared-skill",
             "shared-skill",
             "From deepagents user dir (lowest)",
         )
-        self._create_skill(
+        _create_skill(
             user_agent_dir / "shared-skill",
             "shared-skill",
             "From agents user dir",
         )
-        self._create_skill(
+        _create_skill(
             project_deepagents_dir / "shared-skill",
             "shared-skill",
             "From deepagents project dir",
         )
-        self._create_skill(
+        _create_skill(
             project_agent_dir / "shared-skill",
             "shared-skill",
             "From agents project dir (highest)",
@@ -412,22 +422,22 @@ Content
         project_agent_dir = tmp_path / "project_agent_skills"
 
         # Create different skills in each directory
-        self._create_skill(
+        _create_skill(
             user_deepagents_dir / "skill-a",
             "skill-a",
             "Skill A from deepagents user",
         )
-        self._create_skill(
+        _create_skill(
             user_agent_dir / "skill-b",
             "skill-b",
             "Skill B from agents user",
         )
-        self._create_skill(
+        _create_skill(
             project_deepagents_dir / "skill-c",
             "skill-c",
             "Skill C from deepagents project",
         )
-        self._create_skill(
+        _create_skill(
             project_agent_dir / "skill-d",
             "skill-d",
             "Skill D from agents project",
@@ -460,12 +470,12 @@ Content
         user_agent_dir = tmp_path / "user_agent_skills"
         project_agent_dir = tmp_path / "project_agent_skills"
 
-        self._create_skill(
+        _create_skill(
             user_agent_dir / "user-skill",
             "user-skill",
             "From agents user dir",
         )
-        self._create_skill(
+        _create_skill(
             project_agent_dir / "project-skill",
             "project-skill",
             "From agents project dir",
@@ -495,3 +505,194 @@ Content
         )
 
         assert skills == []
+
+
+class TestListSkillsBuiltIn:
+    """Test list_skills with built-in skills directory."""
+
+    def test_built_in_skills_discovered(self, tmp_path: Path) -> None:
+        """Test that built-in skills are discovered with source 'built-in'."""
+        built_in_dir = tmp_path / "built_in_skills"
+        _create_skill(
+            built_in_dir / "test-builtin",
+            "test-builtin",
+            "A built-in skill",
+        )
+
+        skills = list_skills(
+            built_in_skills_dir=built_in_dir,
+            user_skills_dir=None,
+            project_skills_dir=None,
+        )
+        assert len(skills) == 1
+        assert skills[0]["name"] == "test-builtin"
+        assert skills[0]["source"] == "built-in"
+
+    def test_built_in_lowest_precedence(self, tmp_path: Path) -> None:
+        """Test that user skills override built-in skills with the same name."""
+        built_in_dir = tmp_path / "built_in_skills"
+        user_dir = tmp_path / "user_skills"
+
+        _create_skill(
+            built_in_dir / "shared-skill",
+            "shared-skill",
+            "Built-in version",
+        )
+        _create_skill(
+            user_dir / "shared-skill",
+            "shared-skill",
+            "User version",
+        )
+
+        skills = list_skills(
+            built_in_skills_dir=built_in_dir,
+            user_skills_dir=user_dir,
+            project_skills_dir=None,
+        )
+        assert len(skills) == 1
+        assert skills[0]["name"] == "shared-skill"
+        assert skills[0]["description"] == "User version"
+        assert skills[0]["source"] == "user"
+
+    def test_project_overrides_built_in(self, tmp_path: Path) -> None:
+        """Test that project skills override built-in skills with the same name."""
+        built_in_dir = tmp_path / "built_in_skills"
+        project_dir = tmp_path / "project_skills"
+
+        _create_skill(
+            built_in_dir / "shared-skill",
+            "shared-skill",
+            "Built-in version",
+        )
+        _create_skill(
+            project_dir / "shared-skill",
+            "shared-skill",
+            "Project version",
+        )
+
+        skills = list_skills(
+            built_in_skills_dir=built_in_dir,
+            user_skills_dir=None,
+            project_skills_dir=project_dir,
+        )
+        assert len(skills) == 1
+        assert skills[0]["name"] == "shared-skill"
+        assert skills[0]["description"] == "Project version"
+        assert skills[0]["source"] == "project"
+
+    def test_built_in_coexists_with_other_skills(self, tmp_path: Path) -> None:
+        """Test that built-in skills with different names appear alongside others."""
+        built_in_dir = tmp_path / "built_in_skills"
+        user_dir = tmp_path / "user_skills"
+        project_dir = tmp_path / "project_skills"
+
+        _create_skill(
+            built_in_dir / "builtin-skill",
+            "builtin-skill",
+            "A built-in skill",
+        )
+        _create_skill(
+            user_dir / "user-skill",
+            "user-skill",
+            "A user skill",
+        )
+        _create_skill(
+            project_dir / "project-skill",
+            "project-skill",
+            "A project skill",
+        )
+
+        skills = list_skills(
+            built_in_skills_dir=built_in_dir,
+            user_skills_dir=user_dir,
+            project_skills_dir=project_dir,
+        )
+        assert len(skills) == 3
+        skill_names = {s["name"] for s in skills}
+        assert skill_names == {"builtin-skill", "user-skill", "project-skill"}
+
+        # Verify sources
+        builtin = next(s for s in skills if s["name"] == "builtin-skill")
+        user = next(s for s in skills if s["name"] == "user-skill")
+        proj = next(s for s in skills if s["name"] == "project-skill")
+        assert builtin["source"] == "built-in"
+        assert user["source"] == "user"
+        assert proj["source"] == "project"
+
+    def test_nonexistent_built_in_dir(self, tmp_path: Path) -> None:
+        """Test that a nonexistent built-in directory is handled gracefully."""
+        nonexistent = tmp_path / "nonexistent"
+
+        skills = list_skills(
+            built_in_skills_dir=nonexistent,
+            user_skills_dir=None,
+            project_skills_dir=None,
+        )
+        assert skills == []
+
+    def test_real_skill_creator_ships(self) -> None:
+        """Verify the actual built-in skill-creator SKILL.md exists and loads.
+
+        Unlike other tests in this file, this uses the real package directory
+        (not `tmp_path`) to ensure the built-in skill ships correctly.
+        """
+        built_in_dir = Settings.get_built_in_skills_dir()
+        skill_md = built_in_dir / "skill-creator" / "SKILL.md"
+        assert skill_md.exists(), f"Expected {skill_md} to exist"
+
+        skills = list_skills(
+            built_in_skills_dir=built_in_dir,
+            user_skills_dir=None,
+            project_skills_dir=None,
+        )
+        skill_names = {s["name"] for s in skills}
+        assert "skill-creator" in skill_names
+
+        creator = next(s for s in skills if s["name"] == "skill-creator")
+        assert creator["source"] == "built-in"
+        assert len(creator["description"]) > 0
+        assert creator["license"] == "MIT"
+        assert creator["compatibility"] == "designed for deepagents-cli"
+        assert "deepagents-cli-version" in creator["metadata"]
+        assert creator["metadata"]["deepagents-cli-version"] == _cli_version
+
+    def test_oserror_in_one_source_does_not_break_others(self, tmp_path: Path) -> None:
+        """An OSError in one source should not prevent other sources from loading.
+
+        This verifies the per-source error isolation in `list_skills`.
+        """
+        # Create a healthy user skills directory
+        user_dir = tmp_path / "user_skills"
+        _create_skill(user_dir / "user-skill", "user-skill", "A user skill")
+
+        # Use a built-in dir that exists but will fail when FilesystemBackend
+        # tries to read it — we simulate this by patching list_skills_from_backend
+        # to raise OSError only for the built-in source
+        built_in_dir = tmp_path / "built_in_skills"
+        built_in_dir.mkdir()
+
+        original_list = __import__(
+            "deepagents.middleware.skills", fromlist=["_list_skills"]
+        )._list_skills
+
+        call_count = 0
+
+        def patched_list(backend: object, source_path: str) -> list[object]:
+            nonlocal call_count
+            call_count += 1
+            # First call is the built-in source — make it fail
+            if call_count == 1:
+                msg = "simulated permission error"
+                raise OSError(msg)
+            return original_list(backend=backend, source_path=source_path)
+
+        with patch("deepagents_cli.skills.load.list_skills_from_backend", patched_list):
+            skills = list_skills(
+                built_in_skills_dir=built_in_dir,
+                user_skills_dir=user_dir,
+                project_skills_dir=None,
+            )
+
+        # User skills should still load despite built-in source failing
+        assert len(skills) == 1
+        assert skills[0]["name"] == "user-skill"

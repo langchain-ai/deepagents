@@ -180,7 +180,7 @@ class TestToggleExpand:
 
 
 class TestToolSetConsistency:
-    """Tests for tool set consistency between _MINIMAL_TOOLS and _SHELL_TOOLS."""
+    """Tests for tool set consistency between _MINIMAL_TOOLS and SHELL_TOOL_NAMES."""
 
     def test_bash_tool_is_expandable(self) -> None:
         """Test that bash tool commands can be expandable like shell commands.
@@ -201,7 +201,7 @@ class TestToolSetConsistency:
     def test_execute_tool_is_minimal(self) -> None:
         """Test that execute tool uses minimal display like shell.
 
-        The 'execute' tool is in _SHELL_TOOLS, so it should use minimal display.
+        The 'execute' tool is in SHELL_TOOL_NAMES, so it should use minimal display.
         """
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         # execute should use minimal display like shell/bash

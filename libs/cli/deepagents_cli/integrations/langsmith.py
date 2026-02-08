@@ -147,7 +147,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         if not self._api_key:
             msg = "LangSmith API key not set"
             raise ValueError(msg)
-        self._client: SandboxClient = sandbox.SandboxClient()
+        self._client: SandboxClient = sandbox.SandboxClient(api_key=self._api_key)
 
     def list(
         self,

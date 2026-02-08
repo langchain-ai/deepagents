@@ -83,21 +83,27 @@ def validate_skill(skill_path):
         return False, f"Name must be a string, got {type(name).__name__}"
     name = name.strip()
     if name:
-        # Check naming convention (hyphen-case: lowercase with hyphens)
-        if not re.match(r"^[a-z0-9-]+$", name):
-            return (
-                False,
-                (
-                    f"Name '{name}' should be hyphen-case "
-                    "(lowercase letters, digits, and hyphens only)"
-                ),
-            )
+        # Structural hyphen checks
         if name.startswith("-") or name.endswith("-") or "--" in name:
             return (
                 False,
                 (
                     f"Name '{name}' cannot start/end with hyphen "
                     "or contain consecutive hyphens"
+                ),
+            )
+        # Character-by-character check matching SDK's _validate_skill_name:
+        # Unicode lowercase alphanumeric and hyphens only
+        for c in name:
+            if c == "-":
+                continue
+            if (c.isalpha() and c.islower()) or c.isdigit():
+                continue
+            return (
+                False,
+                (
+                    f"Name '{name}' should be hyphen-case "
+                    "(lowercase letters, digits, and hyphens only)"
                 ),
             )
         # Check name length (max 64 characters per spec)

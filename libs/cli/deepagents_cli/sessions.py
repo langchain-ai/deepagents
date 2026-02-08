@@ -322,7 +322,17 @@ async def list_threads_command(
     agent_name: str | None = None,
     limit: int = 20,
 ) -> None:
-    """CLI handler for: deepagents threads list."""
+    """CLI handler for `deepagents threads list`.
+
+    Fetches and displays a table of recent conversation threads, optionally
+    filtered by agent name.
+
+    Args:
+        agent_name: Only show threads belonging to this agent.
+
+            When `None`, threads for all agents are shown.
+        limit: Maximum number of threads to display.
+    """
     threads = await list_threads(agent_name, limit=limit, include_message_count=True)
 
     if not threads:
@@ -335,7 +345,11 @@ async def list_threads_command(
         console.print("[dim]Start a conversation with: deepagents[/dim]")
         return
 
-    title = f"Threads for '{agent_name}'" if agent_name else "All Threads"
+    title = (
+        f"Recent threads for '{agent_name}' (last {limit})"
+        if agent_name
+        else f"Recent Threads (last {limit})"
+    )
 
     table = Table(
         title=title, show_header=True, header_style=f"bold {COLORS['primary']}"

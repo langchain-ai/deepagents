@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 class HITLIterationLimitError(RuntimeError):
-    """Raised when the HITL interrupt loop exceeds the safety cap."""
+    """Raised when the HITL interrupt loop exceeds `_MAX_HITL_ITERATIONS` rounds."""
 
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
@@ -98,8 +98,11 @@ class StreamState:
             metadata for in-progress tool calls.
         pending_interrupts: Maps interrupt IDs to their validated HITL
             requests that are awaiting decisions.
-        hitl_response: Maps interrupt IDs to decision lists used to resume
-            the agent after HITL processing.
+        hitl_response: Maps interrupt IDs to dicts containing a `'decisions'`
+            key with a list of decision dicts (each having a `'type'` key of
+            `'approve'` or `'reject'`).
+
+            Used to resume the agent after HITL processing.
         interrupt_occurred: Flag indicating whether any HITL interrupt was
             received during the current stream pass.
     """
@@ -136,14 +139,19 @@ def _process_interrupts(
                 )
             except ValidationError:
                 logger.warning(
-                    "Skipping malformed HITL interrupt %s (raw value: %r)",
+                    "Rejecting malformed HITL interrupt %s (raw value: %r)",
                     interrupt_obj.id,
                     interrupt_obj.value,
                 )
                 console.print(
                     f"[yellow]Warning: Received malformed tool approval "
-                    f"request (interrupt {interrupt_obj.id}). Skipping.[/yellow]"
+                    f"request (interrupt {interrupt_obj.id}). Rejecting.[/yellow]"
                 )
+                # Fail-closed: record a reject decision for malformed interrupts
+
+                state.hitl_response[interrupt_obj.id] = {
+                    "decisions": [{"type": "reject", "message": "Malformed interrupt"}]
+                }
                 continue
             state.pending_interrupts[interrupt_obj.id] = validated_request
             state.interrupt_occurred = True
@@ -165,6 +173,7 @@ def _process_ai_message(
         console: Rich console for formatted output.
     """
     if not hasattr(message_obj, "content_blocks"):
+        logger.debug("AIMessage missing content_blocks attribute, skipping")
         return
     for block in message_obj.content_blocks:
         if not isinstance(block, dict):
@@ -215,6 +224,9 @@ def _process_message_chunk(
         file_op_tracker: Tracker for file-operation diffs.
     """
     if not isinstance(data, tuple) or len(data) != _MESSAGE_DATA_LENGTH:
+        logger.debug(
+            "Unexpected message-mode data (type=%s), skipping", type(data).__name__
+        )
         return
 
     message_obj, metadata = data
@@ -254,6 +266,9 @@ def _process_stream_chunk(
         file_op_tracker: Tracker for file-operation diffs.
     """
     if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+        logger.debug(
+            "Unexpected stream chunk (type=%s), skipping", type(chunk).__name__
+        )
         return
 
     namespace, stream_mode, data = chunk
@@ -491,10 +506,12 @@ def _get_thread_url(thread_id: str) -> str | None:
     """
     project_name = get_langsmith_project_name()
     if not project_name:
+        logger.debug("LangSmith project name not configured, skipping thread URL")
         return None
 
     project_url = fetch_langsmith_project_url(project_name)
     if not project_url:
+        logger.debug("Could not fetch LangSmith project URL for %r", project_name)
         return None
 
     return f"{project_url.rstrip('/')}/t/{thread_id}"
@@ -515,6 +532,10 @@ async def run_non_interactive(
     allow-list **is** provided, shell execution is enabled but gated by the
     list; commands not in the list are rejected with an error message sent
     back to the agent.
+
+    Note: `_build_non_interactive_header` makes a synchronous network call
+    to LangSmith (via `fetch_langsmith_project_url`) to resolve the thread
+    URL. This blocks the event loop briefly at startup.
 
     Args:
         message: The task/message to execute.
@@ -563,9 +584,11 @@ async def run_non_interactive(
             )
             sandbox_backend = exit_stack.enter_context(sandbox_cm)
         except (ImportError, ValueError, RuntimeError) as e:
+            logger.exception("Sandbox creation failed")
             console.print(f"[red]❌ Sandbox creation failed: {e}[/red]")
             return 1
         except NotImplementedError as e:
+            logger.exception("Unsupported sandbox type %r", sandbox_type)
             console.print(
                 f"[red]❌ Sandbox type '{sandbox_type}' is not yet supported: {e}[/red]"
             )

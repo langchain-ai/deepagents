@@ -1,6 +1,7 @@
 """Configuration, constants, and model creation for the CLI."""
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -15,6 +16,8 @@ import dotenv
 from rich.console import Console
 
 from deepagents_cli._version import __version__
+
+logger = logging.getLogger(__name__)
 
 dotenv.load_dotenv()
 
@@ -267,9 +270,6 @@ def get_banner() -> str:
     return banner
 
 
-# Legacy alias for backwards compatibility
-DEEP_AGENTS_ASCII = _UNICODE_BANNER
-
 # Interactive commands
 COMMANDS = {
     "clear": "Clear screen and reset conversation",
@@ -355,7 +355,7 @@ def parse_shell_allow_list(allow_list_str: str | None) -> list[str] | None:
             Can also include "recommended" in the list to merge with custom commands.
 
     Returns:
-        List of allowed commands, or None if no allow-list configured
+        List of allowed commands, or None if no allow-list configured.
     """
     if not allow_list_str:
         return None
@@ -396,16 +396,22 @@ class Settings:
     - File system paths
 
     Attributes:
-        project_root: Current project root directory (if in a git project)
-
-        openai_api_key: OpenAI API key if available
-        anthropic_api_key: Anthropic API key if available
-        tavily_api_key: Tavily API key if available
+        openai_api_key: OpenAI API key if available.
+        anthropic_api_key: Anthropic API key if available.
+        google_api_key: Google API key if available.
+        tavily_api_key: Tavily API key if available.
+        google_cloud_project: Google Cloud project ID for VertexAI
+            authentication.
         deepagents_langchain_project: LangSmith project name for deepagents
-            agent tracing
+            agent tracing.
         user_langchain_project: Original LANGSMITH_PROJECT from environment
-            (for user code)
-        shell_allow_list: List of shell commands that don't require approval
+            (for user code).
+        model_name: Currently active model name (set after model creation).
+        model_provider: Provider identifier (e.g. openai, anthropic, google,
+            vertexai).
+        model_context_limit: Maximum input token count from the model profile.
+        project_root: Current project root directory (if in a git project).
+        shell_allow_list: List of shell commands that don't require approval.
     """
 
     # API keys
@@ -802,7 +808,9 @@ DANGEROUS_SHELL_PATTERNS = (
 )
 
 # Recommended safe shell commands for non-interactive mode.
-# These commands are read-only and cannot modify the system.
+# These commands are primarily read-only and do not modify the filesystem
+# when used without shell redirection operators (which the dangerous-patterns
+# check blocks).
 #
 # EXCLUDED (dangerous - listed on GTFOBins/LOOBins or can modify system):
 # - All shells: bash, sh, zsh, fish, dash, ksh, csh, tcsh, etc.
@@ -946,9 +954,11 @@ def get_langsmith_project_name() -> str | None:
     """Resolve the LangSmith project name if tracing is configured.
 
     Checks for the required API key and tracing environment variables.
-    When both are present, resolves the project name from
-    `DEEPAGENTS_LANGSMITH_PROJECT`, `LANGSMITH_PROJECT`, or falls
-    back to `'default'`.
+    When both are present, resolves the project name with priority:
+    `settings.deepagents_langchain_project` (from
+    `DEEPAGENTS_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
+    environment (note: this may already have been overridden at import
+    time to match `DEEPAGENTS_LANGSMITH_PROJECT`), then `'default'`.
 
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
@@ -975,6 +985,10 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
     This is a blocking network call. In async contexts, run it in a thread
     (e.g. via `asyncio.to_thread`).
 
+    Returns None (with a debug log) on any expected failure: missing
+    `langsmith` package, network errors, invalid project names, or client
+    initialization issues.
+
     Args:
         project_name: LangSmith project name to look up.
 
@@ -985,7 +999,12 @@ def fetch_langsmith_project_url(project_name: str) -> str | None:
         from langsmith import Client
 
         project = Client().read_project(project_name=project_name)
-    except (OSError, ValueError, RuntimeError):
+    except (ImportError, OSError, ValueError, RuntimeError):
+        logger.debug(
+            "Could not fetch LangSmith project URL for '%s'",
+            project_name,
+            exc_info=True,
+        )
         return None
     else:
         return project.url or None

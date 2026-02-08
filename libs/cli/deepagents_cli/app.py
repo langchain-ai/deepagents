@@ -645,6 +645,10 @@ class DeepAgentsApp(App):
             # Focus approval menu
             self.call_after_refresh(menu.focus)
         except Exception as e:
+            logger.exception(
+                "Failed to mount approval menu (id=%s) in messages container",
+                unique_id,
+            )
             self._pending_approval_widget = None
             if not result_future.done():
                 result_future.set_exception(e)

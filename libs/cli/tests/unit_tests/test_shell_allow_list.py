@@ -678,3 +678,16 @@ class TestFindExecLimitation:
     def test_find_delete_not_caught_by_dangerous_patterns(self) -> None:
         """Find -delete bypasses dangerous-pattern detection (known limitation)."""
         assert not contains_dangerous_patterns("find . -name '*.tmp' -delete")
+
+
+class TestGrepRegexLimitation:
+    """Document that grep patterns with `$` followed by a letter are blocked.
+
+    The bare-variable check (`$VAR`) cannot distinguish regex anchors inside
+    quoted strings from actual shell variable expansion, so it errs on the
+    side of caution. Users needing such patterns must use interactive mode.
+    """
+
+    def test_grep_dollar_anchor_blocked_known_limitation(self) -> None:
+        """Grep regex with $ followed by a letter is blocked (known limitation)."""
+        assert not is_shell_command_allowed("grep 'pattern$A' file", ["grep"])

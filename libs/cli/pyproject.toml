@@ -25,37 +25,38 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
-  # Framework
-  "deepagents==0.3.12",
-  "langchain>=1.2.7,<2.0.0",
-  "langchain-openai>=1.1.7,<2.0.0",
-  "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
+    # Framework
+    "deepagents==0.3.12",
+    "langchain>=1.2.7,<2.0.0",
+    "langchain-openai>=1.1.7,<2.0.0",
+    "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
 
-  # UI/Terminal
-  "textual>=6.0.0,<8.0.0",
-  "textual-autocomplete>=3.0.0,<5.0.0",
-  "prompt-toolkit>=3.0.52,<4.0.0",
-  "rich>=14.0.0,<15.0.0",
-  "markdownify>=0.13.0,<2.0.0",
+    # UI/Terminal
+    "textual>=6.0.0,<8.0.0",
+    "textual-autocomplete>=3.0.0,<5.0.0",
+    "prompt-toolkit>=3.0.52,<4.0.0",
+    "rich>=14.0.0,<15.0.0",
+    "markdownify>=0.13.0,<2.0.0",
 
-  # Sandbox integrations
-  "daytona>=0.113.0,<1.0.0",
-  "langsmith>=0.6.6",
-  "modal>=0.65.0,<2.0.0",
-  "runloop-api-client>=0.69.0",
+    # Sandbox integrations
+    "daytona>=0.113.0,<1.0.0",
+    "langsmith>=0.6.6",
+    "modal>=0.65.0,<2.0.0",
+    "runloop-api-client>=0.69.0",
 
-  # Tools
-  "tavily-python>=0.7.21,<1.0.0",
+    # Tools
+    "tavily-python>=0.7.21,<1.0.0",
 
-  # Clipboard
-  "pyperclip>=1.11.0,<2.0.0",
+    # Clipboard
+    "pyperclip>=1.11.0,<2.0.0",
 
-  # Utilities
-  "python-dotenv>=1.0.0,<2.0.0",
-  "requests>=2.0.0,<3.0.0",
-  "pillow>=10.0.0,<13.0.0",
-  "pyyaml>=6.0.0",
-  "aiosqlite>=0.19.0,<1.0.0",
+    # Utilities
+    "python-dotenv>=1.0.0,<2.0.0",
+    "requests>=2.0.0,<3.0.0",
+    "pillow>=10.0.0,<13.0.0",
+    "pyyaml>=6.0.0",
+    "aiosqlite>=0.19.0,<1.0.0",
+    "tomli-w>=1.0.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -146,7 +147,7 @@ convention = "google"
 ignore-var-parameters = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN001", "ANN201", "D1", "DOC", "F401", "PLC1901", "PLC2701", "PLR2004", "PLR6201", "PLR6301", "PLW0108", "RUF001", "S", "SLF"]
+"tests/**" = ["ANN001", "ANN201", "D1", "DOC", "F401", "PLC0415", "PLC1901", "PLC2701", "PLR2004", "PLR6201", "PLR6301", "PLW0108", "RUF001", "S", "SLF"]
 "tests/unit_tests/test_imports.py" = ["PLC0415"]  # Imports inside function ARE the test
 "scripts/**" = ["BLE001", "INP", "S", "T201"]
 "deepagents_cli/agent.py" = [
@@ -270,6 +271,10 @@ ignore-var-parameters = true
     "BLE001",   # Do not catch blind exception
     "PLC0415",  # Lazy import to avoid circular dependency
     "T201",     # `print` found
+]
+"deepagents_cli/model_config.py" = [
+    "PLC0415",  # Lazy import for optional dependency probing and conditional imports
+    "T201",     # `print` found - first-run setup wizard
 ]
 "examples/skills/arxiv-search/arxiv_search.py" = [
     "BLE001",   # Do not catch blind exception

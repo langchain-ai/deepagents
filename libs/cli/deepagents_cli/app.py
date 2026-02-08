@@ -21,13 +21,20 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
+    create_model,
     is_shell_command_allowed,
     settings,
+)
+from deepagents_cli.model_config import (
+    PROVIDER_API_KEY_ENV,
+    has_provider_credentials,
+    save_default_model,
 )
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
@@ -41,6 +48,7 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
+from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
@@ -355,6 +363,10 @@ class DeepAgentsApp(App):
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
+        checkpointer: Any = None,
+        tools: list[Any] | None = None,
+        sandbox: Any = None,
+        sandbox_type: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -367,6 +379,10 @@ class DeepAgentsApp(App):
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
+            checkpointer: Checkpointer for session persistence (enables hot-swap)
+            tools: Tools used to create the agent (for hot-swap)
+            sandbox: Sandbox backend (for hot-swap)
+            sandbox_type: Type of sandbox provider (for hot-swap)
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -378,6 +394,11 @@ class DeepAgentsApp(App):
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
         self._initial_prompt = initial_prompt
+        # Store for model hot-swap
+        self._checkpointer = checkpointer
+        self._tools = tools or []
+        self._sandbox = sandbox
+        self._sandbox_type = sandbox_type
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -879,7 +900,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = (
-                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+                "Commands: /quit, /clear, /model, /remember, "
+                "/tokens, /threads, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -953,6 +975,17 @@ class DeepAgentsApp(App):
             # Send as a user message to the agent
             await self._handle_user_message(final_prompt)
             return  # _handle_user_message already mounts the message
+        elif cmd == "/model" or cmd.startswith("/model "):
+            model_arg = None
+            if cmd.startswith("/model "):
+                model_arg = command.strip()[len("/model ") :].strip()
+
+            if model_arg:
+                # Direct switch: /model claude-sonnet-4-5
+                await self._mount_message(UserMessage(command))
+                await self._switch_model(model_arg)
+            else:
+                await self._show_model_selector()
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -1424,6 +1457,133 @@ class DeepAgentsApp(App):
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
+    # =========================================================================
+    # Model Switching
+    # =========================================================================
+
+    async def _show_model_selector(self) -> None:
+        """Show interactive model selector as a modal screen."""
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            """Handle the model selector result."""
+            if result is not None:
+                model_spec, _ = result
+                self.call_later(self._switch_model, model_spec)
+            # Refocus input after modal closes
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ModelSelectorScreen(
+            current_model=settings.model_name,
+            current_provider=settings.model_provider,
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _switch_model(self, model_spec: str) -> None:
+        """Switch to a new model, preserving conversation history.
+
+        Args:
+            model_spec: The model specification to switch to. Can be in
+                provider:model format (e.g., "anthropic:claude-sonnet-4-5")
+                or just the model name for auto-detection.
+        """
+        # Parse provider:model syntax to check credentials early
+        if ":" in model_spec:
+            provider, model_name = model_spec.split(":", 1)
+            # Check credentials for the specified provider
+            if not has_provider_credentials(provider):
+                env_var = PROVIDER_API_KEY_ENV.get(provider, "API key")
+                await self._mount_message(
+                    ErrorMessage(f"Missing credentials: {env_var} not set")
+                )
+                return
+            # Check if already using this exact model
+            if (
+                provider == settings.model_provider
+                and model_name == settings.model_name
+            ):
+                await self._mount_message(AppMessage(f"Already using {model_spec}"))
+                return
+        elif model_spec == settings.model_name:
+            # Just model name - check if already using this model
+            current = f"{settings.model_provider}:{settings.model_name}"
+            await self._mount_message(AppMessage(f"Already using {current}"))
+            return
+
+        # Check if we have what we need for hot-swap
+        if not self._checkpointer:
+            # No checkpointer means we can't hot-swap
+            # Save the preference and notify user
+            if save_default_model(model_spec):
+                await self._mount_message(
+                    AppMessage(
+                        f"Default model set to {model_spec}. "
+                        "Restart the CLI for the change to take effect."
+                    )
+                )
+            else:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Could not save model preference. "
+                        "Check permissions for ~/.deepagents/"
+                    )
+                )
+            return
+
+        # Try to create the new model
+        try:
+            new_model = create_model(model_spec)
+        except SystemExit:
+            # create_model calls sys.exit on error, we need to catch this
+            await self._mount_message(
+                ErrorMessage(f"Failed to create model: {model_spec}")
+            )
+            return
+        except Exception as e:
+            await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
+            return
+
+        # Recreate agent with new model, preserving checkpointer
+        try:
+            new_agent, new_backend = create_cli_agent(
+                model=new_model,
+                assistant_id=self._assistant_id or "default",
+                tools=self._tools,
+                sandbox=self._sandbox,
+                sandbox_type=self._sandbox_type,
+                auto_approve=self._auto_approve,
+                checkpointer=self._checkpointer,
+            )
+
+            # Swap in new agent
+            self._agent = new_agent
+            self._backend = new_backend
+
+            # Note: UI adapter uses callbacks and doesn't hold agent directly,
+            # so it doesn't need recreation on model switch.
+
+            # Update status bar with provider:model format
+            if self._status_bar:
+                display_spec = f"{settings.model_provider}:{settings.model_name}"
+                self._status_bar.set_model(display_spec)
+
+            # Save to config (non-fatal if this fails - model is already switched)
+            config_saved = save_default_model(model_spec)
+
+            display = f"{settings.model_provider}:{settings.model_name}"
+            if config_saved:
+                await self._mount_message(AppMessage(f"Switched to {display}"))
+            else:
+                await self._mount_message(
+                    AppMessage(
+                        f"Switched to {display} (preference not saved - "
+                        "check ~/.deepagents/ permissions)"
+                    )
+                )
+
+        except Exception as e:
+            await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
+
 
 async def run_textual_app(
     *,
@@ -1434,6 +1594,10 @@ async def run_textual_app(
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
+    checkpointer: Any = None,
+    tools: list[Any] | None = None,
+    sandbox: Any = None,
+    sandbox_type: str | None = None,
 ) -> int:
     """Run the Textual application.
 
@@ -1445,6 +1609,10 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
+        checkpointer: Checkpointer for session persistence (enables hot-swap)
+        tools: Tools used to create the agent (for hot-swap)
+        sandbox: Sandbox backend (for hot-swap)
+        sandbox_type: Type of sandbox provider (for hot-swap)
 
     Returns:
         The app's return code (0 for success, non-zero for error).
@@ -1457,6 +1625,10 @@ async def run_textual_app(
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,
+        checkpointer=checkpointer,
+        tools=tools,
+        sandbox=sandbox,
+        sandbox_type=sandbox_type,
     )
     await app.run_async()
     return app.return_code or 0

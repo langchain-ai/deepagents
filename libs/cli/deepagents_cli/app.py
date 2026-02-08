@@ -8,8 +8,11 @@ import os
 
 # S404: subprocess is required for user-initiated shell commands via ! prefix
 import subprocess  # noqa: S404
+import time
 import uuid
+from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -38,6 +41,7 @@ from deepagents_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
+    QueuedUserMessage,
     ToolCallMessage,
     UserMessage,
 )
@@ -118,6 +122,21 @@ if _IS_ITERM:
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
 
     atexit.register(_restore_cursor_guide)
+
+
+@dataclass(frozen=True, slots=True)
+class QueuedMessage:
+    """Represents a queued user message awaiting processing.
+
+    Attributes:
+        text: The message text content.
+        mode: Input mode - "normal", "bash", or "command".
+        queued_at: Timestamp when message was queued.
+    """
+
+    text: str
+    mode: str
+    queued_at: float
 
 
 class TextualTokenTracker:
@@ -389,6 +408,13 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
+        # Message virtualization store
+        self._message_store = MessageStore()
+        # User message queue for sequential processing
+        self._pending_messages: deque[QueuedMessage] = deque()
+        self._processing_pending = False
+        # Track queued message widgets (ephemeral, removed when dequeued)
+        self._queued_message_widgets: dict[str, QueuedUserMessage] = {}
         # Message virtualization store
         self._message_store = MessageStore()
 
@@ -774,15 +800,13 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
-    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-        """Handle submitted input from ChatInput widget."""
-        value = event.value
-        mode = event.mode
+    async def _process_message(self, value: str, mode: str) -> None:
+        """Process a single message (immediate or from queue).
 
-        # Reset quit pending state on any input
-        self._quit_pending = False
-
-        # Handle different modes
+        Args:
+            value: The message text to process.
+            mode: Input mode - "normal", "bash", or "command".
+        """
         if mode == "bash":
             # Bash command - strip the ! prefix
             await self._handle_bash_command(value.removeprefix("!"))
@@ -792,6 +816,36 @@ class DeepAgentsApp(App):
         else:
             # Normal message - will be sent to agent
             await self._handle_user_message(value)
+
+    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        """Handle submitted input from ChatInput widget."""
+        value = event.value
+        mode = event.mode
+
+        # Reset quit pending state on any input
+        self._quit_pending = False
+
+        # If agent is running, enqueue message instead of processing immediately
+        if self._agent_running:
+            msg = QueuedMessage(
+                text=value,
+                mode=mode,
+                queued_at=time.time(),
+            )
+            self._pending_messages.append(msg)
+
+            # Mount a grey/dimmed user message widget (ephemeral)
+            queued_widget = QueuedUserMessage(value)
+            await self._mount_message(queued_widget)
+
+            # Track it so we can remove it when dequeued
+            # Use timestamp as unique key
+            widget_key = f"{msg.queued_at}"
+            self._queued_message_widgets[widget_key] = queued_widget
+            return
+
+        # Otherwise process immediately
+        await self._process_message(value, mode)
 
     def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
         """Update status bar when input mode changes."""
@@ -1017,6 +1071,36 @@ class DeepAgentsApp(App):
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
 
+    async def _process_next_from_queue(self) -> None:
+        """Process the next message from the queue if any exist.
+
+        This is called after the current agent task completes to automatically
+        process queued messages in FIFO order.
+
+        Prevents recursive calls with `_processing_pending` flag.
+        """
+        # Guard against recursive calls
+        if self._processing_pending or not self._pending_messages:
+            return
+
+        self._processing_pending = True
+        try:
+            # Dequeue next message
+            msg = self._pending_messages.popleft()
+
+            # Remove the grey queued message widget (ephemeral)
+            widget_key = f"{msg.queued_at}"
+            if widget_key in self._queued_message_widgets:
+                queued_widget = self._queued_message_widgets.pop(widget_key)
+                await queued_widget.remove()
+
+            # Process the message (this will set _agent_running = True)
+            # Note: _process_message -> _handle_user_message already mounts
+            # the UserMessage
+            await self._process_message(msg.text, msg.mode)
+        finally:
+            self._processing_pending = False
+
     async def _cleanup_agent_task(self) -> None:
         """Clean up after agent task completes or is cancelled."""
         self._agent_running = False
@@ -1033,6 +1117,9 @@ class DeepAgentsApp(App):
         # Ensure token display is restored (in case of early cancellation)
         if self._token_tracker:
             self._token_tracker.show()
+
+        # Process next message from queue if any
+        await self._process_next_from_queue()
 
     async def _load_thread_history(self) -> None:
         """Load and render message history when resuming a thread.

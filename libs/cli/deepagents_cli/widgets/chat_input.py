@@ -506,16 +506,20 @@ class ChatInput(Vertical):
         self.scroll_visible()
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
-        """Handle text submission."""
-        if not self._submit_enabled:
-            return  # Submission disabled while agent is working
+        """Handle text submission.
+
+        Always posts the Submitted event - the app layer decides whether to
+        process immediately or queue based on agent status.
+        """
         value = event.value
         if value:
             if self._completion_manager:
                 self._completion_manager.reset()
 
             self._history.add(value)
+            # Always post the message - let app.py decide to queue or process
             self.post_message(self.Submitted(value, self.mode))
+            # Always clear input for immediate feedback
             if self._text_area:
                 self._text_area.clear_text()
             self.mode = "normal"

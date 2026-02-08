@@ -140,6 +140,50 @@ class UserMessage(Static):
         yield Static(text)
 
 
+class QueuedUserMessage(Static):
+    """Widget displaying a queued (pending) user message in grey.
+
+    This is an ephemeral widget that gets removed when the message is dequeued.
+    """
+
+    DEFAULT_CSS = """
+    QueuedUserMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 1 0 0 0;
+        background: transparent;
+        border-left: wide #6b7280;
+        opacity: 0.6;
+    }
+    """
+
+    def __init__(self, content: str, **kwargs: Any) -> None:
+        """Initialize a queued user message.
+
+        Args:
+            content: The message content
+            **kwargs: Additional arguments passed to parent
+        """
+        super().__init__(**kwargs)
+        self._content = content
+
+    def on_mount(self) -> None:
+        """Set border style based on charset mode."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border_left = ("ascii", "#6b7280")
+
+    def compose(self) -> ComposeResult:
+        """Compose the queued user message layout.
+
+        Yields:
+            Static widget containing the formatted queued message (greyed out).
+        """
+        text = Text()
+        text.append("> ", style="bold #6b7280")
+        text.append(self._content, style="#9ca3af")
+        yield Static(text)
+
+
 class AssistantMessage(Vertical):
     """Widget displaying an assistant message with markdown support.
 

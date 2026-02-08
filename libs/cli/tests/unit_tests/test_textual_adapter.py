@@ -151,9 +151,7 @@ class TestIsSummarizationChunk:
 # ---------------------------------------------------------------------------
 
 
-def _make_tool_widget(
-    name: str = "tool", args: dict | None = None
-) -> MagicMock:
+def _make_tool_widget(name: str = "tool", args: dict | None = None) -> MagicMock:
     """Create a MagicMock that mimics a ToolCallMessage widget."""
     widget = MagicMock()
     widget._tool_name = name
@@ -239,10 +237,7 @@ class TestDictIterationSafety:
 
     def test_items_iteration_safe_with_list(self) -> None:
         """``list(d.items())`` snapshots before mutation can occur."""
-        d: dict = {
-            f"id_{i}": _make_tool_widget(f"t{i}")
-            for i in range(5)
-        }
+        d: dict = {f"id_{i}": _make_tool_widget(f"t{i}") for i in range(5)}
         collected = []
         for key, _val in list(d.items()):
             collected.append(key)
@@ -252,10 +247,7 @@ class TestDictIterationSafety:
 
     def test_values_iteration_safe_with_list(self) -> None:
         """``list(d.values())`` snapshots before mutation."""
-        d: dict = {
-            f"id_{i}": _make_tool_widget(f"t{i}")
-            for i in range(5)
-        }
+        d: dict = {f"id_{i}": _make_tool_widget(f"t{i}") for i in range(5)}
         collected = []
         keys = list(d.keys())
         for val in list(d.values()):
@@ -272,13 +264,10 @@ class TestDictIterationSafety:
         Verifies the function survives concurrent dict modification.
         """
         widgets = {
-            f"id_{i}": _make_tool_widget(f"tool_{i}", {"k": i})
-            for i in range(4)
+            f"id_{i}": _make_tool_widget(f"tool_{i}", {"k": i}) for i in range(4)
         }
         pending_text: dict[tuple, str] = {(): "hello"}
-        result = _build_interrupted_ai_message(
-            pending_text, widgets
-        )
+        result = _build_interrupted_ai_message(pending_text, widgets)
         assert result is not None
         assert result.content == "hello"
         assert len(result.tool_calls) == 4

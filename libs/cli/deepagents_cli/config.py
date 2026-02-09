@@ -1106,11 +1106,10 @@ def _get_default_model_spec() -> str:
 
 
 def _get_provider_kwargs(provider: str) -> dict[str, Any]:
-    """Get provider-specific kwargs for init_chat_model.
+    """Get provider-specific kwargs from the config file.
 
-    Checks hardcoded provider branches first, then falls back to
-    `ModelConfig` for config-file-defined providers (e.g., `base_url`,
-    `api_key_env`).
+    Reads `base_url`, `api_key_env`, and the `kwargs` table from the user's
+    `config.toml` for the given provider.
 
     Args:
         provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
@@ -1118,20 +1117,6 @@ def _get_provider_kwargs(provider: str) -> dict[str, Any]:
     Returns:
         Dictionary of provider-specific kwargs.
     """
-    if provider == "anthropic":
-        return {"max_tokens": 20_000}
-    if provider == "google_genai":
-        return {"temperature": 0}
-    if provider == "google_vertexai":
-        kwargs: dict[str, Any] = {"temperature": 0}
-        if settings.google_cloud_project:
-            kwargs["project"] = settings.google_cloud_project
-        location = os.environ.get("GOOGLE_CLOUD_LOCATION")
-        if location:
-            kwargs["location"] = location
-        return kwargs
-
-    # Fall back to config-file provider settings
     config = ModelConfig.load()
     result: dict[str, Any] = config.get_kwargs(provider)
     base_url = config.get_base_url(provider)

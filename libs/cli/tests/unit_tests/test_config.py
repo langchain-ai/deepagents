@@ -5,11 +5,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from deepagents_cli import model_config
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     Settings,
     _find_project_agent_md,
     _find_project_root,
+    _get_provider_kwargs,
     create_model,
     fetch_langsmith_project_url,
     get_langsmith_project_name,
@@ -544,3 +546,71 @@ class TestFetchLangsmithProjectUrl:
             result = fetch_langsmith_project_url("my-project")
 
         assert result is None
+
+
+class TestGetProviderKwargsConfigFallback:
+    """Tests for _get_provider_kwargs() config-file fallback."""
+
+    def test_returns_base_url_from_config(self, tmp_path: Path) -> None:
+        """Returns base_url from config for non-hardcoded provider."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.fireworks]
+models = ["llama-v3p1-70b"]
+base_url = "https://api.fireworks.ai/inference/v1"
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}, clear=False),
+        ):
+            kwargs = _get_provider_kwargs("fireworks")
+
+        assert kwargs["base_url"] == "https://api.fireworks.ai/inference/v1"
+        assert kwargs["api_key"] == "test-key"
+
+    def test_returns_api_key_from_config(self, tmp_path: Path) -> None:
+        """Returns resolved api_key from config-file api_key_env."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.together]
+models = ["meta-llama/Llama-3-70b"]
+api_key_env = "TOGETHER_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"TOGETHER_API_KEY": "together-key"}, clear=False),
+        ):
+            kwargs = _get_provider_kwargs("together")
+
+        assert kwargs["api_key"] == "together-key"
+        assert "base_url" not in kwargs
+
+    def test_omits_api_key_when_env_not_set(self, tmp_path: Path) -> None:
+        """Omits api_key when the env var is not set."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            kwargs = _get_provider_kwargs("fireworks")
+
+        assert "api_key" not in kwargs
+
+    def test_returns_empty_for_unknown_config_provider(self) -> None:
+        """Returns empty dict for provider not in hardcoded map or config."""
+        kwargs = _get_provider_kwargs("nonexistent_provider_xyz")
+        assert kwargs == {}
+
+    def test_hardcoded_providers_not_affected(self) -> None:
+        """Hardcoded providers still return their specific kwargs."""
+        kwargs = _get_provider_kwargs("anthropic")
+        assert kwargs == {"max_tokens": 20_000}
+
+        kwargs = _get_provider_kwargs("google_genai")
+        assert kwargs == {"temperature": 0}

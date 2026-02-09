@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from deepagents_cli import model_config
 from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.config import settings
 from deepagents_cli.model_config import ModelConfigError
@@ -210,3 +211,130 @@ class TestModelSwitchErrorHandling:
         assert len(captured_messages) == 1
         assert "Default model set" in captured_messages[0]
         assert "Restart" in captured_messages[0]
+
+
+class TestModelSwitchConfigProvider:
+    """Tests for switching to config-file-defined providers."""
+
+    @pytest.mark.asyncio
+    async def test_switch_to_config_provider_no_whitelist_error(self, tmp_path) -> None:
+        """Switching to a provider not in PROVIDER_API_KEY_ENV succeeds.
+
+        Previously this would error with "Unknown provider". Now it falls
+        through to credential check and create_model().
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_messages: list[str] = []
+        original_app_init = AppMessage.__init__
+
+        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+            captured_messages.append(message)
+            original_app_init(self, message, **kwargs)
+
+        mock_model = MagicMock()
+        mock_agent = MagicMock()
+        mock_backend = MagicMock()
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}),
+            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch(
+                "deepagents_cli.app.create_cli_agent",
+                return_value=(mock_agent, mock_backend),
+            ),
+            patch("deepagents_cli.app.save_default_model", return_value=True),
+            patch.object(AppMessage, "__init__", capture_app),
+        ):
+            await app._switch_model("fireworks:llama-v3p1-70b")
+
+        # Should succeed, not show "Unknown provider"
+        assert any("Switched to" in m for m in captured_messages)
+        assert not any("Unknown provider" in m for m in captured_messages)
+
+    @pytest.mark.asyncio
+    async def test_switch_config_provider_missing_credentials(self, tmp_path) -> None:
+        """Config provider with missing credentials shows appropriate error."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_errors: list[str] = []
+        original_err_init = ErrorMessage.__init__
+
+        def capture_err(self: ErrorMessage, message: str, **kwargs: object) -> None:
+            captured_errors.append(message)
+            original_err_init(self, message, **kwargs)
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+            patch.object(ErrorMessage, "__init__", capture_err),
+        ):
+            await app._switch_model("fireworks:llama-v3p1-70b")
+
+        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        assert len(captured_errors) == 1
+        assert "Missing credentials" in captured_errors[0]
+        assert "fireworks" in captured_errors[0]
+
+    @pytest.mark.asyncio
+    async def test_switch_to_ollama_no_key_required(self, tmp_path) -> None:
+        """Ollama (no api_key_env) passes credential check."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.ollama]
+models = ["llama3"]
+""")
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_messages: list[str] = []
+        original_app_init = AppMessage.__init__
+
+        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+            captured_messages.append(message)
+            original_app_init(self, message, **kwargs)
+
+        mock_model = MagicMock()
+        mock_agent = MagicMock()
+        mock_backend = MagicMock()
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch(
+                "deepagents_cli.app.create_cli_agent",
+                return_value=(mock_agent, mock_backend),
+            ),
+            patch("deepagents_cli.app.save_default_model", return_value=True),
+            patch.object(AppMessage, "__init__", capture_app),
+        ):
+            await app._switch_model("ollama:llama3")
+
+        assert any("Switched to" in m for m in captured_messages)

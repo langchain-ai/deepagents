@@ -168,6 +168,20 @@ def get_available_models() -> dict[str, list[str]]:
     if not available:
         available = get_default_models()
 
+    # Merge in models from config file (custom providers like ollama, fireworks)
+    config = ModelConfig.load()
+    for provider_name, provider_config in config.providers.items():
+        config_models = provider_config.get("models", [])
+        if provider_name not in available:
+            if config_models:
+                available[provider_name] = config_models
+        else:
+            # Append any config models not already discovered
+            existing = set(available[provider_name])
+            for model in config_models:
+                if model not in existing:
+                    available[provider_name].append(model)
+
     return available
 
 
@@ -238,16 +252,23 @@ def get_curated_models() -> dict[str, list[str]]:
 def has_provider_credentials(provider: str) -> bool:
     """Check if credentials are available for a provider.
 
+    First checks the hardcoded `PROVIDER_API_KEY_ENV` mapping, then falls back
+    to `ModelConfig` for config-file-defined providers (e.g., ollama, fireworks).
+
     Args:
         provider: Provider name.
 
     Returns:
-        True if the required environment variable is set.
+        True if the required environment variable is set, or the provider is
+        defined in config with no key requirement.
     """
     env_var = PROVIDER_API_KEY_ENV.get(provider)
-    if not env_var:
-        return False
-    return bool(os.environ.get(env_var))
+    if env_var:
+        return bool(os.environ.get(env_var))
+
+    # Fall back to config-file providers
+    config = ModelConfig.load()
+    return config.has_credentials(provider)
 
 
 @dataclass

@@ -1639,25 +1639,22 @@ class DeepAgentsApp(App):
         """
         logger.info("Switching model to %s", model_spec)
 
+        # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
+        model_spec = model_spec.removeprefix(":")
+
         parsed = ModelSpec.try_parse(model_spec)
         if parsed:
             provider, model_name = parsed.provider, parsed.model
 
-            # Validate provider name
-            if provider not in PROVIDER_API_KEY_ENV:
-                known = ", ".join(sorted(PROVIDER_API_KEY_ENV))
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Unknown provider '{provider}'. Known providers: {known}"
-                    )
-                )
-                return
-
             # Check credentials for the specified provider
             if not has_provider_credentials(provider):
-                env_var = PROVIDER_API_KEY_ENV.get(provider, "API key")
+                env_var = PROVIDER_API_KEY_ENV.get(provider)
+                if env_var:
+                    detail = f"{env_var} not set"
+                else:
+                    detail = f"no credentials configured for '{provider}'"
                 await self._mount_message(
-                    ErrorMessage(f"Missing credentials: {env_var} not set")
+                    ErrorMessage(f"Missing credentials: {detail}")
                 )
                 return
 
@@ -1677,9 +1674,13 @@ class DeepAgentsApp(App):
             # Bare model name that differs from current — check credentials
             detected = _detect_provider(model_spec)
             if detected and not has_provider_credentials(detected):
-                env_var = PROVIDER_API_KEY_ENV.get(detected, "API key")
+                env_var = PROVIDER_API_KEY_ENV.get(detected)
+                if env_var:
+                    detail = f"{env_var} not set"
+                else:
+                    detail = f"no credentials configured for '{detected}'"
                 await self._mount_message(
-                    ErrorMessage(f"Missing credentials: {env_var} not set")
+                    ErrorMessage(f"Missing credentials: {detail}")
                 )
                 return
 

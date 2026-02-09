@@ -1094,8 +1094,12 @@ def _get_default_model_spec() -> str:
 def _get_provider_kwargs(provider: str) -> dict[str, Any]:
     """Get provider-specific kwargs for init_chat_model.
 
+    Checks hardcoded provider branches first, then falls back to
+    `ModelConfig` for config-file-defined providers (e.g., `base_url`,
+    `api_key_env`).
+
     Args:
-        provider: Provider name (openai, anthropic, google_genai, google_vertexai)
+        provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
 
     Returns:
         Dictionary of provider-specific kwargs.
@@ -1112,7 +1116,19 @@ def _get_provider_kwargs(provider: str) -> dict[str, Any]:
         if location:
             kwargs["location"] = location
         return kwargs
-    return {}
+
+    # Fall back to config-file provider settings
+    result: dict[str, Any] = {}
+    config = ModelConfig.load()
+    base_url = config.get_base_url(provider)
+    if base_url:
+        result["base_url"] = base_url
+    api_key_env = config.get_api_key_env(provider)
+    if api_key_env:
+        api_key = os.environ.get(api_key_env)
+        if api_key:
+            result["api_key"] = api_key
+    return result
 
 
 def create_model(model_spec: str | None = None) -> BaseChatModel:
@@ -1149,32 +1165,35 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
     provider: str
     model_name: str
     if ":" in model_spec:
-        provider, model_name = model_spec.split(":", 1)
-        if not provider or not model_name:
+        parts = model_spec.split(":", 1)
+        if parts[0] and parts[1]:
+            # Explicit provider:model
+            provider, model_name = parts
+        elif parts[1]:
+            # Leading colon (e.g., ":claude-opus-4-6") — treat as bare model name
+            model_name = parts[1]
+            provider = _detect_provider(model_name) or ""
+        else:
             msg = (
-                f"Invalid model spec '{model_spec}': both provider and model "
-                "name are required (e.g., 'anthropic:claude-sonnet-4-5')"
+                f"Invalid model spec '{model_spec}': model name is required "
+                "(e.g., 'anthropic:claude-sonnet-4-5' or 'claude-sonnet-4-5')"
             )
             raise ModelConfigError(msg)
     else:
-        # Legacy: auto-detect provider from model name
-        detected_provider = _detect_provider(model_spec)
-        if detected_provider:
-            provider = detected_provider
-            model_name = model_spec
-        else:
-            msg = (
-                f"Could not detect provider from model name: {model_spec}. "
-                "Use provider:model syntax (e.g., 'anthropic:claude-sonnet-4-5')"
-            )
-            raise ModelConfigError(msg)
+        # Bare model name — auto-detect provider or let init_chat_model infer
+        model_name = model_spec
+        provider = _detect_provider(model_spec) or ""
 
     # Provider-specific kwargs
     kwargs = _get_provider_kwargs(provider)
 
     # Create the model using init_chat_model
     try:
-        model = init_chat_model(model_name, model_provider=provider, **kwargs)
+        if provider:
+            model = init_chat_model(model_name, model_provider=provider, **kwargs)
+        else:
+            # Let init_chat_model infer the provider from the model name
+            model = init_chat_model(model_name, **kwargs)
     except ImportError as e:
         # Handle missing provider packages
         package_map = {
@@ -1197,7 +1216,7 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
 
     # Store model info in settings for display
     settings.model_name = model_name
-    settings.model_provider = provider
+    settings.model_provider = provider or getattr(model, "_model_provider", provider)
 
     # Extract context limit from model profile (if available)
     profile = getattr(model, "profile", None)

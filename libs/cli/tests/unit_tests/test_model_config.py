@@ -567,6 +567,145 @@ class TestGetAvailableModels:
         )
 
 
+class TestGetAvailableModelsMergesConfig:
+    """Tests for get_available_models() merging config-file providers."""
+
+    def test_merges_new_provider_from_config(self, tmp_path):
+        """Config-file provider not in profiles gets appended."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.fireworks]
+models = ["accounts/fireworks/models/llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            mock_importlib.import_module.side_effect = ImportError("not installed")
+            models = get_available_models()
+
+        assert "fireworks" in models
+        assert "accounts/fireworks/models/llama-v3p1-70b" in models["fireworks"]
+
+    def test_merges_new_models_into_existing_provider(self, tmp_path):
+        """Config-file models for an existing provider get appended."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.anthropic]
+models = ["claude-custom-finetune"]
+""")
+        fake_module = ModuleType("fake_profiles")
+        fake_module._PROFILES = {  # type: ignore[attr-defined]
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_import(name: str) -> ModuleType:
+            if name == "langchain_anthropic.data._profiles":
+                return fake_module
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            mock_importlib.import_module.side_effect = mock_import
+            models = get_available_models()
+
+        assert "claude-sonnet-4-5" in models["anthropic"]
+        assert "claude-custom-finetune" in models["anthropic"]
+
+    def test_does_not_duplicate_existing_models(self, tmp_path):
+        """Config-file models already in profiles are not duplicated."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.anthropic]
+models = ["claude-sonnet-4-5"]
+""")
+        fake_module = ModuleType("fake_profiles")
+        fake_module._PROFILES = {  # type: ignore[attr-defined]
+            "claude-sonnet-4-5": {"tool_calling": True},
+        }
+
+        def mock_import(name: str) -> ModuleType:
+            if name == "langchain_anthropic.data._profiles":
+                return fake_module
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with (
+            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            mock_importlib.import_module.side_effect = mock_import
+            models = get_available_models()
+
+        assert models["anthropic"].count("claude-sonnet-4-5") == 1
+
+    def test_skips_config_provider_with_no_models(self, tmp_path):
+        """Config provider with empty models list is not added."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.empty]
+api_key_env = "SOME_KEY"
+""")
+        with (
+            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            mock_importlib.import_module.side_effect = ImportError("not installed")
+            models = get_available_models()
+
+        assert "empty" not in models
+
+
+class TestHasProviderCredentialsFallback:
+    """Tests for has_provider_credentials() falling back to ModelConfig."""
+
+    def test_falls_back_to_config_no_key_required(self, tmp_path):
+        """Returns True for config provider with no api_key_env (e.g., Ollama)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.ollama]
+models = ["llama3"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert has_provider_credentials("ollama") is True
+
+    def test_falls_back_to_config_with_key_set(self, tmp_path):
+        """Returns True for config provider with api_key_env set in env."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}),
+        ):
+            assert has_provider_credentials("fireworks") is True
+
+    def test_falls_back_to_config_with_key_missing(self, tmp_path):
+        """Returns False for config provider with api_key_env not in env."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert has_provider_credentials("fireworks") is False
+
+    def test_returns_false_for_totally_unknown_provider(self):
+        """Returns False for provider not in hardcoded map or config."""
+        assert has_provider_credentials("nonexistent_provider_xyz") is False
+
+
 class TestModelConfigError:
     """Tests for ModelConfigError exception class."""
 

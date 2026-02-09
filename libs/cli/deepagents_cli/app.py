@@ -74,8 +74,6 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.worker import Worker
 
-logger = logging.getLogger(__name__)
-
 # iTerm2 Cursor Guide Workaround
 # ===============================
 # iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
@@ -1705,7 +1703,12 @@ class DeepAgentsApp(App):
                 )
             return
 
-        # Try to create the new model
+        # Save previous settings for rollback if agent creation fails
+        prev_model_name = settings.model_name
+        prev_model_provider = settings.model_provider
+        prev_context_limit = settings.model_context_limit
+
+        # Try to create the new model (mutates settings as a side effect)
         try:
             new_model = create_model(model_spec)
         except ModelConfigError as e:
@@ -1715,7 +1718,7 @@ class DeepAgentsApp(App):
             await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
             return
 
-        # Create new agent (may fail — no state changed yet)
+        # Create new agent (may fail — rollback settings if so)
         try:
             new_agent, new_backend = create_cli_agent(
                 model=new_model,
@@ -1727,6 +1730,10 @@ class DeepAgentsApp(App):
                 checkpointer=self._checkpointer,
             )
         except Exception as e:
+            # Restore settings so UI stays consistent with actual agent
+            settings.model_name = prev_model_name
+            settings.model_provider = prev_model_provider
+            settings.model_context_limit = prev_context_limit
             logger.exception("Failed to create agent for model switch")
             await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
             return
@@ -1741,7 +1748,11 @@ class DeepAgentsApp(App):
             if self._status_bar:
                 self._status_bar.set_model(display)
         except Exception:
-            logger.warning("Failed to update status bar after model switch")
+            logger.warning(
+                "Failed to update status bar after model switch to %s",
+                display,
+                exc_info=True,
+            )
 
         config_saved = save_default_model(model_spec)
         if config_saved:

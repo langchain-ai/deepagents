@@ -323,8 +323,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.
 
-        Only performs a full rebuild when `_rebuild_needed` is set (e.g. after
-        filtering). Arrow-key navigation uses `_move_selection` instead.
+        Always performs a full DOM rebuild (removes all children, re-mounts).
+        Callers should gate on `_rebuild_needed` to avoid unnecessary rebuilds;
+        e.g. arrow-key navigation uses `_move_selection` instead.
         """
         if not self._options_container:
             return

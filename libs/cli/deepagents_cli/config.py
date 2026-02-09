@@ -1150,6 +1150,12 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
     model_name: str
     if ":" in model_spec:
         provider, model_name = model_spec.split(":", 1)
+        if not provider or not model_name:
+            msg = (
+                f"Invalid model spec '{model_spec}': both provider and model "
+                "name are required (e.g., 'anthropic:claude-sonnet-4-5')"
+            )
+            raise ModelConfigError(msg)
     else:
         # Legacy: auto-detect provider from model name
         detected_provider = _detect_provider(model_spec)
@@ -1181,6 +1187,12 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
         msg = (
             f"Missing package for provider '{provider}'. Install: pip install {package}"
         )
+        raise ModelConfigError(msg) from e
+    except (ValueError, TypeError) as e:
+        msg = f"Invalid model configuration for '{provider}:{model_name}': {e}"
+        raise ModelConfigError(msg) from e
+    except Exception as e:  # provider SDK auth/network errors
+        msg = f"Failed to initialize model '{provider}:{model_name}': {e}"
         raise ModelConfigError(msg) from e
 
     # Store model info in settings for display

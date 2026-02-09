@@ -45,6 +45,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.file_ops import FileOpTracker
+from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import generate_thread_id, get_checkpointer
 from deepagents_cli.tools import fetch_url, http_request, web_search
 
@@ -576,7 +577,11 @@ async def run_non_interactive(
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
-    model = create_model(model_name)
+    try:
+        model = create_model(model_name)
+    except ModelConfigError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        return 1
     thread_id = generate_thread_id()
 
     config: RunnableConfig = {

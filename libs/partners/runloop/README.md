@@ -1,8 +1,8 @@
-# langchain-daytona
+# langchain-runloop
 
-[![PyPI - Version](https://img.shields.io/pypi/v/langchain-daytona?label=%20)](https://pypi.org/project/langchain-daytona/#history)
-[![PyPI - License](https://img.shields.io/pypi/l/langchain-daytona)](https://opensource.org/licenses/MIT)
-[![PyPI - Downloads](https://img.shields.io/pepy/dt/langchain-daytona)](https://pypistats.org/packages/langchain-daytona)
+[![PyPI - Version](https://img.shields.io/pypi/v/langchain-runloop?label=%20)](https://pypi.org/project/langchain-runloop/#history)
+[![PyPI - License](https://img.shields.io/pypi/l/langchain-runloop)](https://opensource.org/licenses/MIT)
+[![PyPI - Downloads](https://img.shields.io/pepy/dt/langchain-runloop)](https://pypistats.org/packages/langchain-runloop)
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain)
 
 Looking for the JS/TS version? Check out [LangChain.js](https://github.com/langchain-ai/langchainjs).
@@ -10,23 +10,32 @@ Looking for the JS/TS version? Check out [LangChain.js](https://github.com/langc
 ## Quick Install
 
 ```bash
-pip install langchain_daytona
+pip install langchain-runloop
 ```
 
 ```python
-from daytona import Daytona
+import os
 
-from langchain_daytona import DaytonaSandbox
+from runloop_api_client import RunloopSDK
 
-sandbox = Daytona().create()
-backend = DaytonaSandbox(sandbox)
-result = backend.execute("echo hello")
-print(result.output)
+from langchain_runloop import RunloopSandbox
+
+api_key = os.environ["RUNLOOP_API_KEY"]
+client = RunloopSDK(bearer_token=api_key)
+
+devbox = client.devbox.create()
+sandbox = RunloopSandbox(devbox=devbox)
+
+try:
+    result = sandbox.execute("echo hello")
+    print(result.output)
+finally:
+    devbox.shutdown()
 ```
 
 ## 🤔 What is this?
 
-Daytona sandbox integration for Deep Agents.
+Runloop sandbox integration for Deep Agents.
 
 ## 📕 Releases & Versioning
 

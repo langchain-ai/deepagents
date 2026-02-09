@@ -29,6 +29,8 @@ on:
           - deepagents-acp
           - deepagents-harbor
           - langchain-daytona
+          - langchain-modal
+          - langchain-runloop
         default: deepagents
       dangerous-nonmaster-release:
         required: false
@@ -76,12 +78,18 @@ jobs:
             deepagents-harbor)
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
-            daytona)
+            langchain-daytona)
               echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
+            langchain-modal)
+              echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT
+              ;;
+            langchain-runloop)
+              echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona, langchain-modal, langchain-runloop"
               exit 1
               ;;
           esac

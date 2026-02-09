@@ -160,14 +160,14 @@ def _make_tool_widget(name: str = "tool", args: dict | None = None) -> MagicMock
 
 
 class _MutatingItemsDict(dict):  # noqa: FURB189
-    """Dict whose ``.items()`` deletes another key mid-iteration.
+    """Dict whose `.items()` deletes another key mid-iteration.
 
-    This deterministically reproduces the ``RuntimeError: dictionary
-    changed size during iteration`` that occurs when async tool-result
-    callbacks mutate ``_current_tool_messages`` while the HITL approval
+    This deterministically reproduces the `RuntimeError: dictionary
+    changed size during iteration` that occurs when async tool-result
+    callbacks mutate `_current_tool_messages` while the HITL approval
     loop is iterating over it.
 
-    We intentionally subclass ``dict`` (not ``UserDict``) because we
+    We intentionally subclass `dict` (not `UserDict`) because we
     need to override the C-level iteration that triggers the error.
     """
 
@@ -184,9 +184,9 @@ class _MutatingItemsDict(dict):  # noqa: FURB189
 
 
 class _MutatingValuesDict(dict):  # noqa: FURB189
-    """Dict whose ``.values()`` deletes a key mid-iteration.
+    """Dict whose `.values()` deletes a key mid-iteration.
 
-    We intentionally subclass ``dict`` (not ``UserDict``) because we
+    We intentionally subclass `dict` (not `UserDict`) because we
     need to override the C-level iteration that triggers the error.
     """
 
@@ -204,11 +204,11 @@ class _MutatingValuesDict(dict):  # noqa: FURB189
 class TestDictIterationSafety:
     """Regression tests for #956.
 
-    Parallel tool calls can modify ``adapter._current_tool_messages``
+    Parallel tool calls can modify `adapter._current_tool_messages`
     while another coroutine iterates over it, raising
-    ``RuntimeError: dictionary changed size during iteration``.
+    `RuntimeError: dictionary changed size during iteration`.
 
-    The fix wraps every iteration with ``list()`` so a snapshot is
+    The fix wraps every iteration with `list()` so a snapshot is
     taken before the loop body runs.  These tests prove the fix is
     necessary and sufficient.
     """
@@ -236,7 +236,7 @@ class TestDictIterationSafety:
     # -- Test B: list() snapshot protects iteration ----
 
     def test_items_iteration_safe_with_list(self) -> None:
-        """``list(d.items())`` snapshots before mutation can occur."""
+        """`list(d.items())` snapshots before mutation can occur."""
         d: dict = {f"id_{i}": _make_tool_widget(f"t{i}") for i in range(5)}
         collected = []
         for key, _val in list(d.items()):
@@ -246,7 +246,7 @@ class TestDictIterationSafety:
         assert len(d) == 0
 
     def test_values_iteration_safe_with_list(self) -> None:
-        """``list(d.values())`` snapshots before mutation."""
+        """`list(d.values())` snapshots before mutation."""
         d: dict = {f"id_{i}": _make_tool_widget(f"t{i}") for i in range(5)}
         collected = []
         keys = list(d.keys())
@@ -259,7 +259,7 @@ class TestDictIterationSafety:
     # -- Test C: _build_interrupted_ai_message uses list() ----
 
     def test_build_interrupted_ai_message_safe(self) -> None:
-        """_build_interrupted_ai_message uses list() and is safe.
+        """_build_interrupted_ai_message uses `list()` and is safe.
 
         Verifies the function survives concurrent dict modification.
         """

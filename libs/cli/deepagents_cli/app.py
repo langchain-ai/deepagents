@@ -1716,6 +1716,7 @@ class DeepAgentsApp(App):
             await self._mount_message(ErrorMessage(str(e)))
             return
         except Exception as e:
+            logger.exception("Failed to create model from spec %s", model_spec)
             await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
             return
 
@@ -1748,11 +1749,10 @@ class DeepAgentsApp(App):
         try:
             if self._status_bar:
                 self._status_bar.set_model(display)
-        except Exception:
-            logger.warning(
+        except (AttributeError, RuntimeError):
+            logger.exception(
                 "Failed to update status bar after model switch to %s",
                 display,
-                exc_info=True,
             )
 
         config_saved = save_default_model(model_spec)

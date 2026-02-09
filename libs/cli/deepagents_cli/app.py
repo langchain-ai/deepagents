@@ -886,7 +886,8 @@ class DeepAgentsApp(App):
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
-                "  !command        Run bash commands directly"
+                "  !command        Run bash commands directly\n\n"
+                "Docs: https://docs.langchain.com/oss/python/deepagents/cli"
             )
             await self._mount_message(AppMessage(help_text))
 

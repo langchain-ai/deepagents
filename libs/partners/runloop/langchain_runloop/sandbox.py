@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runloop_api_client.sdk import Devbox
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -18,7 +21,7 @@ class RunloopSandbox(BaseSandbox):
     def __init__(
         self,
         *,
-        devbox: Any,
+        devbox: Devbox,
     ) -> None:
         """Create a sandbox backend connected to an existing Runloop devbox."""
         self._devbox = devbox

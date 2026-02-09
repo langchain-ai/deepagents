@@ -358,6 +358,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if self._current_model and self._current_provider:
             current_spec = f"{self._current_provider}:{self._current_model}"
 
+        # Collect all widgets first, then batch-mount once to avoid
+        # individual DOM mutations per widget
+        all_widgets: list[Static] = []
+
         for provider, model_specs in by_provider.items():
             # Provider header with credential indicator
             has_creds = has_provider_credentials(provider)
@@ -367,11 +371,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 cred_indicator = glyphs.warning
             else:
                 cred_indicator = glyphs.question
-            header = Static(
-                f"[bold]{provider}[/bold] {cred_indicator}",
-                classes="model-provider-header",
+            all_widgets.append(
+                Static(
+                    f"[bold]{provider}[/bold] {cred_indicator}",
+                    classes="model-provider-header",
+                )
             )
-            await self._options_container.mount(header)
 
             for model_spec in model_specs:
                 is_current = model_spec == current_spec
@@ -398,13 +403,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     has_creds=has_creds,
                     classes=classes,
                 )
-                await self._options_container.mount(widget)
+                all_widgets.append(widget)
                 self._option_widgets.append(widget)
 
                 if is_selected:
                     selected_widget = widget
 
                 flat_index += 1
+
+        await self._options_container.mount(*all_widgets)
 
         # Scroll the selected item into view
         if selected_widget:

@@ -146,7 +146,14 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
 }
-"""Mapping of provider names to their API key environment variables."""
+"""Well-known providers mapped to the env var that holds their API key.
+
+Used by `has_provider_credentials` to verify credentials *before* model
+creation, so the UI can show a warning icon and a specific error message
+(e.g., "ANTHROPIC_API_KEY not set") instead of letting the provider fail at call
+time. Providers not listed here fall through to the config-file check or the
+langchain registry fallback.
+"""
 
 
 # Module-level caches — cleared by `clear_caches()`.
@@ -290,8 +297,9 @@ def has_provider_credentials(provider: str) -> bool:
 
     Checks in order:
 
-    1. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
-    2. Config-file providers (`config.toml`).
+    1. Config-file providers (`config.toml`) — takes priority so user
+        overrides (e.g., custom `api_key_env` or `base_url`) are respected.
+    2. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
     3. Langchain's `_SUPPORTED_PROVIDERS` registry — if the provider is known
         to `init_chat_model`, assume credentials are satisfied and let the
         provider itself report auth failures at model-creation time.
@@ -304,18 +312,38 @@ def has_provider_credentials(provider: str) -> bool:
         defined in config with no key requirement, or the provider is known
         to `langchain`.
     """
-    env_var = PROVIDER_API_KEY_ENV.get(provider)
-    if env_var:
-        return bool(os.environ.get(env_var))
-
-    # Fall back to config-file providers
+    # Config-file providers take priority (user overrides).
     config = ModelConfig.load()
     if config.providers.get(provider):
         return config.has_credentials(provider)
 
+    # Fall back to hardcoded well-known providers.
+    env_var = PROVIDER_API_KEY_ENV.get(provider)
+    if env_var:
+        return bool(os.environ.get(env_var))
+
     # If langchain knows this provider, let it through — the provider
     # will raise its own auth error if a key is actually needed.
     return _is_langchain_supported_provider(provider)
+
+
+def get_credential_env_var(provider: str) -> str | None:
+    """Return the env var name that holds credentials for a provider.
+
+    Checks the config file first (user override), then falls back to the
+    hardcoded `PROVIDER_API_KEY_ENV` map.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        Environment variable name, or None if unknown.
+    """
+    config = ModelConfig.load()
+    config_env = config.get_api_key_env(provider)
+    if config_env:
+        return config_env
+    return PROVIDER_API_KEY_ENV.get(provider)
 
 
 @dataclass(frozen=True)

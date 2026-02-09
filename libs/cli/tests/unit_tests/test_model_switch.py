@@ -85,10 +85,12 @@ class TestModelSwitchErrorHandling:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 
-        env_map = {"anthropic": "ANTHROPIC_API_KEY"}
         with (
             patch("deepagents_cli.app.has_provider_credentials", return_value=False),
-            patch("deepagents_cli.app.PROVIDER_API_KEY_ENV", env_map),
+            patch(
+                "deepagents_cli.app.get_credential_env_var",
+                return_value="ANTHROPIC_API_KEY",
+            ),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
@@ -312,7 +314,7 @@ api_key_env = "FIREWORKS_API_KEY"
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_errors) == 1
         assert "Missing credentials" in captured_errors[0]
-        assert "fireworks" in captured_errors[0]
+        assert "FIREWORKS_API_KEY" in captured_errors[0]
 
     @pytest.mark.asyncio
     async def test_switch_to_ollama_no_key_required(self, tmp_path) -> None:

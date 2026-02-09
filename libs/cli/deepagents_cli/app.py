@@ -35,9 +35,9 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.model_config import (
-    PROVIDER_API_KEY_ENV,
     ModelConfigError,
     ModelSpec,
+    get_credential_env_var,
     has_provider_credentials,
     save_default_model,
 )
@@ -1648,7 +1648,7 @@ class DeepAgentsApp(App):
 
             # Check credentials for the specified provider
             if not has_provider_credentials(provider):
-                env_var = PROVIDER_API_KEY_ENV.get(provider)
+                env_var = get_credential_env_var(provider)
                 if env_var:
                     detail = f"{env_var} not set"
                 else:
@@ -1674,7 +1674,7 @@ class DeepAgentsApp(App):
             # Bare model name that differs from current — check credentials
             detected = _detect_provider(model_spec)
             if detected and not has_provider_credentials(detected):
-                env_var = PROVIDER_API_KEY_ENV.get(detected)
+                env_var = get_credential_env_var(detected)
                 if env_var:
                     detail = f"{env_var} not set"
                 else:

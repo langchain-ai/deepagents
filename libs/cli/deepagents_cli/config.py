@@ -1122,21 +1122,18 @@ def _get_provider_kwargs(provider: str) -> dict[str, Any]:
 def create_model(model_spec: str | None = None) -> BaseChatModel:
     """Create a chat model using init_chat_model.
 
-    Supports the "provider:model" format (e.g., "anthropic:claude-sonnet-4-5")
+    Supports `provider:model` format (e.g., `'anthropic:claude-sonnet-4-5'`)
     for explicit provider selection, or bare model names for auto-detection.
 
     Args:
-        model_spec: Model specification in "provider:model" format (e.g.,
-            "anthropic:claude-sonnet-4-5", "openai:gpt-4o") or just the model
-            name for auto-detection (e.g., "claude-sonnet-4-5"). If not provided,
-            uses environment-based defaults.
+        model_spec: Model specification in `provider:model` format (e.g.,
+            `'anthropic:claude-sonnet-4-5'`, `'openai:gpt-4o'`) or just the model
+            name for auto-detection (e.g., `'claude-sonnet-4-5'`).
+
+                If not provided, uses environment-based defaults.
 
     Returns:
-        Configured BaseChatModel instance ready for use.
-
-    Note:
-        The parameter was renamed from `model_name_override` to `model_spec` to
-        better reflect its purpose of accepting the provider:model format.
+        Configured `BaseChatModel` instance ready for use.
 
     Examples:
         >>> model = create_model("anthropic:claude-sonnet-4-5")

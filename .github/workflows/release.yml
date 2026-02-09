@@ -35,6 +35,11 @@ on:
         type: boolean
         default: false
         description: "Release from a non-master branch (danger!) - Only use for hotfixes"
+      dangerous-skip-sdk-pin-check:
+        required: false
+        type: boolean
+        default: false
+        description: "Skip CLI SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
   PYTHON_VERSION: "3.11"
@@ -484,6 +489,24 @@ jobs:
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Verify CLI pins latest SDK version
+        if: needs.build.outputs.pkg-name == 'deepagents-cli' && !inputs.dangerous-skip-sdk-pin-check
+        run: |
+          SDK_VERSION=$(grep -Po '(?<=^version = ")[^"]*' libs/deepagents/pyproject.toml)
+          CLI_SDK_PIN=$(grep -Po '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml)
+
+          if [ "$SDK_VERSION" != "$CLI_SDK_PIN" ]; then
+            echo "::error::CLI SDK pin does not match SDK version!"
+            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
+            echo "CLI SDK pin (libs/cli/pyproject.toml): $CLI_SDK_PIN"
+            echo ""
+            echo "Update the deepagents dependency in libs/cli/pyproject.toml to deepagents==$SDK_VERSION"
+            echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
+            exit 1
+          else
+            echo "CLI SDK pin matches SDK version: $SDK_VERSION"
+          fi
 
       - name: Import dist package
         shell: bash

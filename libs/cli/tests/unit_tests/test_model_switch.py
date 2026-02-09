@@ -1,5 +1,6 @@
 """Tests for model switching functionality."""
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,6 +10,16 @@ from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.config import settings
 from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
+
+
+@pytest.fixture(autouse=True)
+def _restore_settings() -> Iterator[None]:
+    """Save and restore global settings mutated by tests."""
+    original_name = settings.model_name
+    original_provider = settings.model_provider
+    yield
+    settings.model_name = original_name
+    settings.model_provider = original_provider
 
 
 class TestModelSwitchNoOp:

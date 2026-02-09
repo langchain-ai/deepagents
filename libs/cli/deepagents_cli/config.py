@@ -37,7 +37,11 @@ from langchain.chat_models import init_chat_model  # noqa: E402
 from langchain_core.language_models import BaseChatModel  # noqa: E402
 from langchain_core.runnables import RunnableConfig  # noqa: E402
 
-from deepagents_cli.model_config import ModelConfig, ModelConfigError  # noqa: E402
+from deepagents_cli.model_config import (  # noqa: E402
+    ModelConfig,
+    ModelConfigError,
+    ModelSpec,
+)
 
 # Color scheme
 COLORS = {
@@ -1267,14 +1271,16 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
     # Parse provider:model syntax
     provider: str
     model_name: str
-    if ":" in model_spec:
-        parts = model_spec.split(":", 1)
-        if parts[0] and parts[1]:
-            # Explicit provider:model
-            provider, model_name = parts
-        elif parts[1]:
+    parsed = ModelSpec.try_parse(model_spec)
+    if parsed:
+        # Explicit provider:model (e.g., "anthropic:claude-sonnet-4-5")
+        provider, model_name = parsed.provider, parsed.model
+    elif ":" in model_spec:
+        # Contains colon but ModelSpec rejected it (empty provider or model)
+        _, _, after = model_spec.partition(":")
+        if after:
             # Leading colon (e.g., ":claude-opus-4-6") — treat as bare model name
-            model_name = parts[1]
+            model_name = after
             provider = _detect_provider(model_name) or ""
         else:
             msg = (

@@ -395,7 +395,10 @@ class ModelConfig:
             config_path = DEFAULT_CONFIG_PATH
 
         if not config_path.exists():
-            return cls()
+            fallback = cls()
+            if is_default:
+                _default_config_cache = fallback
+            return fallback
 
         try:
             with config_path.open("rb") as f:
@@ -407,10 +410,16 @@ class ModelConfig:
                 config_path,
                 e,
             )
-            return cls()
+            fallback = cls()
+            if is_default:
+                _default_config_cache = fallback
+            return fallback
         except (PermissionError, OSError) as e:
             logger.warning("Could not read config file %s: %s", config_path, e)
-            return cls()
+            fallback = cls()
+            if is_default:
+                _default_config_cache = fallback
+            return fallback
 
         config = cls(
             default_model=data.get("default", {}).get("model"),
@@ -550,14 +559,14 @@ class ModelConfig:
         return dict(provider.get("kwargs", {}))
 
 
-def save_default_model(model_name: str, config_path: Path | None = None) -> bool:
+def save_default_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the default model in config file.
 
     Reads existing config (if any), updates the `default.model` value, and
     writes back using proper TOML serialization.
 
     Args:
-        model_name: The model to set as default (`provider:model` format recommended).
+        model_spec: The model to set as default in `provider:model` format.
         config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
 
     Returns:
@@ -582,7 +591,7 @@ def save_default_model(model_name: str, config_path: Path | None = None) -> bool
         # Update the default model
         if "default" not in data:
             data["default"] = {}
-        data["default"]["model"] = model_name
+        data["default"]["model"] = model_spec
 
         # Write back with proper TOML formatting
         with config_path.open("wb") as f:

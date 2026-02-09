@@ -1,7 +1,7 @@
 """Unit tests for textual_adapter functions."""
 
 from asyncio import Future
-from collections.abc import Generator, Iterator
+from collections.abc import Generator
 from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -159,7 +159,7 @@ def _make_tool_widget(name: str = "tool", args: dict | None = None) -> MagicMock
     return widget
 
 
-class _MutatingItemsDict(dict):  # noqa: FURB189
+class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to override C-level iteration
     """Dict whose `.items()` deletes another key mid-iteration.
 
     This deterministically reproduces the `RuntimeError: dictionary
@@ -183,7 +183,7 @@ class _MutatingItemsDict(dict):  # noqa: FURB189
         yield from it
 
 
-class _MutatingValuesDict(dict):  # noqa: FURB189
+class _MutatingValuesDict(dict):  # noqa: FURB189  # must subclass dict to override C-level iteration
     """Dict whose `.values()` deletes a key mid-iteration.
 
     We intentionally subclass `dict` (not `UserDict`) because we
@@ -259,9 +259,13 @@ class TestDictIterationSafety:
     # -- Test C: _build_interrupted_ai_message uses list() ----
 
     def test_build_interrupted_ai_message_safe(self) -> None:
-        """_build_interrupted_ai_message uses `list()` and is safe.
+        """_build_interrupted_ai_message correctly builds an AIMessage.
 
-        Verifies the function survives concurrent dict modification.
+        Verifies the function reconstructs tool calls and content from
+        the provided widget dict. The `list()` snapshot inside the
+        production code protects against external async mutation at
+        `await` boundaries, which cannot be deterministically simulated
+        in a synchronous unit test.
         """
         widgets = {
             f"id_{i}": _make_tool_widget(f"tool_{i}", {"k": i}) for i in range(4)

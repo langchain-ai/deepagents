@@ -882,3 +882,76 @@ api_key_env = "FIREWORKS_API_KEY"
 
         mock_init.assert_called_once()
         assert result is mock_instance
+
+
+class TestCreateModelExtraKwargs:
+    """Tests for create_model() with extra_kwargs from --model-kwargs."""
+
+    def setup_method(self) -> None:
+        """Reset settings before each test."""
+        settings.model_context_limit = None
+        settings.model_name = None
+        settings.model_provider = None
+
+    @patch("deepagents_cli.config.init_chat_model")
+    def test_extra_kwargs_passed_to_model(self, mock_init_chat_model: Mock) -> None:
+        """extra_kwargs are forwarded to init_chat_model."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        create_model("anthropic:claude-sonnet-4-5", extra_kwargs={"temperature": 0.7})
+
+        _, call_kwargs = mock_init_chat_model.call_args
+        assert call_kwargs["temperature"] == 0.7
+
+    @patch("deepagents_cli.config.init_chat_model")
+    def test_extra_kwargs_override_config(
+        self, mock_init_chat_model: Mock, tmp_path: Path
+    ) -> None:
+        """extra_kwargs override values from config file."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.anthropic]
+models = ["claude-sonnet-4-5"]
+
+[providers.anthropic.kwargs]
+temperature = 0
+max_tokens = 1024
+""")
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        clear_caches()
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={"temperature": 0.9},
+            )
+
+        _, call_kwargs = mock_init_chat_model.call_args
+        # CLI kwarg wins over config
+        assert call_kwargs["temperature"] == 0.9
+        # Config kwarg preserved when not overridden
+        assert call_kwargs["max_tokens"] == 1024
+
+    @patch("deepagents_cli.config.init_chat_model")
+    def test_none_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
+        """extra_kwargs=None does not affect behavior."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        create_model("anthropic:claude-sonnet-4-5", extra_kwargs=None)
+        mock_init_chat_model.assert_called_once()
+
+    @patch("deepagents_cli.config.init_chat_model")
+    def test_empty_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
+        """extra_kwargs={} does not affect behavior."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        create_model("anthropic:claude-sonnet-4-5", extra_kwargs={})
+        mock_init_chat_model.assert_called_once()

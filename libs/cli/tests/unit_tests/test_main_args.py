@@ -121,3 +121,31 @@ class TestNonInteractiveArgument:
             assert parsed.non_interactive_message == "run task"
             assert parsed.sandbox == "modal"
             assert parsed.sandbox_setup == "/path/to/setup.sh"
+
+
+class TestModelKwargsArgument:
+    """Tests for --model-kwargs argument parsing."""
+
+    def test_stores_json_string(self, mock_argv: MockArgvType) -> None:
+        """Test --model-kwargs stores the raw JSON string."""
+        with mock_argv("--model-kwargs", '{"temperature": 0.7}'):
+            parsed = parse_args()
+            assert parsed.model_kwargs == '{"temperature": 0.7}'
+
+    def test_not_specified_is_none(self, mock_argv: MockArgvType) -> None:
+        """Test model_kwargs is None when not provided."""
+        with mock_argv():
+            parsed = parse_args()
+            assert parsed.model_kwargs is None
+
+    def test_combined_with_model(self, mock_argv: MockArgvType) -> None:
+        """Test --model-kwargs works alongside --model."""
+        with mock_argv(
+            "--model",
+            "gpt-4o",
+            "--model-kwargs",
+            '{"temperature": 0.5, "max_tokens": 2048}',
+        ):
+            parsed = parse_args()
+            assert parsed.model == "gpt-4o"
+            assert parsed.model_kwargs == '{"temperature": 0.5, "max_tokens": 2048}'

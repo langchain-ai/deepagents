@@ -1235,7 +1235,11 @@ def _create_model_via_init(
         raise ModelConfigError(msg) from e
 
 
-def create_model(model_spec: str | None = None) -> BaseChatModel:
+def create_model(
+    model_spec: str | None = None,
+    *,
+    extra_kwargs: dict[str, Any] | None = None,
+) -> BaseChatModel:
     """Create a chat model.
 
     Uses `init_chat_model` for standard providers, or imports a custom
@@ -1250,6 +1254,9 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
             name for auto-detection (e.g., `'claude-sonnet-4-5'`).
 
                 If not provided, uses environment-based defaults.
+        extra_kwargs: Additional kwargs to pass to the model constructor.
+
+            These take highest priority, overriding values from the config file.
 
     Returns:
         Configured `BaseChatModel` instance ready for use.
@@ -1295,6 +1302,10 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
 
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
+
+    # CLI --model-kwargs take highest priority
+    if extra_kwargs:
+        kwargs.update(extra_kwargs)
 
     # Check if this provider uses a custom BaseChatModel class
     config = ModelConfig.load()

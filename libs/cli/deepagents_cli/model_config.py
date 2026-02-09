@@ -105,12 +105,12 @@ class ModelSpec:
 class ProviderConfig(TypedDict, total=False):
     """Configuration for a model provider.
 
-    The optional `class` field allows bypassing `init_chat_model` entirely
+    The optional `class_path` field allows bypassing `init_chat_model` entirely
     and instantiating an arbitrary `BaseChatModel` subclass via importlib.
 
     !!! warning
 
-        Setting `class` executes arbitrary Python code from the user's
+        Setting `class_path` executes arbitrary Python code from the user's
         config file. This has the same trust model as `pyproject.toml` build
         scripts — the user controls their own machine.
     """

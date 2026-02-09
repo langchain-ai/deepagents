@@ -1003,6 +1003,11 @@ class DeepAgentsApp(App):
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
+                try:
+                    banner = self.query_one("#welcome-banner", WelcomeBanner)
+                    banner.update_thread_id(new_thread_id)
+                except NoMatches:
+                    pass
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )

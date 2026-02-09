@@ -3,7 +3,6 @@
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 from unittest.mock import patch
 
@@ -17,6 +16,7 @@ from deepagents_cli.model_config import (
     ModelSpec,
     _get_builtin_providers,
     _get_provider_profile_modules,
+    _load_provider_profiles,
     clear_caches,
     get_available_models,
     has_provider_credentials,
@@ -497,21 +497,22 @@ class TestGetAvailableModels:
 
     def test_returns_discovered_models_when_package_installed(self):
         """Returns discovered models when a provider package is installed."""
-        fake_module = ModuleType("fake_profiles")
-        fake_module._PROFILES = {  # type: ignore[attr-defined]
+        fake_profiles = {
             "claude-sonnet-4-5": {"tool_calling": True},
             "claude-haiku-4-5": {"tool_calling": True},
             "claude-instant": {"tool_calling": False},
         }
 
-        def mock_import(name: str) -> ModuleType:
-            if name == "langchain_anthropic.data._profiles":
-                return fake_module
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
             msg = "not installed"
             raise ImportError(msg)
 
-        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
-            mock_importlib.import_module.side_effect = mock_import
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
             models = get_available_models()
 
         assert "anthropic" in models
@@ -523,10 +524,12 @@ class TestGetAvailableModels:
     def test_logs_debug_on_import_error(self, caplog):
         """Logs debug message when provider package is not installed."""
         with (
-            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
             caplog.at_level(logging.DEBUG, logger="deepagents_cli.model_config"),
         ):
-            mock_importlib.import_module.side_effect = ImportError("not installed")
             get_available_models()
 
         assert any(
@@ -546,10 +549,12 @@ models = ["accounts/fireworks/models/llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
         with (
-            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
         ):
-            mock_importlib.import_module.side_effect = ImportError("not installed")
             models = get_available_models()
 
         assert "fireworks" in models
@@ -562,22 +567,23 @@ api_key_env = "FIREWORKS_API_KEY"
 [providers.anthropic]
 models = ["claude-custom-finetune"]
 """)
-        fake_module = ModuleType("fake_profiles")
-        fake_module._PROFILES = {  # type: ignore[attr-defined]
+        fake_profiles = {
             "claude-sonnet-4-5": {"tool_calling": True},
         }
 
-        def mock_import(name: str) -> ModuleType:
-            if name == "langchain_anthropic.data._profiles":
-                return fake_module
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
             msg = "not installed"
             raise ImportError(msg)
 
         with (
-            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
         ):
-            mock_importlib.import_module.side_effect = mock_import
             models = get_available_models()
 
         assert "claude-sonnet-4-5" in models["anthropic"]
@@ -590,22 +596,23 @@ models = ["claude-custom-finetune"]
 [providers.anthropic]
 models = ["claude-sonnet-4-5"]
 """)
-        fake_module = ModuleType("fake_profiles")
-        fake_module._PROFILES = {  # type: ignore[attr-defined]
+        fake_profiles = {
             "claude-sonnet-4-5": {"tool_calling": True},
         }
 
-        def mock_import(name: str) -> ModuleType:
-            if name == "langchain_anthropic.data._profiles":
-                return fake_module
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
             msg = "not installed"
             raise ImportError(msg)
 
         with (
-            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=mock_load,
+            ),
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
         ):
-            mock_importlib.import_module.side_effect = mock_import
             models = get_available_models()
 
         assert models["anthropic"].count("claude-sonnet-4-5") == 1
@@ -618,10 +625,12 @@ models = ["claude-sonnet-4-5"]
 api_key_env = "SOME_KEY"
 """)
         with (
-            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
         ):
-            mock_importlib.import_module.side_effect = ImportError("not installed")
             models = get_available_models()
 
         assert "empty" not in models
@@ -1074,25 +1083,129 @@ class TestGetBuiltinProviders:
                 setattr(base_module, attr, value)
 
 
+class TestLoadProviderProfiles:
+    """Tests for _load_provider_profiles() direct-file loading."""
+
+    def test_loads_profiles_from_file(self, tmp_path):
+        """Loads _PROFILES dict from a standalone .py file."""
+        pkg_dir = tmp_path / "fake_provider"
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text("")
+        data_dir = pkg_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "_profiles.py").write_text(
+            '_PROFILES = {"model-a": {"tool_calling": True}}\n'
+        )
+
+        fake_spec = type(
+            "FakeSpec",
+            (),
+            {
+                "origin": str(pkg_dir / "__init__.py"),
+                "submodule_search_locations": None,
+            },
+        )()
+        with patch("importlib.util.find_spec", return_value=fake_spec):
+            result = _load_provider_profiles("fake_provider.data._profiles")
+
+        assert result == {"model-a": {"tool_calling": True}}
+
+    def test_raises_import_error_when_package_not_found(self):
+        """Raises ImportError when find_spec returns None."""
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            pytest.raises(ImportError, match="not installed"),
+        ):
+            _load_provider_profiles("nonexistent.data._profiles")
+
+    def test_raises_import_error_when_profiles_missing(self, tmp_path):
+        """Raises ImportError when _profiles.py doesn't exist on disk."""
+        pkg_dir = tmp_path / "fake_provider"
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text("")
+        (pkg_dir / "data").mkdir()
+        # No _profiles.py created
+
+        fake_spec = type(
+            "FakeSpec",
+            (),
+            {
+                "origin": str(pkg_dir / "__init__.py"),
+                "submodule_search_locations": None,
+            },
+        )()
+        with (
+            patch("importlib.util.find_spec", return_value=fake_spec),
+            pytest.raises(ImportError, match="not found"),
+        ):
+            _load_provider_profiles("fake_provider.data._profiles")
+
+    def test_returns_empty_dict_when_no_profiles_attr(self, tmp_path):
+        """Returns empty dict when the module has no _PROFILES attribute."""
+        pkg_dir = tmp_path / "fake_provider"
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text("")
+        data_dir = pkg_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "_profiles.py").write_text("# no _PROFILES here\n")
+
+        fake_spec = type(
+            "FakeSpec",
+            (),
+            {
+                "origin": str(pkg_dir / "__init__.py"),
+                "submodule_search_locations": None,
+            },
+        )()
+        with patch("importlib.util.find_spec", return_value=fake_spec):
+            result = _load_provider_profiles("fake_provider.data._profiles")
+
+        assert result == {}
+
+    def test_uses_submodule_search_locations_fallback(self, tmp_path):
+        """Falls back to submodule_search_locations when origin is None."""
+        pkg_dir = tmp_path / "ns_provider"
+        pkg_dir.mkdir()
+        data_dir = pkg_dir / "data"
+        data_dir.mkdir()
+        (data_dir / "_profiles.py").write_text(
+            '_PROFILES = {"ns-model": {"tool_calling": True}}\n'
+        )
+
+        fake_spec = type(
+            "FakeSpec",
+            (),
+            {
+                "origin": None,
+                "submodule_search_locations": [str(pkg_dir)],
+            },
+        )()
+        with patch("importlib.util.find_spec", return_value=fake_spec):
+            result = _load_provider_profiles("ns_provider.data._profiles")
+
+        assert result == {"ns-model": {"tool_calling": True}}
+
+
 class TestGetAvailableModelsTextIO:
     """Tests for text_inputs / text_outputs filtering in get_available_models()."""
 
     def test_excludes_model_without_text_inputs(self):
         """Models with text_inputs=False are excluded."""
-        fake_module = ModuleType("fake_profiles")
-        fake_module._PROFILES = {  # type: ignore[attr-defined]
+        fake_profiles = {
             "good-model": {"tool_calling": True},
             "image-only": {"tool_calling": True, "text_inputs": False},
         }
 
-        def mock_import(name: str) -> ModuleType:
-            if name == "langchain_anthropic.data._profiles":
-                return fake_module
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
             msg = "not installed"
             raise ImportError(msg)
 
-        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
-            mock_importlib.import_module.side_effect = mock_import
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
             models = get_available_models()
 
         assert "good-model" in models["anthropic"]
@@ -1100,20 +1213,21 @@ class TestGetAvailableModelsTextIO:
 
     def test_excludes_model_without_text_outputs(self):
         """Models with text_outputs=False are excluded."""
-        fake_module = ModuleType("fake_profiles")
-        fake_module._PROFILES = {  # type: ignore[attr-defined]
+        fake_profiles = {
             "good-model": {"tool_calling": True},
             "embedding-only": {"tool_calling": True, "text_outputs": False},
         }
 
-        def mock_import(name: str) -> ModuleType:
-            if name == "langchain_anthropic.data._profiles":
-                return fake_module
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
             msg = "not installed"
             raise ImportError(msg)
 
-        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
-            mock_importlib.import_module.side_effect = mock_import
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
             models = get_available_models()
 
         assert "good-model" in models["anthropic"]
@@ -1121,8 +1235,7 @@ class TestGetAvailableModelsTextIO:
 
     def test_includes_model_with_text_io_true(self):
         """Models with explicit text_inputs=True and text_outputs=True pass."""
-        fake_module = ModuleType("fake_profiles")
-        fake_module._PROFILES = {  # type: ignore[attr-defined]
+        fake_profiles = {
             "explicit-true": {
                 "tool_calling": True,
                 "text_inputs": True,
@@ -1130,33 +1243,36 @@ class TestGetAvailableModelsTextIO:
             },
         }
 
-        def mock_import(name: str) -> ModuleType:
-            if name == "langchain_anthropic.data._profiles":
-                return fake_module
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
             msg = "not installed"
             raise ImportError(msg)
 
-        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
-            mock_importlib.import_module.side_effect = mock_import
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
             models = get_available_models()
 
         assert "explicit-true" in models["anthropic"]
 
     def test_includes_model_without_text_io_fields(self):
         """Models missing text_inputs/text_outputs fields default to included."""
-        fake_module = ModuleType("fake_profiles")
-        fake_module._PROFILES = {  # type: ignore[attr-defined]
+        fake_profiles = {
             "no-fields": {"tool_calling": True},
         }
 
-        def mock_import(name: str) -> ModuleType:
-            if name == "langchain_anthropic.data._profiles":
-                return fake_module
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return fake_profiles
             msg = "not installed"
             raise ImportError(msg)
 
-        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
-            mock_importlib.import_module.side_effect = mock_import
+        with patch(
+            "deepagents_cli.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
             models = get_available_models()
 
         assert "no-fields" in models["anthropic"]

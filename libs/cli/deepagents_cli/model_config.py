@@ -6,7 +6,7 @@ structured way to define available models and providers.
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import logging
 import os
 import tomllib
@@ -238,6 +238,60 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
     return result
 
 
+def _load_provider_profiles(module_path: str) -> dict[str, Any]:
+    """Load `_PROFILES` from a provider's data module.
+
+    Locating the package on disk with `importlib.util.find_spec` and load *only*
+    the `_profiles.py` file via `spec_from_file_location`.
+
+    Args:
+        module_path: Dotted module path (e.g., `"langchain_openai.data._profiles"`).
+
+    Returns:
+        The `_PROFILES` dictionary from the module, or an empty dict if
+            the module has no such attribute.
+
+    Raises:
+        ImportError: If the package is not installed or the profile module
+            cannot be found on disk.
+    """
+    parts = module_path.split(".")
+    package_root = parts[0]
+
+    spec = importlib.util.find_spec(package_root)
+    if spec is None:
+        msg = f"Package {package_root} is not installed"
+        raise ImportError(msg)
+
+    # Determine the package directory from the spec.
+    if spec.origin:
+        package_dir = Path(spec.origin).parent
+    elif spec.submodule_search_locations:
+        package_dir = Path(next(iter(spec.submodule_search_locations)))
+    else:
+        msg = f"Cannot determine location for {package_root}"
+        raise ImportError(msg)
+
+    # Build the path to the target file (e.g., data/_profiles.py).
+    relative_parts = parts[1:]  # ["data", "_profiles"]
+    profiles_path = package_dir.joinpath(
+        *relative_parts[:-1], f"{relative_parts[-1]}.py"
+    )
+
+    if not profiles_path.exists():
+        msg = f"Profile module not found: {profiles_path}"
+        raise ImportError(msg)
+
+    file_spec = importlib.util.spec_from_file_location(module_path, profiles_path)
+    if file_spec is None or file_spec.loader is None:
+        msg = f"Could not create module spec for {profiles_path}"
+        raise ImportError(msg)
+
+    module = importlib.util.module_from_spec(file_spec)
+    file_spec.loader.exec_module(module)
+    return getattr(module, "_PROFILES", {})
+
+
 def get_available_models() -> dict[str, list[str]]:
     """Get available models dynamically from installed LangChain provider packages.
 
@@ -262,8 +316,7 @@ def get_available_models() -> dict[str, list[str]]:
 
     for provider, module_path in provider_modules:
         try:
-            module = importlib.import_module(module_path)
-            profiles: dict[str, Any] = getattr(module, "_PROFILES", {})
+            profiles = _load_provider_profiles(module_path)
 
             # Filter to models that support tool calling and text I/O
             models = [

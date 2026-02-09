@@ -23,7 +23,6 @@ version = "0.0.1"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents",
-    "langchain-tests>=1.1.3",
     "runloop-api-client",
 ] 
 

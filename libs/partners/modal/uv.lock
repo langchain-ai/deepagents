@@ -1057,7 +1057,6 @@ version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
-    { name = "langchain-tests" },
     { name = "modal" },
 ]
 
@@ -1077,7 +1076,6 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", editable = "../../deepagents" },
-    { name = "langchain-tests", specifier = ">=1.1.3" },
     { name = "modal" },
 ]
 

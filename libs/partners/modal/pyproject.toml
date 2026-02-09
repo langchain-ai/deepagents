@@ -24,7 +24,6 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents",
     "modal",
-    "langchain-tests>=1.1.3",
 ] 
 
 [tool.hatch.build.targets.wheel]

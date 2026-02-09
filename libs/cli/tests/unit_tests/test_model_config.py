@@ -19,7 +19,6 @@ from deepagents_cli.model_config import (
     _get_provider_profile_modules,
     clear_caches,
     get_available_models,
-    get_default_models,
     has_provider_credentials,
 )
 
@@ -95,18 +94,6 @@ class TestModelSpec:
         """ModelSpec raises on empty model."""
         with pytest.raises(ValueError, match="Model cannot be empty"):
             ModelSpec(provider="openai", model="")
-
-
-class TestGetDefaultModels:
-    """Tests for get_default_models() function."""
-
-    def test_returns_fallback_models(self):
-        """Returns hardcoded fallback model list."""
-        models = get_default_models()
-        assert isinstance(models, dict)
-        assert "anthropic" in models
-        assert "openai" in models
-        assert "google_genai" in models
 
 
 class TestHasProviderCredentials:
@@ -502,16 +489,6 @@ class TestModelPersistenceBetweenSessions:
 
 class TestGetAvailableModels:
     """Tests for get_available_models() function."""
-
-    def test_returns_defaults_when_all_imports_fail(self):
-        """Returns hardcoded defaults when no provider packages are installed."""
-        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
-            mock_importlib.import_module.side_effect = ImportError("not installed")
-            models = get_available_models()
-
-        # Should fall back to get_default_models()
-        defaults = get_default_models()
-        assert models == defaults
 
     def test_returns_discovered_models_when_package_installed(self):
         """Returns discovered models when a provider package is installed."""

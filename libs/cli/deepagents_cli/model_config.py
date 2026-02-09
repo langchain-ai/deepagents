@@ -212,8 +212,7 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
 def get_available_models() -> dict[str, list[str]]:
     """Get available models dynamically from installed LangChain provider packages.
 
-    Attempts to import model profiles from each provider package and extracts
-    model names. Falls back to hardcoded defaults if profiles are unavailable.
+    Imports model profiles from each provider package and extracts model names.
 
     Results are cached after the first call; use `clear_caches()` to reset.
 
@@ -256,10 +255,6 @@ def get_available_models() -> dict[str, list[str]]:
                 module_path,
             )
 
-    # Fall back to hardcoded defaults if no profiles found
-    if not available:
-        available = get_default_models()
-
     # Merge in models from config file (custom providers like ollama, fireworks)
     config = ModelConfig.load()
     for provider_name, provider_config in config.providers.items():
@@ -276,35 +271,6 @@ def get_available_models() -> dict[str, list[str]]:
 
     _available_models_cache = available
     return available
-
-
-def get_default_models() -> dict[str, list[str]]:
-    """Get hardcoded default curated model list.
-
-    This is a curated list of commonly used models that are known to work well
-    with the CLI. Used as fallback when profile data is unavailable.
-
-    Returns:
-        Dictionary mapping provider names to lists of model identifiers.
-    """
-    return {
-        "anthropic": [
-            "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
-        ],
-        "openai": [
-            "gpt-5.2",
-            "gpt-4o",
-            "o3",
-            "o3-mini",
-        ],
-        "google_genai": [
-            "gemini-3-pro-preview",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-        ],
-    }
 
 
 def _is_langchain_supported_provider(provider: str) -> bool:

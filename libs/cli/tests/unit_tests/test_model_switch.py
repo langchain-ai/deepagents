@@ -8,7 +8,7 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.config import settings
-from deepagents_cli.model_config import ModelConfigError
+from deepagents_cli.model_config import ModelConfigError, clear_caches
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -226,6 +226,10 @@ class TestModelSwitchErrorHandling:
 
 class TestModelSwitchConfigProvider:
     """Tests for switching to config-file-defined providers."""
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
 
     @pytest.mark.asyncio
     async def test_switch_to_config_provider_no_whitelist_error(self, tmp_path) -> None:

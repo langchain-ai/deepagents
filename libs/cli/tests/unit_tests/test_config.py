@@ -20,6 +20,7 @@ from deepagents_cli.config import (
     settings,
     validate_model_capabilities,
 )
+from deepagents_cli.model_config import clear_caches
 
 
 class TestProjectRootDetection:
@@ -552,6 +553,10 @@ class TestFetchLangsmithProjectUrl:
 class TestGetProviderKwargsConfigFallback:
     """Tests for _get_provider_kwargs() config-file fallback."""
 
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
     def test_returns_base_url_from_config(self, tmp_path: Path) -> None:
         """Returns base_url from config for non-hardcoded provider."""
         config_path = tmp_path / "config.toml"
@@ -767,6 +772,13 @@ class TestCreateModelFromClass:
 
 class TestCreateModelWithCustomClass:
     """Tests for create_model() using custom class_path from config."""
+
+    def setup_method(self) -> None:
+        """Clear model config cache and reset settings before each test."""
+        clear_caches()
+        settings.model_context_limit = None
+        settings.model_name = None
+        settings.model_provider = None
 
     def test_create_model_uses_class_path(self, tmp_path: Path) -> None:
         """create_model dispatches to custom class when class_path is set."""

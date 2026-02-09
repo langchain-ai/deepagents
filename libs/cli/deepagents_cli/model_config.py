@@ -127,10 +127,10 @@ class ProviderConfig(TypedDict, total=False):
     # Level 2: arbitrary BaseChatModel classes
 
     class_path: str
-    """Fully-qualified Python class in ``module.path:ClassName`` format.
+    """Fully-qualified Python class in `module.path:ClassName` format.
 
-    When set, ``create_model`` imports this class and instantiates it directly
-    instead of calling ``init_chat_model``.
+    When set, `create_model` imports this class and instantiates it directly
+    instead of calling `init_chat_model`.
     """
 
     kwargs: dict[str, Any]
@@ -565,7 +565,7 @@ class ModelConfig:
             provider_name: The provider to look up.
 
         Returns:
-            Class path in ``module.path:ClassName`` format, or None.
+            Class path in `module.path:ClassName` format, or None.
         """
         provider = self.providers.get(provider_name)
         return provider.get("class_path") if provider else None

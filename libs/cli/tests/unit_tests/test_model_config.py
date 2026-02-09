@@ -1,6 +1,7 @@
 """Tests for model_config module."""
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import patch
@@ -15,11 +16,20 @@ from deepagents_cli.model_config import (
     ModelConfigError,
     ModelSpec,
     _get_provider_profile_modules,
+    clear_caches,
     get_available_models,
     get_curated_models,
     get_default_models,
     has_provider_credentials,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_model_caches() -> Iterator[None]:
+    """Clear module-level caches before and after each test."""
+    clear_caches()
+    yield
+    clear_caches()
 
 
 class TestModelSpec:

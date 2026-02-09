@@ -152,6 +152,20 @@ _FALLBACK_PROFILE_MODULES: list[tuple[str, str]] = [
 ]
 """Defensive fallback used if `langchain`'s provider becomes unavailable."""
 
+# Module-level caches — cleared by `clear_caches()`.
+_available_models_cache: dict[str, list[str]] | None = None
+_default_config_cache: ModelConfig | None = None
+
+
+def clear_caches() -> None:
+    """Reset module-level caches so the next call recomputes from scratch.
+
+    Intended for tests and for a hypothetical "refresh models" UI action.
+    """
+    global _available_models_cache, _default_config_cache  # noqa: PLW0603
+    _available_models_cache = None
+    _default_config_cache = None
+
 
 def _get_provider_profile_modules() -> list[tuple[str, str]]:
     """Build a `(provider, profile_module)` list from langchain's provider registry.
@@ -192,10 +206,16 @@ def get_available_models() -> dict[str, list[str]]:
     Attempts to import model profiles from each provider package and extracts
     model names. Falls back to hardcoded defaults if profiles are unavailable.
 
+    Results are cached after the first call; use `clear_caches()` to reset.
+
     Returns:
         Dictionary mapping provider names to lists of model identifiers.
             Only includes providers whose packages are installed.
     """
+    global _available_models_cache  # noqa: PLW0603
+    if _available_models_cache is not None:
+        return _available_models_cache
+
     available: dict[str, list[str]] = {}
 
     # Try to load from langchain provider profile data.
@@ -243,6 +263,7 @@ def get_available_models() -> dict[str, list[str]]:
                 if model not in existing:
                     available[provider_name].append(model)
 
+    _available_models_cache = available
     return available
 
 
@@ -375,6 +396,9 @@ class ModelConfig:
     def load(cls, config_path: Path | None = None) -> ModelConfig:
         """Load config from file.
 
+        When called with the default path, results are cached for the
+        lifetime of the process. Use `clear_caches()` to reset.
+
         Args:
             config_path: Path to config file. Defaults to ~/.deepagents/config.toml.
 
@@ -383,6 +407,11 @@ class ModelConfig:
                 Returns empty config if file is missing, unreadable, or contains
                 invalid TOML syntax.
         """
+        global _default_config_cache  # noqa: PLW0603
+        is_default = config_path is None
+        if is_default and _default_config_cache is not None:
+            return _default_config_cache
+
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
@@ -411,6 +440,9 @@ class ModelConfig:
 
         # Validate config consistency
         config._validate()
+
+        if is_default:
+            _default_config_cache = config
 
         return config
 
@@ -580,4 +612,7 @@ def save_default_model(model_name: str, config_path: Path | None = None) -> bool
         logger.warning("Could not save model preference: %s", e)
         return False
     else:
+        # Invalidate config cache so the next load() picks up the change.
+        global _default_config_cache  # noqa: PLW0603
+        _default_config_cache = None
         return True

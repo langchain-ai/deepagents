@@ -40,6 +40,7 @@ class WelcomeBanner(Static):
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id: str | None = thread_id
         self._project_name: str | None = get_langsmith_project_name()
+        self._project_url: str | None = None
 
         super().__init__(self._build_banner(), **kwargs)
 
@@ -60,7 +61,17 @@ class WelcomeBanner(Static):
         except (TimeoutError, OSError):
             project_url = None
         if project_url:
+            self._project_url = project_url
             self.update(self._build_banner(project_url))
+
+    def update_thread_id(self, thread_id: str) -> None:
+        """Update the displayed thread ID and re-render the banner.
+
+        Args:
+            thread_id: The new thread ID to display.
+        """
+        self._cli_thread_id = thread_id
+        self.update(self._build_banner(self._project_url))
 
     def _build_banner(self, project_url: str | None = None) -> Text:
         """Build the banner rich text.

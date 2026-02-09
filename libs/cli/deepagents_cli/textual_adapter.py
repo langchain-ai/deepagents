@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
-from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +34,8 @@ from deepagents_cli.widgets.messages import (
     DiffMessage,
     ToolCallMessage,
 )
+
+logger = logging.getLogger(__name__)
 
 # Type alias matching HITLResponse["decisions"] element type
 HITLDecision = ApproveDecision | EditDecision | RejectDecision
@@ -194,7 +196,7 @@ def _build_interrupted_ai_message(
 
     # Reconstruct tool_calls from displayed tool messages
     tool_calls = []
-    for tool_id, tool_widget in current_tool_messages.items():
+    for tool_id, tool_widget in list(current_tool_messages.items()):
         tool_calls.append(
             {
                 "id": tool_id,
@@ -421,7 +423,7 @@ async def execute_task_textual(
                             else:
                                 tool_msg.set_error(output_str or "Error")
                             # Clean up - remove from tracking dict after status update
-                            del adapter._current_tool_messages[tool_id]
+                            adapter._current_tool_messages.pop(tool_id, None)
 
                         # Show file operation results - always show diffs in chat
                         if record:
@@ -629,7 +631,7 @@ async def execute_task_textual(
             if interrupt_occurred:
                 any_rejected = False
 
-                for interrupt_id, hitl_request in pending_interrupts.items():
+                for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
 
                     if session_state.auto_approve:
@@ -639,7 +641,7 @@ async def execute_task_textual(
                         ]
                         hitl_response[interrupt_id] = {"decisions": decisions}
                         # Mark all tools as running
-                        for tool_msg in adapter._current_tool_messages.values():
+                        for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
                     else:
                         # Batch approval - one dialog for all parallel tool calls
@@ -662,7 +664,10 @@ async def execute_task_textual(
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_running()
                                 # Mark file ops as approved
                                 for action_request in action_requests:
@@ -680,7 +685,10 @@ async def execute_task_textual(
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_running()
                                 # Mark file ops as approved
                                 for action_request in action_requests:
@@ -698,20 +706,41 @@ async def execute_task_textual(
                                     RejectDecision(type="reject")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in adapter._current_tool_messages.values():
+                                tool_msgs = list(
+                                    adapter._current_tool_messages.values()
+                                )
+                                for tool_msg in tool_msgs:
                                     tool_msg.set_rejected()
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
                             else:
+                                logger.warning(
+                                    "Unexpected HITL decision type: %s",
+                                    decision_type,
+                                )
                                 decisions = [
                                     RejectDecision(type="reject")
                                     for _ in action_requests
                                 ]
+                                for tool_msg in list(
+                                    adapter._current_tool_messages.values()
+                                ):
+                                    tool_msg.set_rejected()
+                                adapter._current_tool_messages.clear()
                                 any_rejected = True
                         else:
+                            logger.warning(
+                                "HITL decision was not a dict: %s",
+                                type(decision).__name__,
+                            )
                             decisions = [
                                 RejectDecision(type="reject") for _ in action_requests
                             ]
+                            for tool_msg in list(
+                                adapter._current_tool_messages.values()
+                            ):
+                                tool_msg.set_rejected()
+                            adapter._current_tool_messages.clear()
                             any_rejected = True
 
                         hitl_response[interrupt_id] = {"decisions": decisions}
@@ -745,8 +774,8 @@ async def execute_task_textual(
         await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
-        # Suppress all errors: state update failures shouldn't prevent cleanup
-        with suppress(Exception):
+        # State update failures shouldn't prevent cleanup
+        try:
             interrupted_msg = _build_interrupted_ai_message(
                 pending_text_by_namespace,
                 adapter._current_tool_messages,
@@ -759,6 +788,8 @@ async def execute_task_textual(
                 "Previous operation was cancelled."
             )
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+        except Exception:
+            logger.debug("Failed to save interrupted state", exc_info=True)
 
         # Mark tools as rejected AFTER saving state
         for tool_msg in list(adapter._current_tool_messages.values()):
@@ -777,7 +808,6 @@ async def execute_task_textual(
 
     except KeyboardInterrupt:
         # Clear active message immediately so it won't block pruning
-        # Clear active message immediately so it won't block pruning
         # If we don't do this, the store still thinks it's actice and protects
         # from pruning, which breaks get_messages_to_prune(), potentially
         # blocking all future pruning
@@ -787,8 +817,8 @@ async def execute_task_textual(
         await adapter._mount_message(AppMessage("Interrupted by user"))
 
         # Save accumulated state before marking tools as rejected (best-effort)
-        # Suppress all errors: state update failures shouldn't prevent cleanup
-        with suppress(Exception):
+        # State update failures shouldn't prevent cleanup
+        try:
             interrupted_msg = _build_interrupted_ai_message(
                 pending_text_by_namespace,
                 adapter._current_tool_messages,
@@ -801,6 +831,8 @@ async def execute_task_textual(
                 "Previous operation was cancelled."
             )
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+        except Exception:
+            logger.debug("Failed to save interrupted state", exc_info=True)
 
         # Mark tools as rejected AFTER saving state
         for tool_msg in list(adapter._current_tool_messages.values()):

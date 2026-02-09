@@ -49,3 +49,27 @@ jobs:
           else
             echo "deepagents-cli versions match: $CLI_PYPROJECT_VERSION"
           fi
+
+  check_sdk_pin:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'ignore-sdk-pin-check') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: "✅ Verify CLI pins latest SDK version"
+        run: |
+          SDK_VERSION=$(grep -Po '(?<=^version = ")[^"]*' libs/deepagents/pyproject.toml)
+          CLI_SDK_PIN=$(grep -Po '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml)
+
+          if [ "$SDK_VERSION" != "$CLI_SDK_PIN" ]; then
+            echo "::error::CLI SDK pin does not match SDK version!"
+            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
+            echo "CLI SDK pin (libs/cli/pyproject.toml): $CLI_SDK_PIN"
+            echo ""
+            echo "Update the deepagents dependency in libs/cli/pyproject.toml to deepagents==$SDK_VERSION"
+            echo "Or add the 'ignore-sdk-pin-check' label to skip this check."
+            exit 1
+          else
+            echo "CLI SDK pin matches SDK version: $SDK_VERSION"
+          fi

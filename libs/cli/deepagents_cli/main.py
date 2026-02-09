@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser = argparse.ArgumentParser(
-        description="Deep Agents - AI Coding Assistant",
+        description=("Deep Agents - AI Coding Assistant"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
     )
@@ -267,6 +267,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Clean output for piping — only the agent's response "
+        "goes to stdout. Requires -n.",
+    )
+
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
         help=(
@@ -316,7 +324,12 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(show_help),
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.quiet and not args.non_interactive_message:
+        parser.error("--quiet requires --non-interactive (-n)")
+
+    return args
 
 
 async def run_textual_cli_async(
@@ -488,6 +501,7 @@ def cli_main() -> None:
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
+                    quiet=args.quiet,
                 )
             )
             sys.exit(exit_code)

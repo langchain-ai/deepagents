@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
     from textual.scrollbar import ScrollUp
+    from textual.widget import Widget
     from textual.worker import Worker
 
 logger = logging.getLogger(__name__)
@@ -633,6 +634,57 @@ class DeepAgentsApp(App):
         added_height = hydrated_count * estimated_height_per_message
         chat.scroll_y = old_scroll_y + added_height
 
+    async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
+        """Mount a widget in the messages container, before any queued widgets.
+
+        Queued-message widgets must stay at the bottom of the container so
+        they remain visually anchored below the current agent response.
+        This helper inserts `widget` just before the first queued widget,
+        or appends at the end when the queue is empty.
+
+        Args:
+            container: The `#messages` container to mount into.
+            widget: The widget to mount.
+        """
+        first_queued = self._queued_widgets[0] if self._queued_widgets else None
+        if first_queued is not None and first_queued.parent is container:
+            try:
+                await container.mount(widget, before=first_queued)
+            except Exception:
+                logger.warning(
+                    "Stale queued-widget reference; appending at end",
+                    exc_info=True,
+                )
+            else:
+                return
+        await container.mount(widget)
+
+    def _is_spinner_at_correct_position(self, container: Container) -> bool:
+        """Check whether the loading spinner is already correctly positioned.
+
+        The spinner should be immediately before the first queued widget, or
+        at the very end of the container when the queue is empty.
+
+        Args:
+            container: The `#messages` container.
+
+        Returns:
+            `True` if the spinner is already in the correct position.
+        """
+        children = list(container.children)
+        if not children or self._loading_widget not in children:
+            return False
+
+        if self._queued_widgets:
+            first_queued = self._queued_widgets[0]
+            if first_queued not in children:
+                return False
+            return children.index(self._loading_widget) == (
+                children.index(first_queued) - 1
+            )
+
+        return children[-1] == self._loading_widget
+
     async def _set_spinner(self, status: str | None) -> None:
         """Show, update, or hide the loading spinner.
 
@@ -652,15 +704,14 @@ class DeepAgentsApp(App):
         if self._loading_widget is None:
             # Create new
             self._loading_widget = LoadingWidget(status)
-            await messages.mount(self._loading_widget)
+            await self._mount_before_queued(messages, self._loading_widget)
         else:
             # Update existing
             self._loading_widget.set_status(status)
-            # Reposition if not at the end (e.g., after tool message was added)
-            children = list(messages.children)
-            if children and children[-1] != self._loading_widget:
+            # Reposition if not already at the correct location
+            if not self._is_spinner_at_correct_position(messages):
                 await self._loading_widget.remove()
-                await messages.mount(self._loading_widget)
+                await self._mount_before_queued(messages, self._loading_widget)
         # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
         # and drag user back to bottom if they've scrolled away during streaming
 
@@ -739,7 +790,7 @@ class DeepAgentsApp(App):
                         auto_msg = AppMessage(
                             f"✓ Auto-approved shell command (allow-list): {command}"
                         )
-                        await messages.mount(auto_msg)
+                        await self._mount_before_queued(messages, auto_msg)
                     self._scroll_chat_to_bottom()
                 except NoMatches:
                     # Cosmetic only: approval already granted via result_future.
@@ -767,7 +818,7 @@ class DeepAgentsApp(App):
         # Mount approval inline in messages area (not replacing ChatInput)
         try:
             messages = self.query_one("#messages", Container)
-            await messages.mount(menu)
+            await self._mount_before_queued(messages, menu)
             # Scroll to make approval visible (but don't re-anchor)
             self.call_after_refresh(menu.scroll_visible)
             # Focus approval menu
@@ -1252,8 +1303,12 @@ class DeepAgentsApp(App):
         message_data = MessageData.from_widget(widget)
         self._message_store.append(message_data)
 
-        # Mount the widget
-        await messages.mount(widget)
+        # Queued-message widgets must always stay at the bottom so they
+        # remain visually anchored below the current agent response.
+        if isinstance(widget, QueuedUserMessage):
+            await messages.mount(widget)
+        else:
+            await self._mount_before_queued(messages, widget)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()
@@ -1348,6 +1403,8 @@ class DeepAgentsApp(App):
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
             self._queued_widgets.clear()
             self._agent_worker.cancel()
             self._quit_pending = False
@@ -1379,6 +1436,8 @@ class DeepAgentsApp(App):
         # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
             self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
             self._queued_widgets.clear()
             self._agent_worker.cancel()
             return

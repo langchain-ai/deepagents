@@ -462,10 +462,6 @@ def cli_main() -> None:
 
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
-        # Show current working directory on startup
-        if not args.quiet and args.command != "help":
-            print(f"Working directory: {os.getcwd()}", file=sys.stderr)
-
         if args.command == "help":
             show_help()
         elif args.command == "list":

@@ -121,6 +121,7 @@ class StatusBar(Horizontal):
             id="auto-approve-indicator",
         )
         yield Static("", classes="status-message", id="status-message")
+        yield Static("", classes="status-cwd", id="cwd-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield Static(
             settings.model_name or "", classes="status-model", id="model-display"

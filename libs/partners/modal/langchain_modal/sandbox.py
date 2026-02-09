@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-import time
-from typing import Any
 
-import modal
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
@@ -14,6 +11,8 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
 )
 from deepagents.backends.sandbox import BaseSandbox
+
+import modal
 
 
 class ModalSandbox(BaseSandbox):

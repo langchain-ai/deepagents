@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.18"
+version = "0.0.19"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
   # Framework
-  "deepagents==0.3.10",
+  "deepagents==0.3.12",
   "langchain>=1.2.7,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
   "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -78,9 +78,9 @@ test = [
     "build>=1.0.0,<2.0.0",
     "ruff>=0.14.0,<1.0.0",
     "ty>=0.0.1,<1.0.0",
-    "pytest>=8.3.4,<9.0.0",
-    "pytest-asyncio>=0.25.3,<1.0.0",
-    "pytest-cov>=6.0.0,<7.0.0",
+    "pytest>=8.3.4,<10.0.0",
+    "pytest-asyncio>=0.25.3,<2.0.0",
+    "pytest-cov>=6.0.0,<8.0.0",
     "pytest-mock>=3.14.0,<4.0.0",
     "pytest-socket>=0.7.0,<1.0.0",
     "pytest-timeout>=2.3.1,<3.0.0",
@@ -124,7 +124,6 @@ ignore = [
     "PLR09",   # Too many something (args, branches, returns, statements, etc)
     "PLR1702", # Too many nested blocks
     "SLF001",  # Private member access
-    "PLC0415", # Imports should be at the top. Not always desirable
     "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
     "TD002",   # Missing author in TODO
     "TD003",   # Missing issue link in TODO
@@ -148,6 +147,7 @@ ignore-var-parameters = true
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN001", "ANN201", "D1", "DOC", "F401", "PLC1901", "PLC2701", "PLR2004", "PLR6201", "PLR6301", "PLW0108", "RUF001", "S", "SLF"]
+"tests/unit_tests/test_imports.py" = ["PLC0415"]  # Imports inside function ARE the test
 "scripts/**" = ["BLE001", "INP", "S", "T201"]
 "deepagents_cli/agent.py" = [
     "PLR2004",  # Magic value used in comparison
@@ -158,17 +158,23 @@ ignore-var-parameters = true
     "ARG002",   # Unused method argument
     "ASYNC110", # Use `asyncio.Event` instead of busy-waiting
     "BLE001",   # Do not catch blind exception
+    "PLC0415",  # Lazy import for startup performance and optional deps
     "PLR2004",  # Magic value used in comparison
     "SIM108",   # Use ternary operator instead of if-else
+]
+"deepagents_cli/backends.py" = [
+    "PLC0415",  # Lazy import for monkey-patching at runtime
 ]
 "deepagents_cli/cli.py" = [
     "T201",     # `print` found
 ]
 "deepagents_cli/clipboard.py" = [
     "BLE001",   # Do not catch blind exception
+    "PLC0415",  # Lazy import for optional dependency (pyperclip)
 ]
 "deepagents_cli/config.py" = [
     "ERA001",   # Found commented-out code
+    "PLC0415",  # Conditional imports for model providers
     "PLR2004",  # Magic value used in comparison
 ]
 "deepagents_cli/file_ops.py" = [
@@ -181,6 +187,15 @@ ignore-var-parameters = true
 "deepagents_cli/input.py" = [
     "BLE001",   # Do not catch blind exception
     "PLR6301",  # Method could be a function or static method
+]
+"deepagents_cli/integrations/daytona.py" = [
+    "PLC0415",  # Lazy import for optional dependency (daytona)
+]
+"deepagents_cli/integrations/langsmith.py" = [
+    "PLC0415",  # Lazy import for optional dependency (langsmith)
+]
+"deepagents_cli/integrations/modal.py" = [
+    "PLC0415",  # Lazy import for optional dependency (modal)
 ]
 "deepagents_cli/integrations/runloop.py" = [
     "B904",     # Within an `except` clause, raise exceptions with `raise ... from err`
@@ -253,10 +268,12 @@ ignore-var-parameters = true
 ]
 "deepagents_cli/main.py" = [
     "BLE001",   # Do not catch blind exception
+    "PLC0415",  # Lazy import to avoid circular dependency
     "T201",     # `print` found
 ]
 "examples/skills/arxiv-search/arxiv_search.py" = [
     "BLE001",   # Do not catch blind exception
+    "PLC0415",  # Lazy import for optional dependency (arxiv)
     "TRY300",   # Consider moving this statement to an `else` block
 ]
 "examples/skills/skill-creator/scripts/init_skill.py" = [
@@ -269,6 +286,22 @@ ignore-var-parameters = true
 "examples/skills/skill-creator/scripts/quick_validate.py" = [
     "ANN001",   # Missing type annotation for function argument
     "ANN201",   # Missing return type annotation for public function
+    "N806",     # Variable in function should be lowercase
+    "PLR2004",  # Magic value used in comparison
+    "T201",     # `print` found
+]
+"deepagents_cli/built_in_skills/skill-creator/scripts/init_skill.py" = [
+    "ANN001",   # Missing type annotation for function argument
+    "ANN201",   # Missing return type annotation for public function
+    "BLE001",   # Do not catch blind exception
+    "INP001",   # Implicit namespace package
+    "PLR2004",  # Magic value used in comparison
+    "T201",     # `print` found
+]
+"deepagents_cli/built_in_skills/skill-creator/scripts/quick_validate.py" = [
+    "ANN001",   # Missing type annotation for function argument
+    "ANN201",   # Missing return type annotation for public function
+    "INP001",   # Implicit namespace package
     "N806",     # Variable in function should be lowercase
     "PLR2004",  # Magic value used in comparison
     "T201",     # `print` found

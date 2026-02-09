@@ -310,18 +310,42 @@ def get_curated_models() -> dict[str, list[str]]:
     }
 
 
+def _is_langchain_supported_provider(provider: str) -> bool:
+    """Check if a provider is in langchain's `_SUPPORTED_PROVIDERS` registry.
+
+    Args:
+        provider: Provider name to check.
+
+    Returns:
+        True if the provider is known to `init_chat_model`.
+    """
+    try:
+        from langchain.chat_models.base import (  # noqa: PLC0415
+            _SUPPORTED_PROVIDERS,  # noqa: PLC2701
+        )
+    except (ImportError, AttributeError):
+        return False
+    return provider in _SUPPORTED_PROVIDERS
+
+
 def has_provider_credentials(provider: str) -> bool:
     """Check if credentials are available for a provider.
 
-    First checks the hardcoded `PROVIDER_API_KEY_ENV` mapping, then falls back
-    to `ModelConfig` for config-file-defined providers (e.g., ollama, fireworks).
+    Checks in order:
+
+    1. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
+    2. Config-file providers (`config.toml`).
+    3. Langchain's `_SUPPORTED_PROVIDERS` registry — if the provider is known
+        to `init_chat_model`, assume credentials are satisfied and let the
+        provider itself report auth failures at model-creation time.
 
     Args:
         provider: Provider name.
 
     Returns:
-        True if the required environment variable is set, or the provider is
-        defined in config with no key requirement.
+        True if the required environment variable is set, the provider is
+        defined in config with no key requirement, or the provider is known
+        to `langchain`.
     """
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
@@ -329,7 +353,12 @@ def has_provider_credentials(provider: str) -> bool:
 
     # Fall back to config-file providers
     config = ModelConfig.load()
-    return config.has_credentials(provider)
+    if config.providers.get(provider):
+        return config.has_credentials(provider)
+
+    # If langchain knows this provider, let it through — the provider
+    # will raise its own auth error if a key is actually needed.
+    return _is_langchain_supported_provider(provider)
 
 
 @dataclass

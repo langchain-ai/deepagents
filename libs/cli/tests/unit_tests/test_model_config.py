@@ -704,8 +704,19 @@ api_key_env = "FIREWORKS_API_KEY"
             assert has_provider_credentials("fireworks") is False
 
     def test_returns_false_for_totally_unknown_provider(self):
-        """Returns False for provider not in hardcoded map or config."""
+        """Returns False for provider not in hardcoded map, config, or langchain."""
         assert has_provider_credentials("nonexistent_provider_xyz") is False
+
+    def test_returns_true_for_langchain_known_provider(self):
+        """Returns True for a provider known to langchain but not in config."""
+        fake_registry = {
+            "ollama": ("langchain_ollama", "ChatOllama", None),
+        }
+        fake_module = ModuleType("fake_base")
+        fake_module._SUPPORTED_PROVIDERS = fake_registry  # type: ignore[attr-defined]
+
+        with patch.dict("sys.modules", {"langchain.chat_models.base": fake_module}):
+            assert has_provider_credentials("ollama") is True
 
 
 class TestModelConfigGetClassPath:

@@ -13,18 +13,14 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
-    SandboxProvider,
-)
+from deepagents.backends.sandbox import BaseSandbox
 
 if TYPE_CHECKING:
     from daytona import Sandbox
 
 
-class DaytonaBackend(BaseSandbox):
-    """Daytona backend implementation conforming to SandboxBackendProtocol.
+class DaytonaSandbox(BaseSandbox):
+    """Daytona sandbox implementation conforming to SandboxBackendProtocol.
 
     This implementation inherits all file operation methods from BaseSandbox
     and only implements the execute() method using Daytona's API.
@@ -55,74 +51,132 @@ class DaytonaBackend(BaseSandbox):
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files from the sandbox."""
-        download_requests = [FileDownloadRequest(source=path) for path in paths]
+        download_requests: list[FileDownloadRequest] = []
+        download_paths: list[str] = []
+        responses: list[FileDownloadResponse] = []
+
+        for path in paths:
+            if not path.startswith("/"):
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="invalid_path")
+                )
+                continue
+            download_paths.append(path)
+            download_requests.append(FileDownloadRequest(source=path))
+            responses.append(FileDownloadResponse(path=path, content=None, error=None))
+
+        if not download_requests:
+            return responses
+
         daytona_responses = self._sandbox.fs.download_files(download_requests)
 
-        return [
-            FileDownloadResponse(
-                path=resp.source,
-                content=resp.result,
-                error=None,
+        mapped_responses: list[FileDownloadResponse] = []
+        for resp in daytona_responses:
+            content = resp.result
+            if content is None:
+                mapped_responses.append(
+                    FileDownloadResponse(
+                        path=resp.source,
+                        content=None,
+                        error="file_not_found",
+                    )
+                )
+            else:
+                mapped_responses.append(
+                    FileDownloadResponse(
+                        path=resp.source,
+                        content=content,
+                        error=None,
+                    )
+                )
+
+        mapped_iter = iter(mapped_responses)
+        for i, path in enumerate(paths):
+            if not path.startswith("/"):
+                continue
+            responses[i] = next(
+                mapped_iter,
+                FileDownloadResponse(path=path, content=None, error="file_not_found"),
             )
-            for resp in daytona_responses
-        ]
+
+        return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload files into the sandbox."""
-        upload_requests = [
-            FileUpload(source=content, destination=path) for path, content in files
-        ]
-        self._sandbox.fs.upload_files(upload_requests)
+        upload_requests: list[FileUpload] = []
+        responses: list[FileUploadResponse] = []
 
-        return [FileUploadResponse(path=path, error=None) for path, _ in files]
+        for path, content in files:
+            if not path.startswith("/"):
+                responses.append(FileUploadResponse(path=path, error="invalid_path"))
+                continue
+            upload_requests.append(FileUpload(source=content, destination=path))
+            responses.append(FileUploadResponse(path=path, error=None))
+
+        if upload_requests:
+            self._sandbox.fs.upload_files(upload_requests)
+
+        return responses
 
 
-class DaytonaProvider(SandboxProvider[dict[str, Any]]):
+DaytonaBackend = DaytonaSandbox
+
+
+class DaytonaSandboxClient:
     """Daytona sandbox provider implementation."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(
+        self, *, api_key: str | None = None, client: Daytona | None = None
+    ) -> None:
         """Create a provider backed by the Daytona SDK."""
-        self._api_key = api_key or os.environ.get("DAYTONA_API_KEY")
-        if not self._api_key:
-            msg = "DAYTONA_API_KEY environment variable not set"
+        if api_key and client:
+            msg = "Provide either api_key or client, not both."
             raise ValueError(msg)
-        self._client = Daytona(DaytonaConfig(api_key=self._api_key))
 
-    def list(
+        if client is not None:
+            self._client = client
+            return
+
+        api_key = api_key or os.environ.get("DAYTONA_API_KEY")
+        if not api_key:
+            msg = "Provide either client or api_key (or set DAYTONA_API_KEY)."
+            raise ValueError(msg)
+
+        self._client = Daytona(DaytonaConfig(api_key=api_key))
+
+    @property
+    def client(self) -> Daytona:
+        """Expose the underlying Daytona client instance."""
+        return self._client
+
+    def get(
         self,
         *,
-        cursor: str | None = None,
+        sandbox_id: str,
         **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List sandboxes (not yet implemented for Daytona SDK)."""
-        if cursor is not None:
-            msg = "DaytonaProvider.list() does not support cursor"
-            raise ValueError(msg)
+    ) -> SandboxBackendProtocol:
+        """Get an existing Daytona sandbox."""
         if kwargs:
             keys = sorted(kwargs.keys())
-            msg = f"DaytonaProvider.list() got unsupported kwargs: {keys}"
+            msg = f"DaytonaProvider.get() got unsupported kwargs: {keys}"
             raise ValueError(msg)
-        msg = "Listing with Daytona SDK not yet implemented"
-        raise NotImplementedError(msg)
+        try:
+            sandbox = self._client.get(sandbox_id)
+        except Exception as e:
+            raise ValueError(sandbox_id) from e
+        return DaytonaSandbox(sandbox)
 
-    def get_or_create(
+    def create(
         self,
         *,
-        sandbox_id: str | None = None,
         timeout: int = 180,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
-        """Create a new sandbox and wait until it's ready."""
+        """Create a new Daytona sandbox."""
         if kwargs:
             keys = sorted(kwargs.keys())
-            msg = f"DaytonaProvider.get_or_create() got unsupported kwargs: {keys}"
+            msg = f"DaytonaProvider.create() got unsupported kwargs: {keys}"
             raise ValueError(msg)
-        if sandbox_id:
-            msg = (
-                "Connecting to existing Daytona sandbox by ID not yet supported. "
-                "Create a new sandbox by omitting sandbox_id parameter."
-            )
-            raise NotImplementedError(msg)
 
         sandbox = self._client.create()
 
@@ -143,7 +197,19 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
                 msg = f"Daytona sandbox failed to start within {timeout} seconds"
                 raise RuntimeError(msg)
 
-        return DaytonaBackend(sandbox)
+        return DaytonaSandbox(sandbox)
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Deprecated: use get() or create()."""
+        if sandbox_id is None:
+            return self.create(timeout=timeout, **kwargs)
+        return self.get(sandbox_id=sandbox_id, **kwargs)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:
         """Delete a sandbox by id."""
@@ -151,5 +217,11 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             keys = sorted(kwargs.keys())
             msg = f"DaytonaProvider.delete() got unsupported kwargs: {keys}"
             raise ValueError(msg)
-        sandbox = self._client.get(sandbox_id)
-        self._client.delete(sandbox)
+        try:
+            sandbox = self._client.get(sandbox_id)
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            self._client.delete(sandbox)
+        except Exception:  # noqa: BLE001
+            return

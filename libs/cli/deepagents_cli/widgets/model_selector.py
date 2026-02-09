@@ -413,14 +413,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         await self._options_container.mount(*all_widgets)
 
-        # Scroll the selected item into view
+        # Scroll the selected item into view without animation so the list
+        # appears already scrolled to the current model on first paint.
         if selected_widget:
             if self._selected_index == 0:
                 # First item: scroll to top so header is visible
                 scroll_container = self.query_one(".model-list", VerticalScroll)
                 scroll_container.scroll_home(animate=False)
             else:
-                selected_widget.scroll_visible()
+                selected_widget.scroll_visible(animate=False)
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected widgets.

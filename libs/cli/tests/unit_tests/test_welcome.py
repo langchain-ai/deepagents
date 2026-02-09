@@ -151,10 +151,13 @@ class TestUpdateThreadId:
         widget = _make_banner(thread_id="old_id")
         widget._project_url = project_url
 
-        with patch.object(widget, "update"):
+        with patch.object(widget, "update") as mock_update:
             widget.update_thread_id("new_id")
 
-        banner = widget._build_banner(project_url)
+        # Verify update_thread_id passed the correct banner to Static.update
+        mock_update.assert_called_once()
+        banner = mock_update.call_args[0][0]
+        assert "Thread: new_id" in banner.plain
         thread_start = banner.plain.index("new_id")
         thread_end = thread_start + len("new_id")
         links = _extract_links(banner, thread_start, thread_end)

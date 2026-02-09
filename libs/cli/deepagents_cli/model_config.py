@@ -149,13 +149,6 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
 """Mapping of provider names to their API key environment variables."""
 
 
-_FALLBACK_PROFILE_MODULES: list[tuple[str, str]] = [
-    ("anthropic", "langchain_anthropic.data._profiles"),
-    ("openai", "langchain_openai.data._profiles"),
-    ("google_genai", "langchain_google_genai.data._profiles"),
-]
-"""Defensive fallback used if `langchain`'s provider becomes unavailable."""
-
 # Module-level caches — cleared by `clear_caches()`.
 _available_models_cache: dict[str, list[str]] | None = None
 _default_config_cache: ModelConfig | None = None
@@ -171,29 +164,41 @@ def clear_caches() -> None:
     _default_config_cache = None
 
 
+def _get_builtin_providers() -> dict[str, Any]:
+    """Return langchain's built-in provider registry.
+
+    Tries the newer `_BUILTIN_PROVIDERS` name first, then falls back to
+    the legacy `_SUPPORTED_PROVIDERS` for older langchain versions.
+
+    Returns:
+        The provider registry dict from `langchain.chat_models.base`.
+    """
+    from langchain.chat_models import base  # noqa: PLC0415
+
+    registry: dict[str, Any] | None = getattr(base, "_BUILTIN_PROVIDERS", None)
+    if registry is None:
+        registry = getattr(base, "_SUPPORTED_PROVIDERS", None)
+    if registry is None:
+        return {}
+    return registry
+
+
 def _get_provider_profile_modules() -> list[tuple[str, str]]:
     """Build a `(provider, profile_module)` list from langchain's provider registry.
 
-    Reads `_SUPPORTED_PROVIDERS` from `langchain.chat_models.base` to
-    discover every provider that `init_chat_model` knows about, then derives
-    the `<package>.data._profiles` module path for each.  Falls back to
-    `_FALLBACK_PROFILE_MODULES` if the import fails (e.g. older langchain
-    version or langchain not installed).
+    Reads the built-in provider registry from `langchain.chat_models.base`
+    to discover every provider that `init_chat_model` knows about, then derives
+    the `<package>.data._profiles` module path for each.
 
     Returns:
         List of `(provider_name, profile_module_path)` tuples.
     """
-    try:
-        from langchain.chat_models.base import (  # noqa: PLC0415
-            _SUPPORTED_PROVIDERS,  # noqa: PLC2701
-        )
-    except (ImportError, AttributeError):
-        return list(_FALLBACK_PROFILE_MODULES)
+    providers = _get_builtin_providers()
 
     result: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    for provider_name, (module_path, *_rest) in _SUPPORTED_PROVIDERS.items():
+    for provider_name, (module_path, *_rest) in providers.items():
         package_root = module_path.split(".", maxsplit=1)[0]
         profile_module = f"{package_root}.data._profiles"
         key = (provider_name, profile_module)
@@ -232,11 +237,13 @@ def get_available_models() -> dict[str, list[str]]:
             module = importlib.import_module(module_path)
             profiles: dict[str, Any] = getattr(module, "_PROFILES", {})
 
-            # Filter to models that support tool calling (required for agents)
+            # Filter to models that support tool calling and text I/O
             models = [
                 name
                 for name, profile in profiles.items()
                 if profile.get("tool_calling", False)
+                and profile.get("text_inputs", True) is not False
+                and profile.get("text_outputs", True) is not False
             ]
 
             # Sort by model name for consistent display
@@ -301,7 +308,7 @@ def get_default_models() -> dict[str, list[str]]:
 
 
 def _is_langchain_supported_provider(provider: str) -> bool:
-    """Check if a provider is in langchain's `_SUPPORTED_PROVIDERS` registry.
+    """Check if a provider is in langchain's built-in provider registry.
 
     Args:
         provider: Provider name to check.
@@ -309,13 +316,7 @@ def _is_langchain_supported_provider(provider: str) -> bool:
     Returns:
         True if the provider is known to `init_chat_model`.
     """
-    try:
-        from langchain.chat_models.base import (  # noqa: PLC0415
-            _SUPPORTED_PROVIDERS,  # noqa: PLC2701
-        )
-    except (ImportError, AttributeError):
-        return False
-    return provider in _SUPPORTED_PROVIDERS
+    return provider in _get_builtin_providers()
 
 
 def has_provider_credentials(provider: str) -> bool:

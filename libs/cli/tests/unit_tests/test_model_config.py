@@ -4,17 +4,18 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from deepagents_cli import model_config
 from deepagents_cli.model_config import (
-    _FALLBACK_PROFILE_MODULES,
     PROVIDER_API_KEY_ENV,
     ModelConfig,
     ModelConfigError,
     ModelSpec,
+    _get_builtin_providers,
     _get_provider_profile_modules,
     clear_caches,
     get_available_models,
@@ -694,10 +695,10 @@ api_key_env = "FIREWORKS_API_KEY"
         fake_registry = {
             "ollama": ("langchain_ollama", "ChatOllama", None),
         }
-        fake_module = ModuleType("fake_base")
-        fake_module._SUPPORTED_PROVIDERS = fake_registry  # type: ignore[attr-defined]
-
-        with patch.dict("sys.modules", {"langchain.chat_models.base": fake_module}):
+        with patch(
+            "deepagents_cli.model_config._get_builtin_providers",
+            return_value=fake_registry,
+        ):
             assert has_provider_credentials("ollama") is True
 
 
@@ -816,25 +817,18 @@ models = ["my-model"]
 class TestGetProviderProfileModules:
     """Tests for _get_provider_profile_modules()."""
 
-    def test_returns_fallback_when_langchain_unavailable(self):
-        """Returns hardcoded fallback when langchain registry can't be imported."""
-        with patch.dict("sys.modules", {"langchain.chat_models.base": None}):
-            result = _get_provider_profile_modules()
-
-        assert result == _FALLBACK_PROFILE_MODULES
-
-    def test_builds_from_supported_providers(self):
-        """Derives profile module paths from _SUPPORTED_PROVIDERS registry."""
+    def test_builds_from_builtin_providers(self):
+        """Derives profile module paths from _BUILTIN_PROVIDERS registry."""
         fake_registry = {
             "anthropic": ("langchain_anthropic", "ChatAnthropic", None),
             "openai": ("langchain_openai", "ChatOpenAI", None),
             "ollama": ("langchain_ollama", "ChatOllama", None),
             "fireworks": ("langchain_fireworks", "ChatFireworks", None),
         }
-        fake_module = ModuleType("fake_base")
-        fake_module._SUPPORTED_PROVIDERS = fake_registry  # type: ignore[attr-defined]
-
-        with patch.dict("sys.modules", {"langchain.chat_models.base": fake_module}):
+        with patch(
+            "deepagents_cli.model_config._get_builtin_providers",
+            return_value=fake_registry,
+        ):
             result = _get_provider_profile_modules()
 
         assert ("anthropic", "langchain_anthropic.data._profiles") in result
@@ -852,15 +846,160 @@ class TestGetProviderProfileModules:
                 None,
             ),
         }
-        fake_module = ModuleType("fake_base")
-        fake_module._SUPPORTED_PROVIDERS = fake_registry  # type: ignore[attr-defined]
-
-        with patch.dict("sys.modules", {"langchain.chat_models.base": fake_module}):
+        with patch(
+            "deepagents_cli.model_config._get_builtin_providers",
+            return_value=fake_registry,
+        ):
             result = _get_provider_profile_modules()
 
         assert result == [
             ("google_anthropic_vertex", "langchain_google_vertexai.data._profiles"),
         ]
+
+
+class TestGetBuiltinProviders:
+    """Tests for _get_builtin_providers() forward-compat helper."""
+
+    def test_prefers_builtin_providers(self):
+        """Uses _BUILTIN_PROVIDERS when both attributes exist."""
+        import langchain.chat_models.base as base_module
+
+        builtin = {"anthropic": ("langchain_anthropic", "ChatAnthropic", None)}
+        legacy = {"openai": ("langchain_openai", "ChatOpenAI", None)}
+
+        with (
+            patch.object(base_module, "_BUILTIN_PROVIDERS", builtin, create=True),
+            patch.object(base_module, "_SUPPORTED_PROVIDERS", legacy, create=True),
+        ):
+            result = _get_builtin_providers()
+
+        assert result is builtin
+
+    def test_falls_back_to_supported_providers(self):
+        """Falls back to _SUPPORTED_PROVIDERS when _BUILTIN_PROVIDERS is absent."""
+        import langchain.chat_models.base as base_module
+
+        legacy = {"openai": ("langchain_openai", "ChatOpenAI", None)}
+
+        # Delete _BUILTIN_PROVIDERS if it exists so fallback is exercised
+        had_builtin = hasattr(base_module, "_BUILTIN_PROVIDERS")
+        if had_builtin:
+            saved = base_module._BUILTIN_PROVIDERS  # type: ignore[attr-defined]
+            delattr(base_module, "_BUILTIN_PROVIDERS")
+
+        try:
+            with patch.object(base_module, "_SUPPORTED_PROVIDERS", legacy, create=True):
+                result = _get_builtin_providers()
+            assert result is legacy
+        finally:
+            if had_builtin:
+                base_module._BUILTIN_PROVIDERS = saved  # type: ignore[attr-defined]
+
+    def test_returns_empty_when_neither_exists(self):
+        """Returns empty dict when neither attribute exists."""
+        import langchain.chat_models.base as base_module
+
+        # Temporarily remove both attributes
+        saved_attrs: dict[str, Any] = {}
+        for attr in ("_BUILTIN_PROVIDERS", "_SUPPORTED_PROVIDERS"):
+            if hasattr(base_module, attr):
+                saved_attrs[attr] = getattr(base_module, attr)
+                delattr(base_module, attr)
+
+        try:
+            result = _get_builtin_providers()
+            assert result == {}
+        finally:
+            for attr, value in saved_attrs.items():
+                setattr(base_module, attr, value)
+
+
+class TestGetAvailableModelsTextIO:
+    """Tests for text_inputs / text_outputs filtering in get_available_models()."""
+
+    def test_excludes_model_without_text_inputs(self):
+        """Models with text_inputs=False are excluded."""
+        fake_module = ModuleType("fake_profiles")
+        fake_module._PROFILES = {  # type: ignore[attr-defined]
+            "good-model": {"tool_calling": True},
+            "image-only": {"tool_calling": True, "text_inputs": False},
+        }
+
+        def mock_import(name: str) -> ModuleType:
+            if name == "langchain_anthropic.data._profiles":
+                return fake_module
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
+            mock_importlib.import_module.side_effect = mock_import
+            models = get_available_models()
+
+        assert "good-model" in models["anthropic"]
+        assert "image-only" not in models["anthropic"]
+
+    def test_excludes_model_without_text_outputs(self):
+        """Models with text_outputs=False are excluded."""
+        fake_module = ModuleType("fake_profiles")
+        fake_module._PROFILES = {  # type: ignore[attr-defined]
+            "good-model": {"tool_calling": True},
+            "embedding-only": {"tool_calling": True, "text_outputs": False},
+        }
+
+        def mock_import(name: str) -> ModuleType:
+            if name == "langchain_anthropic.data._profiles":
+                return fake_module
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
+            mock_importlib.import_module.side_effect = mock_import
+            models = get_available_models()
+
+        assert "good-model" in models["anthropic"]
+        assert "embedding-only" not in models["anthropic"]
+
+    def test_includes_model_with_text_io_true(self):
+        """Models with explicit text_inputs=True and text_outputs=True pass."""
+        fake_module = ModuleType("fake_profiles")
+        fake_module._PROFILES = {  # type: ignore[attr-defined]
+            "explicit-true": {
+                "tool_calling": True,
+                "text_inputs": True,
+                "text_outputs": True,
+            },
+        }
+
+        def mock_import(name: str) -> ModuleType:
+            if name == "langchain_anthropic.data._profiles":
+                return fake_module
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
+            mock_importlib.import_module.side_effect = mock_import
+            models = get_available_models()
+
+        assert "explicit-true" in models["anthropic"]
+
+    def test_includes_model_without_text_io_fields(self):
+        """Models missing text_inputs/text_outputs fields default to included."""
+        fake_module = ModuleType("fake_profiles")
+        fake_module._PROFILES = {  # type: ignore[attr-defined]
+            "no-fields": {"tool_calling": True},
+        }
+
+        def mock_import(name: str) -> ModuleType:
+            if name == "langchain_anthropic.data._profiles":
+                return fake_module
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
+            mock_importlib.import_module.side_effect = mock_import
+            models = get_available_models()
+
+        assert "no-fields" in models["anthropic"]
 
 
 class TestModelConfigError:

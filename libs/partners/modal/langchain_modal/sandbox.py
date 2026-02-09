@@ -16,7 +16,7 @@ from deepagents.backends.sandbox import BaseSandbox
 class ModalSandbox(BaseSandbox):
     """Modal sandbox implementation conforming to SandboxBackendProtocol."""
 
-    def __init__(self, sandbox: modal.Sandbox) -> None:
+    def __init__(self, *, sandbox: modal.Sandbox) -> None:
         """Create a backend wrapping an existing Modal sandbox."""
         self._sandbox = sandbox
         self._timeout = 30 * 60

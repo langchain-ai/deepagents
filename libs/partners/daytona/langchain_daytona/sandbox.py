@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+import daytona
 from daytona import FileDownloadRequest, FileUpload
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -11,9 +10,6 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
 )
 from deepagents.backends.sandbox import BaseSandbox
-
-if TYPE_CHECKING:
-    from daytona import Sandbox
 
 
 class DaytonaSandbox(BaseSandbox):
@@ -23,7 +19,7 @@ class DaytonaSandbox(BaseSandbox):
     and only implements the execute() method using Daytona's API.
     """
 
-    def __init__(self, sandbox: Sandbox) -> None:
+    def __init__(self, *, sandbox: daytona.Sandbox) -> None:
         """Create a backend wrapping an existing Daytona sandbox."""
         self._sandbox = sandbox
         self._timeout: int = 30 * 60

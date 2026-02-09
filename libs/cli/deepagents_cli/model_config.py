@@ -136,6 +136,13 @@ class ProviderConfig(TypedDict, total=False):
     kwargs: dict[str, Any]
     """Extra keyword arguments forwarded to the model constructor."""
 
+    model_kwargs: dict[str, dict[str, Any]]
+    """Per-model overrides that shallow-merge on top of `kwargs`.
+
+    Keys are model names; values are dicts of kwargs that override or extend
+    the provider-level `kwargs` for that specific model.
+    """
+
 
 DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
 """Directory for user-level Deep Agents configuration (`~/.deepagents`)."""
@@ -475,7 +482,7 @@ class ModelConfig:
                 self.recent_model,
             )
 
-        # Validate class_path format for custom providers
+        # Validate class_path format and model_kwargs references
         for name, provider in self.providers.items():
             class_path = provider.get("class_path")
             if class_path and ":" not in class_path:
@@ -486,6 +493,17 @@ class ModelConfig:
                     name,
                     class_path,
                 )
+
+            model_kwargs = provider.get("model_kwargs", {})
+            models = set(provider.get("models", []))
+            for model in model_kwargs:
+                if model not in models:
+                    logger.warning(
+                        "Provider '%s' has model_kwargs for '%s' "
+                        "which is not in its models list",
+                        name,
+                        model,
+                    )
 
     def get_all_models(self) -> list[tuple[str, str]]:
         """Get all models as `(model_name, provider_name)` tuples.
@@ -573,11 +591,18 @@ class ModelConfig:
         provider = self.providers.get(provider_name)
         return provider.get("class_path") if provider else None
 
-    def get_kwargs(self, provider_name: str) -> dict[str, Any]:
+    def get_kwargs(
+        self, provider_name: str, *, model_name: str | None = None
+    ) -> dict[str, Any]:
         """Get extra constructor kwargs for a provider.
+
+        When `model_name` is given and a matching entry exists in
+        `model_kwargs`, those values are shallow-merged on top of the
+        provider-level `kwargs` (model wins on conflict).
 
         Args:
             provider_name: The provider to look up.
+            model_name: Optional model name for per-model overrides.
 
         Returns:
             Dictionary of extra kwargs (empty if none configured).
@@ -585,7 +610,12 @@ class ModelConfig:
         provider = self.providers.get(provider_name)
         if not provider:
             return {}
-        return dict(provider.get("kwargs", {}))
+        result = dict(provider.get("kwargs", {}))
+        if model_name:
+            overrides = provider.get("model_kwargs", {}).get(model_name)
+            if overrides:
+                result.update(overrides)
+        return result
 
 
 def save_default_model(model_spec: str, config_path: Path | None = None) -> bool:

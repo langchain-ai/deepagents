@@ -613,13 +613,13 @@ api_key_env = "FIREWORKS_API_KEY"
         kwargs = _get_provider_kwargs("nonexistent_provider_xyz")
         assert kwargs == {}
 
-    def test_hardcoded_providers_not_affected(self) -> None:
-        """Hardcoded providers still return their specific kwargs."""
+    def test_unconfigured_providers_return_empty(self) -> None:
+        """Providers without config return empty kwargs."""
         kwargs = _get_provider_kwargs("anthropic")
-        assert kwargs == {"max_tokens": 20_000}
+        assert kwargs == {}
 
         kwargs = _get_provider_kwargs("google_genai")
-        assert kwargs == {"temperature": 0}
+        assert kwargs == {}
 
     def test_merges_config_kwargs(self, tmp_path: Path) -> None:
         """Merges kwargs from config with base_url and api_key."""
@@ -644,6 +644,45 @@ max_tokens = 4096
         assert kwargs["max_tokens"] == 4096
         assert kwargs["base_url"] == "https://my-endpoint.example.com"
         assert kwargs["api_key"] == "secret"
+
+    def test_passes_model_name_for_per_model_kwargs(self, tmp_path: Path) -> None:
+        """Per-model kwargs are merged when model_name is provided."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.ollama]
+models = ["qwen3:4b", "llama3"]
+
+[providers.ollama.kwargs]
+temperature = 0
+num_ctx = 8192
+
+[providers.ollama.model_kwargs."qwen3:4b"]
+temperature = 0.5
+num_ctx = 4000
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            kwargs = _get_provider_kwargs("ollama", model_name="qwen3:4b")
+
+        assert kwargs["temperature"] == 0.5
+        assert kwargs["num_ctx"] == 4000
+
+    def test_model_name_none_uses_provider_kwargs(self, tmp_path: Path) -> None:
+        """model_name=None returns provider kwargs without per-model merge."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.ollama]
+models = ["qwen3:4b"]
+
+[providers.ollama.kwargs]
+temperature = 0
+
+[providers.ollama.model_kwargs."qwen3:4b"]
+temperature = 0.5
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            kwargs = _get_provider_kwargs("ollama")
+
+        assert kwargs["temperature"] == 0
 
     def test_base_url_and_api_key_override_config_kwargs(self, tmp_path: Path) -> None:
         """base_url/api_key from config fields override same keys in kwargs."""

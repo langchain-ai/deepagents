@@ -1105,20 +1105,26 @@ def _get_default_model_spec() -> str:
     raise ModelConfigError(msg)
 
 
-def _get_provider_kwargs(provider: str) -> dict[str, Any]:
+def _get_provider_kwargs(
+    provider: str, *, model_name: str | None = None
+) -> dict[str, Any]:
     """Get provider-specific kwargs from the config file.
 
     Reads `base_url`, `api_key_env`, and the `kwargs` table from the user's
     `config.toml` for the given provider.
 
+    When `model_name` is provided, per-model overrides from `model_kwargs` are
+    shallow-merged on top.
+
     Args:
         provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
+        model_name: Optional model name for per-model kwarg overrides.
 
     Returns:
         Dictionary of provider-specific kwargs.
     """
     config = ModelConfig.load()
-    result: dict[str, Any] = config.get_kwargs(provider)
+    result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
     base_url = config.get_base_url(provider)
     if base_url:
         result["base_url"] = base_url
@@ -1287,8 +1293,8 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
         model_name = model_spec
         provider = _detect_provider(model_spec) or ""
 
-    # Provider-specific kwargs
-    kwargs = _get_provider_kwargs(provider)
+    # Provider-specific kwargs (with per-model overrides)
+    kwargs = _get_provider_kwargs(provider, model_name=model_name)
 
     # Check if this provider uses a custom BaseChatModel class
     config = ModelConfig.load()

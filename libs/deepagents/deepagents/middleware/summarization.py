@@ -793,7 +793,7 @@ A condensed summary follows:
                     "ContextOverflowError during model call with %d tokens",
                     total_tokens,
                 )
-                should_summarize = True  # Fallback to summarization on context overflow
+                # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
@@ -883,7 +883,7 @@ A condensed summary follows:
                     "ContextOverflowError during model call with %d tokens",
                     total_tokens,
                 )
-                should_summarize = True  # Fallback to summarization on context overflow
+                # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)

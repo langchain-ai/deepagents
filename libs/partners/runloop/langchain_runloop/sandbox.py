@@ -35,25 +35,24 @@ class RunloopSandbox(BaseSandbox):
 
     def execute(self, command: str) -> ExecuteResponse:
         """Execute a shell command inside the devbox."""
-        result = self._devbox.execute_and_await_completion(
-            command=command,
-            timeout=self._timeout,
-        )
+        result = self._devbox.cmd.exec(command)
 
-        output = result.stdout or ""
-        if result.stderr:
-            output += "\n" + result.stderr if output else result.stderr
+        output = result.stdout() if result.stdout() is not None else ""
+        stderr = result.stderr() if result.stderr() is not None else ""
+        if stderr:
+            output += "\n" + stderr if output else stderr
 
         return ExecuteResponse(
-            output=output, exit_code=result.exit_status, truncated=False
+            output=output,
+            exit_code=result.exit_code,
+            truncated=False,
         )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files from the devbox."""
         responses: list[FileDownloadResponse] = []
         for path in paths:
-            resp = self._devbox.download_file(path=path)
-            content = resp.read()
+            content = self._devbox.file.download(path=path)
             responses.append(
                 FileDownloadResponse(path=path, content=content, error=None)
             )
@@ -63,6 +62,6 @@ class RunloopSandbox(BaseSandbox):
         """Upload files into the devbox."""
         responses: list[FileUploadResponse] = []
         for path, content in files:
-            self._devbox.upload_file(path=path, file=content)
+            self._devbox.file.upload(path=path, file=content)
             responses.append(FileUploadResponse(path=path, error=None))
         return responses

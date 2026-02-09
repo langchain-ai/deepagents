@@ -99,6 +99,8 @@ packages = ["deepagents_cli"]
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+langchain-core = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/core" }
+langchain = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/langchain_v1" }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents"]

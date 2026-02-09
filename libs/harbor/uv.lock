@@ -735,11 +735,10 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
     { name = "daytona", specifier = ">=0.113.0,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
-    { name = "deepagents-cli", extras = ["anthropic", "azure-ai", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "mistralai", "nvidia", "ollama", "openai", "perplexity", "vertexai", "xai"], marker = "extra == 'all-providers'" },
+    { name = "deepagents-cli", extras = ["anthropic", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "mistralai", "nvidia", "ollama", "openai", "perplexity", "vertexai", "xai"], marker = "extra == 'all-providers'" },
     { name = "langchain", specifier = ">=1.2.7,<2.0.0" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.0.0,<2.0.0" },
-    { name = "langchain-azure-ai", marker = "extra == 'azure-ai'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.5.0,<1.0.0" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.0.0,<2.0.0" },
@@ -772,7 +771,7 @@ requires-dist = [
     { name = "textual-autocomplete", specifier = ">=3.0.0,<5.0.0" },
     { name = "tomli-w", specifier = ">=1.0.0,<2.0.0" },
 ]
-provides-extras = ["anthropic", "azure-ai", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "mistralai", "nvidia", "ollama", "openai", "perplexity", "vertexai", "xai", "all-providers"]
+provides-extras = ["anthropic", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "mistralai", "nvidia", "ollama", "openai", "perplexity", "vertexai", "xai", "all-providers"]
 
 [package.metadata.requires-dev]
 test = [

@@ -64,7 +64,6 @@ dependencies = [
 [project.optional-dependencies]
 # Model providers
 anthropic = ["langchain-anthropic>=1.0.0,<2.0.0"]
-azure-ai = ["langchain-azure-ai>=1.0.0,<2.0.0"]
 bedrock = ["langchain-aws>=1.0.0,<2.0.0"]
 cohere = ["langchain-cohere>=0.5.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.0.0,<2.0.0"]
@@ -81,7 +80,7 @@ perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
 xai = ["langchain-xai>=1.0.0,<2.0.0"]
 all-providers = [
-    "deepagents-cli[anthropic,azure-ai,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,mistralai,nvidia,ollama,openai,perplexity,vertexai,xai]",
+    "deepagents-cli[anthropic,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,mistralai,nvidia,ollama,openai,perplexity,vertexai,xai]",
 ]
 
 [project.scripts]

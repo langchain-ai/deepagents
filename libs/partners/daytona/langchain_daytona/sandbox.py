@@ -49,7 +49,6 @@ class DaytonaSandbox(BaseSandbox):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files from the sandbox."""
         download_requests: list[FileDownloadRequest] = []
-        download_paths: list[str] = []
         responses: list[FileDownloadResponse] = []
 
         for path in paths:
@@ -58,7 +57,6 @@ class DaytonaSandbox(BaseSandbox):
                     FileDownloadResponse(path=path, content=None, error="invalid_path")
                 )
                 continue
-            download_paths.append(path)
             download_requests.append(FileDownloadRequest(source=path))
             responses.append(FileDownloadResponse(path=path, content=None, error=None))
 

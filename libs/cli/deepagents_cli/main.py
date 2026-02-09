@@ -267,6 +267,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress non-agent output (status messages, headers, tool "
+        "notifications). Only the agent's response text is written to "
+        "stdout; diagnostic output moves to stderr. Requires -n",
+    )
+
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
         help=(
@@ -443,6 +452,10 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
+        if args.quiet and not args.non_interactive_message:
+            print("error: --quiet requires --non-interactive (-n)", file=sys.stderr)
+            sys.exit(2)
+
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:
             from deepagents_cli.config import parse_shell_allow_list
@@ -484,6 +497,7 @@ def cli_main() -> None:
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
+                    quiet=args.quiet,
                 )
             )
             sys.exit(exit_code)

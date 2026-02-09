@@ -339,6 +339,106 @@ class TestSandboxSetupForwarding:
         assert captured_kwargs[0]["setup_script_path"] == "/path/to/setup.sh"
 
 
+class TestQuietMode:
+    """Tests for --quiet flag in run_non_interactive."""
+
+    @pytest.mark.asyncio
+    async def test_quiet_redirects_console_to_stderr(self) -> None:
+        """When quiet=True, Console should be created with stderr=True."""
+        mock_console = MagicMock(spec=Console)
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.Console",
+                return_value=mock_console,
+            ) as mock_console_cls,
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+            ) as mock_checkpointer,
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            mock_cp = MagicMock()
+            mock_checkpointer.return_value.__aenter__ = MagicMock(return_value=mock_cp)
+            mock_checkpointer.return_value.__aexit__ = MagicMock(return_value=None)
+
+            mock_agent = MagicMock()
+            mock_agent.astream = MagicMock(return_value=_async_iter([]))
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(message="test", quiet=True)
+
+        mock_console_cls.assert_called_once_with(stderr=True)
+
+    @pytest.mark.asyncio
+    async def test_non_quiet_uses_stdout(self) -> None:
+        """When quiet=False (default), Console should be created without stderr."""
+        mock_console = MagicMock(spec=Console)
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.Console",
+                return_value=mock_console,
+            ) as mock_console_cls,
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+            ) as mock_checkpointer,
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            mock_cp = MagicMock()
+            mock_checkpointer.return_value.__aenter__ = MagicMock(return_value=mock_cp)
+            mock_checkpointer.return_value.__aexit__ = MagicMock(return_value=None)
+
+            mock_agent = MagicMock()
+            mock_agent.astream = MagicMock(return_value=_async_iter([]))
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(message="test", quiet=False)
+
+        mock_console_cls.assert_called_once_with()
+
+
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029
     """Create an async iterator from a list for testing."""
     for item in items:

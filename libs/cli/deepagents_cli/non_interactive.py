@@ -524,6 +524,8 @@ async def run_non_interactive(
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
+    *,
+    quiet: bool = False,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -546,11 +548,14 @@ async def run_non_interactive(
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
+        quiet: When `True`, diagnostic output (headers, tool notifications,
+            completion status) is redirected to stderr so that only the
+            agent's response text appears on stdout.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
     """
-    console = Console()
+    console = Console(stderr=True) if quiet else Console()
     model = create_model(model_name)
     thread_id = generate_thread_id()
 

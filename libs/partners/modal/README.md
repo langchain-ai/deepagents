@@ -14,10 +14,11 @@ pip install langchain-modal
 ```
 
 ```python
-from langchain_modal import ModalSandboxClient
+import modal
 
-client = ModalSandboxClient()
-sandbox = client.create()
+from langchain_modal import ModalSandbox
+
+sandbox = ModalSandbox(modal.Sandbox.create(app=modal.App.lookup("your-app")))
 result = sandbox.execute("echo hello")
 print(result.output)
 ```

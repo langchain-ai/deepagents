@@ -48,6 +48,7 @@ from langchain.agents.middleware.summarization import (
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
@@ -783,20 +784,14 @@ A condensed summary follows:
         total_tokens = self.token_counter(truncated_messages)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
-        # If only truncation happened (no summarization)
-        if args_were_truncated and not should_summarize:
-            return handler(request.override(messages=truncated_messages))
-
-        # If no truncation and no summarization
+        # If no summarization needed, return with truncated messages
         if not should_summarize:
             return handler(request.override(messages=truncated_messages))
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # If truncation happened but we can't summarize, still return truncated messages
-            if args_were_truncated:
-                return handler(request.override(messages=truncated_messages))
+            # Can't summarize, return truncated messages
             return handler(request.override(messages=truncated_messages))
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
@@ -872,20 +867,14 @@ A condensed summary follows:
         total_tokens = self.token_counter(truncated_messages)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
-        # If only truncation happened (no summarization)
-        if args_were_truncated and not should_summarize:
-            return await handler(request.override(messages=truncated_messages))
-
-        # If no truncation and no summarization
+        # If no summarization needed, return with truncated messages
         if not should_summarize:
             return await handler(request.override(messages=truncated_messages))
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # If truncation happened but we can't summarize, still return truncated messages
-            if args_were_truncated:
-                return await handler(request.override(messages=truncated_messages))
+            # Can't summarize, return truncated messages
             return await handler(request.override(messages=truncated_messages))
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)

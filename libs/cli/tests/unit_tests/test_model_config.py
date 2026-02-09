@@ -120,9 +120,21 @@ class TestProviderApiKeyEnv:
     def test_contains_major_providers(self):
         """Contains environment variables for major providers."""
         assert PROVIDER_API_KEY_ENV["anthropic"] == "ANTHROPIC_API_KEY"
-        assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
+        assert PROVIDER_API_KEY_ENV["azure_openai"] == "AZURE_OPENAI_API_KEY"
+        assert PROVIDER_API_KEY_ENV["cohere"] == "COHERE_API_KEY"
+        assert PROVIDER_API_KEY_ENV["deepseek"] == "DEEPSEEK_API_KEY"
+        assert PROVIDER_API_KEY_ENV["fireworks"] == "FIREWORKS_API_KEY"
         assert PROVIDER_API_KEY_ENV["google_genai"] == "GOOGLE_API_KEY"
         assert PROVIDER_API_KEY_ENV["google_vertexai"] == "GOOGLE_CLOUD_PROJECT"
+        assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
+        assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
+        assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
+        assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
+        assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
+        assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
+        assert PROVIDER_API_KEY_ENV["perplexity"] == "PPLX_API_KEY"
+        assert PROVIDER_API_KEY_ENV["together"] == "TOGETHER_API_KEY"
+        assert PROVIDER_API_KEY_ENV["xai"] == "XAI_API_KEY"
 
 
 class TestModelConfigLoad:
@@ -238,8 +250,8 @@ class TestModelConfigHasCredentials:
         config = ModelConfig()
         assert config.has_credentials("unknown") is False
 
-    def test_returns_true_when_no_key_required(self, tmp_path):
-        """Returns True when api_key_env not specified."""
+    def test_returns_none_when_no_key_configured(self, tmp_path):
+        """Returns None when api_key_env not specified (unknown status)."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.local]
@@ -247,7 +259,7 @@ models = ["llama3"]
 """)
         config = ModelConfig.load(config_path)
 
-        assert config.has_credentials("local") is True
+        assert config.has_credentials("local") is None
 
     def test_returns_true_when_env_var_set(self, tmp_path):
         """Returns True when api_key_env is set in environment."""
@@ -626,14 +638,14 @@ class TestHasProviderCredentialsFallback:
     """Tests for has_provider_credentials() falling back to ModelConfig."""
 
     def test_falls_back_to_config_no_key_required(self, tmp_path):
-        """Returns True for config provider with no api_key_env (e.g., Ollama)."""
+        """Returns None for config provider with no api_key_env (unknown)."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
 models = ["llama3"]
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert has_provider_credentials("ollama") is True
+            assert has_provider_credentials("ollama") is None
 
     def test_falls_back_to_config_with_key_set(self, tmp_path):
         """Returns True for config provider with api_key_env set in env."""
@@ -667,8 +679,8 @@ api_key_env = "FIREWORKS_API_KEY"
         """Returns False for provider not in hardcoded map, config, or langchain."""
         assert has_provider_credentials("nonexistent_provider_xyz") is False
 
-    def test_returns_true_for_langchain_known_provider(self):
-        """Returns True for a provider known to langchain but not in config."""
+    def test_returns_none_for_langchain_known_provider(self):
+        """Returns None for a provider known to langchain but not in config."""
         fake_registry = {
             "ollama": ("langchain_ollama", "ChatOllama", None),
         }
@@ -676,7 +688,7 @@ api_key_env = "FIREWORKS_API_KEY"
             "deepagents_cli.model_config._get_builtin_providers",
             return_value=fake_registry,
         ):
-            assert has_provider_credentials("ollama") is True
+            assert has_provider_credentials("ollama") is None
 
 
 class TestModelConfigGetClassPath:

@@ -1647,7 +1647,7 @@ class DeepAgentsApp(App):
             provider, model_name = parsed.provider, parsed.model
 
             # Check credentials for the specified provider
-            if not has_provider_credentials(provider):
+            if has_provider_credentials(provider) is False:
                 env_var = get_credential_env_var(provider)
                 if env_var:
                     detail = f"{env_var} not set"
@@ -1673,7 +1673,7 @@ class DeepAgentsApp(App):
         else:
             # Bare model name that differs from current — check credentials
             detected = _detect_provider(model_spec)
-            if detected and not has_provider_credentials(detected):
+            if detected and has_provider_credentials(detected) is False:
                 env_var = get_credential_env_var(detected)
                 if env_var:
                     detail = f"{env_var} not set"

@@ -33,7 +33,7 @@ class ModelOption(Static):
         provider: str,
         index: int,
         *,
-        has_creds: bool = True,
+        has_creds: bool | None = True,
         classes: str = "",
     ) -> None:
         """Initialize a model option.
@@ -43,7 +43,8 @@ class ModelOption(Static):
             model_spec: The model specification (provider:model format).
             provider: The provider name.
             index: The index of this option in the filtered list.
-            has_creds: Whether the provider has valid credentials.
+            has_creds: Whether the provider has valid credentials. True if
+                confirmed, False if missing, None if unknown.
             classes: CSS classes for styling.
         """
         super().__init__(label, classes=classes)
@@ -360,7 +361,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         for provider, model_specs in by_provider.items():
             # Provider header with credential indicator
             has_creds = has_provider_credentials(provider)
-            cred_indicator = glyphs.checkmark if has_creds else glyphs.warning
+            if has_creds is True:
+                cred_indicator = glyphs.checkmark
+            elif has_creds is False:
+                cred_indicator = glyphs.warning
+            else:
+                cred_indicator = glyphs.question
             header = Static(
                 f"[bold]{provider}[/bold] {cred_indicator}",
                 classes="model-provider-header",

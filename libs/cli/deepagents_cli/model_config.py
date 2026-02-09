@@ -145,9 +145,21 @@ DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
 
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
+    "azure_openai": "AZURE_OPENAI_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "fireworks": "FIREWORKS_API_KEY",
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
+    "groq": "GROQ_API_KEY",
+    "huggingface": "HUGGINGFACEHUB_API_TOKEN",
+    "ibm": "WATSONX_APIKEY",
+    "mistralai": "MISTRAL_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "perplexity": "PPLX_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "xai": "XAI_API_KEY",
 }
 """Well-known providers mapped to the env var that holds their API key.
 
@@ -295,7 +307,7 @@ def _is_langchain_supported_provider(provider: str) -> bool:
     return provider in _get_builtin_providers()
 
 
-def has_provider_credentials(provider: str) -> bool:
+def has_provider_credentials(provider: str) -> bool | None:
     """Check if credentials are available for a provider.
 
     Checks in order:
@@ -304,30 +316,35 @@ def has_provider_credentials(provider: str) -> bool:
         overrides (e.g., custom `api_key_env` or `base_url`) are respected.
     2. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
     3. Langchain's `_SUPPORTED_PROVIDERS` registry — if the provider is known
-        to `init_chat_model`, assume credentials are satisfied and let the
-        provider itself report auth failures at model-creation time.
+        to `init_chat_model`, credential status is unknown; the provider
+        itself will report auth failures at model-creation time.
 
     Args:
         provider: Provider name.
 
     Returns:
-        True if the required environment variable is set, the provider is
-        defined in config with no key requirement, or the provider is known
-        to `langchain`.
+        True if credentials are confirmed available, False if confirmed
+            missing, or None if credential status cannot be determined.
     """
-    # Config-file providers take priority (user overrides).
+    # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
     if config.providers.get(provider):
-        return config.has_credentials(provider)
+        result = config.has_credentials(provider)
+        if result is not None:
+            return result
+        # No api_key_env in config — fall through to hardcoded map.
 
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
         return bool(os.environ.get(env_var))
 
-    # If langchain knows this provider, let it through — the provider
-    # will raise its own auth error if a key is actually needed.
-    return _is_langchain_supported_provider(provider)
+    # If langchain knows this provider, let it through — we can't verify
+    # credentials, but the provider will raise its own auth error if needed.
+    if _is_langchain_supported_provider(provider):
+        return None
+
+    return False
 
 
 def get_credential_env_var(provider: str) -> str | None:
@@ -484,7 +501,7 @@ class ModelConfig:
                 return provider_name
         return None
 
-    def has_credentials(self, provider_name: str) -> bool:
+    def has_credentials(self, provider_name: str) -> bool | None:
         """Check if credentials are available for a provider.
 
         This is the config-file-driven credential check, supporting custom
@@ -496,14 +513,16 @@ class ModelConfig:
             provider_name: The provider to check.
 
         Returns:
-            True if credentials are available or not required.
+            True if credentials are confirmed available, False if confirmed
+                missing, or None if no `api_key_env` is configured and
+                credential status cannot be determined.
         """
         provider = self.providers.get(provider_name)
         if not provider:
             return False
         env_var = provider.get("api_key_env")
         if not env_var:
-            return True  # No key required (e.g., local Ollama)
+            return None  # No key configured — can't verify
         return bool(os.environ.get(env_var))
 
     def get_base_url(self, provider_name: str) -> str | None:

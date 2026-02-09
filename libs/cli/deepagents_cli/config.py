@@ -79,6 +79,7 @@ class Glyphs:
     pause: str  # ⏸ vs ||
     newline: str  # ⏎ vs \\n
     warning: str  # ⚠ vs [!]
+    question: str  # ? vs [?]
     arrow_up: str  # up arrow vs ^
     arrow_down: str  # down arrow vs v
     bullet: str  # bullet vs -
@@ -110,6 +111,7 @@ UNICODE_GLYPHS = Glyphs(
     pause="⏸",
     newline="⏎",
     warning="⚠",
+    question="?",
     arrow_up="↑",
     arrow_down="↓",
     bullet="•",
@@ -136,6 +138,7 @@ ASCII_GLYPHS = Glyphs(
     pause="||",
     newline="\\n",
     warning="[!]",
+    question="[?]",
     arrow_up="^",
     arrow_down="v",
     bullet="-",

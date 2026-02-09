@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.model_config import (
-    get_curated_models,
+    get_available_models,
     has_provider_credentials,
 )
 
@@ -191,9 +191,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._current_model = current_model
         self._current_provider = current_provider
 
-        # Build list of (model_spec, provider) tuples from curated models
+        # Build list from dynamically discovered models (falls back to defaults)
         self._all_models: list[tuple[str, str]] = []
-        for provider, models in get_curated_models().items():
+        for provider, models in get_available_models().items():
             for model in models:
                 model_spec = f"{provider}:{model}"
                 self._all_models.append((model_spec, provider))

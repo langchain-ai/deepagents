@@ -6,6 +6,7 @@ import pytest
 
 from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.config import settings
+from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -86,8 +87,8 @@ class TestModelSwitchErrorHandling:
         assert "ANTHROPIC_API_KEY" in captured_errors[0]
 
     @pytest.mark.asyncio
-    async def test_create_model_system_exit_shows_error(self) -> None:
-        """_switch_model shows error when create_model calls sys.exit."""
+    async def test_create_model_config_error_shows_error(self) -> None:
+        """_switch_model shows error when create_model raises ModelConfigError."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._checkpointer = MagicMock()
@@ -103,16 +104,17 @@ class TestModelSwitchErrorHandling:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 
+        error = ModelConfigError("Missing package for provider 'anthropic'")
         with (
             patch("deepagents_cli.app.has_provider_credentials", return_value=True),
-            patch("deepagents_cli.app.create_model", side_effect=SystemExit(1)),
+            patch("deepagents_cli.app.create_model", side_effect=error),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
             await app._switch_model("anthropic:invalid-model")
 
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_errors) == 1
-        assert "Failed to create model" in captured_errors[0]
+        assert "Missing package" in captured_errors[0]
 
     @pytest.mark.asyncio
     async def test_create_model_exception_shows_error(self) -> None:

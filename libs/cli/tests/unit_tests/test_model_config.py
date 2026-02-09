@@ -1,6 +1,8 @@
 """Tests for model_config module."""
 
+import logging
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 import pytest
@@ -9,7 +11,9 @@ from deepagents_cli import model_config
 from deepagents_cli.model_config import (
     PROVIDER_API_KEY_ENV,
     ModelConfig,
+    ModelConfigError,
     ModelSpec,
+    get_available_models,
     get_curated_models,
     get_default_models,
     has_provider_credentials,
@@ -509,3 +513,68 @@ class TestModelPersistenceBetweenSessions:
                 f"Expected config default 'openai:gpt-5.2' but got '{result}'. "
                 "Config file default should take priority over env var detection."
             )
+
+
+class TestGetAvailableModels:
+    """Tests for get_available_models() function."""
+
+    def test_returns_defaults_when_all_imports_fail(self):
+        """Returns hardcoded defaults when no provider packages are installed."""
+        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
+            mock_importlib.import_module.side_effect = ImportError("not installed")
+            models = get_available_models()
+
+        # Should fall back to get_default_models()
+        defaults = get_default_models()
+        assert models == defaults
+
+    def test_returns_discovered_models_when_package_installed(self):
+        """Returns discovered models when a provider package is installed."""
+        fake_module = ModuleType("fake_profiles")
+        fake_module._PROFILES = {  # type: ignore[attr-defined]
+            "claude-sonnet-4-5": {"tool_calling": True},
+            "claude-haiku-4-5": {"tool_calling": True},
+            "claude-instant": {"tool_calling": False},
+        }
+
+        def mock_import(name: str) -> ModuleType:
+            if name == "langchain_anthropic.data._profiles":
+                return fake_module
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch("deepagents_cli.model_config.importlib") as mock_importlib:
+            mock_importlib.import_module.side_effect = mock_import
+            models = get_available_models()
+
+        assert "anthropic" in models
+        # Should only include models with tool_calling=True
+        assert "claude-sonnet-4-5" in models["anthropic"]
+        assert "claude-haiku-4-5" in models["anthropic"]
+        assert "claude-instant" not in models["anthropic"]
+
+    def test_logs_debug_on_import_error(self, caplog):
+        """Logs debug message when provider package is not installed."""
+        with (
+            patch("deepagents_cli.model_config.importlib") as mock_importlib,
+            caplog.at_level(logging.DEBUG, logger="deepagents_cli.model_config"),
+        ):
+            mock_importlib.import_module.side_effect = ImportError("not installed")
+            get_available_models()
+
+        assert any(
+            "Could not import profiles" in record.message for record in caplog.records
+        )
+
+
+class TestModelConfigError:
+    """Tests for ModelConfigError exception class."""
+
+    def test_is_exception(self):
+        """ModelConfigError is an Exception subclass."""
+        assert issubclass(ModelConfigError, Exception)
+
+    def test_carries_message(self):
+        """ModelConfigError carries the error message."""
+        err = ModelConfigError("test error message")
+        assert str(err) == "test error message"

@@ -36,7 +36,7 @@ from langchain.chat_models import init_chat_model  # noqa: E402
 from langchain_core.language_models import BaseChatModel  # noqa: E402
 from langchain_core.runnables import RunnableConfig  # noqa: E402
 
-from deepagents_cli.model_config import ModelConfig  # noqa: E402
+from deepagents_cli.model_config import ModelConfig, ModelConfigError  # noqa: E402
 
 # Color scheme
 COLORS = {
@@ -412,8 +412,8 @@ class Settings:
         user_langchain_project: Original LANGSMITH_PROJECT from environment
             (for user code).
         model_name: Currently active model name (set after model creation).
-        model_provider: Provider identifier (e.g. openai, anthropic, google,
-            vertexai).
+        model_provider: Provider identifier (e.g., openai, anthropic, google_genai,
+            google_vertexai).
         model_context_limit: Maximum input token count from the model profile.
         project_root: Current project root directory (if in a git project).
         shell_allow_list: List of shell commands that don't require approval.
@@ -434,7 +434,7 @@ class Settings:
 
     # Model configuration
     model_name: str | None = None  # Currently active model name
-    model_provider: str | None = None  # Provider (openai, anthropic, google)
+    model_provider: str | None = None  # Provider name (see PROVIDER_API_KEY_ENV)
     model_context_limit: int | None = None  # Max input tokens from model profile
 
     # Project information
@@ -1062,6 +1062,9 @@ def _get_default_model_spec() -> str:
 
     Returns:
         Model specification in provider:model format.
+
+    Raises:
+        ModelConfigError: If no credentials are configured.
     """
     config = ModelConfig.load()
     if config.default_model:
@@ -1080,19 +1083,12 @@ def _get_default_model_spec() -> str:
         model = os.environ.get("VERTEX_AI_MODEL", "gemini-3-pro-preview")
         return f"google_vertexai:{model}"
 
-    console.print("[bold red]Error:[/bold red] No credentials configured.")
-    console.print("\nPlease set one of the following environment variables:")
-    console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-    console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5.2)")
-    console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
-    console.print(
-        "  - GOOGLE_CLOUD_PROJECT (for VertexAI models, "
-        "with Application Default Credentials)"
+    msg = (
+        "No credentials configured. Please set one of: "
+        "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
+        "or GOOGLE_CLOUD_PROJECT"
     )
-    console.print("\nExample:")
-    console.print("  export ANTHROPIC_API_KEY=your_api_key_here")
-    console.print("\nOr add it to your .env file.")
-    sys.exit(1)
+    raise ModelConfigError(msg)
 
 
 def _get_provider_kwargs(provider: str) -> dict[str, Any]:
@@ -1109,7 +1105,7 @@ def _get_provider_kwargs(provider: str) -> dict[str, Any]:
     if provider == "google_genai":
         return {"temperature": 0}
     if provider == "google_vertexai":
-        kwargs: dict = {"temperature": 0}
+        kwargs: dict[str, Any] = {"temperature": 0}
         if settings.google_cloud_project:
             kwargs["project"] = settings.google_cloud_project
         location = os.environ.get("GOOGLE_CLOUD_LOCATION")
@@ -1135,6 +1131,11 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
     Returns:
         Configured `BaseChatModel` instance ready for use.
 
+    Raises:
+        ModelConfigError: If provider cannot be determined from the model name,
+            required provider package is not installed, or no credentials are
+            configured.
+
     Examples:
         >>> model = create_model("anthropic:claude-sonnet-4-5")
         >>> model = create_model("openai:gpt-4o")
@@ -1156,20 +1157,11 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
             provider = detected_provider
             model_name = model_spec
         else:
-            console.print(
-                "[bold red]Error:[/bold red] Could not detect provider "
-                f"from model name: {model_spec}"
+            msg = (
+                f"Could not detect provider from model name: {model_spec}. "
+                "Use provider:model syntax (e.g., 'anthropic:claude-sonnet-4-5')"
             )
-            console.print("\nUse provider:model syntax for explicit selection:")
-            console.print("  - anthropic:claude-sonnet-4-5")
-            console.print("  - openai:gpt-4o")
-            console.print("  - google_genai:gemini-3-pro-preview")
-            console.print("  - google_vertexai:gemini-3-pro-preview")
-            console.print("\nOr use a model name with a recognizable pattern:")
-            console.print("  - OpenAI: gpt-*, o1-*, o3-*, o4-*")
-            console.print("  - Anthropic: claude-*")
-            console.print("  - Google: gemini-*")
-            sys.exit(1)
+            raise ModelConfigError(msg)
 
     # Provider-specific kwargs
     kwargs = _get_provider_kwargs(provider)
@@ -1186,13 +1178,10 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
             "google_vertexai": "langchain-google-vertexai",
         }
         package = package_map.get(provider, f"langchain-{provider}")
-        console.print(
-            f"[bold red]Error:[/bold red] Missing package for provider '{provider}'"
+        msg = (
+            f"Missing package for provider '{provider}'. Install: pip install {package}"
         )
-        console.print("\nInstall it with:")
-        console.print(f"  pip install {package}", markup=False)
-        console.print(f"\nOriginal error: {e}")
-        sys.exit(1)
+        raise ModelConfigError(msg) from e
 
     # Store model info in settings for display
     settings.model_name = model_name

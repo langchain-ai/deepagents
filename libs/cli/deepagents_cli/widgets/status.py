@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -12,6 +12,8 @@ from textual.reactive import reactive
 from textual.widgets import Static
 
 from deepagents_cli.config import settings
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -264,8 +266,10 @@ class StatusBar(Horizontal):
 
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
-        with suppress(NoMatches):
+        try:
             self.query_one("#tokens-display", Static).update("")
+        except NoMatches:
+            logger.debug("Tokens display widget not found")
 
     def set_model(self, model_spec: str) -> None:
         """Update the model display text.
@@ -279,5 +283,7 @@ class StatusBar(Horizontal):
             (`settings.model_name`, `settings.model_provider`) should be updated
             by the caller via `create_model()` before calling this method.
         """
-        with suppress(NoMatches):
+        try:
             self.query_one("#model-display", Static).update(model_spec)
+        except NoMatches:
+            logger.debug("Model display widget not found; status bar not updated")

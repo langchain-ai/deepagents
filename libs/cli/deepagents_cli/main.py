@@ -42,6 +42,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
+from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import (
     delete_thread_command,
     find_similar_threads,
@@ -364,7 +365,11 @@ async def run_textual_cli_async(
     """
     from deepagents_cli.app import run_textual_app
 
-    model = create_model(model_name)
+    try:
+        model = create_model(model_name)
+    except ModelConfigError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        return 1
 
     # Show thread info
     if is_resumed:

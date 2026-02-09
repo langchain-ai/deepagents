@@ -272,10 +272,6 @@ ignore-var-parameters = true
     "PLC0415",  # Lazy import to avoid circular dependency
     "T201",     # `print` found
 ]
-"deepagents_cli/model_config.py" = [
-    "PLC0415",  # Lazy import for optional dependency probing and conditional imports
-    "T201",     # `print` found - first-run setup wizard
-]
 "examples/skills/arxiv-search/arxiv_search.py" = [
     "BLE001",   # Do not catch blind exception
     "PLC0415",  # Lazy import for optional dependency (arxiv)

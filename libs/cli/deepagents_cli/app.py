@@ -29,12 +29,15 @@ from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
+    _detect_provider,
     create_model,
     is_shell_command_allowed,
     settings,
 )
 from deepagents_cli.model_config import (
     PROVIDER_API_KEY_ENV,
+    ModelConfigError,
+    ModelSpec,
     has_provider_credentials,
     save_default_model,
 )
@@ -60,7 +63,10 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents.backends import CompositeBackend
+    from deepagents.backends.sandbox import SandboxBackendProtocol
     from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
@@ -378,14 +384,14 @@ class DeepAgentsApp(App):
         *,
         agent: Pregel | None = None,
         assistant_id: str | None = None,
-        backend: Any = None,  # CompositeBackend
+        backend: CompositeBackend | None = None,
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
-        checkpointer: Any = None,
-        tools: list[Any] | None = None,
-        sandbox: Any = None,
+        checkpointer: BaseCheckpointSaver | None = None,
+        tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+        sandbox: SandboxBackendProtocol | None = None,
         sandbox_type: str | None = None,
         **kwargs: Any,
     ) -> None:
@@ -1633,8 +1639,22 @@ class DeepAgentsApp(App):
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
         """
-        if ":" in model_spec:
-            provider, model_name = model_spec.split(":", 1)
+        logger.info("Switching model to %s", model_spec)
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if parsed:
+            provider, model_name = parsed.provider, parsed.model
+
+            # Validate provider name
+            if provider not in PROVIDER_API_KEY_ENV:
+                known = ", ".join(sorted(PROVIDER_API_KEY_ENV))
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Unknown provider '{provider}'. Known providers: {known}"
+                    )
+                )
+                return
+
             # Check credentials for the specified provider
             if not has_provider_credentials(provider):
                 env_var = PROVIDER_API_KEY_ENV.get(provider, "API key")
@@ -1642,6 +1662,7 @@ class DeepAgentsApp(App):
                     ErrorMessage(f"Missing credentials: {env_var} not set")
                 )
                 return
+
             # Check if already using this exact model
             if (
                 provider == settings.model_provider
@@ -1654,6 +1675,15 @@ class DeepAgentsApp(App):
             current = f"{settings.model_provider}:{settings.model_name}"
             await self._mount_message(AppMessage(f"Already using {current}"))
             return
+        else:
+            # Bare model name that differs from current — check credentials
+            detected = _detect_provider(model_spec)
+            if detected and not has_provider_credentials(detected):
+                env_var = PROVIDER_API_KEY_ENV.get(detected, "API key")
+                await self._mount_message(
+                    ErrorMessage(f"Missing credentials: {env_var} not set")
+                )
+                return
 
         # Check if we have what we need for hot-swap
         if not self._checkpointer:
@@ -1678,17 +1708,14 @@ class DeepAgentsApp(App):
         # Try to create the new model
         try:
             new_model = create_model(model_spec)
-        except SystemExit:
-            # create_model calls sys.exit on error, we need to catch this
-            await self._mount_message(
-                ErrorMessage(f"Failed to create model: {model_spec}")
-            )
+        except ModelConfigError as e:
+            await self._mount_message(ErrorMessage(str(e)))
             return
         except Exception as e:
             await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
             return
 
-        # Recreate agent with new model, preserving checkpointer
+        # Create new agent (may fail — no state changed yet)
         try:
             new_agent, new_backend = create_cli_agent(
                 model=new_model,
@@ -1699,46 +1726,49 @@ class DeepAgentsApp(App):
                 auto_approve=self._auto_approve,
                 checkpointer=self._checkpointer,
             )
-
-            # Swap in new agent
-            self._agent = new_agent
-            self._backend = new_backend
-
-            # Update status bar with provider:model format
-            if self._status_bar:
-                display_spec = f"{settings.model_provider}:{settings.model_name}"
-                self._status_bar.set_model(display_spec)
-
-            # Save to config (non-fatal if this fails - model is already switched)
-            config_saved = save_default_model(model_spec)
-
-            display = f"{settings.model_provider}:{settings.model_name}"
-            if config_saved:
-                await self._mount_message(AppMessage(f"Switched to {display}"))
-            else:
-                await self._mount_message(
-                    AppMessage(
-                        f"Switched to {display} (preference not saved - "
-                        "check ~/.deepagents/ permissions)"
-                    )
-                )
-
         except Exception as e:
+            logger.exception("Failed to create agent for model switch")
             await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
+            return
+
+        # Swap agent
+        self._agent = new_agent
+        self._backend = new_backend
+
+        # Post-swap: update UI and save config
+        display = f"{settings.model_provider}:{settings.model_name}"
+        try:
+            if self._status_bar:
+                self._status_bar.set_model(display)
+        except Exception:
+            logger.warning("Failed to update status bar after model switch")
+
+        config_saved = save_default_model(model_spec)
+        if config_saved:
+            await self._mount_message(AppMessage(f"Switched to {display}"))
+        else:
+            await self._mount_message(
+                AppMessage(
+                    f"Switched to {display} (preference not saved - "
+                    "check ~/.deepagents/ permissions)"
+                )
+            )
+
+        logger.info("Model switched to %s", display)
 
 
 async def run_textual_app(
     *,
     agent: Pregel | None = None,
     assistant_id: str | None = None,
-    backend: Any = None,  # CompositeBackend
+    backend: CompositeBackend | None = None,
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
-    checkpointer: Any = None,
-    tools: list[Any] | None = None,
-    sandbox: Any = None,
+    checkpointer: BaseCheckpointSaver | None = None,
+    tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+    sandbox: SandboxBackendProtocol | None = None,
     sandbox_type: str | None = None,
 ) -> int:
     """Run the Textual application.

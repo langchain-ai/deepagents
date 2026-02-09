@@ -6,14 +6,21 @@ structured way to define available models and providers.
 
 from __future__ import annotations
 
+import importlib
+import logging
 import os
-import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict
 
 import tomli_w
+
+logger = logging.getLogger(__name__)
+
+
+class ModelConfigError(Exception):
+    """Raised when model configuration or creation fails."""
 
 
 @dataclass(frozen=True)
@@ -137,8 +144,6 @@ def get_available_models() -> dict[str, list[str]]:
 
     for provider, module_path in provider_modules:
         try:
-            import importlib
-
             module = importlib.import_module(module_path)
             profiles: dict[str, Any] = getattr(module, "_PROFILES", {})
 
@@ -154,8 +159,10 @@ def get_available_models() -> dict[str, list[str]]:
             if models:
                 available[provider] = models
         except ImportError:
-            # Package not installed, skip this provider
-            pass
+            logger.debug(
+                "Could not import profiles from %s (package may not be installed)",
+                module_path,
+            )
 
     # Fall back to hardcoded defaults if no profiles found
     if not available:
@@ -275,17 +282,15 @@ class ModelConfig:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
         except tomllib.TOMLDecodeError as e:
-            print(
-                f"Warning: Config file {config_path} has invalid TOML syntax: {e}\n"
+            logger.warning(
+                "Config file %s has invalid TOML syntax: %s. "
                 "Ignoring config file. Fix the file or delete it to reset.",
-                file=sys.stderr,
+                config_path,
+                e,
             )
             return cls()
         except (PermissionError, OSError) as e:
-            print(
-                f"Warning: Could not read config file {config_path}: {e}",
-                file=sys.stderr,
-            )
+            logger.warning("Could not read config file %s: %s", config_path, e)
             return cls()
 
         config = cls(
@@ -306,10 +311,10 @@ class ModelConfig:
         """
         # Warn if default_model is set but doesn't use provider:model format
         if self.default_model and ":" not in self.default_model:
-            print(
-                f"Warning: default_model '{self.default_model}' should use "
-                "provider:model format (e.g., 'anthropic:claude-sonnet-4-5')",
-                file=sys.stderr,
+            logger.warning(
+                "default_model '%s' should use provider:model format "
+                "(e.g., 'anthropic:claude-sonnet-4-5')",
+                self.default_model,
             )
 
     def get_all_models(self) -> list[tuple[str, str]]:
@@ -340,6 +345,11 @@ class ModelConfig:
 
     def has_credentials(self, provider_name: str) -> bool:
         """Check if credentials are available for a provider.
+
+        This is the config-file-driven credential check, supporting custom
+        providers (e.g., local Ollama with no key required). For the hardcoded
+        `PROVIDER_API_KEY_ENV`-based check used in the hot-swap path, see the
+        module-level `has_provider_credentials()`.
 
         Args:
             provider_name: The provider to check.
@@ -418,75 +428,7 @@ def save_default_model(model_name: str, config_path: Path | None = None) -> bool
         with config_path.open("wb") as f:
             tomli_w.dump(data, f)
     except (OSError, PermissionError, tomllib.TOMLDecodeError) as e:
-        print(f"Warning: Could not save model preference: {e}", file=sys.stderr)
+        logger.warning("Could not save model preference: %s", e)
         return False
     else:
         return True
-
-
-def run_first_run_wizard() -> ModelConfig | None:
-    """Interactive first-run setup when no config exists.
-
-    Called from `main.py` if no config file and no env vars detected.
-    Uses simple `input()` prompts since app isn't running yet.
-
-    Returns:
-        Created `ModelConfig` if setup completed, None if skipped.
-    """
-    print("\nNo configuration found for deepagents.")
-    print("\nAvailable providers:")
-    print("  1. Anthropic (Claude models)")
-    print("  2. OpenAI (GPT models)")
-    print("  3. Google (Gemini models)")
-    print("  4. Skip (use environment variables)")
-
-    try:
-        choice = input("\nSelect provider [1-4]: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return None
-
-    if not choice or choice == "4":
-        return None
-
-    # Map choice to (provider, env_var, default_model_spec using provider:model format)
-    provider_map: dict[str, tuple[str, str, str]] = {
-        "1": ("anthropic", "ANTHROPIC_API_KEY", "anthropic:claude-sonnet-4-5"),
-        "2": ("openai", "OPENAI_API_KEY", "openai:gpt-4o"),
-        "3": ("google_genai", "GOOGLE_API_KEY", "google_genai:gemini-3-pro-preview"),
-    }
-
-    if choice not in provider_map:
-        print(f"Invalid choice: {choice}")
-        return None
-
-    provider_name, env_var, default_model_spec = provider_map[choice]
-
-    # Check if env var exists
-    if not os.environ.get(env_var):
-        print(f"\nNote: {env_var} is not set.")
-        print(f"Set it with: export {env_var}=your_key_here")
-
-    # Create config with provider:model syntax
-    config_path = DEFAULT_CONFIG_PATH
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Get curated models for this provider
-    curated = get_curated_models().get(provider_name, [])
-    models_list = curated or [default_model_spec.split(":", 1)[1]]
-
-    # Build config data structure and serialize with tomli_w
-    config_data = {
-        "default": {"model": default_model_spec},
-        "providers": {
-            provider_name: {
-                "models": models_list,
-                "api_key_env": env_var,
-            }
-        },
-    }
-
-    with config_path.open("wb") as f:
-        tomli_w.dump(config_data, f)
-    print(f"\nConfiguration saved to {config_path}")
-
-    return ModelConfig.load(config_path)

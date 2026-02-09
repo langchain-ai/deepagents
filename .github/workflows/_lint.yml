@@ -13,6 +13,11 @@ on:
         required: true
         type: string
         description: "Python version to use"
+      typecheck:
+        required: false
+        type: boolean
+        default: false
+        description: "Whether to run type checking (make typecheck)"
 
 permissions:
   contents: read
@@ -47,3 +52,9 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: |
           make lint
+
+      - name: "🔎 Run Type Checker"
+        if: inputs.typecheck
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          make typecheck

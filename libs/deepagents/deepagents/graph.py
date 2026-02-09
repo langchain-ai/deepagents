@@ -1,4 +1,4 @@
-"""Deepagents come with planning, filesystem, and subagents."""
+"""Deep Agents come with planning, filesystem, and subagents."""
 
 from collections.abc import Callable, Sequence
 from typing import Any

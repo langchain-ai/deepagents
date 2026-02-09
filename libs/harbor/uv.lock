@@ -667,7 +667,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.3.11"
+version = "0.3.12"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -697,7 +697,7 @@ test = [
     { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },
     { name = "pytest-watcher", specifier = ">=0.3.4,<1.0.0" },
     { name = "pytest-xdist" },
-    { name = "ruff", specifier = ">=0.12.2,<0.13.0" },
+    { name = "ruff", specifier = ">=0.12.2,<0.16.0" },
     { name = "twine" },
     { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]
@@ -758,9 +758,9 @@ provides-extras = ["vertexai"]
 [package.metadata.requires-dev]
 test = [
     { name = "build", specifier = ">=1.0.0,<2.0.0" },
-    { name = "pytest", specifier = ">=8.3.4,<9.0.0" },
-    { name = "pytest-asyncio", specifier = ">=0.25.3,<1.0.0" },
-    { name = "pytest-cov", specifier = ">=6.0.0,<7.0.0" },
+    { name = "pytest", specifier = ">=8.3.4,<10.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.25.3,<2.0.0" },
+    { name = "pytest-cov", specifier = ">=6.0.0,<8.0.0" },
     { name = "pytest-mock", specifier = ">=3.14.0,<4.0.0" },
     { name = "pytest-socket", specifier = ">=0.7.0,<1.0.0" },
     { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },

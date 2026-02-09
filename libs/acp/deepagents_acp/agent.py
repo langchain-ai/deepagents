@@ -534,7 +534,7 @@ class ACPDeepAgent(ACPAgent):
                 # Extract action requests from interrupt_value
                 action_requests = []
                 if isinstance(interrupt_value, dict):
-                    # DeepAgents wraps tool calls in action_requests
+                    # Deep Agents wraps tool calls in action_requests
                     action_requests = interrupt_value.get("action_requests", [])
 
                 # Process each action request

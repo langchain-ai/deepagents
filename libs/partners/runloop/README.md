@@ -14,18 +14,23 @@ pip install langchain-runloop
 ```
 
 ```python
-from runloop_api_client import Runloop
+import os
+
+from runloop_api_client import RunloopSDK
 
 from langchain_runloop import RunloopSandbox
 
+api_key = os.environ["RUNLOOP_API_KEY"]
+client = RunloopSDK(bearer_token=api_key)
 
-client = Runloop(bearer_token=api_key)
-devbox = client.devboxes.create()
+devbox = client.devbox.create()
 sandbox = RunloopSandbox(devbox=devbox)
-result = sandbox.execute("echo hello")
-print(result.output)
 
-client.devboxes.shutdown(id=devbox.id)
+try:
+    result = sandbox.execute("echo hello")
+    print(result.output)
+finally:
+    devbox.shutdown()
 ```
 
 ## 🤔 What is this?

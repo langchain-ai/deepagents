@@ -201,7 +201,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._filtered_models: list[tuple[str, str]] = list(self._all_models)
         self._selected_index = self._find_current_model_index()
         self._options_container: Container | None = None
+        self._option_widgets: list[ModelOption] = []
         self._filter_text = ""
+        self._rebuild_needed = True
+
+        # Pre-compute current spec for fast comparison in _move_selection
+        if current_model and current_provider:
+            self._current_spec = f"{current_provider}:{current_model}"
+        else:
+            self._current_spec: str | None = None
 
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
@@ -275,6 +283,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """
         self._filter_text = event.value.lower()
         self._update_filtered_list()
+        self._rebuild_needed = True
         self.call_after_refresh(self._update_display)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -293,7 +302,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The click event with model info.
         """
         self._selected_index = event.index
-        self.call_after_refresh(self._update_display)
         self.dismiss((event.model_spec, event.provider))
 
     def _update_filtered_list(self) -> None:
@@ -313,11 +321,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._selected_index = max(0, len(self._filtered_models) - 1)
 
     async def _update_display(self) -> None:
-        """Render the model list grouped by provider."""
+        """Render the model list grouped by provider.
+
+        Only performs a full rebuild when `_rebuild_needed` is set (e.g. after
+        filtering). Arrow-key navigation uses `_move_selection` instead.
+        """
         if not self._options_container:
             return
 
         await self._options_container.remove_children()
+        self._option_widgets: list[ModelOption] = []
+        self._rebuild_needed = False
 
         if not self._filtered_models:
             no_matches = Static("[dim]No matching models[/dim]")
@@ -370,6 +384,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     classes=classes,
                 )
                 await self._options_container.mount(widget)
+                self._option_widgets.append(widget)
 
                 if is_selected:
                     selected_widget = widget
@@ -385,19 +400,50 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             else:
                 selected_widget.scroll_visible()
 
+    def _move_selection(self, delta: int) -> None:
+        """Move selection by delta, updating only the affected widgets.
+
+        Args:
+            delta: Number of positions to move (-1 for up, +1 for down).
+        """
+        if not self._filtered_models or not self._option_widgets:
+            return
+
+        count = len(self._filtered_models)
+        old_index = self._selected_index
+        new_index = (old_index + delta) % count
+        self._selected_index = new_index
+
+        glyphs = get_glyphs()
+
+        # Update the previously selected widget
+        old_widget = self._option_widgets[old_index]
+        old_widget.remove_class("model-option-selected")
+        is_current = old_widget.model_spec == self._current_spec
+        suffix = " [dim](current)[/dim]" if is_current else ""
+        old_widget.update(f"  {old_widget.model_spec}{suffix}")
+
+        # Update the newly selected widget
+        new_widget = self._option_widgets[new_index]
+        new_widget.add_class("model-option-selected")
+        is_current = new_widget.model_spec == self._current_spec
+        suffix = " [dim](current)[/dim]" if is_current else ""
+        new_widget.update(f"{glyphs.cursor} {new_widget.model_spec}{suffix}")
+
+        # Scroll the selected item into view
+        if new_index == 0:
+            scroll_container = self.query_one(".model-list", VerticalScroll)
+            scroll_container.scroll_home(animate=False)
+        else:
+            new_widget.scroll_visible()
+
     def action_move_up(self) -> None:
         """Move selection up."""
-        if self._filtered_models:
-            count = len(self._filtered_models)
-            self._selected_index = (self._selected_index - 1) % count
-            self.call_after_refresh(self._update_display)
+        self._move_selection(-1)
 
     def action_move_down(self) -> None:
         """Move selection down."""
-        if self._filtered_models:
-            count = len(self._filtered_models)
-            self._selected_index = (self._selected_index + 1) % count
-            self.call_after_refresh(self._update_display)
+        self._move_selection(1)
 
     def action_select(self) -> None:
         """Select the current model."""

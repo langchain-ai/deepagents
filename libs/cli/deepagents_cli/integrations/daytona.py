@@ -12,8 +12,9 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
+from deepagents.backends.sandbox import BaseSandbox
+
+from deepagents_cli.integrations.sandbox_provider import (
     SandboxListResponse,
     SandboxProvider,
 )

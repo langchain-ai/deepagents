@@ -19,12 +19,13 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
+from deepagents.backends.sandbox import BaseSandbox
+from runloop_api_client import Runloop
+
+from deepagents_cli.integrations.sandbox_provider import (
     SandboxListResponse,
     SandboxProvider,
 )
-from runloop_api_client import Runloop
 
 
 class RunloopBackend(BaseSandbox):

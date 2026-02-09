@@ -12,9 +12,13 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypedDict
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import tomli_w
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -382,15 +386,25 @@ def has_provider_credentials(provider: str) -> bool:
     return _is_langchain_supported_provider(provider)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ModelConfig:
-    """Parsed model configuration from `config.toml`."""
+    """Parsed model configuration from `config.toml`.
+
+    Instances are immutable once constructed. The `providers` mapping is
+    wrapped in `MappingProxyType` to prevent accidental mutation of the
+    globally cached singleton returned by `load()`.
+    """
 
     default_model: str | None = None
     """The default model to use when none is specified."""
 
-    providers: dict[str, ProviderConfig] = field(default_factory=dict)
-    """Dictionary mapping provider names to their configurations."""
+    providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
+    """Read-only mapping of provider names to their configurations."""
+
+    def __post_init__(self) -> None:
+        """Freeze the providers dict into a read-only proxy."""
+        if not isinstance(self.providers, MappingProxyType):
+            object.__setattr__(self, "providers", MappingProxyType(self.providers))
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> ModelConfig:

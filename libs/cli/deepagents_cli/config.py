@@ -1,5 +1,6 @@
 """Configuration, constants, and model creation for the CLI."""
 
+import importlib
 import json
 import logging
 import os
@@ -1118,8 +1119,8 @@ def _get_provider_kwargs(provider: str) -> dict[str, Any]:
         return kwargs
 
     # Fall back to config-file provider settings
-    result: dict[str, Any] = {}
     config = ModelConfig.load()
+    result: dict[str, Any] = config.get_kwargs(provider)
     base_url = config.get_base_url(provider)
     if base_url:
         result["base_url"] = base_url
@@ -1131,8 +1132,110 @@ def _get_provider_kwargs(provider: str) -> dict[str, Any]:
     return result
 
 
+def _create_model_from_class(
+    class_path: str,
+    model_name: str,
+    provider: str,
+    kwargs: dict[str, Any],
+) -> BaseChatModel:
+    """Import and instantiate a custom `BaseChatModel` class.
+
+    Args:
+        class_path: Fully-qualified class in `module.path:ClassName` format.
+        model_name: Model identifier to pass as `model` kwarg.
+        provider: Provider name (for error messages).
+        kwargs: Additional keyword arguments for the constructor.
+
+    Returns:
+        Instantiated `BaseChatModel`.
+
+    Raises:
+        ModelConfigError: If the class cannot be imported, is not a
+            `BaseChatModel` subclass, or fails to instantiate.
+    """
+    if ":" not in class_path:
+        msg = (
+            f"Invalid class_path '{class_path}' for provider '{provider}': "
+            "must be in module.path:ClassName format"
+        )
+        raise ModelConfigError(msg)
+
+    module_path, class_name = class_path.rsplit(":", 1)
+
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as e:
+        msg = f"Could not import module '{module_path}' for provider '{provider}': {e}"
+        raise ModelConfigError(msg) from e
+
+    cls = getattr(module, class_name, None)
+    if cls is None:
+        msg = (
+            f"Class '{class_name}' not found in module '{module_path}' "
+            f"for provider '{provider}'"
+        )
+        raise ModelConfigError(msg)
+
+    if not (isinstance(cls, type) and issubclass(cls, BaseChatModel)):
+        msg = (
+            f"'{class_path}' is not a BaseChatModel subclass (got {type(cls).__name__})"
+        )
+        raise ModelConfigError(msg)
+
+    try:
+        return cls(model=model_name, **kwargs)
+    except Exception as e:
+        msg = f"Failed to instantiate '{class_path}' for '{provider}:{model_name}': {e}"
+        raise ModelConfigError(msg) from e
+
+
+def _create_model_via_init(
+    model_name: str,
+    provider: str,
+    kwargs: dict[str, Any],
+) -> BaseChatModel:
+    """Create a model using langchain's `init_chat_model`.
+
+    Args:
+        model_name: Model identifier.
+        provider: Provider name (may be empty for auto-detection).
+        kwargs: Additional keyword arguments.
+
+    Returns:
+        Instantiated `BaseChatModel`.
+
+    Raises:
+        ModelConfigError: On import, value, or runtime errors.
+    """
+    try:
+        if provider:
+            return init_chat_model(model_name, model_provider=provider, **kwargs)
+        return init_chat_model(model_name, **kwargs)
+    except ImportError as e:
+        package_map = {
+            "anthropic": "langchain-anthropic",
+            "openai": "langchain-openai",
+            "google_genai": "langchain-google-genai",
+            "google_vertexai": "langchain-google-vertexai",
+        }
+        package = package_map.get(provider, f"langchain-{provider}")
+        msg = (
+            f"Missing package for provider '{provider}'. Install: pip install {package}"
+        )
+        raise ModelConfigError(msg) from e
+    except (ValueError, TypeError) as e:
+        msg = f"Invalid model configuration for '{provider}:{model_name}': {e}"
+        raise ModelConfigError(msg) from e
+    except Exception as e:  # provider SDK auth/network errors
+        msg = f"Failed to initialize model '{provider}:{model_name}': {e}"
+        raise ModelConfigError(msg) from e
+
+
 def create_model(model_spec: str | None = None) -> BaseChatModel:
-    """Create a chat model using init_chat_model.
+    """Create a chat model.
+
+    Uses `init_chat_model` for standard providers, or imports a custom
+    `BaseChatModel` subclass when the provider has a `class_path` in config.
 
     Supports `provider:model` format (e.g., `'anthropic:claude-sonnet-4-5'`)
     for explicit provider selection, or bare model names for auto-detection.
@@ -1187,32 +1290,14 @@ def create_model(model_spec: str | None = None) -> BaseChatModel:
     # Provider-specific kwargs
     kwargs = _get_provider_kwargs(provider)
 
-    # Create the model using init_chat_model
-    try:
-        if provider:
-            model = init_chat_model(model_name, model_provider=provider, **kwargs)
-        else:
-            # Let init_chat_model infer the provider from the model name
-            model = init_chat_model(model_name, **kwargs)
-    except ImportError as e:
-        # Handle missing provider packages
-        package_map = {
-            "anthropic": "langchain-anthropic",
-            "openai": "langchain-openai",
-            "google_genai": "langchain-google-genai",
-            "google_vertexai": "langchain-google-vertexai",
-        }
-        package = package_map.get(provider, f"langchain-{provider}")
-        msg = (
-            f"Missing package for provider '{provider}'. Install: pip install {package}"
-        )
-        raise ModelConfigError(msg) from e
-    except (ValueError, TypeError) as e:
-        msg = f"Invalid model configuration for '{provider}:{model_name}': {e}"
-        raise ModelConfigError(msg) from e
-    except Exception as e:  # provider SDK auth/network errors
-        msg = f"Failed to initialize model '{provider}:{model_name}': {e}"
-        raise ModelConfigError(msg) from e
+    # Check if this provider uses a custom BaseChatModel class
+    config = ModelConfig.load()
+    class_path = config.get_class_path(provider) if provider else None
+
+    if class_path:
+        model = _create_model_from_class(class_path, model_name, provider, kwargs)
+    else:
+        model = _create_model_via_init(model_name, provider, kwargs)
 
     # Store model info in settings for display
     settings.model_name = model_name

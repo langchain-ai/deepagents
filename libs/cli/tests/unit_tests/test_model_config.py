@@ -706,6 +706,118 @@ api_key_env = "FIREWORKS_API_KEY"
         assert has_provider_credentials("nonexistent_provider_xyz") is False
 
 
+class TestModelConfigGetClassPath:
+    """Tests for ModelConfig.get_class_path() method."""
+
+    def test_returns_none_for_unknown_provider(self):
+        """Returns None for unknown provider."""
+        config = ModelConfig()
+        assert config.get_class_path("unknown") is None
+
+    def test_returns_none_when_not_configured(self, tmp_path):
+        """Returns None when class_path not in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.anthropic]
+models = ["claude-sonnet-4-5"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.get_class_path("anthropic") is None
+
+    def test_returns_class_path(self, tmp_path):
+        """Returns configured class_path."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.custom]
+class_path = "my_package.models:MyChatModel"
+models = ["my-model"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.get_class_path("custom") == "my_package.models:MyChatModel"
+
+
+class TestModelConfigGetKwargs:
+    """Tests for ModelConfig.get_kwargs() method."""
+
+    def test_returns_empty_for_unknown_provider(self):
+        """Returns empty dict for unknown provider."""
+        config = ModelConfig()
+        assert config.get_kwargs("unknown") == {}
+
+    def test_returns_empty_when_no_kwargs(self, tmp_path):
+        """Returns empty dict when kwargs not in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.custom]
+models = ["my-model"]
+""")
+        config = ModelConfig.load(config_path)
+        assert config.get_kwargs("custom") == {}
+
+    def test_returns_kwargs(self, tmp_path):
+        """Returns configured kwargs."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.custom]
+models = ["my-model"]
+
+[providers.custom.kwargs]
+temperature = 0
+max_tokens = 4096
+""")
+        config = ModelConfig.load(config_path)
+        kwargs = config.get_kwargs("custom")
+        assert kwargs == {"temperature": 0, "max_tokens": 4096}
+
+    def test_returns_copy(self, tmp_path):
+        """Returns a copy, not the original dict."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.custom]
+models = ["my-model"]
+
+[providers.custom.kwargs]
+temperature = 0
+""")
+        config = ModelConfig.load(config_path)
+        kwargs = config.get_kwargs("custom")
+        kwargs["extra"] = "mutated"
+        # Original should not be affected
+        assert "extra" not in config.get_kwargs("custom")
+
+
+class TestModelConfigValidateClassPath:
+    """Tests for _validate() class_path validation."""
+
+    def test_warns_on_invalid_class_path_format(self, tmp_path, caplog):
+        """Warns when class_path lacks colon separator."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.bad]
+class_path = "my_package.MyChatModel"
+models = ["my-model"]
+""")
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
+            ModelConfig.load(config_path)
+
+        assert any("invalid class_path" in record.message for record in caplog.records)
+
+    def test_no_warning_on_valid_class_path(self, tmp_path, caplog):
+        """No warning when class_path has colon separator."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.good]
+class_path = "my_package.models:MyChatModel"
+models = ["my-model"]
+""")
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
+            ModelConfig.load(config_path)
+
+        assert not any(
+            "invalid class_path" in record.message for record in caplog.records
+        )
+
+
 class TestModelConfigError:
     """Tests for ModelConfigError exception class."""
 

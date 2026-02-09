@@ -99,7 +99,17 @@ class ModelSpec:
 
 
 class ProviderConfig(TypedDict, total=False):
-    """Configuration for a model provider."""
+    """Configuration for a model provider.
+
+    The optional `class` field allows bypassing `init_chat_model` entirely
+    and instantiating an arbitrary `BaseChatModel` subclass via importlib.
+
+    !!! warning
+
+        Setting `class` executes arbitrary Python code from the user's
+        config file. This has the same trust model as `pyproject.toml` build
+        scripts — the user controls their own machine.
+    """
 
     models: list[str]
     """List of model identifiers available from this provider."""
@@ -109,6 +119,18 @@ class ProviderConfig(TypedDict, total=False):
 
     base_url: str
     """Custom base URL."""
+
+    # Level 2: arbitrary BaseChatModel classes
+
+    class_path: str
+    """Fully-qualified Python class in ``module.path:ClassName`` format.
+
+    When set, ``create_model`` imports this class and instantiates it directly
+    instead of calling ``init_chat_model``.
+    """
+
+    kwargs: dict[str, Any]
+    """Extra keyword arguments forwarded to the model constructor."""
 
 
 DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
@@ -338,6 +360,18 @@ class ModelConfig:
                 self.default_model,
             )
 
+        # Validate class_path format for custom providers
+        for name, provider in self.providers.items():
+            class_path = provider.get("class_path")
+            if class_path and ":" not in class_path:
+                logger.warning(
+                    "Provider '%s' has invalid class_path '%s': "
+                    "must be in module.path:ClassName format "
+                    "(e.g., 'my_package.models:MyChatModel')",
+                    name,
+                    class_path,
+                )
+
     def get_all_models(self) -> list[tuple[str, str]]:
         """Get all models as `(model_name, provider_name)` tuples.
 
@@ -409,6 +443,32 @@ class ModelConfig:
         """
         provider = self.providers.get(provider_name)
         return provider.get("api_key_env") if provider else None
+
+    def get_class_path(self, provider_name: str) -> str | None:
+        """Get the custom class path for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            Class path in ``module.path:ClassName`` format, or None.
+        """
+        provider = self.providers.get(provider_name)
+        return provider.get("class_path") if provider else None
+
+    def get_kwargs(self, provider_name: str) -> dict[str, Any]:
+        """Get extra constructor kwargs for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            Dictionary of extra kwargs (empty if none configured).
+        """
+        provider = self.providers.get(provider_name)
+        if not provider:
+            return {}
+        return dict(provider.get("kwargs", {}))
 
 
 def save_default_model(model_name: str, config_path: Path | None = None) -> bool:

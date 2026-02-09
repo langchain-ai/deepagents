@@ -9,6 +9,7 @@ from deepagents_cli import model_config
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     Settings,
+    _create_model_from_class,
     _find_project_agent_md,
     _find_project_root,
     _get_provider_kwargs,
@@ -614,3 +615,219 @@ api_key_env = "FIREWORKS_API_KEY"
 
         kwargs = _get_provider_kwargs("google_genai")
         assert kwargs == {"temperature": 0}
+
+    def test_merges_config_kwargs(self, tmp_path: Path) -> None:
+        """Merges kwargs from config with base_url and api_key."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.custom]
+models = ["my-model"]
+base_url = "https://my-endpoint.example.com"
+api_key_env = "CUSTOM_KEY"
+
+[providers.custom.kwargs]
+temperature = 0
+max_tokens = 4096
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"CUSTOM_KEY": "secret"}, clear=False),
+        ):
+            kwargs = _get_provider_kwargs("custom")
+
+        assert kwargs["temperature"] == 0
+        assert kwargs["max_tokens"] == 4096
+        assert kwargs["base_url"] == "https://my-endpoint.example.com"
+        assert kwargs["api_key"] == "secret"
+
+    def test_base_url_and_api_key_override_config_kwargs(self, tmp_path: Path) -> None:
+        """base_url/api_key from config fields override same keys in kwargs."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.custom]
+models = ["my-model"]
+base_url = "https://correct-url.com"
+api_key_env = "CUSTOM_KEY"
+
+[providers.custom.kwargs]
+base_url = "https://wrong-url.com"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"CUSTOM_KEY": "secret"}, clear=False),
+        ):
+            kwargs = _get_provider_kwargs("custom")
+
+        # Explicit base_url field should win over kwargs.base_url
+        assert kwargs["base_url"] == "https://correct-url.com"
+
+
+class TestCreateModelFromClass:
+    """Tests for _create_model_from_class() custom class factory."""
+
+    def test_raises_on_invalid_class_path_format(self) -> None:
+        """Raises ModelConfigError when class_path lacks colon."""
+        from deepagents_cli.model_config import ModelConfigError
+
+        with pytest.raises(ModelConfigError, match="Invalid class_path"):
+            _create_model_from_class("my_package.MyChatModel", "model", "provider", {})
+
+    def test_raises_on_import_error(self) -> None:
+        """Raises ModelConfigError when module cannot be imported."""
+        from deepagents_cli.model_config import ModelConfigError
+
+        with pytest.raises(ModelConfigError, match="Could not import module"):
+            _create_model_from_class(
+                "nonexistent_package_xyz.models:MyModel", "model", "provider", {}
+            )
+
+    def test_raises_when_class_not_found_in_module(self) -> None:
+        """Raises ModelConfigError when class doesn't exist in module."""
+        from deepagents_cli.model_config import ModelConfigError
+
+        with pytest.raises(ModelConfigError, match="not found in module"):
+            _create_model_from_class("os.path:NonExistentClass", "m", "p", {})
+
+    def test_raises_when_not_base_chat_model_subclass(self) -> None:
+        """Raises ModelConfigError when class is not a BaseChatModel."""
+        from deepagents_cli.model_config import ModelConfigError
+
+        # os.path:join is a function, not a BaseChatModel subclass
+        with pytest.raises(ModelConfigError, match="not a BaseChatModel subclass"):
+            _create_model_from_class("os.path:sep", "m", "p", {})
+
+    def test_instantiates_valid_subclass(self) -> None:
+        """Successfully instantiates a valid BaseChatModel subclass."""
+        from unittest.mock import MagicMock
+
+        from langchain_core.callbacks import CallbackManagerForLLMRun
+        from langchain_core.language_models import BaseChatModel
+        from langchain_core.messages import BaseMessage
+        from langchain_core.outputs import ChatResult
+
+        # Track what args the constructor receives
+        captured: dict[str, object] = {}
+
+        class FakeChatModel(BaseChatModel):
+            """Minimal BaseChatModel subclass for testing."""
+
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+            def _generate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: CallbackManagerForLLMRun | None = None,
+                **kwargs: object,
+            ) -> ChatResult:
+                msg = "not implemented"
+                raise NotImplementedError(msg)
+
+            @property
+            def _llm_type(self) -> str:
+                return "fake"
+
+        with patch("importlib.import_module") as mock_import:
+            mock_module = MagicMock()
+            mock_module.MyChatModel = FakeChatModel
+            mock_import.return_value = mock_module
+
+            result = _create_model_from_class(
+                "my_pkg:MyChatModel", "my-model", "custom", {"temp": 0}
+            )
+
+        assert isinstance(result, FakeChatModel)
+        assert captured["model"] == "my-model"
+        assert captured["temp"] == 0
+
+    def test_raises_on_instantiation_error(self) -> None:
+        """Raises ModelConfigError when constructor fails."""
+        from unittest.mock import MagicMock
+
+        from langchain_core.language_models import BaseChatModel
+
+        from deepagents_cli.model_config import ModelConfigError
+
+        class BadModel(BaseChatModel):
+            def __init__(self, **kwargs: object) -> None:
+                pass
+
+        with (
+            patch("importlib.import_module") as mock_import,
+            patch.object(BadModel, "__init__", side_effect=TypeError("bad args")),
+        ):
+            mock_module = MagicMock()
+            mock_module.BadModel = BadModel
+            mock_import.return_value = mock_module
+
+            with pytest.raises(ModelConfigError, match="Failed to instantiate"):
+                _create_model_from_class("my_pkg:BadModel", "model", "custom", {})
+
+
+class TestCreateModelWithCustomClass:
+    """Tests for create_model() using custom class_path from config."""
+
+    def test_create_model_uses_class_path(self, tmp_path: Path) -> None:
+        """create_model dispatches to custom class when class_path is set."""
+        from unittest.mock import MagicMock
+
+        from langchain_core.language_models import BaseChatModel
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.custom]
+class_path = "my_pkg.models:MyChatModel"
+models = ["my-model"]
+
+[providers.custom.kwargs]
+temperature = 0
+""")
+        mock_instance = MagicMock(spec=BaseChatModel)
+        mock_instance.profile = None
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.config._create_model_from_class",
+                return_value=mock_instance,
+            ) as mock_factory,
+        ):
+            result = create_model("custom:my-model")
+
+        mock_factory.assert_called_once()
+        call_args = mock_factory.call_args
+        assert call_args[0][0] == "my_pkg.models:MyChatModel"
+        assert call_args[0][1] == "my-model"
+        assert call_args[0][2] == "custom"
+        assert result is mock_instance
+
+    def test_create_model_falls_through_without_class_path(
+        self, tmp_path: Path
+    ) -> None:
+        """create_model uses init_chat_model when no class_path is set."""
+        from unittest.mock import MagicMock
+
+        from langchain_core.language_models import BaseChatModel
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[providers.fireworks]
+models = ["llama"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        mock_instance = MagicMock(spec=BaseChatModel)
+        mock_instance.profile = None
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"FIREWORKS_API_KEY": "key"}, clear=False),
+            patch(
+                "deepagents_cli.config._create_model_via_init",
+                return_value=mock_instance,
+            ) as mock_init,
+        ):
+            result = create_model("fireworks:llama")
+
+        mock_init.assert_called_once()
+        assert result is mock_instance

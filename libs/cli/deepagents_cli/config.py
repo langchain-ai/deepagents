@@ -1071,12 +1071,12 @@ def _get_default_model_spec() -> str:
     if config.default_model:
         return config.default_model
 
-    if settings.has_anthropic:
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-        return f"anthropic:{model}"
     if settings.has_openai:
         model = os.environ.get("OPENAI_MODEL", "gpt-5.2")
         return f"openai:{model}"
+    if settings.has_anthropic:
+        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+        return f"anthropic:{model}"
     if settings.has_google:
         model = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
         return f"google_genai:{model}"

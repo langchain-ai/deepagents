@@ -786,7 +786,14 @@ A condensed summary follows:
 
         # If no summarization needed, return with truncated messages
         if not should_summarize:
-            return handler(request.override(messages=truncated_messages))
+            try:
+                return handler(request.override(messages=truncated_messages))
+            except ContextOverflowError:
+                logger.warning(
+                    "ContextOverflowError during model call with %d tokens",
+                    total_tokens,
+                )
+                should_summarize = True  # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
@@ -869,7 +876,14 @@ A condensed summary follows:
 
         # If no summarization needed, return with truncated messages
         if not should_summarize:
-            return await handler(request.override(messages=truncated_messages))
+            try:
+                return await handler(request.override(messages=truncated_messages))
+            except ContextOverflowError:
+                logger.warning(
+                    "ContextOverflowError during model call with %d tokens",
+                    total_tokens,
+                )
+                should_summarize = True  # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)

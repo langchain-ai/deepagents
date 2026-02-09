@@ -131,8 +131,8 @@ class StatusBar(Horizontal):
         """Format the model display string.
 
         Returns:
-            Model display string in provider:model format if provider is known,
-            otherwise just the model name.
+            Model display string in `provider:model` format if provider is known,
+                otherwise just the model name.
         """
         if settings.model_provider and settings.model_name:
             return f"{settings.model_provider}:{settings.model_name}"
@@ -272,7 +272,7 @@ class StatusBar(Horizontal):
 
         Args:
             model_spec: Model specification to display (e.g.,
-                "anthropic:claude-sonnet-4-5").
+                `'anthropic:claude-sonnet-4-5'`).
 
         Note:
             This method only updates the UI display. Global settings

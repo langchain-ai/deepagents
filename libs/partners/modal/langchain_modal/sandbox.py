@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import contextlib
 
+import modal
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
-    SandboxBackendProtocol,
 )
 from deepagents.backends.sandbox import BaseSandbox
-
-import modal
 
 
 class ModalSandbox(BaseSandbox):
@@ -99,4 +97,3 @@ class ModalSandbox(BaseSandbox):
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload files into the sandbox."""
         return [self._write_file(path, content) for path, content in files]
-

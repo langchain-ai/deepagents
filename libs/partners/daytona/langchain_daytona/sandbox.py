@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from daytona import Daytona, DaytonaConfig, FileDownloadRequest, FileUpload
+from daytona import FileDownloadRequest, FileUpload
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
-    SandboxBackendProtocol,
 )
 from deepagents.backends.sandbox import BaseSandbox
 

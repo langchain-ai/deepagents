@@ -399,10 +399,10 @@ class DeepAgentsApp(App):
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
-            checkpointer: Checkpointer for session persistence (enables hot-swap)
-            tools: Tools used to create the agent (for hot-swap)
-            sandbox: Sandbox backend (for hot-swap)
-            sandbox_type: Type of sandbox provider (for hot-swap)
+            checkpointer: Checkpointer for session persistence (enables model hot-swap)
+            tools: Tools used to create the agent (for model hot-swap)
+            sandbox: Sandbox backend (for model hot-swap)
+            sandbox_type: Type of sandbox provider (for model hot-swap)
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -1627,11 +1627,12 @@ class DeepAgentsApp(App):
         """Switch to a new model, preserving conversation history.
 
         Args:
-            model_spec: The model specification to switch to. Can be in
-                provider:model format (e.g., "anthropic:claude-sonnet-4-5")
-                or just the model name for auto-detection.
+            model_spec: The model specification to switch to.
+
+                Can be in `provider:model` format
+                (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
+                for auto-detection.
         """
-        # Parse provider:model syntax to check credentials early
         if ":" in model_spec:
             provider, model_name = model_spec.split(":", 1)
             # Check credentials for the specified provider
@@ -1703,9 +1704,6 @@ class DeepAgentsApp(App):
             self._agent = new_agent
             self._backend = new_backend
 
-            # Note: UI adapter uses callbacks and doesn't hold agent directly,
-            # so it doesn't need recreation on model switch.
-
             # Update status bar with provider:model format
             if self._status_bar:
                 display_spec = f"{settings.model_provider}:{settings.model_name}"
@@ -1753,10 +1751,10 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
-        checkpointer: Checkpointer for session persistence (enables hot-swap)
-        tools: Tools used to create the agent (for hot-swap)
-        sandbox: Sandbox backend (for hot-swap)
-        sandbox_type: Type of sandbox provider (for hot-swap)
+        checkpointer: Checkpointer for session persistence (enables model hot-swap)
+        tools: Tools used to create the agent (for model hot-swap)
+        sandbox: Sandbox backend (for model hot-swap)
+        sandbox_type: Type of sandbox provider (for model hot-swap)
 
     Returns:
         The app's return code (0 for success, non-zero for error).

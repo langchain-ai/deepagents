@@ -36,6 +36,8 @@ jobs:
       cli: ${{ steps.filter.outputs.cli }}
       harbor: ${{ steps.filter.outputs.harbor }}
       daytona: ${{ steps.filter.outputs.daytona }}
+      modal: ${{ steps.filter.outputs.modal }}
+      runloop: ${{ steps.filter.outputs.runloop }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@v6
@@ -68,6 +70,18 @@ jobs:
               - '.github/actions/**'
             daytona:
               - 'libs/partners/daytona/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            modal:
+              - 'libs/partners/modal/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            runloop:
+              - 'libs/partners/runloop/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -108,6 +122,24 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-version: "3.11"
+
+  lint-modal:
+    name: "🧹 Lint modal"
+    needs: changes
+    if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/modal"
+      python-version: "3.11"
+
+  lint-runloop:
+    name: "🧹 Lint runloop"
+    needs: changes
+    if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/runloop"
       python-version: "3.11"
 
   # Run unit tests on changed packages
@@ -163,6 +195,32 @@ jobs:
       working-directory: "libs/partners/daytona"
       python-version: ${{ matrix.python-version }}
 
+  test-modal:
+    name: "🧪 Test modal"
+    needs: changes
+    if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/modal"
+      python-version: ${{ matrix.python-version }}
+
+  test-runloop:
+    name: "🧪 Test runloop"
+    needs: changes
+    if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/runloop"
+      python-version: ${{ matrix.python-version }}
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -172,10 +230,14 @@ jobs:
       - lint-cli
       - lint-harbor
       - lint-daytona
+      - lint-modal
+      - lint-runloop
       - test-deepagents
       - test-cli
       - test-harbor
       - test-daytona
+      - test-modal
+      - test-runloop
     if: always()
     runs-on: ubuntu-latest
     steps:

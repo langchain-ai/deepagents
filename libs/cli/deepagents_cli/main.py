@@ -270,9 +270,8 @@ def parse_args() -> argparse.Namespace:
         "-q",
         "--quiet",
         action="store_true",
-        help="Suppress non-agent output (status messages, headers, tool "
-        "notifications). Only the agent's response text is written to "
-        "stdout; diagnostic output moves to stderr. Requires -n",
+        help="Clean output for piping — only the agent's response "
+        "goes to stdout. Requires -n.",
     )
 
     parser.add_argument(
@@ -325,7 +324,12 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(show_help),
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.quiet and not args.non_interactive_message:
+        parser.error("--quiet requires --non-interactive (-n)")
+
+    return args
 
 
 async def run_textual_cli_async(
@@ -451,10 +455,6 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
-
-        if args.quiet and not args.non_interactive_message:
-            print("error: --quiet requires --non-interactive (-n)", file=sys.stderr)
-            sys.exit(2)
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:

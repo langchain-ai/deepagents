@@ -10,6 +10,9 @@ all tool calls (shell and non-shell) pass through HITL, where non-shell
 tools are approved unconditionally and shell commands are validated against
 the list.
 
+An optional quiet mode (`--quiet` / `-q`) redirects all console output to
+stderr, leaving stdout exclusively for the agent's response text.
+
 Note: in non-interactive mode (`-n`), auto-approval is determined solely by
 whether a `--shell-allow-list` is present, not by the `--auto-approve` CLI
 flag. See `run_non_interactive` for details.
@@ -73,7 +76,11 @@ loops (e.g. when the agent keeps retrying rejected commands)."""
 
 
 def _write_text(text: str) -> None:
-    """Write text to stdout (without a trailing newline) for streaming output.
+    """Write agent response text to stdout (without a trailing newline).
+
+    Uses `sys.stdout` directly (rather than the Rich Console) so that agent
+    response text always appears on stdout, even in quiet mode where the
+    Console is redirected to stderr.
 
     Args:
         text: The text string to write.
@@ -93,6 +100,9 @@ class StreamState:
     """Mutable state accumulated while iterating over the agent stream.
 
     Attributes:
+        quiet: When `True`, diagnostic formatting that would otherwise go
+            to stdout (e.g. separator newlines before tool notifications)
+            is suppressed so that stdout contains only agent response text.
         full_response: Accumulated text fragments from the AI message stream.
         tool_call_buffers: Maps a tool-call index or ID to its name/ID
             metadata for in-progress tool calls.
@@ -107,6 +117,7 @@ class StreamState:
             received during the current stream pass.
     """
 
+    quiet: bool = False
     full_response: list[str] = field(default_factory=list)
     tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
         default_factory=dict
@@ -200,7 +211,7 @@ def _process_ai_message(
                 state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
             if chunk_name:
                 state.tool_call_buffers[buffer_key]["name"] = chunk_name
-                if state.full_response:
+                if state.full_response and not state.quiet:
                     _write_newline()
                 console.print(f"[dim]🔧 Calling tool: {chunk_name}[/dim]")
 
@@ -405,6 +416,8 @@ async def _run_agent_loop(
     config: RunnableConfig,
     console: Console,
     file_op_tracker: FileOpTracker,
+    *,
+    quiet: bool = False,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -417,11 +430,12 @@ async def _run_agent_loop(
         config: LangGraph runnable config.
         console: Rich console for formatted output.
         file_op_tracker: Tracker for file-operation diffs.
+        quiet: Suppress diagnostic formatting on stdout.
 
     Raises:
         HITLIterationLimitError: If the HITL iteration limit is exceeded.
     """
-    state = StreamState()
+    state = StreamState(quiet=quiet)
     stream_input: dict[str, Any] | Command = {
         "messages": [{"role": "user", "content": message}]
     }
@@ -450,7 +464,11 @@ async def _run_agent_loop(
     if state.full_response:
         _write_newline()
 
-    console.print("[green]✓ Task completed[/green]")
+    if not quiet:
+        console.print()
+        console.print("[green]✓ Task completed[/green]")
+    else:
+        console.print("[green]✓ Task completed (response written to stdout)[/green]")
 
 
 def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
@@ -548,13 +566,15 @@ async def run_non_interactive(
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
-        quiet: When `True`, diagnostic output (headers, tool notifications,
-            completion status) is redirected to stderr so that only the
-            agent's response text appears on stdout.
+        quiet: When `True`, all console output (headers, status messages,
+            tool notifications, HITL decisions, errors) is redirected to
+            stderr so that only the agent's response text appears on stdout.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
     """
+    # stderr=True routes all console.print() to stderr; agent response text
+    # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
     model = create_model(model_name)
     thread_id = generate_thread_id()
@@ -568,7 +588,10 @@ async def run_non_interactive(
         },
     }
 
-    console.print("[dim]Running task non-interactively...[/dim]")
+    if quiet:
+        console.print("[dim]Running task non-interactively (quiet mode)...[/dim]")
+    else:
+        console.print("[dim]Running task non-interactively...[/dim]")
     header = _build_non_interactive_header(assistant_id, thread_id)
     console.print(header)
     console.print()
@@ -626,7 +649,9 @@ async def run_non_interactive(
                 assistant_id=assistant_id, backend=composite_backend
             )
 
-            await _run_agent_loop(agent, message, config, console, file_op_tracker)
+            await _run_agent_loop(
+                agent, message, config, console, file_op_tracker, quiet=quiet
+            )
             return 0
 
     except KeyboardInterrupt:

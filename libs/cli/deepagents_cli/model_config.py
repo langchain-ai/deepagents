@@ -180,6 +180,7 @@ langchain registry fallback.
 
 # Module-level caches — cleared by `clear_caches()`.
 _available_models_cache: dict[str, list[str]] | None = None
+_builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
 
 
@@ -188,8 +189,9 @@ def clear_caches() -> None:
 
     Intended for tests and for a hypothetical "refresh models" UI action.
     """
-    global _available_models_cache, _default_config_cache  # noqa: PLW0603
+    global _available_models_cache, _builtin_providers_cache, _default_config_cache  # noqa: PLW0603
     _available_models_cache = None
+    _builtin_providers_cache = None
     _default_config_cache = None
 
 
@@ -199,17 +201,22 @@ def _get_builtin_providers() -> dict[str, Any]:
     Tries the newer `_BUILTIN_PROVIDERS` name first, then falls back to
     the legacy `_SUPPORTED_PROVIDERS` for older langchain versions.
 
+    Results are cached after the first call; use `clear_caches()` to reset.
+
     Returns:
         The provider registry dict from `langchain.chat_models.base`.
     """
+    global _builtin_providers_cache  # noqa: PLW0603
+    if _builtin_providers_cache is not None:
+        return _builtin_providers_cache
+
     from langchain.chat_models import base  # noqa: PLC0415
 
     registry: dict[str, Any] | None = getattr(base, "_BUILTIN_PROVIDERS", None)
     if registry is None:
         registry = getattr(base, "_SUPPORTED_PROVIDERS", None)
-    if registry is None:
-        return {}
-    return registry
+    _builtin_providers_cache = registry if registry is not None else {}
+    return _builtin_providers_cache
 
 
 def _get_provider_profile_modules() -> list[tuple[str, str]]:

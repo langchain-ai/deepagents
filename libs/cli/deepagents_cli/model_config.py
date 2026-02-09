@@ -1,10 +1,7 @@
-"""Model configuration management for deepagents-cli.
+"""Model configuration management.
 
-This module handles loading and saving model configuration from TOML files,
-providing a structured way to define available models and providers.
-
-The module supports the "provider:model" syntax for model specification,
-allowing explicit provider selection (e.g., "anthropic:claude-sonnet-4-5").
+Handles loading and saving model configuration from TOML files, providing a
+structured way to define available models and providers.
 """
 
 from __future__ import annotations
@@ -21,15 +18,7 @@ import tomli_w
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """A model specification in provider:model format.
-
-    This is a value type that encapsulates the provider:model syntax used
-    throughout the CLI. It validates the format at construction time and
-    provides convenient access to both parts.
-
-    Attributes:
-        provider: The provider name (e.g., "anthropic", "openai").
-        model: The model identifier (e.g., "claude-sonnet-4-5", "gpt-4o").
+    """A model specification in `provider:model` format.
 
     Examples:
         >>> spec = ModelSpec.parse("anthropic:claude-sonnet-4-5")
@@ -42,7 +31,10 @@ class ModelSpec:
     """
 
     provider: str
+    """The provider name (e.g., `'anthropic'`, `'openai'`)."""
+
     model: str
+    """The model identifier (e.g., `'claude-sonnet-4-5'`, `'gpt-4o'`)."""
 
     def __post_init__(self) -> None:
         """Validate the model spec after initialization.
@@ -62,13 +54,13 @@ class ModelSpec:
         """Parse a model specification string.
 
         Args:
-            spec: Model specification in "provider:model" format.
+            spec: Model specification in `'provider:model'` format.
 
         Returns:
             Parsed ModelSpec instance.
 
         Raises:
-            ValueError: If the spec is not in valid provider:model format.
+            ValueError: If the spec is not in valid `'provider:model'` format.
         """
         if ":" not in spec:
             msg = (
@@ -95,35 +87,33 @@ class ModelSpec:
             return None
 
     def __str__(self) -> str:
-        """Return the model spec as a string in provider:model format."""
+        """Return the model spec as a string in `provider:model` format."""
         return f"{self.provider}:{self.model}"
 
 
 class ProviderConfig(TypedDict, total=False):
-    """Configuration for a model provider.
-
-    Keys:
-        models: List of model identifiers available from this provider.
-        api_key_env: Environment variable name containing the API key.
-        base_url: Custom base URL for OpenAI-compatible APIs.
-    """
+    """Configuration for a model provider."""
 
     models: list[str]
+    """List of model identifiers available from this provider."""
+
     api_key_env: str
+    """Environment variable name containing the API key."""
+
     base_url: str
+    """Custom base URL."""
 
 
-# Default config directory
 DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
 
-# Mapping of provider names to their API key environment variables
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
 }
+"""Mapping of provider names to their API key environment variables."""
 
 
 def get_available_models() -> dict[str, list[str]]:
@@ -134,7 +124,7 @@ def get_available_models() -> dict[str, list[str]]:
 
     Returns:
         Dictionary mapping provider names to lists of model identifiers.
-        Only includes providers whose packages are installed.
+            Only includes providers whose packages are installed.
     """
     available: dict[str, list[str]] = {}
 
@@ -233,7 +223,7 @@ def get_curated_models() -> dict[str, list[str]]:
         ],
         "google_vertexai": [
             "gemini-3-pro-preview",
-            "claude-sonnet-4-5",  # Claude on Vertex
+            "claude-sonnet-4-5",  # (Claude on Vertex)
         ],
     }
 
@@ -242,7 +232,7 @@ def has_provider_credentials(provider: str) -> bool:
     """Check if credentials are available for a provider.
 
     Args:
-        provider: Provider name (anthropic, openai, google_genai, google_vertexai)
+        provider: Provider name.
 
     Returns:
         True if the required environment variable is set.
@@ -255,29 +245,26 @@ def has_provider_credentials(provider: str) -> bool:
 
 @dataclass
 class ModelConfig:
-    """Parsed model configuration from config.toml.
-
-    Attributes:
-        default_model: The default model to use when none is specified.
-        providers: Dictionary mapping provider names to their configurations.
-    """
+    """Parsed model configuration from `config.toml`."""
 
     default_model: str | None = None
+    """The default model to use when none is specified."""
+
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    """Dictionary mapping provider names to their configurations."""
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> ModelConfig:
-        """Load config from file, returning empty config if not found or invalid.
+        """Load config from file.
 
         Args:
             config_path: Path to config file. Defaults to ~/.deepagents/config.toml.
 
         Returns:
-            Parsed ModelConfig instance. Returns empty config if file is missing,
-            unreadable, or contains invalid TOML syntax.
+            Parsed `ModelConfig` instance.
+                Returns empty config if file is missing, unreadable, or contains
+                invalid TOML syntax.
         """
-        import sys
-
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
@@ -290,7 +277,7 @@ class ModelConfig:
         except tomllib.TOMLDecodeError as e:
             print(
                 f"Warning: Config file {config_path} has invalid TOML syntax: {e}\n"
-                "Using default configuration. Fix the file or delete it to reset.",
+                "Ignoring config file. Fix the file or delete it to reset.",
                 file=sys.stderr,
             )
             return cls()
@@ -317,8 +304,6 @@ class ModelConfig:
         Issues warnings for invalid configurations but does not raise exceptions,
         allowing the app to continue with potentially degraded functionality.
         """
-        import sys
-
         # Warn if default_model is set but doesn't use provider:model format
         if self.default_model and ":" not in self.default_model:
             print(
@@ -328,10 +313,10 @@ class ModelConfig:
             )
 
     def get_all_models(self) -> list[tuple[str, str]]:
-        """Get all models as (model_name, provider_name) tuples.
+        """Get all models as `(model_name, provider_name)` tuples.
 
         Returns:
-            List of tuples containing (model_name, provider_name).
+            List of tuples containing `(model_name, provider_name)`.
         """
         return [
             (model, provider_name)
@@ -371,7 +356,7 @@ class ModelConfig:
         return bool(os.environ.get(env_var))
 
     def get_base_url(self, provider_name: str) -> str | None:
-        """Get custom base URL for OpenAI-compatible providers.
+        """Get custom base URL.
 
         Args:
             provider_name: The provider to get base URL for.
@@ -398,12 +383,12 @@ class ModelConfig:
 def save_default_model(model_name: str, config_path: Path | None = None) -> bool:
     """Update the default model in config file.
 
-    Reads existing config (if any), updates the default.model value,
-    and writes back using proper TOML serialization.
+    Reads existing config (if any), updates the `default.model` value, and
+    writes back using proper TOML serialization.
 
     Args:
-        model_name: The model to set as default (provider:model format recommended).
-        config_path: Path to config file. Defaults to ~/.deepagents/config.toml.
+        model_name: The model to set as default (`provider:model` format recommended).
+        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
@@ -442,11 +427,11 @@ def save_default_model(model_name: str, config_path: Path | None = None) -> bool
 def run_first_run_wizard() -> ModelConfig | None:
     """Interactive first-run setup when no config exists.
 
-    Called from main.py if no config file and no env vars detected.
-    Uses simple input() prompts since app isn't running yet.
+    Called from `main.py` if no config file and no env vars detected.
+    Uses simple `input()` prompts since app isn't running yet.
 
     Returns:
-        Created ModelConfig if setup completed, None if skipped.
+        Created `ModelConfig` if setup completed, None if skipped.
     """
     print("\nNo configuration found for deepagents.")
     print("\nAvailable providers:")

@@ -451,21 +451,19 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
     def action_select(self) -> None:
         """Select the current model."""
-        # Check if user typed a custom model spec in the filter
+        # If there are filtered results, always select the highlighted model
+        if self._filtered_models:
+            model_spec, provider = self._filtered_models[self._selected_index]
+            self.dismiss((model_spec, provider))
+            return
+
+        # No matches - check if user typed a custom provider:model spec
         filter_input = self.query_one("#model-filter", Input)
         custom_input = filter_input.value.strip()
 
         if custom_input and ":" in custom_input:
-            # User typed a custom provider:model - use it directly
             provider = custom_input.split(":", 1)[0]
             self.dismiss((custom_input, provider))
-            return
-
-        if not self._filtered_models:
-            return
-
-        model_spec, provider = self._filtered_models[self._selected_index]
-        self.dismiss((model_spec, provider))
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

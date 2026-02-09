@@ -234,6 +234,36 @@ class TestModelSelectorFiltering:
             assert app.dismissed is True
             assert app.result == ("custom:my-model", "custom")
 
+    @pytest.mark.asyncio
+    async def test_enter_selects_highlighted_model_not_filter_text(self) -> None:
+        """Enter selects highlighted model, not raw filter text."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+
+            # Type a partial spec with colon that matches existing models
+            for char in "anthropic:claude":
+                await pilot.press(char)
+            await pilot.pause()
+
+            # Should have filtered results
+            assert len(screen._filtered_models) > 0
+
+            # Press enter - should select the highlighted model, not raw text
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.dismissed is True
+            assert app.result is not None
+            # Result should be a full model spec from the list, not "anthropic:claude"
+            model_spec, provider = app.result
+            assert model_spec != "anthropic:claude"
+            assert provider == "anthropic"
+
 
 class TestModelSelectorCurrentModelPreselection:
     """Tests for pre-selecting the current model when opening the selector."""

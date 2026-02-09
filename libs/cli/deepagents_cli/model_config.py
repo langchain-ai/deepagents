@@ -138,7 +138,10 @@ class ProviderConfig(TypedDict, total=False):
 
 
 DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
+"""Directory for user-level Deep Agents configuration (`~/.deepagents`)."""
+
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
+"""Path to the user's model configuration file (`~/.deepagents/config.toml`)."""
 
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",

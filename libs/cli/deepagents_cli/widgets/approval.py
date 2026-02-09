@@ -15,10 +15,13 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
+from deepagents_cli.config import (
+    SHELL_TOOL_NAMES,
+    CharsetMode,
+    _detect_charset_mode,
+    get_glyphs,
+)
 from deepagents_cli.widgets.tool_renderers import get_renderer
-
-# Tools that support expandable command display (must be subset of _SHELL_TOOLS)
-_SHELL_TOOLS: set[str] = {"bash", "shell", "execute"}
 
 # Max length for truncated shell command display
 _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
@@ -70,7 +73,7 @@ class ApprovalMenu(Container):
             self.decision = decision
 
     # Tools that don't need detailed info display (already shown in tool call)
-    _MINIMAL_TOOLS: ClassVar[set[str]] = _SHELL_TOOLS
+    _MINIMAL_TOOLS: ClassVar[frozenset[str]] = SHELL_TOOL_NAMES
 
     def __init__(
         self,
@@ -123,7 +126,7 @@ class ApprovalMenu(Container):
         if len(self._action_requests) != 1:
             return False
         req = self._action_requests[0]
-        if req.get("name", "") not in _SHELL_TOOLS:
+        if req.get("name", "") not in SHELL_TOOL_NAMES:
             return False
         command = str(req.get("args", {}).get("command", ""))
         return len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH
@@ -147,7 +150,7 @@ class ApprovalMenu(Container):
         command = str(req.get("args", {}).get("command", ""))
         if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
             return f"[bold #f59e0b]{command}[/bold #f59e0b]"
-        truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + "..."
+        truncated = command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
         return (
             f"[bold #f59e0b]{truncated}[/bold #f59e0b] [dim](press 'e' to expand)[/dim]"
         )
@@ -184,7 +187,8 @@ class ApprovalMenu(Container):
                 yield self._tool_info_container
 
             # Separator between tool details and options
-            yield Static("─" * 40, classes="approval-separator")
+            glyphs = get_glyphs()
+            yield Static(glyphs.box_horizontal * 40, classes="approval-separator")
 
         # Options container at bottom
         with Container(classes="approval-options-container"):
@@ -195,13 +199,20 @@ class ApprovalMenu(Container):
                 yield widget
 
         # Help text at the very bottom
-        help_text = "↑/↓ navigate • Enter select • y/n/a quick keys"
+        glyphs = get_glyphs()
+        help_text = (
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
+            f"Enter select {glyphs.bullet} y/n/a quick keys {glyphs.bullet} Esc reject"
+        )
         if self._has_expandable_command:
-            help_text += " • e expand"
+            help_text += f" {glyphs.bullet} e expand"
         yield Static(help_text, classes="approval-help")
 
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border = ("ascii", "yellow")
+
         if not self._is_minimal:
             await self._update_tool_info()
         self._update_options()
@@ -238,19 +249,19 @@ class ApprovalMenu(Container):
             options = [
                 "1. Approve (y)",
                 "2. Reject (n)",
-                "3. Auto-approve all this session (a)",
+                "3. Auto-approve for this thread (a)",
             ]
         else:
             options = [
                 f"1. Approve all {count} (y)",
                 f"2. Reject all {count} (n)",
-                "3. Auto-approve all this session (a)",
+                "3. Auto-approve for this thread (a)",
             ]
 
         for i, (text, widget) in enumerate(
             zip(options, self._option_widgets, strict=True)
         ):
-            cursor = "› " if i == self._selected else "  "
+            cursor = f"{get_glyphs().cursor} " if i == self._selected else "  "
             widget.update(f"{cursor}{text}")
 
             # Update classes

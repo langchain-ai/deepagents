@@ -3,34 +3,28 @@
 from __future__ import annotations
 
 from time import time
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
 from textual.containers import Horizontal
 from textual.widgets import Static
+
+from deepagents_cli.config import get_glyphs
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
-class BrailleSpinner:
-    """Animated braille spinner."""
-
-    FRAMES: ClassVar[tuple[str, ...]] = (
-        "⠋",
-        "⠙",
-        "⠹",
-        "⠸",
-        "⠼",
-        "⠴",
-        "⠦",
-        "⠧",
-        "⠇",
-        "⠏",
-    )
+class Spinner:
+    """Animated spinner using charset-appropriate frames."""
 
     def __init__(self) -> None:
         """Initialize spinner."""
         self._position = 0
+
+    @property
+    def frames(self) -> tuple[str, ...]:
+        """Get spinner frames from glyphs config."""
+        return get_glyphs().spinner_frames
 
     def next_frame(self) -> str:
         """Get next animation frame.
@@ -38,8 +32,9 @@ class BrailleSpinner:
         Returns:
             The next spinner character in the animation sequence.
         """
-        frame = self.FRAMES[self._position]
-        self._position = (self._position + 1) % len(self.FRAMES)
+        frames = self.frames
+        frame = frames[self._position]
+        self._position = (self._position + 1) % len(frames)
         return frame
 
     def current_frame(self) -> str:
@@ -48,19 +43,20 @@ class BrailleSpinner:
         Returns:
             The current spinner character.
         """
-        return self.FRAMES[self._position]
+        return self.frames[self._position]
 
 
 class LoadingWidget(Static):
     """Animated loading indicator with status text and elapsed time.
 
-    Displays: ⠋ Thinking... (3s, esc to interrupt)
+    Displays: <spinner> Thinking... (3s, esc to interrupt)
     """
 
     DEFAULT_CSS = """
     LoadingWidget {
         height: auto;
         padding: 0 1;
+        margin-top: 1;
     }
 
     LoadingWidget .loading-container {
@@ -93,7 +89,7 @@ class LoadingWidget(Static):
         """
         super().__init__()
         self._status = status
-        self._spinner = BrailleSpinner()
+        self._spinner = Spinner()
         self._start_time: float | None = None
         self._spinner_widget: Static | None = None
         self._status_widget: Static | None = None
@@ -164,7 +160,7 @@ class LoadingWidget(Static):
         if self._hint_widget:
             self._hint_widget.update(f"(paused at {self._paused_elapsed}s)")
         if self._spinner_widget:
-            self._spinner_widget.update("[dim]⏸[/dim]")
+            self._spinner_widget.update(f"[dim]{get_glyphs().pause}[/dim]")
 
     def resume(self) -> None:
         """Resume the animation."""

@@ -4,7 +4,14 @@ from typing import Any, Literal
 
 import requests
 from markdownify import markdownify
-from tavily import TavilyClient
+from tavily import (
+    BadRequestError,
+    InvalidAPIKeyError,
+    MissingAPIKeyError,
+    TavilyClient,
+    UsageLimitExceededError,
+)
+from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
 
 from deepagents_cli.config import settings
 
@@ -52,7 +59,7 @@ def http_request(
 
         try:
             content = response.json()
-        except:
+        except (ValueError, requests.exceptions.JSONDecodeError):
             content = response.text
 
         return {
@@ -77,14 +84,6 @@ def http_request(
             "status_code": 0,
             "headers": {},
             "content": f"Request error: {e!s}",
-            "url": url,
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "status_code": 0,
-            "headers": {},
-            "content": f"Error making request: {e!s}",
             "url": url,
         }
 
@@ -136,7 +135,18 @@ def web_search(
             include_raw_content=include_raw_content,
             topic=topic,
         )
-    except Exception as e:
+    except (
+        requests.exceptions.RequestException,
+        ValueError,
+        TypeError,
+        # Tavily-specific exceptions
+        BadRequestError,
+        ForbiddenError,
+        InvalidAPIKeyError,
+        MissingAPIKeyError,
+        TavilyTimeoutError,
+        UsageLimitExceededError,
+    ) as e:
         return {"error": f"Web search error: {e!s}", "query": query}
 
 
@@ -182,5 +192,5 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
             "status_code": response.status_code,
             "content_length": len(markdown_content),
         }
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         return {"error": f"Fetch URL error: {e!s}", "url": url}

@@ -376,7 +376,10 @@ class ModelConfig:
     """
 
     default_model: str | None = None
-    """The default model to use when none is specified."""
+    """The user's intentional default model (from config file `[default].model`)."""
+
+    recent_model: str | None = None
+    """The most recently switched-to model (from config file `[recent].model`)."""
 
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
@@ -438,6 +441,7 @@ class ModelConfig:
 
         config = cls(
             default_model=data.get("default", {}).get("model"),
+            recent_model=data.get("recent", {}).get("model"),
             providers=data.get("providers", {}),
         )
 
@@ -461,6 +465,14 @@ class ModelConfig:
                 "default_model '%s' should use provider:model format "
                 "(e.g., 'anthropic:claude-sonnet-4-5')",
                 self.default_model,
+            )
+
+        # Warn if recent_model is set but doesn't use provider:model format
+        if self.recent_model and ":" not in self.recent_model:
+            logger.warning(
+                "recent_model '%s' should use provider:model format "
+                "(e.g., 'anthropic:claude-sonnet-4-5')",
+                self.recent_model,
             )
 
         # Validate class_path format for custom providers
@@ -614,7 +626,54 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
         with config_path.open("wb") as f:
             tomli_w.dump(data, f)
     except (OSError, PermissionError, tomllib.TOMLDecodeError) as e:
-        logger.warning("Could not save model preference: %s", e)
+        logger.warning("Could not save default model preference: %s", e)
+        return False
+    else:
+        # Invalidate config cache so the next load() picks up the change.
+        global _default_config_cache  # noqa: PLW0603
+        _default_config_cache = None
+        return True
+
+
+def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
+    """Update the recently used model in config file.
+
+    Writes to `[recent].model` instead of `[default].model`, so that `/model`
+    switches do not overwrite the user's intentional default.
+
+    Args:
+        model_spec: The model to save in `provider:model` format.
+        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+
+    Note:
+        This function does not preserve comments in the config file.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing config or start fresh
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        # Update the recent model
+        if "recent" not in data:
+            data["recent"] = {}
+        data["recent"]["model"] = model_spec
+
+        # Write back with proper TOML formatting
+        with config_path.open("wb") as f:
+            tomli_w.dump(data, f)
+    except (OSError, PermissionError, tomllib.TOMLDecodeError) as e:
+        logger.warning("Could not save recent model preference: %s", e)
         return False
     else:
         # Invalidate config cache so the next load() picks up the change.

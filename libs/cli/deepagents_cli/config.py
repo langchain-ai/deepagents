@@ -1065,8 +1065,11 @@ def _detect_provider(model_name: str) -> str | None:
 def _get_default_model_spec() -> str:
     """Get default model specification based on available credentials.
 
-    First checks for a saved default model in the config file, then
-    falls back to auto-detection based on available API credentials.
+    Checks in order:
+
+    1. `[default].model` in config file (user's intentional preference).
+    2. `[recent].model` in config file (last `/model` switch).
+    3. Auto-detection based on available API credentials.
 
     Returns:
         Model specification in provider:model format.
@@ -1077,6 +1080,9 @@ def _get_default_model_spec() -> str:
     config = ModelConfig.load()
     if config.default_model:
         return config.default_model
+
+    if config.recent_model:
+        return config.recent_model
 
     if settings.has_openai:
         model = os.environ.get("OPENAI_MODEL", "gpt-5.2")

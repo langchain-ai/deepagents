@@ -39,7 +39,7 @@ from deepagents_cli.model_config import (
     ModelSpec,
     get_credential_env_var,
     has_provider_credentials,
-    save_default_model,
+    save_recent_model,
 )
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
@@ -1688,10 +1688,10 @@ class DeepAgentsApp(App):
         if not self._checkpointer:
             # No checkpointer means we can't hot-swap
             # Save the preference and notify user
-            if save_default_model(model_spec):
+            if save_recent_model(model_spec):
                 await self._mount_message(
                     AppMessage(
-                        f"Default model set to {model_spec}. "
+                        f"Model preference set to {model_spec}. "
                         "Restart the CLI for the change to take effect."
                     )
                 )
@@ -1755,7 +1755,7 @@ class DeepAgentsApp(App):
                 display,
             )
 
-        config_saved = save_default_model(model_spec)
+        config_saved = save_recent_model(model_spec)
         if config_saved:
             await self._mount_message(AppMessage(f"Switched to {display}"))
         else:

@@ -215,14 +215,14 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch("deepagents_cli.app.has_provider_credentials", return_value=True),
-            patch("deepagents_cli.app.save_default_model", return_value=True),
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
             patch.object(AppMessage, "__init__", capture_init),
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_messages) == 1
-        assert "Default model set" in captured_messages[0]
+        assert "Model preference set" in captured_messages[0]
         assert "Restart" in captured_messages[0]
 
 
@@ -272,7 +272,7 @@ api_key_env = "FIREWORKS_API_KEY"
                 "deepagents_cli.app.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
             ),
-            patch("deepagents_cli.app.save_default_model", return_value=True),
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
             patch.object(AppMessage, "__init__", capture_app),
         ):
             await app._switch_model("fireworks:llama-v3p1-70b")
@@ -349,7 +349,7 @@ models = ["llama3"]
                 "deepagents_cli.app.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
             ),
-            patch("deepagents_cli.app.save_default_model", return_value=True),
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
             patch.object(AppMessage, "__init__", capture_app),
         ):
             await app._switch_model("ollama:llama3")

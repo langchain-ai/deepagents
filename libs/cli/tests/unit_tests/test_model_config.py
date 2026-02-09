@@ -20,6 +20,7 @@ from deepagents_cli.model_config import (
     clear_caches,
     get_available_models,
     has_provider_credentials,
+    save_recent_model,
 )
 
 
@@ -421,26 +422,20 @@ class TestModelPersistenceBetweenSessions:
     """
 
     def test_saved_model_is_used_when_no_model_specified(self, tmp_path):
-        """Saved default model should be used when CLI starts without --model.
-
-        This test reproduces the bug where switching models via /model command
-        saves the model to config, but the saved model is not used on restart.
+        """Recently switched model should be used when CLI starts without --model.
 
         Steps:
-        1. Save a model to config (simulating /model switch)
+        1. Save a model to config via save_recent_model (simulating /model switch)
         2. Call _get_default_model_spec() without specifying a model
-        3. Verify the saved model is used
-
-        This test SHOULD PASS when the bug is fixed.
+        3. Verify the saved recent model is used
         """
         from deepagents_cli.config import _get_default_model_spec
-        from deepagents_cli.model_config import DEFAULT_CONFIG_PATH, save_default_model
 
         # Use a temporary config path
         config_path = tmp_path / ".deepagents" / "config.toml"
 
         # Step 1: Save model to config (simulating /model anthropic:claude-opus-4-5)
-        save_default_model("anthropic:claude-opus-4-5", config_path)
+        save_recent_model("anthropic:claude-opus-4-5", config_path)
 
         # Verify the model was saved
         assert config_path.exists()
@@ -457,11 +452,9 @@ class TestModelPersistenceBetweenSessions:
                 clear=False,
             ),
         ):
-            # Step 3: Get default model spec - should use saved config
+            # Step 3: Get default model spec - should use saved recent model
             result = _get_default_model_spec()
 
-            # BUG: Currently this returns "anthropic:claude-sonnet-4-5-20250929"
-            # from env var detection, not the saved "anthropic:claude-opus-4-5"
             assert result == "anthropic:claude-opus-4-5", (
                 f"Expected saved model 'anthropic:claude-opus-4-5' but got '{result}'. "
                 "The saved model selection is not being loaded from config."
@@ -1002,3 +995,168 @@ class TestModelConfigError:
         """ModelConfigError carries the error message."""
         err = ModelConfigError("test error message")
         assert str(err) == "test error message"
+
+
+class TestSaveRecentModel:
+    """Tests for save_recent_model() function."""
+
+    def test_creates_new_file(self, tmp_path):
+        """Creates config file when it doesn't exist."""
+        config_path = tmp_path / "config.toml"
+        save_recent_model("anthropic:claude-sonnet-4-5", config_path)
+
+        assert config_path.exists()
+        content = config_path.read_text()
+        assert "[recent]" in content
+        assert 'model = "anthropic:claude-sonnet-4-5"' in content
+
+    def test_updates_existing_recent(self, tmp_path):
+        """Updates existing recent model."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[recent]
+model = "old-model"
+
+[providers.anthropic]
+models = ["claude-sonnet-4-5"]
+""")
+        save_recent_model("new-model", config_path)
+
+        content = config_path.read_text()
+        assert 'model = "new-model"' in content
+        assert "old-model" not in content
+        # Should preserve other config
+        assert "[providers.anthropic]" in content
+
+    def test_preserves_existing_default(self, tmp_path):
+        """Does not overwrite [default].model when saving recent."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[default]
+model = "ollama:qwen3:4b"
+""")
+        save_recent_model("anthropic:claude-sonnet-4-5", config_path)
+
+        content = config_path.read_text()
+        assert 'model = "ollama:qwen3:4b"' in content
+        assert 'model = "anthropic:claude-sonnet-4-5"' in content
+
+    def test_creates_parent_directory(self, tmp_path):
+        """Creates parent directory if needed."""
+        config_path = tmp_path / "subdir" / "config.toml"
+        save_recent_model("anthropic:claude-sonnet-4-5", config_path)
+
+        assert config_path.exists()
+
+
+class TestModelConfigLoadRecent:
+    """Tests for ModelConfig.load() reading recent_model."""
+
+    def test_loads_recent_model(self, tmp_path):
+        """Loads recent model from config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[recent]
+model = "anthropic:claude-sonnet-4-5"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.recent_model == "anthropic:claude-sonnet-4-5"
+
+    def test_recent_model_none_when_absent(self, tmp_path):
+        """recent_model is None when [recent] section is absent."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[default]
+model = "anthropic:claude-sonnet-4-5"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.recent_model is None
+
+    def test_loads_both_default_and_recent(self, tmp_path):
+        """Loads both default_model and recent_model from config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[default]
+model = "ollama:qwen3:4b"
+
+[recent]
+model = "anthropic:claude-sonnet-4-5"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.default_model == "ollama:qwen3:4b"
+        assert config.recent_model == "anthropic:claude-sonnet-4-5"
+
+
+class TestModelPrecedenceOrder:
+    """Tests for model selection precedence: default > recent > env."""
+
+    def test_default_takes_priority_over_recent(self, tmp_path):
+        """[default].model takes priority over [recent].model."""
+        from deepagents_cli.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[default]
+model = "ollama:qwen3:4b"
+
+[recent]
+model = "anthropic:claude-sonnet-4-5"
+""")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {"ANTHROPIC_API_KEY": "test-key"},
+                clear=False,
+            ),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "ollama:qwen3:4b"
+
+    def test_recent_takes_priority_over_env(self, tmp_path):
+        """[recent].model takes priority over env var auto-detection."""
+        from deepagents_cli.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[recent]
+model = "openai:gpt-5.2"
+""")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {"ANTHROPIC_API_KEY": "test-key"},
+                clear=False,
+            ),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "openai:gpt-5.2"
+
+    def test_env_used_when_neither_set(self, tmp_path):
+        """Falls back to env var auto-detection when neither default nor recent set."""
+        from deepagents_cli.config import _get_default_model_spec, settings
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", "test-key"),
+            patch.dict(
+                "os.environ",
+                {"ANTHROPIC_API_KEY": "test-key"},
+                clear=False,
+            ),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "anthropic:claude-sonnet-4-5-20250929"

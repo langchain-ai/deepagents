@@ -450,7 +450,7 @@ async def _run_agent_loop(
     if state.full_response:
         _write_newline()
 
-    console.print("\n[green]✓ Task completed[/green]")
+    console.print("[green]✓ Task completed[/green]")
 
 
 def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:

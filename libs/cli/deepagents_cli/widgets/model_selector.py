@@ -32,6 +32,8 @@ class ModelOption(Static):
         model_spec: str,
         provider: str,
         index: int,
+        *,
+        has_creds: bool = True,
         classes: str = "",
     ) -> None:
         """Initialize a model option.
@@ -41,12 +43,14 @@ class ModelOption(Static):
             model_spec: The model specification (provider:model format).
             provider: The provider name.
             index: The index of this option in the filtered list.
+            has_creds: Whether the provider has valid credentials.
             classes: CSS classes for styling.
         """
         super().__init__(label, classes=classes)
         self.model_spec = model_spec
         self.provider = provider
         self.index = index
+        self.has_creds = has_creds
 
     class Clicked(Message):
         """Message sent when a model option is clicked."""
@@ -385,6 +389,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     model_spec=model_spec,
                     provider=provider,
                     index=flat_index,
+                    has_creds=has_creds,
                     classes=classes,
                 )
                 await self._options_container.mount(widget)
@@ -425,14 +430,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         old_widget.remove_class("model-option-selected")
         is_current = old_widget.model_spec == self._current_spec
         suffix = " [dim](current)[/dim]" if is_current else ""
-        old_widget.update(f"  {old_widget.model_spec}{suffix}")
+        old_spec = (
+            old_widget.model_spec
+            if old_widget.has_creds
+            else f"[yellow]{old_widget.model_spec}[/yellow]"
+        )
+        old_widget.update(f"  {old_spec}{suffix}")
 
         # Update the newly selected widget
         new_widget = self._option_widgets[new_index]
         new_widget.add_class("model-option-selected")
         is_current = new_widget.model_spec == self._current_spec
         suffix = " [dim](current)[/dim]" if is_current else ""
-        new_widget.update(f"{glyphs.cursor} {new_widget.model_spec}{suffix}")
+        new_spec = (
+            new_widget.model_spec
+            if new_widget.has_creds
+            else f"[yellow]{new_widget.model_spec}[/yellow]"
+        )
+        new_widget.update(f"{glyphs.cursor} {new_spec}{suffix}")
 
         # Scroll the selected item into view
         if new_index == 0:

@@ -300,41 +300,6 @@ def get_default_models() -> dict[str, list[str]]:
     }
 
 
-def get_curated_models() -> dict[str, list[str]]:
-    """Get curated subset of popular models for display in the selector.
-
-    Returns a smaller, curated list of the most commonly used models
-    rather than the full list from profiles. Users can still type
-    any valid model name.
-
-    Returns:
-        Dictionary mapping provider names to lists of curated model identifiers.
-    """
-    return {
-        "anthropic": [
-            "claude-opus-4-5",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
-        ],
-        "openai": [
-            "gpt-5.2",
-            "gpt-5",
-            "gpt-4o",
-            "o3",
-            "o3-mini",
-        ],
-        "google_genai": [
-            "gemini-3-pro-preview",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-        ],
-        "google_vertexai": [
-            "gemini-3-pro-preview",
-            "claude-sonnet-4-5",  # (Claude on Vertex)
-        ],
-    }
-
-
 def _is_langchain_supported_provider(provider: str) -> bool:
     """Check if a provider is in langchain's `_SUPPORTED_PROVIDERS` registry.
 

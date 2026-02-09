@@ -18,7 +18,6 @@ from deepagents_cli.model_config import (
     _get_provider_profile_modules,
     clear_caches,
     get_available_models,
-    get_curated_models,
     get_default_models,
     has_provider_credentials,
 )
@@ -95,33 +94,6 @@ class TestModelSpec:
         """ModelSpec raises on empty model."""
         with pytest.raises(ValueError, match="Model cannot be empty"):
             ModelSpec(provider="openai", model="")
-
-
-class TestGetCuratedModels:
-    """Tests for get_curated_models() function."""
-
-    def test_returns_dict_with_providers(self):
-        """Returns dictionary with provider keys."""
-        models = get_curated_models()
-        assert isinstance(models, dict)
-        assert "anthropic" in models
-        assert "openai" in models
-        assert "google_genai" in models
-
-    def test_anthropic_models_include_claude(self):
-        """Anthropic models include Claude variants."""
-        models = get_curated_models()
-        assert any("claude" in m for m in models["anthropic"])
-
-    def test_openai_models_include_gpt(self):
-        """OpenAI models include GPT variants."""
-        models = get_curated_models()
-        assert any("gpt" in m for m in models["openai"])
-
-    def test_google_models_include_gemini(self):
-        """Google models include Gemini variants."""
-        models = get_curated_models()
-        assert any("gemini" in m for m in models["google_genai"])
 
 
 class TestGetDefaultModels:

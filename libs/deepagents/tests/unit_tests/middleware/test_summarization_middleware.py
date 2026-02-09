@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
 from deepagents.middleware.summarization import SummarizationMiddleware
@@ -725,6 +725,159 @@ class TestNoSummarizationTriggered:
 
         # No writes should have occurred
         assert len(backend.write_calls) == 0
+
+
+def test_system_message_counts_for_trigger_only() -> None:
+    """System message should affect token trigger but not be sent in messages."""
+    backend = MockBackend()
+    seen_system = {"counted": False}
+
+    def token_counter(messages: list[BaseMessage]) -> int:
+        if any(isinstance(msg, SystemMessage) for msg in messages):
+            seen_system["counted"] = True
+        return len(messages)
+
+    middleware = SummarizationMiddleware(
+        model=make_mock_model(),
+        backend=backend,
+        trigger=("tokens", 3),
+        keep=("messages", 1),
+        token_counter=token_counter,
+    )
+
+    messages = [HumanMessage(content="hi"), AIMessage(content="hello")]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+    request = make_model_request(state, runtime).override(system_message=SystemMessage(content="sys"))
+
+    captured_request = None
+
+    def handler(req: ModelRequest) -> ModelResponse:
+        nonlocal captured_request
+        captured_request = req
+        return AIMessage(content="Mock response")
+
+    with mock_get_config():
+        result = middleware.wrap_model_call(request, handler)
+
+    assert isinstance(result, ExtendedModelResponse)
+    assert seen_system["counted"] is True
+    assert captured_request is not None
+    assert captured_request.system_message is not None
+    assert all(not isinstance(msg, SystemMessage) for msg in captured_request.messages)
+    assert len(backend.write_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_async_tools_passed_to_token_counter_for_summarization() -> None:
+    backend = MockBackend()
+    mock_model = make_mock_model()
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    seen = {"tools": False, "system": False}
+
+    def token_counter(messages: list[BaseMessage], *, tools: list[dict[str, Any]] | None = None) -> int:
+        if tools:
+            seen["tools"] = True
+        if any(isinstance(msg, SystemMessage) for msg in messages):
+            seen["system"] = True
+        return 3 if seen["system"] else 2
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("tokens", 3),
+        keep=("messages", 1),
+        token_counter=token_counter,
+    )
+
+    messages = [HumanMessage(content="hi"), AIMessage(content="hello")]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+    request = ModelRequest(
+        model=mock_model,
+        messages=state["messages"],
+        system_message=SystemMessage(content="sys"),
+        tools=[{"name": "t", "description": "d", "input_schema": {"type": "object", "properties": {}}}],
+        runtime=runtime,
+        state=state,
+    )
+
+    captured_request = None
+
+    async def handler(req: ModelRequest) -> ModelResponse:
+        nonlocal captured_request
+        captured_request = req
+        return AIMessage(content="Mock response")
+
+    with mock_get_config():
+        result = await middleware.awrap_model_call(request, handler)
+
+    assert isinstance(result, ExtendedModelResponse)
+    assert seen["tools"]
+    assert seen["system"] is True
+    assert captured_request is not None
+    assert all(not isinstance(msg, SystemMessage) for msg in captured_request.messages)
+
+
+@pytest.mark.anyio
+async def test_async_system_message_counts_for_truncate_trigger() -> None:
+    backend = MockBackend()
+    mock_model = make_mock_model()
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+    def token_counter(messages: list[BaseMessage], *, tools: list[dict[str, Any]] | None = None) -> int:
+        if not any(isinstance(msg, SystemMessage) for msg in messages):
+            msg = "system message not included"
+            raise AssertionError(msg)
+        assert tools is not None
+        return 3
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),
+        keep=("messages", 1),
+        truncate_args_settings={
+            "trigger": ("tokens", 3),
+            "keep": ("messages", 1),
+            "max_length": 40,
+            "truncation_text": "...(argument truncated)",
+        },
+        token_counter=token_counter,
+    )
+
+    long_content = "x" * 100
+    messages = [
+        AIMessage(
+            content="write",
+            tool_calls=[{"id": "call-1", "name": "write_file", "args": {"content": long_content}}],
+        ),
+        HumanMessage(content="next"),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+    request = ModelRequest(
+        model=mock_model,
+        messages=state["messages"],
+        system_message=SystemMessage(content="sys"),
+        tools=[],
+        runtime=runtime,
+        state=state,
+    )
+
+    captured_request = None
+
+    async def handler(req: ModelRequest) -> ModelResponse:
+        nonlocal captured_request
+        captured_request = req
+        return AIMessage(content="Mock response")
+
+    result = await middleware.awrap_model_call(request, handler)
+
+    assert not isinstance(result, ExtendedModelResponse)
+    assert captured_request is not None
+    truncated_call = captured_request.messages[0].tool_calls[0]
+    assert truncated_call["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
 
 class TestBackendFailureHandling:

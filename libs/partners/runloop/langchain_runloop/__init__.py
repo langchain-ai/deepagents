@@ -1,5 +1,5 @@
 """Runloop sandbox integration for Deep Agents."""
 
-from langchain_runloop.sandbox import RunloopSandbox, RunloopSandboxClient
+from langchain_runloop.sandbox import RunloopSandbox
 
-__all__ = ["RunloopSandbox", "RunloopSandboxClient"]
+__all__ = ["RunloopSandbox"]

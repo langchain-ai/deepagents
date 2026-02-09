@@ -222,3 +222,41 @@ class TestShortFlags:
         ):
             parse_args()
         assert exc_info.value.code in (0, None)
+
+
+class TestQuietArg:
+    """Tests for -q/--quiet argument parsing."""
+
+    def test_short_flag(self) -> None:
+        """Verify -q sets quiet=True."""
+        with patch.object(sys, "argv", ["deepagents", "-q", "-n", "task"]):
+            args = parse_args()
+        assert args.quiet is True
+
+    def test_long_flag(self) -> None:
+        """Verify --quiet sets quiet=True."""
+        with patch.object(sys, "argv", ["deepagents", "--quiet", "-n", "task"]):
+            args = parse_args()
+        assert args.quiet is True
+
+    def test_no_flag_defaults_false(self) -> None:
+        """Verify quiet is False when not provided."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.quiet is False
+
+    def test_combined_with_non_interactive(self) -> None:
+        """Verify -q works alongside -n."""
+        with patch.object(sys, "argv", ["deepagents", "-q", "-n", "run tests"]):
+            args = parse_args()
+        assert args.quiet is True
+        assert args.non_interactive_message == "run tests"
+
+    def test_quiet_without_non_interactive_exits(self) -> None:
+        """Verify --quiet without -n triggers parser.error (exit code 2)."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "-q"]),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2

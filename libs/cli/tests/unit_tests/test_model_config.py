@@ -9,10 +9,12 @@ import pytest
 
 from deepagents_cli import model_config
 from deepagents_cli.model_config import (
+    _FALLBACK_PROFILE_MODULES,
     PROVIDER_API_KEY_ENV,
     ModelConfig,
     ModelConfigError,
     ModelSpec,
+    _get_provider_profile_modules,
     get_available_models,
     get_curated_models,
     get_default_models,
@@ -816,6 +818,56 @@ models = ["my-model"]
         assert not any(
             "invalid class_path" in record.message for record in caplog.records
         )
+
+
+class TestGetProviderProfileModules:
+    """Tests for _get_provider_profile_modules()."""
+
+    def test_returns_fallback_when_langchain_unavailable(self):
+        """Returns hardcoded fallback when langchain registry can't be imported."""
+        with patch.dict("sys.modules", {"langchain.chat_models.base": None}):
+            result = _get_provider_profile_modules()
+
+        assert result == _FALLBACK_PROFILE_MODULES
+
+    def test_builds_from_supported_providers(self):
+        """Derives profile module paths from _SUPPORTED_PROVIDERS registry."""
+        fake_registry = {
+            "anthropic": ("langchain_anthropic", "ChatAnthropic", None),
+            "openai": ("langchain_openai", "ChatOpenAI", None),
+            "ollama": ("langchain_ollama", "ChatOllama", None),
+            "fireworks": ("langchain_fireworks", "ChatFireworks", None),
+        }
+        fake_module = ModuleType("fake_base")
+        fake_module._SUPPORTED_PROVIDERS = fake_registry  # type: ignore[attr-defined]
+
+        with patch.dict("sys.modules", {"langchain.chat_models.base": fake_module}):
+            result = _get_provider_profile_modules()
+
+        assert ("anthropic", "langchain_anthropic.data._profiles") in result
+        assert ("openai", "langchain_openai.data._profiles") in result
+        assert ("ollama", "langchain_ollama.data._profiles") in result
+        assert ("fireworks", "langchain_fireworks.data._profiles") in result
+        assert len(result) == 4
+
+    def test_handles_submodule_paths(self):
+        """Extracts package root from dotted module paths like 'pkg.submodule'."""
+        fake_registry = {
+            "google_anthropic_vertex": (
+                "langchain_google_vertexai.model_garden",
+                "ChatAnthropicVertex",
+                None,
+            ),
+        }
+        fake_module = ModuleType("fake_base")
+        fake_module._SUPPORTED_PROVIDERS = fake_registry  # type: ignore[attr-defined]
+
+        with patch.dict("sys.modules", {"langchain.chat_models.base": fake_module}):
+            result = _get_provider_profile_modules()
+
+        assert result == [
+            ("google_anthropic_vertex", "langchain_google_vertexai.data._profiles"),
+        ]
 
 
 class TestModelConfigError:

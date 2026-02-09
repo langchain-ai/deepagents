@@ -376,7 +376,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 if is_current:
                     classes += " model-option-current"
 
-                label = f"{cursor}{model_spec}{current_mark}"
+                spec_text = (
+                    f"[yellow]{model_spec}[/yellow]" if not has_creds else model_spec
+                )
+                label = f"{cursor}{spec_text}{current_mark}"
                 widget = ModelOption(
                     label=label,
                     model_spec=model_spec,

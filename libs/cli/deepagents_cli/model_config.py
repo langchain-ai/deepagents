@@ -145,6 +145,47 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
 """Mapping of provider names to their API key environment variables."""
 
 
+_FALLBACK_PROFILE_MODULES: list[tuple[str, str]] = [
+    ("anthropic", "langchain_anthropic.data._profiles"),
+    ("openai", "langchain_openai.data._profiles"),
+    ("google_genai", "langchain_google_genai.data._profiles"),
+]
+"""Defensive fallback used if `langchain`'s provider becomes unavailable."""
+
+
+def _get_provider_profile_modules() -> list[tuple[str, str]]:
+    """Build a `(provider, profile_module)` list from langchain's provider registry.
+
+    Reads `_SUPPORTED_PROVIDERS` from `langchain.chat_models.base` to
+    discover every provider that `init_chat_model` knows about, then derives
+    the `<package>.data._profiles` module path for each.  Falls back to
+    `_FALLBACK_PROFILE_MODULES` if the import fails (e.g. older langchain
+    version or langchain not installed).
+
+    Returns:
+        List of `(provider_name, profile_module_path)` tuples.
+    """
+    try:
+        from langchain.chat_models.base import (  # noqa: PLC0415
+            _SUPPORTED_PROVIDERS,  # noqa: PLC2701
+        )
+    except (ImportError, AttributeError):
+        return list(_FALLBACK_PROFILE_MODULES)
+
+    result: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for provider_name, (module_path, *_rest) in _SUPPORTED_PROVIDERS.items():
+        package_root = module_path.split(".", maxsplit=1)[0]
+        profile_module = f"{package_root}.data._profiles"
+        key = (provider_name, profile_module)
+        if key not in seen:
+            seen.add(key)
+            result.append((provider_name, profile_module))
+
+    return result
+
+
 def get_available_models() -> dict[str, list[str]]:
     """Get available models dynamically from installed LangChain provider packages.
 
@@ -157,12 +198,10 @@ def get_available_models() -> dict[str, list[str]]:
     """
     available: dict[str, list[str]] = {}
 
-    # Try to load from langchain provider profile data
-    provider_modules = [
-        ("anthropic", "langchain_anthropic.data._profiles"),
-        ("openai", "langchain_openai.data._profiles"),
-        ("google_genai", "langchain_google_genai.data._profiles"),
-    ]
+    # Try to load from langchain provider profile data.
+    # Build the list dynamically from langchain's supported-provider registry
+    # so new providers are picked up automatically when langchain adds them.
+    provider_modules = _get_provider_profile_modules()
 
     for provider, module_path in provider_modules:
         try:

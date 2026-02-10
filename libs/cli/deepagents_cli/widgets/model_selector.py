@@ -107,8 +107,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ModelSelectorScreen > Vertical {
         width: 80;
         max-width: 90%;
-        height: auto;
-        max-height: 80%;
+        height: 80%;
         background: $surface;
         border: solid $primary;
         padding: 1 2;
@@ -133,8 +132,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ModelSelectorScreen .model-list {
         height: 1fr;
         min-height: 5;
-        max-height: 20;
         scrollbar-gutter: stable;
+        background: $background;
     }
 
     ModelSelectorScreen #model-options {

@@ -778,7 +778,7 @@ A condensed summary follows:
         effective_messages = self._get_effective_messages(request)
 
         # Step 1: Truncate args if configured
-        truncated_messages, args_were_truncated = self._truncate_args(effective_messages)
+        truncated_messages, _ = self._truncate_args(effective_messages)
 
         # Step 2: Check if summarization should happen
         total_tokens = self.token_counter(truncated_messages)
@@ -868,7 +868,7 @@ A condensed summary follows:
         effective_messages = self._get_effective_messages(request)
 
         # Step 1: Truncate args if configured
-        truncated_messages, args_were_truncated = self._truncate_args(effective_messages)
+        truncated_messages, _ = self._truncate_args(effective_messages)
 
         # Step 2: Check if summarization should happen
         total_tokens = self.token_counter(truncated_messages)

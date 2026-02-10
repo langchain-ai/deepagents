@@ -368,7 +368,7 @@ class TestOffloadingBasic:
         runtime = make_mock_runtime()
 
         with mock_get_config():
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result, _ = call_wrap_model_call(middleware, state, runtime)
 
         # Should have triggered summarization
         assert isinstance(result, ExtendedModelResponse)
@@ -719,7 +719,7 @@ class TestNoSummarizationTriggered:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization)
         assert not isinstance(result, ExtendedModelResponse)
@@ -857,7 +857,7 @@ class TestAsyncBehavior:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
 
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
@@ -969,7 +969,7 @@ class TestMarkdownFormatting:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
         assert result.command.update is not None
@@ -1003,7 +1003,7 @@ class TestDownloadFilesException:
         runtime = make_mock_runtime()
 
         # Should not raise - summarization should continue
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
 
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
@@ -1032,7 +1032,7 @@ class TestDownloadFilesException:
         runtime = make_mock_runtime()
 
         # Should not raise - summarization should continue
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
 
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
@@ -1187,7 +1187,7 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization) because cutoff_index would be 0 or negative
         assert not isinstance(result, ExtendedModelResponse)
@@ -1211,7 +1211,7 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization)
         assert not isinstance(result, ExtendedModelResponse)
@@ -1241,7 +1241,7 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization) because cutoff_index would be 0 or negative
         assert not isinstance(result, ExtendedModelResponse)
@@ -1287,7 +1287,7 @@ def test_no_truncation_when_trigger_is_none() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result, _ = call_wrap_model_call(middleware, state, runtime)
 
     # Should return ModelResponse (no truncation, no summarization)
     assert not isinstance(result, ExtendedModelResponse)

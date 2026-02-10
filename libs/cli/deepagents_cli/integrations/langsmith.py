@@ -147,20 +147,6 @@ class LangSmithProvider(SandboxProvider):
             raise ValueError(msg)
         self._client: SandboxClient = sandbox.SandboxClient(api_key=self._api_key)
 
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> list[dict[str, Any]]:
-        """List available LangSmith sandboxes.
-
-        Raises:
-            NotImplementedError: LangSmith SDK list API not yet implemented.
-        """
-        msg = "Listing with LangSmith SDK not yet implemented"
-        raise NotImplementedError(msg)
-
     def get_or_create(
         self,
         *,

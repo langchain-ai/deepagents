@@ -365,12 +365,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             if has_creds is True:
                 cred_indicator = glyphs.checkmark
             elif has_creds is False:
-                cred_indicator = glyphs.warning
+                cred_indicator = f"{glyphs.warning} missing credentials"
             else:
-                cred_indicator = glyphs.question
+                cred_indicator = f"{glyphs.question} credentials unknown"
             all_widgets.append(
                 Static(
-                    f"[bold]{provider}[/bold] {cred_indicator}",
+                    f"[bold]{provider}[/bold] [dim]{cred_indicator}[/dim]",
                     classes="model-provider-header",
                 )
             )

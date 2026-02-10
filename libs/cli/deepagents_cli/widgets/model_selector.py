@@ -513,10 +513,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             provider = custom_input.split(":", 1)[0]
             self.dismiss((custom_input, provider))
         elif custom_input:
-            self.notify(
-                "Use provider:model format (e.g., openai:gpt-4o)",
-                severity="warning",
-            )
+            self.dismiss((custom_input, ""))
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

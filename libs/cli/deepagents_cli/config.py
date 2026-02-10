@@ -1228,10 +1228,12 @@ def _create_model_via_init(
         )
         raise ModelConfigError(msg) from e
     except (ValueError, TypeError) as e:
-        msg = f"Invalid model configuration for '{provider}:{model_name}': {e}"
+        spec = f"{provider}:{model_name}" if provider else model_name
+        msg = f"Invalid model configuration for '{spec}': {e}"
         raise ModelConfigError(msg) from e
     except Exception as e:  # provider SDK auth/network errors
-        msg = f"Failed to initialize model '{provider}:{model_name}': {e}"
+        spec = f"{provider}:{model_name}" if provider else model_name
+        msg = f"Failed to initialize model '{spec}': {e}"
         raise ModelConfigError(msg) from e
 
 

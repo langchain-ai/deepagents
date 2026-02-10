@@ -1738,7 +1738,7 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_model(display)
 
-        config_saved = save_recent_model(model_spec)
+        config_saved = save_recent_model(display)
         if config_saved:
             await self._mount_message(AppMessage(f"Switched to {display}"))
         else:

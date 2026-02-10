@@ -51,6 +51,7 @@ test = [
   "langchain-openai",
   "twine",
   "build",
+  "tomli>=2.0.1",
 ]
 
 [build-system]

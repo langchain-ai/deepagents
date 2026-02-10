@@ -41,7 +41,7 @@ from acp.schema import (
 )
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
-from deepagents.graph import Checkpointer, CompiledStateGraph
+from deepagents.graph import Checkpointer
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
@@ -61,10 +61,21 @@ load_dotenv()
 class ACPDeepAgent(ACPAgent):
     _conn: Client
 
-    _deepagent: CompiledStateGraph
-    _root_dir: str
-    _checkpointer: Checkpointer
-    _mode: str
+    def __init__(
+        self,
+        root_dir: str,
+        checkpointer: Checkpointer,
+        mode: str,
+    ) -> None:
+        """Initialize the ACPDeepAgent."""
+        super().__init__()  # In case ACPAgent has its own initialization logic
+        self._root_dir = root_dir
+        self._checkpointer = checkpointer
+        self._mode = mode
+        self._deepagent = self._create_deepagent(mode)
+        self._cancelled = False
+        # Track current plan per session
+        self._session_plans: dict[str, list[dict[str, Any]]] = {}
 
     @staticmethod
     def _get_interrupt_config(mode_id: str) -> dict:
@@ -100,20 +111,6 @@ class ACPDeepAgent(ACPAgent):
             backend=create_backend,
             interrupt_on=interrupt_config,
         )
-
-    def __init__(
-        self,
-        root_dir: str,
-        checkpointer: Checkpointer,
-        mode: str,
-    ):
-        self._root_dir = root_dir
-        self._checkpointer = checkpointer
-        self._mode = mode
-        self._deepagent = self._create_deepagent(mode)
-        self._cancelled = False
-        self._session_plans: dict[str, list[dict[str, Any]]] = {}  # Track current plan per session
-        super().__init__()
 
     def on_connect(self, conn: Client) -> None:
         self._conn = conn

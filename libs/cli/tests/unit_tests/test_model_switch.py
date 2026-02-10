@@ -7,7 +7,7 @@ import pytest
 
 from deepagents_cli import model_config
 from deepagents_cli.app import DeepAgentsApp
-from deepagents_cli.config import settings
+from deepagents_cli.config import ModelResult, settings
 from deepagents_cli.model_config import ModelConfigError, clear_caches
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -164,8 +164,10 @@ class TestModelSwitchErrorHandling:
         assert "Invalid model" in captured_errors[0]
 
     @pytest.mark.asyncio
-    async def test_agent_recreation_failure_shows_error_and_rolls_back(self) -> None:
-        """_switch_model shows error and rolls back settings on agent failure."""
+    async def test_agent_recreation_failure_shows_error_and_preserves_settings(
+        self,
+    ) -> None:
+        """_switch_model shows error and preserves settings on agent failure."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._checkpointer = MagicMock()
@@ -183,11 +185,17 @@ class TestModelSwitchErrorHandling:
             original_init(self, message, **kwargs)
 
         mock_model = MagicMock()
+        mock_result = ModelResult(
+            model=mock_model,
+            model_name="claude-sonnet-4-5",
+            provider="anthropic",
+            context_limit=200_000,
+        )
 
         agent_error = RuntimeError("Agent creation failed")
         with (
             patch("deepagents_cli.app.has_provider_credentials", return_value=True),
-            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch("deepagents_cli.app.create_cli_agent", side_effect=agent_error),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -198,7 +206,7 @@ class TestModelSwitchErrorHandling:
         assert "Model switch failed" in captured_errors[0]
         assert "Agent creation failed" in captured_errors[0]
 
-        # Settings must be rolled back to their original values
+        # Settings are never mutated — no rollback needed
         assert settings.model_name == "gpt-4o"
         assert settings.model_provider == "openai"
         assert settings.model_context_limit == 128_000
@@ -279,12 +287,17 @@ class TestModelSwitchErrorHandling:
             original_init(self, message, **kwargs)
 
         mock_model = MagicMock()
+        mock_result = ModelResult(
+            model=mock_model,
+            model_name="claude-sonnet-4-5",
+            provider="anthropic",
+        )
         mock_agent = MagicMock()
         mock_backend = MagicMock()
 
         with (
             patch("deepagents_cli.app.has_provider_credentials", return_value=True),
-            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
                 "deepagents_cli.app.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
@@ -335,13 +348,18 @@ api_key_env = "FIREWORKS_API_KEY"
             original_app_init(self, message, **kwargs)
 
         mock_model = MagicMock()
+        mock_result = ModelResult(
+            model=mock_model,
+            model_name="llama-v3p1-70b",
+            provider="fireworks",
+        )
         mock_agent = MagicMock()
         mock_backend = MagicMock()
 
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}),
-            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
                 "deepagents_cli.app.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
@@ -413,12 +431,17 @@ models = ["llama3"]
             original_app_init(self, message, **kwargs)
 
         mock_model = MagicMock()
+        mock_result = ModelResult(
+            model=mock_model,
+            model_name="llama3",
+            provider="ollama",
+        )
         mock_agent = MagicMock()
         mock_backend = MagicMock()
 
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
                 "deepagents_cli.app.create_cli_agent",
                 return_value=(mock_agent, mock_backend),
@@ -452,13 +475,18 @@ class TestModelSwitchBareModelName:
             original_init(self, message, **kwargs)
 
         mock_model = MagicMock()
+        mock_result = ModelResult(
+            model=mock_model,
+            model_name="gpt-4o",
+            provider="openai",
+        )
         mock_agent = MagicMock()
         mock_backend = MagicMock()
 
         with (
             patch("deepagents_cli.app.detect_provider", return_value="openai"),
             patch("deepagents_cli.app.has_provider_credentials", return_value=True),
-            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch("deepagents_cli.app.create_model", return_value=mock_result),
             patch(
                 "deepagents_cli.app.create_cli_agent",
                 return_value=(mock_agent, mock_backend),

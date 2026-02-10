@@ -582,10 +582,13 @@ async def run_non_interactive(
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
     try:
-        model = create_model(model_name, extra_kwargs=model_kwargs)
+        result = create_model(model_name, extra_kwargs=model_kwargs)
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1
+
+    model = result.model
+    result.apply_to_settings()
     thread_id = generate_thread_id()
 
     config: RunnableConfig = {

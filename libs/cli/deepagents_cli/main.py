@@ -379,10 +379,13 @@ async def run_textual_cli_async(
     from deepagents_cli.app import run_textual_app
 
     try:
-        model = create_model(model_name, extra_kwargs=model_kwargs)
+        result = create_model(model_name, extra_kwargs=model_kwargs)
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1
+
+    model = result.model
+    result.apply_to_settings()
 
     # Show thread info
     if is_resumed:

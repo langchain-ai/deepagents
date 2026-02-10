@@ -1237,11 +1237,38 @@ def _create_model_via_init(
         raise ModelConfigError(msg) from e
 
 
+@dataclass(frozen=True)
+class ModelResult:
+    """Result of creating a chat model, bundling the model with its metadata.
+
+    This separates model creation from settings mutation so callers can decide
+    when to commit the metadata to global settings.
+
+    Attributes:
+        model: The instantiated chat model.
+        model_name: Resolved model name.
+        provider: Resolved provider name.
+        context_limit: Max input tokens from the model profile, or `None`.
+    """
+
+    model: BaseChatModel
+    model_name: str
+    provider: str
+    context_limit: int | None = None
+
+    def apply_to_settings(self) -> None:
+        """Commit this result's metadata to global `settings`."""
+        settings.model_name = self.model_name
+        settings.model_provider = self.provider
+        if self.context_limit is not None:
+            settings.model_context_limit = self.context_limit
+
+
 def create_model(
     model_spec: str | None = None,
     *,
     extra_kwargs: dict[str, Any] | None = None,
-) -> BaseChatModel:
+) -> ModelResult:
     """Create a chat model.
 
     Uses `init_chat_model` for standard providers, or imports a custom
@@ -1261,7 +1288,7 @@ def create_model(
             These take highest priority, overriding values from the config file.
 
     Returns:
-        Configured `BaseChatModel` instance ready for use.
+        A `ModelResult` containing the model and its metadata.
 
     Raises:
         ModelConfigError: If provider cannot be determined from the model name,
@@ -1318,16 +1345,20 @@ def create_model(
     else:
         model = _create_model_via_init(model_name, provider, kwargs)
 
-    # Store model info in settings for display
-    settings.model_name = model_name
-    settings.model_provider = provider or getattr(model, "_model_provider", provider)
+    resolved_provider = provider or getattr(model, "_model_provider", provider)
 
     # Extract context limit from model profile (if available)
+    context_limit: int | None = None
     profile = getattr(model, "profile", None)
     if isinstance(profile, dict) and isinstance(profile.get("max_input_tokens"), int):
-        settings.model_context_limit = profile["max_input_tokens"]
+        context_limit = profile["max_input_tokens"]
 
-    return model
+    return ModelResult(
+        model=model,
+        model_name=model_name,
+        provider=resolved_provider,
+        context_limit=context_limit,
+    )
 
 
 def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:

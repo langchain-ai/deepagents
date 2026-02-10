@@ -8,6 +8,7 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
+    ModelResult,
     Settings,
     _create_model_from_class,
     _find_project_agent_md,
@@ -285,28 +286,22 @@ class TestAgentsAliasDirectories:
 class TestCreateModelProfileExtraction:
     """Tests for profile extraction in create_model.
 
-    These tests verify that create_model correctly extracts the model_context_limit
+    These tests verify that create_model correctly extracts the context_limit
     from the model's profile attribute. We mock init_chat_model since create_model
     now uses it internally.
     """
-
-    def setup_method(self) -> None:
-        """Reset settings before each test."""
-        settings.model_context_limit = None
-        settings.model_name = None
-        settings.model_provider = None
 
     @patch("deepagents_cli.config.init_chat_model")
     def test_extracts_context_limit_from_profile(
         self, mock_init_chat_model: Mock
     ) -> None:
-        """Test that model_context_limit is extracted from model profile."""
+        """Test that context_limit is extracted from model profile."""
         mock_model = Mock()
         mock_model.profile = {"max_input_tokens": 200000, "tool_calling": True}
         mock_init_chat_model.return_value = mock_model
 
-        create_model("anthropic:claude-sonnet-4-5")
-        assert settings.model_context_limit == 200000
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.context_limit == 200000
 
     @patch("deepagents_cli.config.init_chat_model")
     def test_handles_missing_profile_gracefully(
@@ -316,8 +311,8 @@ class TestCreateModelProfileExtraction:
         mock_model = Mock(spec=["invoke"])  # No profile attribute
         mock_init_chat_model.return_value = mock_model
 
-        create_model("anthropic:claude-sonnet-4-5")
-        assert settings.model_context_limit is None
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.context_limit is None
 
     @patch("deepagents_cli.config.init_chat_model")
     def test_handles_none_profile(self, mock_init_chat_model: Mock) -> None:
@@ -326,8 +321,8 @@ class TestCreateModelProfileExtraction:
         mock_model.profile = None
         mock_init_chat_model.return_value = mock_model
 
-        create_model("anthropic:claude-sonnet-4-5")
-        assert settings.model_context_limit is None
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.context_limit is None
 
     @patch("deepagents_cli.config.init_chat_model")
     def test_handles_non_dict_profile(self, mock_init_chat_model: Mock) -> None:
@@ -336,8 +331,8 @@ class TestCreateModelProfileExtraction:
         mock_model.profile = "not a dict"
         mock_init_chat_model.return_value = mock_model
 
-        create_model("anthropic:claude-sonnet-4-5")
-        assert settings.model_context_limit is None
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.context_limit is None
 
     @patch("deepagents_cli.config.init_chat_model")
     def test_handles_non_int_max_input_tokens(self, mock_init_chat_model: Mock) -> None:
@@ -346,8 +341,8 @@ class TestCreateModelProfileExtraction:
         mock_model.profile = {"max_input_tokens": "200000"}  # String, not int
         mock_init_chat_model.return_value = mock_model
 
-        create_model("anthropic:claude-sonnet-4-5")
-        assert settings.model_context_limit is None
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.context_limit is None
 
     @patch("deepagents_cli.config.init_chat_model")
     def test_handles_missing_max_input_tokens_key(
@@ -358,8 +353,8 @@ class TestCreateModelProfileExtraction:
         mock_model.profile = {"tool_calling": True}  # No max_input_tokens
         mock_init_chat_model.return_value = mock_model
 
-        create_model("anthropic:claude-sonnet-4-5")
-        assert settings.model_context_limit is None
+        result = create_model("anthropic:claude-sonnet-4-5")
+        assert result.context_limit is None
 
 
 class TestParseShellAllowList:
@@ -814,11 +809,8 @@ class TestCreateModelWithCustomClass:
     """Tests for create_model() using custom class_path from config."""
 
     def setup_method(self) -> None:
-        """Clear model config cache and reset settings before each test."""
+        """Clear model config cache before each test."""
         clear_caches()
-        settings.model_context_limit = None
-        settings.model_name = None
-        settings.model_provider = None
 
     def test_create_model_uses_class_path(self, tmp_path: Path) -> None:
         """create_model dispatches to custom class when class_path is set."""
@@ -852,7 +844,10 @@ temperature = 0
         assert call_args[0][0] == "my_pkg.models:MyChatModel"
         assert call_args[0][1] == "my-model"
         assert call_args[0][2] == "custom"
-        assert result is mock_instance
+        assert isinstance(result, ModelResult)
+        assert result.model is mock_instance
+        assert result.model_name == "my-model"
+        assert result.provider == "custom"
 
     def test_create_model_falls_through_without_class_path(
         self, tmp_path: Path
@@ -882,17 +877,11 @@ api_key_env = "FIREWORKS_API_KEY"
             result = create_model("fireworks:llama")
 
         mock_init.assert_called_once()
-        assert result is mock_instance
+        assert result.model is mock_instance
 
 
 class TestCreateModelExtraKwargs:
     """Tests for create_model() with extra_kwargs from --model-kwargs."""
-
-    def setup_method(self) -> None:
-        """Reset settings before each test."""
-        settings.model_context_limit = None
-        settings.model_name = None
-        settings.model_provider = None
 
     @patch("deepagents_cli.config.init_chat_model")
     def test_extra_kwargs_passed_to_model(self, mock_init_chat_model: Mock) -> None:
@@ -961,12 +950,6 @@ max_tokens = 1024
 class TestCreateModelEdgeCaseParsing:
     """Tests for create_model() edge-case spec parsing."""
 
-    def setup_method(self) -> None:
-        """Reset settings before each test."""
-        settings.model_context_limit = None
-        settings.model_name = None
-        settings.model_provider = None
-
     @patch("deepagents_cli.config.init_chat_model")
     def test_leading_colon_treated_as_bare_model(
         self, mock_init_chat_model: Mock
@@ -978,12 +961,12 @@ class TestCreateModelEdgeCaseParsing:
 
         settings.anthropic_api_key = "test"
         try:
-            create_model(":claude-opus-4-6")
+            result = create_model(":claude-opus-4-6")
         finally:
             settings.anthropic_api_key = None
 
         # Should have detected 'anthropic' provider and used 'claude-opus-4-6'
-        assert settings.model_name == "claude-opus-4-6"
+        assert result.model_name == "claude-opus-4-6"
 
     def test_trailing_colon_raises_error(self) -> None:
         """Trailing colon (e.g., 'anthropic:') raises ModelConfigError."""

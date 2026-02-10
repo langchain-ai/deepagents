@@ -1704,16 +1704,8 @@ class DeepAgentsApp(App):
                 )
             return
 
-        # Save previous settings for rollback if agent creation fails.
-        # create_model mutates settings only after the model is created
-        # successfully, so only the create_cli_agent path needs rollback.
-        prev_model_name = settings.model_name
-        prev_model_provider = settings.model_provider
-        prev_context_limit = settings.model_context_limit
-
-        # Try to create the new model (mutates settings as a side effect)
         try:
-            new_model = create_model(model_spec)
+            result = create_model(model_spec)
         except ModelConfigError as e:
             await self._mount_message(ErrorMessage(str(e)))
             return
@@ -1722,10 +1714,9 @@ class DeepAgentsApp(App):
             await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
             return
 
-        # Create new agent (may fail — rollback settings if so)
         try:
             new_agent, new_backend = create_cli_agent(
-                model=new_model,
+                model=result.model,
                 assistant_id=self._assistant_id or "default",
                 tools=self._tools,
                 sandbox=self._sandbox,
@@ -1734,13 +1725,12 @@ class DeepAgentsApp(App):
                 checkpointer=self._checkpointer,
             )
         except Exception as e:
-            # Restore settings so UI stays consistent with actual agent
-            settings.model_name = prev_model_name
-            settings.model_provider = prev_model_provider
-            settings.model_context_limit = prev_context_limit
             logger.exception("Failed to create agent for model switch")
             await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
             return
+
+        # Both model and agent succeeded — now commit to settings atomically.
+        result.apply_to_settings()
 
         # Swap agent
         self._agent = new_agent

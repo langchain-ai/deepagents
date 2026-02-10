@@ -60,6 +60,7 @@ def _create_image_content_block(image_b64: str, media_type: str) -> dict:
         "mime_type": media_type,
     }
 
+
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
 READ_FILE_TRUNCATION_MSG = (

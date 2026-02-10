@@ -135,14 +135,13 @@ class ProviderConfig(TypedDict, total=False):
     instead of calling `init_chat_model`.
     """
 
-    kwargs: dict[str, Any]
-    """Extra keyword arguments forwarded to the model constructor."""
+    params: dict[str, Any]
+    """Extra keyword arguments forwarded to the model constructor.
 
-    params: dict[str, dict[str, Any]]
-    """Per-model overrides that shallow-merge on top of `kwargs`.
-
-    Keys are model names; values are dicts of kwargs that override or extend
-    the provider-level `kwargs` for that specific model.
+    Flat keys (e.g., `temperature = 0`) are provider-wide defaults applied to
+    every model from this provider. Model-keyed sub-tables (e.g.,
+    `[params."qwen3:4b"]`) override individual values for that model only;
+    the merge is shallow (model wins on conflict).
     """
 
 
@@ -567,13 +566,13 @@ class ModelConfig:
 
             params = provider.get("params", {})
             models = set(provider.get("models", []))
-            for model in params:
-                if model not in models:
+            for key, value in params.items():
+                if isinstance(value, dict) and key not in models:
                     logger.warning(
                         "Provider '%s' has params for '%s' "
                         "which is not in its models list",
                         name,
-                        model,
+                        key,
                     )
 
     def get_all_models(self) -> list[tuple[str, str]]:
@@ -667,9 +666,9 @@ class ModelConfig:
     ) -> dict[str, Any]:
         """Get extra constructor kwargs for a provider.
 
-        When `model_name` is given and a matching entry exists in
-        `params`, those values are shallow-merged on top of the
-        provider-level `kwargs` (model wins on conflict).
+        Reads the `params` table from the provider config. Flat keys are
+        provider-wide defaults; model-keyed sub-tables are per-model
+        overrides that shallow-merge on top (model wins on conflict).
 
         Args:
             provider_name: The provider to look up.
@@ -681,10 +680,12 @@ class ModelConfig:
         provider = self.providers.get(provider_name)
         if not provider:
             return {}
-        result = dict(provider.get("kwargs", {}))
+        params = provider.get("params", {})
+        # Flat keys are provider-wide defaults; dict values are per-model overrides
+        result = {k: v for k, v in params.items() if not isinstance(v, dict)}
         if model_name:
-            overrides = provider.get("params", {}).get(model_name)
-            if overrides:
+            overrides = params.get(model_name)
+            if isinstance(overrides, dict):
                 result.update(overrides)
         return result
 

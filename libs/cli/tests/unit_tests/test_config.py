@@ -617,8 +617,8 @@ api_key_env = "FIREWORKS_API_KEY"
         kwargs = _get_provider_kwargs("google_genai")
         assert kwargs == {}
 
-    def test_merges_config_kwargs(self, tmp_path: Path) -> None:
-        """Merges kwargs from config with base_url and api_key."""
+    def test_merges_config_params(self, tmp_path: Path) -> None:
+        """Merges params from config with base_url and api_key."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.custom]
@@ -626,7 +626,7 @@ models = ["my-model"]
 base_url = "https://my-endpoint.example.com"
 api_key_env = "CUSTOM_KEY"
 
-[models.providers.custom.kwargs]
+[models.providers.custom.params]
 temperature = 0
 max_tokens = 4096
 """)
@@ -642,13 +642,13 @@ max_tokens = 4096
         assert kwargs["api_key"] == "secret"
 
     def test_passes_model_name_for_per_model_params(self, tmp_path: Path) -> None:
-        """Per-model kwargs are merged when model_name is provided."""
+        """Per-model params are merged when model_name is provided."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["qwen3:4b", "llama3"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 num_ctx = 8192
 
@@ -662,14 +662,14 @@ num_ctx = 4000
         assert kwargs["temperature"] == 0.5
         assert kwargs["num_ctx"] == 4000
 
-    def test_model_name_none_uses_provider_kwargs(self, tmp_path: Path) -> None:
-        """model_name=None returns provider kwargs without per-model merge."""
+    def test_model_name_none_uses_provider_params(self, tmp_path: Path) -> None:
+        """model_name=None returns provider params without per-model merge."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["qwen3:4b"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 
 [models.providers.ollama.params."qwen3:4b"]
@@ -680,8 +680,8 @@ temperature = 0.5
 
         assert kwargs["temperature"] == 0
 
-    def test_base_url_and_api_key_override_config_kwargs(self, tmp_path: Path) -> None:
-        """base_url/api_key from config fields override same keys in kwargs."""
+    def test_base_url_and_api_key_override_config_params(self, tmp_path: Path) -> None:
+        """base_url/api_key from config fields override same keys in params."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.custom]
@@ -689,7 +689,7 @@ models = ["my-model"]
 base_url = "https://correct-url.com"
 api_key_env = "CUSTOM_KEY"
 
-[models.providers.custom.kwargs]
+[models.providers.custom.params]
 base_url = "https://wrong-url.com"
 """)
         with (
@@ -824,7 +824,7 @@ class TestCreateModelWithCustomClass:
 class_path = "my_pkg.models:MyChatModel"
 models = ["my-model"]
 
-[models.providers.custom.kwargs]
+[models.providers.custom.params]
 temperature = 0
 """)
         mock_instance = MagicMock(spec=BaseChatModel)
@@ -905,7 +905,7 @@ class TestCreateModelExtraKwargs:
 [models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 
-[models.providers.anthropic.kwargs]
+[models.providers.anthropic.params]
 temperature = 0
 max_tokens = 1024
 """)

@@ -760,8 +760,8 @@ class TestModelConfigGetKwargs:
         config = ModelConfig()
         assert config.get_kwargs("unknown") == {}
 
-    def test_returns_empty_when_no_kwargs(self, tmp_path):
-        """Returns empty dict when kwargs not in config."""
+    def test_returns_empty_when_no_params(self, tmp_path):
+        """Returns empty dict when params not in config."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.custom]
@@ -770,14 +770,14 @@ models = ["my-model"]
         config = ModelConfig.load(config_path)
         assert config.get_kwargs("custom") == {}
 
-    def test_returns_kwargs(self, tmp_path):
-        """Returns configured kwargs."""
+    def test_returns_params(self, tmp_path):
+        """Returns configured params."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.custom]
 models = ["my-model"]
 
-[models.providers.custom.kwargs]
+[models.providers.custom.params]
 temperature = 0
 max_tokens = 4096
 """)
@@ -792,7 +792,7 @@ max_tokens = 4096
 [models.providers.custom]
 models = ["my-model"]
 
-[models.providers.custom.kwargs]
+[models.providers.custom.params]
 temperature = 0
 """)
         config = ModelConfig.load(config_path)
@@ -806,13 +806,13 @@ class TestModelConfigGetKwargsPerModel:
     """Tests for ModelConfig.get_kwargs() with per-model overrides."""
 
     def test_model_override_replaces_provider_value(self, tmp_path):
-        """Params entry overrides same key from provider kwargs."""
+        """Per-model sub-table overrides same key from provider params."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["qwen3:4b", "llama3"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 num_ctx = 8192
 
@@ -824,14 +824,14 @@ num_ctx = 4000
         kwargs = config.get_kwargs("ollama", model_name="qwen3:4b")
         assert kwargs == {"temperature": 0.5, "num_ctx": 4000}
 
-    def test_no_override_returns_provider_kwargs(self, tmp_path):
-        """Model without params entry gets provider kwargs only."""
+    def test_no_override_returns_provider_params(self, tmp_path):
+        """Model without sub-table gets provider-level params only."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["qwen3:4b", "llama3"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 num_ctx = 8192
 
@@ -843,13 +843,13 @@ temperature = 0.5
         assert kwargs == {"temperature": 0, "num_ctx": 8192}
 
     def test_model_adds_new_keys(self, tmp_path):
-        """Params can introduce keys not in provider kwargs."""
+        """Per-model sub-table can introduce keys not in provider params."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["qwen3:4b"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 
 [models.providers.ollama.params."qwen3:4b"]
@@ -860,13 +860,13 @@ top_p = 0.9
         assert kwargs == {"temperature": 0, "top_p": 0.9}
 
     def test_shallow_merge(self, tmp_path):
-        """Merge is shallow — provider keys not in params are preserved."""
+        """Merge is shallow — provider keys not in sub-table are preserved."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["qwen3:4b"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 num_ctx = 8192
 seed = 42
@@ -878,14 +878,14 @@ temperature = 0.5
         kwargs = config.get_kwargs("ollama", model_name="qwen3:4b")
         assert kwargs == {"temperature": 0.5, "num_ctx": 8192, "seed": 42}
 
-    def test_none_model_name_returns_provider_kwargs(self, tmp_path):
-        """model_name=None returns provider kwargs without merging."""
+    def test_none_model_name_returns_provider_params(self, tmp_path):
+        """model_name=None returns provider params without merging."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["qwen3:4b"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 
 [models.providers.ollama.params."qwen3:4b"]
@@ -902,7 +902,7 @@ temperature = 0.5
 [models.providers.ollama]
 models = ["qwen3:4b"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 
 [models.providers.ollama.params."qwen3:4b"]
@@ -914,8 +914,8 @@ temperature = 0.5
         fresh = config.get_kwargs("ollama", model_name="qwen3:4b")
         assert "injected" not in fresh
 
-    def test_no_provider_kwargs_only_params(self, tmp_path):
-        """Works when provider has no kwargs, only params."""
+    def test_no_provider_params_only_model_subtable(self, tmp_path):
+        """Works when provider has no flat params, only model sub-table."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
@@ -933,7 +933,7 @@ class TestModelConfigValidateParams:
     """Tests for _validate() params warnings."""
 
     def test_warns_on_unknown_model_in_params(self, tmp_path, caplog):
-        """Warns when params references a model not in models list."""
+        """Warns when params sub-table references a model not in models list."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
@@ -950,7 +950,7 @@ temperature = 0.5
         )
 
     def test_no_warning_when_model_in_list(self, tmp_path, caplog):
-        """No warning when params references a model in models list."""
+        """No warning when params sub-table references a model in models list."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
@@ -964,14 +964,14 @@ temperature = 0.5
 
         assert not any("params for" in record.message for record in caplog.records)
 
-    def test_no_warning_when_no_params(self, tmp_path, caplog):
-        """No warning when params section is absent."""
+    def test_no_warning_when_no_model_overrides(self, tmp_path, caplog):
+        """No warning when params has no model sub-tables."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["llama3"]
 
-[models.providers.ollama.kwargs]
+[models.providers.ollama.params]
 temperature = 0
 """)
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):

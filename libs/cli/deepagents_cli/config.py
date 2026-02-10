@@ -1119,15 +1119,15 @@ def _get_provider_kwargs(
 ) -> dict[str, Any]:
     """Get provider-specific kwargs from the config file.
 
-    Reads `base_url`, `api_key_env`, and the `kwargs` table from the user's
+    Reads `base_url`, `api_key_env`, and the `params` table from the user's
     `config.toml` for the given provider.
 
-    When `model_name` is provided, per-model overrides from `params` are
-    shallow-merged on top.
+    When `model_name` is provided, per-model overrides from the `params`
+    sub-table are shallow-merged on top.
 
     Args:
         provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
-        model_name: Optional model name for per-model kwarg overrides.
+        model_name: Optional model name for per-model overrides.
 
     Returns:
         Dictionary of provider-specific kwargs.

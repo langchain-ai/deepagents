@@ -23,13 +23,25 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
+    create_model,
+    detect_provider,
     is_shell_command_allowed,
     settings,
+)
+from deepagents_cli.model_config import (
+    ModelConfigError,
+    ModelSpec,
+    clear_default_model,
+    get_credential_env_var,
+    has_provider_credentials,
+    save_default_model,
+    save_recent_model,
 )
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
@@ -44,6 +56,7 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
+from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
@@ -52,15 +65,16 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents.backends import CompositeBackend
+    from deepagents.backends.sandbox import SandboxBackendProtocol
     from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -370,11 +384,15 @@ class DeepAgentsApp(App):
         *,
         agent: Pregel | None = None,
         assistant_id: str | None = None,
-        backend: Any = None,  # CompositeBackend
+        backend: CompositeBackend | None = None,
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
+        checkpointer: BaseCheckpointSaver | None = None,
+        tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+        sandbox: SandboxBackendProtocol | None = None,
+        sandbox_type: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -387,6 +405,10 @@ class DeepAgentsApp(App):
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
+            checkpointer: Checkpointer for session persistence (enables model hot-swap)
+            tools: Tools used to create the agent (for model hot-swap)
+            sandbox: Sandbox backend (for model hot-swap)
+            sandbox_type: Type of sandbox provider (for model hot-swap)
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -398,6 +420,11 @@ class DeepAgentsApp(App):
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
         self._initial_prompt = initial_prompt
+        # Store for model hot-swap
+        self._checkpointer = checkpointer
+        self._tools = tools or []
+        self._sandbox = sandbox
+        self._sandbox_type = sandbox_type
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -969,7 +996,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = (
-                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+                "Commands: /quit, /clear, /model [--default], /remember, "
+                "/tokens, /threads, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -1050,9 +1078,52 @@ class DeepAgentsApp(App):
             # Send as a user message to the agent
             await self._handle_user_message(final_prompt)
             return  # _handle_user_message already mounts the message
+        elif cmd == "/model" or cmd.startswith("/model "):
+            model_arg = None
+            set_default = False
+            if cmd.startswith("/model "):
+                raw_arg = command.strip()[len("/model ") :].strip()
+                if raw_arg.startswith("--default"):
+                    set_default = True
+                    model_arg = raw_arg[len("--default") :].strip() or None
+                else:
+                    model_arg = raw_arg
+
+            if set_default:
+                await self._mount_message(UserMessage(command))
+                if model_arg == "--clear":
+                    await self._clear_default_model()
+                elif model_arg:
+                    await self._set_default_model(model_arg)
+                else:
+                    await self._mount_message(
+                        AppMessage(
+                            "Usage: /model --default provider:model\n"
+                            "       /model --default --clear"
+                        )
+                    )
+            elif model_arg:
+                # Direct switch: /model claude-sonnet-4-5
+                await self._mount_message(UserMessage(command))
+                await self._switch_model(model_arg)
+            else:
+                await self._show_model_selector()
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
+
+        # Scroll to bottom after command output is rendered.
+        # Use call_after_refresh so the layout pass completes first;
+        # otherwise max_scroll_y is still stale.
+        def _scroll_after_command() -> None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+                if chat.max_scroll_y > 0:
+                    chat.scroll_end(animate=False)
+            except NoMatches:
+                pass
+
+        self.call_after_refresh(_scroll_after_command)
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
@@ -1568,16 +1639,214 @@ class DeepAgentsApp(App):
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
+    # =========================================================================
+    # Model Switching
+    # =========================================================================
+
+    async def _show_model_selector(self) -> None:
+        """Show interactive model selector as a modal screen."""
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            """Handle the model selector result."""
+            if result is not None:
+                model_spec, _ = result
+                self.call_later(self._switch_model, model_spec)
+            # Refocus input after modal closes
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ModelSelectorScreen(
+            current_model=settings.model_name,
+            current_provider=settings.model_provider,
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _switch_model(self, model_spec: str) -> None:
+        """Switch to a new model, preserving conversation history.
+
+        Args:
+            model_spec: The model specification to switch to.
+
+                Can be in `provider:model` format
+                (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
+                for auto-detection.
+        """
+        logger.info("Switching model to %s", model_spec)
+
+        # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
+        model_spec = model_spec.removeprefix(":")
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if parsed:
+            provider: str | None = parsed.provider
+            model_name = parsed.model
+        else:
+            model_name = model_spec
+            provider = detect_provider(model_spec)
+
+        # Check credentials
+        if provider and has_provider_credentials(provider) is False:
+            env_var = get_credential_env_var(provider)
+            if env_var:
+                detail = f"{env_var} is not set or is empty"
+            else:
+                detail = (
+                    f"provider '{provider}' is not recognized. "
+                    "Add it to ~/.deepagents/config.toml with an api_key_env field"
+                )
+            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
+            return
+
+        # Check if already using this exact model
+        if model_name == settings.model_name and (
+            not provider or provider == settings.model_provider
+        ):
+            current = f"{settings.model_provider}:{settings.model_name}"
+            await self._mount_message(AppMessage(f"Already using {current}"))
+            return
+
+        # Check if we have what we need for hot-swap
+        if not self._checkpointer:
+            # No checkpointer means we can't hot-swap
+            # Save the preference and notify user
+            if save_recent_model(model_spec):
+                await self._mount_message(
+                    AppMessage(
+                        f"Model preference set to {model_spec}. "
+                        "Restart the CLI for the change to take effect."
+                    )
+                )
+            else:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Could not save model preference. "
+                        "Check permissions for ~/.deepagents/"
+                    )
+                )
+            return
+
+        try:
+            result = create_model(model_spec)
+        except ModelConfigError as e:
+            await self._mount_message(ErrorMessage(str(e)))
+            return
+        except Exception as e:
+            logger.exception("Failed to create model from spec %s", model_spec)
+            await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
+            return
+
+        try:
+            new_agent, new_backend = create_cli_agent(
+                model=result.model,
+                assistant_id=self._assistant_id or "default",
+                tools=self._tools,
+                sandbox=self._sandbox,
+                sandbox_type=self._sandbox_type,
+                auto_approve=self._auto_approve,
+                checkpointer=self._checkpointer,
+            )
+        except Exception as e:
+            logger.exception("Failed to create agent for model switch")
+            await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
+            return
+
+        # Both model and agent succeeded — now commit to settings atomically.
+        result.apply_to_settings()
+
+        # Swap agent
+        self._agent = new_agent
+        self._backend = new_backend
+
+        # Post-swap: update UI and save config
+        display = f"{settings.model_provider}:{settings.model_name}"
+        if self._status_bar:
+            self._status_bar.set_model(display)
+
+        config_saved = save_recent_model(display)
+        if config_saved:
+            await self._mount_message(AppMessage(f"Switched to {display}"))
+        else:
+            await self._mount_message(
+                AppMessage(
+                    f"Switched to {display} (preference not saved - "
+                    "check ~/.deepagents/ permissions)"
+                )
+            )
+
+        logger.info("Model switched to %s", display)
+
+        # Scroll to bottom so the confirmation message is visible
+        def _scroll_after_switch() -> None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+                if chat.max_scroll_y > 0:
+                    chat.scroll_end(animate=False)
+            except NoMatches:
+                pass
+
+        self.call_after_refresh(_scroll_after_switch)
+
+    async def _set_default_model(self, model_spec: str) -> None:
+        """Set the default model in config without switching the current session.
+
+        Updates `[models].default` in `~/.deepagents/config.toml` so that
+        future CLI launches use this model. Does not affect the running session.
+
+        Args:
+            model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
+        """
+        model_spec = model_spec.removeprefix(":")
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if not parsed:
+            provider = detect_provider(model_spec)
+            if provider:
+                model_spec = f"{provider}:{model_spec}"
+
+        if save_default_model(model_spec):
+            await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not save default model. Check permissions for ~/.deepagents/"
+                )
+            )
+
+    async def _clear_default_model(self) -> None:
+        """Remove the default model from config.
+
+        After clearing, future launches fall back to `[models].recent` or
+        environment auto-detection.
+        """
+        if clear_default_model():
+            await self._mount_message(
+                AppMessage(
+                    "Default model cleared. "
+                    "Future launches will use recent model or auto-detect."
+                )
+            )
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not clear default model. "
+                    "Check permissions for ~/.deepagents/"
+                )
+            )
+
 
 async def run_textual_app(
     *,
     agent: Pregel | None = None,
     assistant_id: str | None = None,
-    backend: Any = None,  # CompositeBackend
+    backend: CompositeBackend | None = None,
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
+    tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+    sandbox: SandboxBackendProtocol | None = None,
+    sandbox_type: str | None = None,
 ) -> int:
     """Run the Textual application.
 
@@ -1589,6 +1858,10 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
+        checkpointer: Checkpointer for session persistence (enables model hot-swap)
+        tools: Tools used to create the agent (for model hot-swap)
+        sandbox: Sandbox backend (for model hot-swap)
+        sandbox_type: Type of sandbox provider (for model hot-swap)
 
     Returns:
         The app's return code (0 for success, non-zero for error).
@@ -1601,6 +1874,10 @@ async def run_textual_app(
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,
+        checkpointer=checkpointer,
+        tools=tools,
+        sandbox=sandbox,
+        sandbox_type=sandbox_type,
     )
     await app.run_async()
     return app.return_code or 0

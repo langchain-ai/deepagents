@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_cli.config import ModelResult
 from deepagents_cli.non_interactive import (
     _build_non_interactive_header,
     _get_thread_url,
@@ -294,7 +295,11 @@ class TestSandboxSetupForwarding:
         with (
             patch(
                 "deepagents_cli.non_interactive.create_model",
-                return_value=MagicMock(),
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
             ),
             patch(
                 "deepagents_cli.non_interactive.generate_thread_id",
@@ -366,7 +371,11 @@ class TestQuietMode:
             ) as mock_console_cls,
             patch(
                 "deepagents_cli.non_interactive.create_model",
-                return_value=MagicMock(),
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
             ),
             patch(
                 "deepagents_cli.non_interactive.generate_thread_id",
@@ -427,7 +436,11 @@ class TestQuietMode:
         with (
             patch(
                 "deepagents_cli.non_interactive.create_model",
-                return_value=MagicMock(),
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
             ),
             patch(
                 "deepagents_cli.non_interactive.generate_thread_id",

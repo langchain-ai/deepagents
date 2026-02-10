@@ -34,7 +34,7 @@ class CompletionResult(StrEnum):
 
     IGNORED = "ignored"  # Key not handled, let default behavior proceed
     HANDLED = "handled"  # Key handled, prevent default
-    SUBMIT = "submit"  # Key triggers submission (e.g., Enter on slash command)
+    SUBMIT = "submit"  # Key triggers submission (for controllers that opt in)
 
 
 class CompletionView(Protocol):
@@ -96,6 +96,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
     ("/clear", "Clear chat and start new thread"),
     ("/remember", "Update memory and skills from conversation"),
+    ("/swarm", "Execute batch tasks from JSONL file"),
     ("/quit", "Exit app"),
     ("/tokens", "Token usage"),
     ("/threads", "Show thread info"),
@@ -191,7 +192,8 @@ class SlashCommandController:
                 return CompletionResult.IGNORED
             case "enter":
                 if self._apply_selected_completion(cursor_index):
-                    return CompletionResult.SUBMIT
+                    # Enter should accept the completion without auto-submitting.
+                    return CompletionResult.HANDLED
                 return CompletionResult.HANDLED
             case "down":
                 self._move_selection(1)

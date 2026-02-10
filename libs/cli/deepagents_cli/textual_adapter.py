@@ -599,6 +599,11 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
+                                # `swarm_execute` can run for a while without
+                                # intermediate stream updates, so show inline
+                                # running animation immediately.
+                                if buffer_name == "swarm_execute":
+                                    tool_msg.set_running()
 
                                 # Sticky scroll after tool call is shown
                                 if adapter._scroll_to_bottom:

@@ -321,6 +321,73 @@ List what you captured and where you stored it:
 - Memory entries added (with location)
 """  # noqa: E501
 
+# Prompt template for /swarm command
+SWARM_PROMPT_TEMPLATE = """Execute a batch of tasks using swarm_execute.
+
+**Task file:** `{file_path}`
+**num_parallel:** {num_parallel}
+{output_dir_line}
+
+Call the `swarm_execute` tool with these parameters:
+- `source`: task file path
+- `num_parallel`: number of parallel subagents
+- `output_dir`: output directory (if provided)
+
+Important:
+- If a task includes `type`, it must match a configured subagent type.
+- If unsure, omit `type` and use the default subagent.
+
+Use the tool directly to run tasks in parallel.
+After execution, summarize the results for me.
+"""
+
+SWARM_USAGE = "Usage:\n  /swarm <file.jsonl> [--num-parallel N] [--output-dir DIR]"
+
+
+@dataclass
+class ParsedSwarmCommand:
+    """Parsed options for /swarm slash command."""
+
+    file_path: str
+    num_parallel: int = 10
+    output_dir: str | None = None
+
+
+def _parse_swarm_command(command: str) -> tuple[ParsedSwarmCommand | None, str | None]:
+    """Parse `/swarm` command arguments.
+
+    Returns:
+        Tuple of (parsed options, error message). Only one value is non-None.
+    """
+    args = command.strip()[len("/swarm") :].strip().split()
+    if not args:
+        return None, SWARM_USAGE
+
+    if "--enrich" in args:
+        return (
+            None,
+            "Error: --enrich was removed. Use /swarm <file.jsonl> with JSONL tasks.",
+        )
+
+    if not args:
+        return None, "Error: No file path provided"
+
+    parsed = ParsedSwarmCommand(file_path=args[0])
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--num-parallel" and i + 1 < len(args):
+            with suppress(ValueError):
+                parsed.num_parallel = int(args[i + 1])
+            i += 2
+        elif args[i] == "--output-dir" and i + 1 < len(args):
+            parsed.output_dir = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    return parsed, None
+
 
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
@@ -969,7 +1036,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = (
-                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+                "Commands: /quit, /clear, /remember, /swarm, /tokens, /threads, "
+                "/help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -1050,6 +1118,27 @@ class DeepAgentsApp(App):
             # Send as a user message to the agent
             await self._handle_user_message(final_prompt)
             return  # _handle_user_message already mounts the message
+        elif cmd == "/swarm" or cmd.startswith("/swarm "):
+            parsed, parse_error = _parse_swarm_command(command)
+            if parse_error or parsed is None:
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(AppMessage(parse_error or SWARM_USAGE))
+                return
+
+            # Build execution prompt
+            output_dir_line = (
+                f"**Output directory:** `{parsed.output_dir}`"
+                if parsed.output_dir
+                else ""
+            )
+            final_prompt = SWARM_PROMPT_TEMPLATE.format(
+                file_path=parsed.file_path,
+                num_parallel=parsed.num_parallel,
+                output_dir_line=output_dir_line,
+            )
+
+            await self._handle_user_message(final_prompt)
+            return
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))

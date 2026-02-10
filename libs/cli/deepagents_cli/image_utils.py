@@ -2,6 +2,7 @@
 
 import base64
 import io
+import logging
 import os
 import pathlib
 import shutil
@@ -10,10 +11,11 @@ import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
-from contextlib import suppress
 from dataclasses import dataclass
 
 from PIL import Image, UnidentifiedImageError
+
+logger = logging.getLogger(__name__)
 
 
 def _get_executable(name: str) -> str | None:
@@ -73,10 +75,7 @@ def _get_macos_clipboard_image() -> ImageData | None:
     # Try pngpaste first (fast if installed)
     pngpaste_path = _get_executable("pngpaste")
     if pngpaste_path:
-        with suppress(
-            FileNotFoundError,
-            subprocess.TimeoutExpired,
-        ):  # pngpaste not installed or timed out
+        try:
             # S603: pngpaste_path is validated via shutil.which(), args are hardcoded
             result = subprocess.run(  # noqa: S603
                 [pngpaste_path, "-"],
@@ -86,11 +85,7 @@ def _get_macos_clipboard_image() -> ImageData | None:
             )
             if result.returncode == 0 and result.stdout:
                 # Successfully got PNG data - validate it's a real image
-                with suppress(
-                    # UnidentifiedImageError: corrupted or non-image data
-                    UnidentifiedImageError,
-                    OSError,  # OSError: I/O errors during image processing
-                ):
+                try:
                     Image.open(io.BytesIO(result.stdout))
                     base64_data = base64.b64encode(result.stdout).decode("utf-8")
                     return ImageData(
@@ -98,6 +93,19 @@ def _get_macos_clipboard_image() -> ImageData | None:
                         format="png",  # 'pngpaste -' always outputs PNG
                         placeholder="[image]",
                     )
+                except (
+                    # UnidentifiedImageError: corrupted or non-image data
+                    UnidentifiedImageError,
+                    OSError,  # OSError: I/O errors during image processing
+                ) as e:
+                    logger.debug(
+                        "Invalid image data from pngpaste: %s", e, exc_info=True
+                    )
+        except FileNotFoundError:
+            # pngpaste not installed - expected on systems without it
+            logger.debug("pngpaste not found, falling back to osascript")
+        except subprocess.TimeoutExpired:
+            logger.debug("pngpaste timed out after 2 seconds")
 
     # Fallback to osascript with temp file (built-in but slower)
     return _get_clipboard_via_osascript()
@@ -197,15 +205,24 @@ def _get_clipboard_via_osascript() -> ImageData | None:
             # UnidentifiedImageError: corrupted or non-image data
             UnidentifiedImageError,
             OSError,  # OSError: I/O errors during image processing
-        ):
+        ) as e:
+            logger.debug(
+                "Failed to process clipboard image via osascript: %s", e, exc_info=True
+            )
             return None
 
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        logger.debug("osascript timed out while accessing clipboard")
+        return None
+    except OSError as e:
+        logger.debug("OSError accessing clipboard via osascript: %s", e)
         return None
     finally:
         # Clean up temp file
-        with suppress(OSError):
+        try:
             pathlib.Path(temp_path).unlink()
+        except OSError as e:
+            logger.debug("Failed to clean up temp file %s: %s", temp_path, e)
 
 
 def encode_image_to_base64(image_bytes: bytes) -> str:

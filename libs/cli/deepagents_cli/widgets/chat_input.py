@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from rich.text import Text
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
+from textual.widgets.text_area import Selection
 
+from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.widgets.autocomplete import (
     SLASH_COMMANDS,
     CompletionResult,
@@ -24,21 +25,121 @@ from deepagents_cli.widgets.history import HistoryManager
 if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
+    from textual.events import Click
 
 
-class CompletionPopup(Static):
-    """Popup widget that displays completion suggestions."""
+class CompletionOption(Static):
+    """A clickable completion option in the autocomplete popup."""
+
+    DEFAULT_CSS = """
+    CompletionOption {
+        height: 1;
+        padding: 0 1;
+    }
+
+    CompletionOption:hover {
+        background: $surface-lighten-1;
+    }
+
+    CompletionOption.completion-option-selected {
+        background: $primary;
+        text-style: bold;
+    }
+
+    CompletionOption.completion-option-selected:hover {
+        background: $primary-lighten-1;
+    }
+    """
+
+    class Clicked(Message):
+        """Message sent when a completion option is clicked."""
+
+        def __init__(self, index: int) -> None:
+            """Initialize with the clicked option index."""
+            super().__init__()
+            self.index = index
+
+    def __init__(
+        self,
+        label: str,
+        description: str,
+        index: int,
+        is_selected: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the completion option.
+
+        Args:
+            label: The main label text (e.g., command name or file path)
+            description: Secondary description text
+            index: Index of this option in the suggestions list
+            is_selected: Whether this option is currently selected
+            **kwargs: Additional arguments for parent
+        """
+        super().__init__(**kwargs)
+        self._label = label
+        self._description = description
+        self._index = index
+        self._is_selected = is_selected
+
+    def on_mount(self) -> None:
+        """Set up the option display on mount."""
+        self._update_display()
+
+    def _update_display(self) -> None:
+        """Update the display text and styling."""
+        glyphs = get_glyphs()
+        cursor = f"{glyphs.cursor} " if self._is_selected else "  "
+
+        if self._description:
+            text = f"{cursor}[bold]{self._label}[/bold]  [dim]{self._description}[/dim]"
+        else:
+            text = f"{cursor}[bold]{self._label}[/bold]"
+
+        self.update(text)
+
+        if self._is_selected:
+            self.add_class("completion-option-selected")
+        else:
+            self.remove_class("completion-option-selected")
+
+    def set_selected(self, *, selected: bool) -> None:
+        """Update the selected state of this option."""
+        if self._is_selected != selected:
+            self._is_selected = selected
+            self._update_display()
+
+    def on_click(self, event: Click) -> None:
+        """Handle click on this option."""
+        event.stop()
+        self.post_message(self.Clicked(self._index))
+
+
+class CompletionPopup(Vertical):
+    """Popup widget that displays completion suggestions as clickable options."""
 
     DEFAULT_CSS = """
     CompletionPopup {
         display: none;
+        height: auto;
+        max-height: 12;
     }
     """
 
+    class OptionClicked(Message):
+        """Message sent when a completion option is clicked."""
+
+        def __init__(self, index: int) -> None:
+            """Initialize with the clicked option index."""
+            super().__init__()
+            self.index = index
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the completion popup."""
-        super().__init__("", **kwargs)
+        super().__init__(**kwargs)
         self.can_focus = False
+        self._options: list[CompletionOption] = []
+        self._selected_index = 0
 
     def update_suggestions(
         self, suggestions: list[tuple[str, str]], selected_index: int
@@ -48,30 +149,58 @@ class CompletionPopup(Static):
             self.hide()
             return
 
-        text = Text()
-        for idx, (label, description) in enumerate(suggestions):
-            if idx:
-                text.append("\n")
-
-            if idx == selected_index:
-                label_style = "bold reverse"
-                desc_style = "italic"
-            else:
-                label_style = "bold"
-                desc_style = "dim"
-
-            text.append(label, style=label_style)
-            if description:
-                text.append("  ")
-                text.append(description, style=desc_style)
-
-        self.update(text)
+        self._selected_index = selected_index
+        # Store pending update and schedule async rebuild
+        self._pending_suggestions = suggestions
+        self._pending_selected = selected_index
+        self.call_after_refresh(self._rebuild_options)
         self.show()
+
+    async def _rebuild_options(self) -> None:
+        """Rebuild option widgets from pending suggestions."""
+        suggestions = getattr(self, "_pending_suggestions", [])
+        selected_index = getattr(self, "_pending_selected", 0)
+
+        if not suggestions:
+            return
+
+        # Remove existing options
+        await self.remove_children()
+        self._options.clear()
+
+        # Create new options
+        for idx, (label, description) in enumerate(suggestions):
+            option = CompletionOption(
+                label=label,
+                description=description,
+                index=idx,
+                is_selected=(idx == selected_index),
+            )
+            self._options.append(option)
+            await self.mount(option)
+
+    def update_selection(self, selected_index: int) -> None:
+        """Update which option is selected without rebuilding the list."""
+        if self._selected_index == selected_index:
+            return
+
+        # Deselect previous
+        if 0 <= self._selected_index < len(self._options):
+            self._options[self._selected_index].set_selected(selected=False)
+
+        # Select new
+        self._selected_index = selected_index
+        if 0 <= selected_index < len(self._options):
+            self._options[selected_index].set_selected(selected=True)
+
+    def on_completion_option_clicked(self, event: CompletionOption.Clicked) -> None:
+        """Handle click on a completion option."""
+        event.stop()
+        self.post_message(self.OptionClicked(event.index))
 
     def hide(self) -> None:
         """Hide the popup."""
-        self.update("")
-        self.styles.display = "none"
+        self.styles.display = "none"  # type: ignore[assignment]
 
     def show(self) -> None:
         """Show the popup."""
@@ -156,7 +285,7 @@ class ChatTextArea(TextArea):
         lines = self.text.split("\n")
         end_row = len(lines) - 1
         end_col = len(lines[end_row])
-        self.selection = ((0, 0), (end_row, end_col))
+        self.selection = Selection(start=(0, 0), end=(end_row, end_col))
 
     async def _on_key(self, event: events.Key) -> None:
         """Handle key events."""
@@ -309,11 +438,14 @@ class ChatInput(Vertical):
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
 
+        # Track current suggestions for click handling
+        self._current_suggestions: list[tuple[str, str]] = []
+        self._current_selected_index = 0
+
         # Set up history manager
         if history_file is None:
             history_file = Path.home() / ".deepagents" / "history.jsonl"
         self._history = HistoryManager(history_file)
-        self._submit_enabled = True
 
     def compose(self) -> ComposeResult:
         """Compose the chat input layout.
@@ -329,14 +461,19 @@ class ChatInput(Vertical):
 
     def on_mount(self) -> None:
         """Initialize components after mount."""
+        if _detect_charset_mode() == CharsetMode.ASCII:
+            self.styles.border = ("ascii", "cyan")
+
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
 
+        # Both controllers implement the CompletionController protocol but have
+        # different concrete types; the list-item warning is a false positive
         self._completion_manager = MultiCompletionManager(
             [
                 SlashCommandController(SLASH_COMMANDS, self),
                 FuzzyFileController(self, cwd=self._cwd),
-            ]
+            ]  # type: ignore[list-item]
         )
 
         self._text_area.focus()
@@ -368,16 +505,20 @@ class ChatInput(Vertical):
         self.scroll_visible()
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
-        """Handle text submission."""
-        if not self._submit_enabled:
-            return  # Submission disabled while agent is working
+        """Handle text submission.
+
+        Always posts the Submitted event - the app layer decides whether to
+        process immediately or queue based on agent status.
+        """
         value = event.value
         if value:
             if self._completion_manager:
                 self._completion_manager.reset()
 
             self._history.add(value)
+            # Always post the message - app layer decides to queue or process
             self.post_message(self.Submitted(value, self.mode))
+            # Always clear input for immediate feedback
             if self._text_area:
                 self._text_area.clear_text()
             self.mode = "normal"
@@ -500,10 +641,6 @@ class ChatInput(Vertical):
                 if self._completion_manager:
                     self._completion_manager.reset()
 
-    def set_submit_enabled(self, *, enabled: bool) -> None:
-        """Enable or disable submission (Enter key). User can still type."""
-        self._submit_enabled = enabled
-
     def set_cursor_active(self, *, active: bool) -> None:
         """Set whether the cursor should be actively blinking.
 
@@ -521,6 +658,10 @@ class ChatInput(Vertical):
         self, suggestions: list[tuple[str, str]], selected_index: int
     ) -> None:
         """Render completion suggestions in the popup."""
+        # Track suggestions locally for click handling
+        self._current_suggestions = suggestions
+        self._current_selected_index = selected_index
+
         if self._popup:
             self._popup.update_suggestions(suggestions, selected_index)
         # Tell TextArea that completion is active so it yields navigation keys
@@ -529,11 +670,47 @@ class ChatInput(Vertical):
 
     def clear_completion_suggestions(self) -> None:
         """Clear/hide the completion popup."""
+        self._current_suggestions = []
+        self._current_selected_index = 0
+
         if self._popup:
             self._popup.hide()
         # Tell TextArea that completion is no longer active
         if self._text_area:
             self._text_area.set_completion_active(active=False)
+
+    def on_completion_popup_option_clicked(
+        self, event: CompletionPopup.OptionClicked
+    ) -> None:
+        """Handle click on a completion option."""
+        if not self._current_suggestions or not self._text_area:
+            return
+
+        index = event.index
+        if index < 0 or index >= len(self._current_suggestions):
+            return
+
+        # Get the selected completion
+        label, _ = self._current_suggestions[index]
+        text = self._text_area.text
+        cursor = self._get_cursor_offset()
+
+        # Determine replacement range based on completion type
+        if label.startswith("/"):
+            # Slash command: replace from start
+            self.replace_completion_range(0, cursor, label)
+        elif label.startswith("@"):
+            # File mention: replace from @ to cursor
+            at_index = text[:cursor].rfind("@")
+            if at_index >= 0:
+                self.replace_completion_range(at_index, cursor, label)
+
+        # Reset completion state
+        if self._completion_manager:
+            self._completion_manager.reset()
+
+        # Re-focus the text input after click
+        self._text_area.focus()
 
     def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
         """Replace text in the input field."""

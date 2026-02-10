@@ -242,7 +242,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_skill_metadata(
+def _parse_skill_metadata(  # noqa: PLR0912
     content: str,
     skill_path: str,
     directory_name: str,

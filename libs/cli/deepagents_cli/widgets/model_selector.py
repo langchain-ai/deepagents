@@ -457,7 +457,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         else:
             spec_text = model_spec
         suffix = " [dim](current)[/dim]" if current else ""
-        default_suffix = f" [cyan]{glyphs.pin} default[/cyan]" if is_default else ""
+        default_suffix = " [cyan](default)[/cyan]" if is_default else ""
         return f"{cursor}{spec_text}{suffix}{default_suffix}"
 
     def _move_selection(self, delta: int) -> None:

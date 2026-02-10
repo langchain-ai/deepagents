@@ -318,6 +318,11 @@ def _parse_skill_metadata(  # noqa: PLR0912
         elif isinstance(raw_tools, str):
             allowed_tools = raw_tools.split()
         else:
+            logger.warning(
+                "Invalid 'allowed-tools' type %s in %s; expected list or string. Ignoring value.",
+                type(raw_tools).__name__,
+                skill_path,
+            )
             allowed_tools = []
     else:
         allowed_tools = []

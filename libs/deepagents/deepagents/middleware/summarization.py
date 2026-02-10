@@ -49,7 +49,7 @@ from langchain.agents.middleware.summarization import (
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
     from langchain_core.runnables.config import RunnableConfig
+    from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
@@ -522,7 +523,7 @@ A condensed summary follows:
             # Keep recent messages up to token limit
             tokens_kept = 0
             for i in range(len(messages) - 1, -1, -1):
-                msg_tokens = self.token_counter([messages[i]])
+                msg_tokens = self._lc_helper._partial_token_counter([messages[i]])
                 if tokens_kept + msg_tokens > target_token_count:
                     return i + 1
                 tokens_kept += msg_tokens
@@ -558,17 +559,28 @@ A condensed summary follows:
             }
         return tool_call
 
-    def _truncate_args(self, messages: list[AnyMessage]) -> tuple[list[AnyMessage], bool]:
+    def _truncate_args(
+        self,
+        messages: list[AnyMessage],
+        system_message: SystemMessage | None,
+        tools: list[BaseTool | dict[str, Any]] | None,
+    ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
         Args:
             messages: Messages to potentially truncate.
+            system_message: Optional system message for token counting.
+            tools: Optional tools for token counting.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
             truncated_messages is the same as input messages.
         """
-        total_tokens = self.token_counter(messages)
+        counted_messages = [system_message, *messages] if system_message is not None else messages
+        try:
+            total_tokens = self.token_counter(counted_messages, tools=tools)
+        except TypeError:
+            total_tokens = self.token_counter(counted_messages)
         if not self._should_truncate_args(messages, total_tokens):
             return messages, False
 
@@ -778,10 +790,18 @@ A condensed summary follows:
         effective_messages = self._get_effective_messages(request)
 
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(effective_messages)
+        truncated_messages, _ = self._truncate_args(
+            effective_messages,
+            request.system_message,
+            request.tools,
+        )
 
         # Step 2: Check if summarization should happen
-        total_tokens = self.token_counter(truncated_messages)
+        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
+        try:
+            total_tokens = self.token_counter(counted_messages, tools=request.tools)
+        except TypeError:
+            total_tokens = self.token_counter(counted_messages)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
@@ -865,10 +885,18 @@ A condensed summary follows:
         effective_messages = self._get_effective_messages(request)
 
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(effective_messages)
+        truncated_messages, _ = self._truncate_args(
+            effective_messages,
+            request.system_message,
+            request.tools,
+        )
 
         # Step 2: Check if summarization should happen
-        total_tokens = self.token_counter(truncated_messages)
+        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
+        try:
+            total_tokens = self.token_counter(counted_messages, tools=request.tools)
+        except TypeError:
+            total_tokens = self.token_counter(counted_messages)
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages

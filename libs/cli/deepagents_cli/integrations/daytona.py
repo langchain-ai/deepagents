@@ -92,7 +92,9 @@ class DaytonaBackend(BaseSandbox):
         return [
             FileDownloadResponse(
                 path=resp.source,
-                content=resp.result,
+                content=resp.result.encode()
+                if isinstance(resp.result, str)
+                else resp.result,
                 error=None,  # TODO: map resp.error to FileOperationError
             )
             for resp in daytona_responses

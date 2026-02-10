@@ -17,6 +17,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
+from langchain_core.messages.content import create_image_block
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -50,15 +51,6 @@ IMAGE_MEDIA_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
-
-
-def _create_image_content_block(image_b64: str, media_type: str) -> dict:
-    """Create a standard LangChain image content block."""
-    return {
-        "type": "image",
-        "base64": image_b64,
-        "mime_type": media_type,
-    }
 
 
 # Template for truncation message in read_file
@@ -505,33 +497,6 @@ class FilesystemMiddleware(AgentMiddleware):
             return self.backend(runtime)
         return self.backend
 
-    @staticmethod
-    def _build_image_tool_command(
-        *,
-        image_bytes: bytes,
-        media_type: str,
-        file_path: str,
-        tool_call_id: str,
-    ) -> Command:
-        """Build a ToolMessage Command for image read results."""
-        image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-        image_block = _create_image_content_block(image_b64, media_type)
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=[image_block],
-                        name="read_file",
-                        tool_call_id=tool_call_id,
-                        additional_kwargs={
-                            "read_file_path": file_path,
-                            "read_file_media_type": media_type,
-                        },
-                    )
-                ]
-            }
-        )
-
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
@@ -583,7 +548,7 @@ class FilesystemMiddleware(AgentMiddleware):
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> Command | str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -596,11 +561,15 @@ class FilesystemMiddleware(AgentMiddleware):
                 responses = resolved_backend.download_files([validated_path])
                 if responses and responses[0].content is not None:
                     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    return self._build_image_tool_command(
-                        image_bytes=responses[0].content,
-                        media_type=media_type,
-                        file_path=validated_path,
+                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
+                    return ToolMessage(
+                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        name="read_file",
                         tool_call_id=runtime.tool_call_id,
+                        additional_kwargs={
+                            "read_file_path": validated_path,
+                            "read_file_media_type": media_type,
+                        },
                     )
                 if responses and responses[0].error:
                     return f"Error reading image: {responses[0].error}"
@@ -628,7 +597,7 @@ class FilesystemMiddleware(AgentMiddleware):
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> Command | str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -641,11 +610,15 @@ class FilesystemMiddleware(AgentMiddleware):
                 responses = await resolved_backend.adownload_files([validated_path])
                 if responses and responses[0].content is not None:
                     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
-                    return self._build_image_tool_command(
-                        image_bytes=responses[0].content,
-                        media_type=media_type,
-                        file_path=validated_path,
+                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
+                    return ToolMessage(
+                        conten_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        name="read_file",
                         tool_call_id=runtime.tool_call_id,
+                        additional_kwargs={
+                            "read_file_path": validated_path,
+                            "read_file_media_type": media_type,
+                        },
                     )
                 if responses and responses[0].error:
                     return f"Error reading image: {responses[0].error}"

@@ -1144,19 +1144,15 @@ class TestFilesystemMiddleware:
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/app/frame_001.jpg", "runtime": runtime})
 
-        assert isinstance(result, Command)
-        messages = result.update["messages"]
-        assert len(messages) == 1
-        tool_msg = messages[0]
-        assert isinstance(tool_msg, ToolMessage)
-        assert tool_msg.name == "read_file"
-        assert tool_msg.tool_call_id == "img-read-1"
-        assert tool_msg.additional_kwargs["read_file_path"] == "/app/frame_001.jpg"
-        assert tool_msg.additional_kwargs["read_file_media_type"] == "image/jpeg"
-        assert isinstance(tool_msg.content, list)
-        assert tool_msg.content[0]["type"] == "image"
-        assert tool_msg.content[0]["mime_type"] == "image/jpeg"
-        assert tool_msg.content[0]["base64"] == "ZmFrZS1pbWFnZS1ieXRlcw=="
+        assert isinstance(result, ToolMessage)
+        assert result.name == "read_file"
+        assert result.tool_call_id == "img-read-1"
+        assert result.additional_kwargs["read_file_path"] == "/app/frame_001.jpg"
+        assert result.additional_kwargs["read_file_media_type"] == "image/jpeg"
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "image"
+        assert result.content[0]["mime_type"] == "image/jpeg"
+        assert result.content[0]["base64"] == "ZmFrZS1pbWFnZS1ieXRlcw=="
 
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""

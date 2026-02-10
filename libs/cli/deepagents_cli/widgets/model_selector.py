@@ -209,12 +209,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._option_widgets: list[ModelOption] = []
         self._filter_text = ""
         self._rebuild_needed = True
-
-        # Pre-compute current spec for fast comparison in _move_selection
+        self._current_spec: str | None = None
         if current_model and current_provider:
             self._current_spec = f"{current_provider}:{current_model}"
-        else:
-            self._current_spec: str | None = None
 
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
@@ -336,7 +333,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return
 
         await self._options_container.remove_children()
-        self._option_widgets: list[ModelOption] = []
+        self._option_widgets = []
         self._rebuild_needed = False
 
         if not self._filtered_models:
@@ -515,6 +512,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
             self.dismiss((custom_input, provider))
+        elif custom_input:
+            self.notify(
+                "Use provider:model format (e.g., openai:gpt-4o)",
+                severity="warning",
+            )
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

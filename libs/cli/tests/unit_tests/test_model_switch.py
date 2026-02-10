@@ -233,6 +233,72 @@ class TestModelSwitchErrorHandling:
         assert "Model preference set" in captured_messages[0]
         assert "Restart" in captured_messages[0]
 
+    @pytest.mark.asyncio
+    async def test_no_checkpointer_save_failure_shows_error(self) -> None:
+        """_switch_model without checkpointer shows error when save fails."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = None
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch("deepagents_cli.app.save_recent_model", return_value=False),
+            patch.object(ErrorMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        assert len(captured_errors) == 1
+        assert "Could not save model preference" in captured_errors[0]
+
+    @pytest.mark.asyncio
+    async def test_hot_swap_save_failure_warns_in_message(self) -> None:
+        """Successful hot-swap warns when save_recent_model fails."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        mock_model = MagicMock()
+        mock_agent = MagicMock()
+        mock_backend = MagicMock()
+
+        with (
+            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch(
+                "deepagents_cli.app.create_cli_agent",
+                return_value=(mock_agent, mock_backend),
+            ),
+            patch("deepagents_cli.app.save_recent_model", return_value=False),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        assert len(captured_messages) == 1
+        assert "Switched to" in captured_messages[0]
+        assert "preference not saved" in captured_messages[0]
+
 
 class TestModelSwitchConfigProvider:
     """Tests for switching to config-file-defined providers."""

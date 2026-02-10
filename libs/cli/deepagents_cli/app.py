@@ -1735,14 +1735,8 @@ class DeepAgentsApp(App):
 
         # Post-swap: update UI and save config
         display = f"{settings.model_provider}:{settings.model_name}"
-        try:
-            if self._status_bar:
-                self._status_bar.set_model(display)
-        except (AttributeError, RuntimeError):
-            logger.exception(
-                "Failed to update status bar after model switch to %s",
-                display,
-            )
+        if self._status_bar:
+            self._status_bar.set_model(display)
 
         config_saved = save_recent_model(model_spec)
         if config_saved:

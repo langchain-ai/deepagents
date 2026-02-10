@@ -6,9 +6,11 @@ structured way to define available models and providers.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import logging
 import os
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -324,25 +326,12 @@ def get_available_models() -> dict[str, list[str]]:
     for provider, module_path in provider_modules:
         try:
             profiles = _load_provider_profiles(module_path)
-
-            # Filter to models that support tool calling and text I/O
-            models = [
-                name
-                for name, profile in profiles.items()
-                if profile.get("tool_calling", False)
-                and profile.get("text_inputs", True) is not False
-                and profile.get("text_outputs", True) is not False
-            ]
-
-            # Sort by model name for consistent display
-            models.sort()
-            if models:
-                available[provider] = models
         except ImportError:
             logger.debug(
                 "Could not import profiles from %s (package may not be installed)",
                 module_path,
             )
+            continue
         except Exception:
             logger.warning(
                 "Failed to load profiles from %s, skipping provider '%s'",
@@ -350,6 +339,20 @@ def get_available_models() -> dict[str, list[str]]:
                 provider,
                 exc_info=True,
             )
+            continue
+
+        # Filter to models that support tool calling and text I/O.
+        models = [
+            name
+            for name, profile in profiles.items()
+            if profile.get("tool_calling", False)
+            and profile.get("text_inputs", True) is not False
+            and profile.get("text_outputs", True) is not False
+        ]
+
+        models.sort()
+        if models:
+            available[provider] = models
 
     # Merge in models from config file (custom providers like ollama, fireworks)
     config = ModelConfig.load()
@@ -715,11 +718,19 @@ def _save_model_field(
             data[section] = {}
         data[section]["model"] = model_spec
 
-        # Write back with proper TOML formatting
-        with config_path.open("wb") as f:
-            tomli_w.dump(data, f)
-    except (OSError, PermissionError, tomllib.TOMLDecodeError) as e:
-        logger.warning("Could not save %s model preference: %s", section, e)
+        # Write to temp file then rename to prevent corruption if write is interrupted
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            # Clean up temp file on any failure
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not save %s model preference", section)
         return False
     else:
         # Invalidate config cache so the next load() picks up the change.

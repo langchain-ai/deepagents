@@ -21,7 +21,7 @@ from deepagents_cli.config import (
     settings,
     validate_model_capabilities,
 )
-from deepagents_cli.model_config import clear_caches
+from deepagents_cli.model_config import ModelConfigError, clear_caches
 
 
 class TestProjectRootDetection:
@@ -956,6 +956,53 @@ max_tokens = 1024
 
         create_model("anthropic:claude-sonnet-4-5", extra_kwargs={})
         mock_init_chat_model.assert_called_once()
+
+
+class TestCreateModelEdgeCaseParsing:
+    """Tests for create_model() edge-case spec parsing."""
+
+    def setup_method(self) -> None:
+        """Reset settings before each test."""
+        settings.model_context_limit = None
+        settings.model_name = None
+        settings.model_provider = None
+
+    @patch("deepagents_cli.config.init_chat_model")
+    def test_leading_colon_treated_as_bare_model(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Leading colon (e.g., ':claude-opus-4-6') is treated as bare model name."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        settings.anthropic_api_key = "test"
+        try:
+            create_model(":claude-opus-4-6")
+        finally:
+            settings.anthropic_api_key = None
+
+        # Should have detected 'anthropic' provider and used 'claude-opus-4-6'
+        assert settings.model_name == "claude-opus-4-6"
+
+    def test_trailing_colon_raises_error(self) -> None:
+        """Trailing colon (e.g., 'anthropic:') raises ModelConfigError."""
+        with pytest.raises(ModelConfigError, match="model name is required"):
+            create_model("anthropic:")
+
+    @patch("deepagents_cli.config._get_default_model_spec")
+    @patch("deepagents_cli.config.init_chat_model")
+    def test_empty_string_uses_default(
+        self, mock_init_chat_model: Mock, mock_default: Mock
+    ) -> None:
+        """Empty string falls through to _get_default_model_spec."""
+        mock_default.return_value = "openai:gpt-4o"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        create_model("")
+        mock_default.assert_called_once()
 
 
 class TestDetectProvider:

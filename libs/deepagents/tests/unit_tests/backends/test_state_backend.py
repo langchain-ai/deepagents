@@ -148,7 +148,7 @@ def test_state_backend_ls_trailing_slash():
 def test_state_backend_intercept_large_tool_result():
     """Test that StateBackend properly handles large tool result interception."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StateBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=StateBackend, tool_token_limit_before_evict=1000)
 
     large_content = "x" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_123")

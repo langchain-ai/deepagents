@@ -15,10 +15,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 
-from deepagents_cli.integrations.sandbox_provider import (
-    SandboxListResponse,
-    SandboxProvider,
-)
+from deepagents_cli.integrations.sandbox_provider import SandboxProvider
 
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox, SandboxClient, SandboxTemplate
@@ -127,7 +124,7 @@ class LangSmithBackend(BaseSandbox):
         return responses
 
 
-class LangSmithProvider(SandboxProvider[dict[str, Any]]):
+class LangSmithProvider(SandboxProvider):
     """LangSmith sandbox provider implementation.
 
     Manages LangSmith sandbox lifecycle using the LangSmith SDK.
@@ -155,7 +152,7 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
         *,
         cursor: str | None = None,
         **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List available LangSmith sandboxes.
 
         Raises:

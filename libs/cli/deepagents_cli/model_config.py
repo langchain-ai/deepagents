@@ -453,10 +453,10 @@ class ModelConfig:
     """
 
     default_model: str | None = None
-    """The user's intentional default model (from config file `[default].model`)."""
+    """The user's intentional default model (from config file `[models].default`)."""
 
     recent_model: str | None = None
-    """The most recently switched-to model (from config file `[recent].model`)."""
+    """The most recently switched-to model (from config file `[models].recent`)."""
 
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
@@ -516,10 +516,11 @@ class ModelConfig:
                 _default_config_cache = fallback
             return fallback
 
+        models_section = data.get("models", {})
         config = cls(
-            default_model=data.get("default", {}).get("model"),
-            recent_model=data.get("recent", {}).get("model"),
-            providers=data.get("models", {}).get("providers", {}),
+            default_model=models_section.get("default"),
+            recent_model=models_section.get("recent"),
+            providers=models_section.get("providers", {}),
         )
 
         # Validate config consistency
@@ -689,12 +690,12 @@ class ModelConfig:
 
 
 def _save_model_field(
-    section: str, model_spec: str, config_path: Path | None = None
+    field: str, model_spec: str, config_path: Path | None = None
 ) -> bool:
-    """Read-modify-write a `[section].model` field in the config file.
+    """Read-modify-write a `[models].<field>` key in the config file.
 
     Args:
-        section: TOML section name (e.g., `'default'` or `'recent'`).
+        field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
         model_spec: The model to save in `provider:model` format.
         config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
 
@@ -714,9 +715,9 @@ def _save_model_field(
         else:
             data = {}
 
-        if section not in data:
-            data[section] = {}
-        data[section]["model"] = model_spec
+        if "models" not in data:
+            data["models"] = {}
+        data["models"][field] = model_spec
 
         # Write to temp file then rename to prevent corruption if write is interrupted
         fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
@@ -730,7 +731,7 @@ def _save_model_field(
                 Path(tmp_path).unlink()
             raise
     except (OSError, tomllib.TOMLDecodeError):
-        logger.exception("Could not save %s model preference", section)
+        logger.exception("Could not save %s model preference", field)
         return False
     else:
         # Invalidate config cache so the next load() picks up the change.
@@ -742,8 +743,8 @@ def _save_model_field(
 def save_default_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the default model in config file.
 
-    Reads existing config (if any), updates the `default.model` value, and
-    writes back using proper TOML serialization.
+    Reads existing config (if any), updates `[models].default`, and writes
+    back using proper TOML serialization.
 
     Args:
         model_spec: The model to set as default in `provider:model` format.
@@ -761,7 +762,7 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
 def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the recently used model in config file.
 
-    Writes to `[recent].model` instead of `[default].model`, so that `/model`
+    Writes to `[models].recent` instead of `[models].default`, so that `/model`
     switches do not overwrite the user's intentional default.
 
     Args:

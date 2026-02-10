@@ -1076,8 +1076,8 @@ def _get_default_model_spec() -> str:
 
     Checks in order:
 
-    1. `[default].model` in config file (user's intentional preference).
-    2. `[recent].model` in config file (last `/model` switch).
+    1. `[models].default` in config file (user's intentional preference).
+    2. `[models].recent` in config file (last `/model` switch).
     3. Auto-detection based on available API credentials.
 
     Returns:

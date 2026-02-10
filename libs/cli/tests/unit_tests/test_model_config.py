@@ -153,8 +153,8 @@ class TestModelConfigLoad:
         """Loads default model from config."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[default]
-model = "claude-sonnet-4-5"
+[models]
+default = "claude-sonnet-4-5"
 """)
         config = ModelConfig.load(config_path)
 
@@ -211,7 +211,7 @@ models = ["llama3"]
     def test_unreadable_file_returns_empty_config(self, tmp_path, caplog):
         """Unreadable config file returns empty config and logs a warning."""
         config_path = tmp_path / "config.toml"
-        config_path.write_text("[default]\nmodel = 'test'")
+        config_path.write_text("[models]\ndefault = 'test'")
         config_path.chmod(0o000)
 
         try:
@@ -382,14 +382,14 @@ class TestSaveDefaultModel:
 
         assert config_path.exists()
         content = config_path.read_text()
-        assert 'model = "claude-sonnet-4-5"' in content
+        assert 'default = "claude-sonnet-4-5"' in content
 
     def test_updates_existing_default(self, tmp_path):
         """Updates existing default model."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[default]
-model = "old-model"
+[models]
+default = "old-model"
 
 [models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
@@ -397,13 +397,13 @@ models = ["claude-sonnet-4-5"]
         model_config.save_default_model("new-model", config_path)
 
         content = config_path.read_text()
-        assert 'model = "new-model"' in content
+        assert 'default = "new-model"' in content
         assert "old-model" not in content
         # Should preserve other config
         assert "[models.providers.anthropic]" in content
 
-    def test_adds_default_section(self, tmp_path):
-        """Adds [default] section if missing."""
+    def test_adds_default_to_models_section(self, tmp_path):
+        """Adds default key to [models] section if missing."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.anthropic]
@@ -412,8 +412,7 @@ models = ["claude-sonnet-4-5"]
         model_config.save_default_model("claude-sonnet-4-5", config_path)
 
         content = config_path.read_text()
-        assert "[default]" in content
-        assert 'model = "claude-sonnet-4-5"' in content
+        assert 'default = "claude-sonnet-4-5"' in content
 
     def test_creates_parent_directory(self, tmp_path):
         """Creates parent directory if needed."""
@@ -428,19 +427,19 @@ models = ["claude-sonnet-4-5"]
         model_config.save_default_model("anthropic:claude-sonnet-4-5", config_path)
 
         content = config_path.read_text()
-        assert 'model = "anthropic:claude-sonnet-4-5"' in content
+        assert 'default = "anthropic:claude-sonnet-4-5"' in content
 
     def test_updates_to_provider_model_format(self, tmp_path):
         """Updates from bare model name to provider:model format."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[default]
-model = "claude-sonnet-4-5"
+[models]
+default = "claude-sonnet-4-5"
 """)
         model_config.save_default_model("anthropic:claude-opus-4-5", config_path)
 
         content = config_path.read_text()
-        assert 'model = "anthropic:claude-opus-4-5"' in content
+        assert 'default = "anthropic:claude-opus-4-5"' in content
         assert "claude-sonnet-4-5" not in content
 
 
@@ -470,7 +469,7 @@ class TestModelPersistenceBetweenSessions:
         # Verify the model was saved
         assert config_path.exists()
         content = config_path.read_text()
-        assert 'model = "anthropic:claude-opus-4-5"' in content
+        assert 'recent = "anthropic:claude-opus-4-5"' in content
 
         # Step 2: Patch DEFAULT_CONFIG_PATH and call _get_default_model_spec
         # This simulates starting a new CLI session
@@ -1331,15 +1330,14 @@ class TestSaveRecentModel:
 
         assert config_path.exists()
         content = config_path.read_text()
-        assert "[recent]" in content
-        assert 'model = "anthropic:claude-sonnet-4-5"' in content
+        assert 'recent = "anthropic:claude-sonnet-4-5"' in content
 
     def test_updates_existing_recent(self, tmp_path):
         """Updates existing recent model."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[recent]
-model = "old-model"
+[models]
+recent = "old-model"
 
 [models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
@@ -1347,23 +1345,23 @@ models = ["claude-sonnet-4-5"]
         save_recent_model("new-model", config_path)
 
         content = config_path.read_text()
-        assert 'model = "new-model"' in content
+        assert 'recent = "new-model"' in content
         assert "old-model" not in content
         # Should preserve other config
         assert "[models.providers.anthropic]" in content
 
     def test_preserves_existing_default(self, tmp_path):
-        """Does not overwrite [default].model when saving recent."""
+        """Does not overwrite [models].default when saving recent."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[default]
-model = "ollama:qwen3:4b"
+[models]
+default = "ollama:qwen3:4b"
 """)
         save_recent_model("anthropic:claude-sonnet-4-5", config_path)
 
         content = config_path.read_text()
-        assert 'model = "ollama:qwen3:4b"' in content
-        assert 'model = "anthropic:claude-sonnet-4-5"' in content
+        assert 'default = "ollama:qwen3:4b"' in content
+        assert 'recent = "anthropic:claude-sonnet-4-5"' in content
 
     def test_creates_parent_directory(self, tmp_path):
         """Creates parent directory if needed."""
@@ -1380,19 +1378,19 @@ class TestModelConfigLoadRecent:
         """Loads recent model from config."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[recent]
-model = "anthropic:claude-sonnet-4-5"
+[models]
+recent = "anthropic:claude-sonnet-4-5"
 """)
         config = ModelConfig.load(config_path)
 
         assert config.recent_model == "anthropic:claude-sonnet-4-5"
 
     def test_recent_model_none_when_absent(self, tmp_path):
-        """recent_model is None when [recent] section is absent."""
+        """recent_model is None when [models].recent key is absent."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[default]
-model = "anthropic:claude-sonnet-4-5"
+[models]
+default = "anthropic:claude-sonnet-4-5"
 """)
         config = ModelConfig.load(config_path)
 
@@ -1402,11 +1400,9 @@ model = "anthropic:claude-sonnet-4-5"
         """Loads both default_model and recent_model from config."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[default]
-model = "ollama:qwen3:4b"
-
-[recent]
-model = "anthropic:claude-sonnet-4-5"
+[models]
+default = "ollama:qwen3:4b"
+recent = "anthropic:claude-sonnet-4-5"
 """)
         config = ModelConfig.load(config_path)
 
@@ -1418,16 +1414,14 @@ class TestModelPrecedenceOrder:
     """Tests for model selection precedence: default > recent > env."""
 
     def test_default_takes_priority_over_recent(self, tmp_path):
-        """[default].model takes priority over [recent].model."""
+        """[models].default takes priority over [models].recent."""
         from deepagents_cli.config import _get_default_model_spec
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[default]
-model = "ollama:qwen3:4b"
-
-[recent]
-model = "anthropic:claude-sonnet-4-5"
+[models]
+default = "ollama:qwen3:4b"
+recent = "anthropic:claude-sonnet-4-5"
 """)
 
         with (
@@ -1443,13 +1437,13 @@ model = "anthropic:claude-sonnet-4-5"
         assert result == "ollama:qwen3:4b"
 
     def test_recent_takes_priority_over_env(self, tmp_path):
-        """[recent].model takes priority over env var auto-detection."""
+        """[models].recent takes priority over env var auto-detection."""
         from deepagents_cli.config import _get_default_model_spec
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[recent]
-model = "openai:gpt-5.2"
+[models]
+recent = "openai:gpt-5.2"
 """)
 
         with (

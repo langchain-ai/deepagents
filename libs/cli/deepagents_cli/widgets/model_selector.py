@@ -98,6 +98,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("j", "move_down", "Down", show=False, priority=True),
         Binding("tab", "move_down", "Down", show=False, priority=True),
         Binding("shift+tab", "move_up", "Up", show=False, priority=True),
+        Binding("pageup", "page_up", "Page up", show=False, priority=True),
+        Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("ctrl+s", "set_default", "Set default", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
@@ -514,6 +516,52 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def action_move_down(self) -> None:
         """Move selection down."""
         self._move_selection(1)
+
+    def _visible_page_size(self) -> int:
+        """Return the number of model options that fit in one visual page.
+
+        Returns:
+            Number of model options per page, at least 1.
+        """
+        default_page_size = 10
+        try:
+            scroll = self.query_one(".model-list", VerticalScroll)
+            height = scroll.size.height
+        except Exception:  # noqa: BLE001
+            return default_page_size
+        if height <= 0:
+            return default_page_size
+
+        total_models = len(self._filtered_models)
+        if total_models == 0:
+            return default_page_size
+
+        # Each provider header = 1 row + margin-top: 1 (first has margin 0)
+        num_headers = len(self.query(".model-provider-header"))
+        header_rows = max(0, num_headers * 2 - 1) if num_headers else 0
+        total_rows = total_models + header_rows
+        return max(1, int(height * total_models / total_rows))
+
+    def action_page_up(self) -> None:
+        """Move selection up by one visible page."""
+        if not self._filtered_models:
+            return
+        page = self._visible_page_size()
+        target = max(0, self._selected_index - page)
+        delta = target - self._selected_index
+        if delta != 0:
+            self._move_selection(delta)
+
+    def action_page_down(self) -> None:
+        """Move selection down by one visible page."""
+        if not self._filtered_models:
+            return
+        count = len(self._filtered_models)
+        page = self._visible_page_size()
+        target = min(count - 1, self._selected_index + page)
+        delta = target - self._selected_index
+        if delta != 0:
+            self._move_selection(delta)
 
     def action_select(self) -> None:
         """Select the current model."""

@@ -31,7 +31,7 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
-from deepagents.middleware.summarization import _compute_summarization_defaults, _DeepAgentsSummarizationMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
@@ -172,7 +172,7 @@ def create_deep_agent(
     gp_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
-        _DeepAgentsSummarizationMiddleware(
+        SummarizationMiddleware(
             model=model,
             backend=backend,
             trigger=summarization_defaults["trigger"],
@@ -212,7 +212,7 @@ def create_deep_agent(
             subagent_middleware: list[AgentMiddleware] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(backend=backend),
-                _DeepAgentsSummarizationMiddleware(
+                SummarizationMiddleware(
                     model=subagent_model,
                     backend=backend,
                     trigger=subagent_summarization_defaults["trigger"],
@@ -254,7 +254,7 @@ def create_deep_agent(
                 backend=backend,
                 subagents=all_subagents,
             ),
-            _DeepAgentsSummarizationMiddleware(
+            SummarizationMiddleware(
                 model=model,
                 backend=backend,
                 trigger=summarization_defaults["trigger"],

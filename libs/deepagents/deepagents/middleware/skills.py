@@ -242,7 +242,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_skill_metadata(
+def _parse_skill_metadata(  # noqa: PLR0912
     content: str,
     skill_path: str,
     directory_name: str,
@@ -314,10 +314,16 @@ def _parse_skill_metadata(
     raw_tools = frontmatter_data.get("allowed-tools")
     if raw_tools:
         if isinstance(raw_tools, list):
-            allowed_tools = [str(t).strip() for t in raw_tools if str(t).strip()]
+            allowed_tools = [t.strip() for t in raw_tools if isinstance(t, str) and t.strip()]
+        elif isinstance(raw_tools, str):
+            allowed_tools = raw_tools.split()
         else:
-            # Assume space-delimited string
-            allowed_tools = str(raw_tools).split()
+            logger.warning(
+                "Invalid 'allowed-tools' type %s in %s; expected list or string. Ignoring value.",
+                type(raw_tools).__name__,
+                skill_path,
+            )
+            allowed_tools = []
     else:
         allowed_tools = []
 

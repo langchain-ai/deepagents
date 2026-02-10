@@ -125,7 +125,6 @@ class StatusBar(Horizontal):
         )
         yield Static("", classes="status-message", id="status-message")
         yield Static("", classes="status-tokens", id="tokens-display")
-        # Display model in provider:model format if provider is available
         model_display = self._format_model_display()
         yield Static(model_display, classes="status-model", id="model-display")
 
@@ -266,10 +265,7 @@ class StatusBar(Horizontal):
 
     def hide_tokens(self) -> None:
         """Hide the token display (e.g., during streaming)."""
-        try:
-            self.query_one("#tokens-display", Static).update("")
-        except NoMatches:
-            logger.debug("Tokens display widget not found")
+        self.query_one("#tokens-display", Static).update("")
 
     def set_model(self, model_spec: str) -> None:
         """Update the model display text.
@@ -277,13 +273,5 @@ class StatusBar(Horizontal):
         Args:
             model_spec: Model specification to display (e.g.,
                 `'anthropic:claude-sonnet-4-5'`).
-
-        Note:
-            This method only updates the UI display. Global settings
-            (`settings.model_name`, `settings.model_provider`) should be updated
-            by the caller via `create_model()` before calling this method.
         """
-        try:
-            self.query_one("#model-display", Static).update(model_spec)
-        except NoMatches:
-            logger.debug("Model display widget not found; status bar not updated")
+        self.query_one("#model-display", Static).update(model_spec)

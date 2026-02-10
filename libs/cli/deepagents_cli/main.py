@@ -255,8 +255,8 @@ def parse_args() -> argparse.Namespace:
         "--model-kwargs",
         metavar="JSON",
         help="Extra kwargs to pass to the model as a JSON string "
-        '(e.g., \'{"temperature": 0.7, "max_tokens": 2048}\'). '
-        "These take highest priority, overriding config file values.",
+        '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
+        "These take priority, overriding config file values.",
     )
 
     parser.add_argument(
@@ -400,7 +400,7 @@ async def run_textual_cli_async(
     # Use async context manager for checkpointer
     async with get_checkpointer() as checkpointer:
         # Create agent with conditional tools
-        tools = [http_request, fetch_url]
+        tools: list[Callable[..., Any] | dict[str, Any]] = [http_request, fetch_url]
         if settings.has_tavily:
             tools.append(web_search)
 
@@ -487,7 +487,6 @@ def cli_main() -> None:
 
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
-        # Parse --model-kwargs JSON string
         model_kwargs: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_kwargs", None)
         if raw_kwargs:

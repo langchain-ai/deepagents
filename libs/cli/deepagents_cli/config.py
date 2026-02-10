@@ -420,8 +420,7 @@ class Settings:
         user_langchain_project: Original LANGSMITH_PROJECT from environment
             (for user code).
         model_name: Currently active model name (set after model creation).
-        model_provider: Provider identifier (e.g., openai, anthropic, google_genai,
-            google_vertexai).
+        model_provider: Provider identifier (e.g., openai, anthropic, google_genai).
         model_context_limit: Maximum input token count from the model profile.
         project_root: Current project root directory (if in a git project).
         shell_allow_list: List of shell commands that don't require approval.

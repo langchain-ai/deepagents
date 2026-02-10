@@ -29,12 +29,19 @@ on:
           - deepagents-acp
           - deepagents-harbor
           - langchain-daytona
+          - langchain-modal
+          - langchain-runloop
         default: deepagents
       dangerous-nonmaster-release:
         required: false
         type: boolean
         default: false
         description: "Release from a non-master branch (danger!) - Only use for hotfixes"
+      dangerous-skip-sdk-pin-check:
+        required: false
+        type: boolean
+        default: false
+        description: "Skip CLI SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
   PYTHON_VERSION: "3.11"
@@ -71,12 +78,18 @@ jobs:
             deepagents-harbor)
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
-            daytona)
+            langchain-daytona)
               echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
+            langchain-modal)
+              echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT
+              ;;
+            langchain-runloop)
+              echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona, langchain-modal, langchain-runloop"
               exit 1
               ;;
           esac
@@ -230,10 +243,10 @@ jobs:
 
                 if [ -n "$GH_USER" ]; then
                   # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
-                  TWITTER=$(echo "$PR_BODY" | grep -iP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
+                  TWITTER=$(echo "$PR_BODY" | grep -ioP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
 
                   # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
-                  LINKEDIN=$(echo "$PR_BODY" | grep -iP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
+                  LINKEDIN=$(echo "$PR_BODY" | grep -ioP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
 
                   # Add user if not seen, or update socials if newly provided
                   if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then
@@ -484,6 +497,24 @@ jobs:
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Verify CLI pins latest SDK version
+        if: needs.build.outputs.pkg-name == 'deepagents-cli' && !inputs.dangerous-skip-sdk-pin-check
+        run: |
+          SDK_VERSION=$(grep -Po '(?<=^version = ")[^"]*' libs/deepagents/pyproject.toml)
+          CLI_SDK_PIN=$(grep -Po '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml)
+
+          if [ "$SDK_VERSION" != "$CLI_SDK_PIN" ]; then
+            echo "::error::CLI SDK pin does not match SDK version!"
+            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
+            echo "CLI SDK pin (libs/cli/pyproject.toml): $CLI_SDK_PIN"
+            echo ""
+            echo "Update the deepagents dependency in libs/cli/pyproject.toml to deepagents==$SDK_VERSION"
+            echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
+            exit 1
+          else
+            echo "CLI SDK pin matches SDK version: $SDK_VERSION"
+          fi
 
       - name: Import dist package
         shell: bash

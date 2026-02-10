@@ -248,6 +248,11 @@ def show_help() -> None:
         f" v{__version__}{install_type}"
     )
     console.print()
+    console.print(
+        "Docs: https://docs.langchain.com/oss/python/deepagents/cli",
+        style=COLORS["dim"],
+    )
+    console.print()
     console.print("[bold]Usage:[/bold]", style=COLORS["primary"])
     console.print(
         "  deepagents [OPTIONS]                           Start interactive thread"
@@ -287,6 +292,8 @@ def show_help() -> None:
     console.print(
         "  --shell-allow-list CMDS    Comma-separated local shell commands to allow"
     )
+    console.print("  --default-model [MODEL]    Set, show, or manage the default model")
+    console.print("  --clear-default-model      Clear the default model")
     console.print("  -v, --version              Show deepagents CLI version")
     console.print("  -h, --help                 Show this help message and exit")
     console.print()

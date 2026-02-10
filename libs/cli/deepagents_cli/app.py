@@ -9,9 +9,11 @@ import os
 # S404: subprocess is required for user-initiated shell commands via ! prefix
 import subprocess  # noqa: S404
 import uuid
+from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from textual.app import App
@@ -21,38 +23,58 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
+    create_model,
+    detect_provider,
     is_shell_command_allowed,
     settings,
+)
+from deepagents_cli.model_config import (
+    ModelConfigError,
+    ModelSpec,
+    clear_default_model,
+    get_credential_env_var,
+    has_provider_credentials,
+    save_default_model,
+    save_recent_model,
 )
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
+from deepagents_cli.widgets.message_store import MessageData, MessageStore
 from deepagents_cli.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
+    QueuedUserMessage,
     ToolCallMessage,
     UserMessage,
 )
+from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
 from deepagents_cli.widgets.welcome import WelcomeBanner
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents.backends import CompositeBackend
+    from deepagents.backends.sandbox import SandboxBackendProtocol
     from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
+    from textual.scrollbar import ScrollUp
+    from textual.widget import Widget
     from textual.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -114,6 +136,22 @@ if _IS_ITERM:
         _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
 
     atexit.register(_restore_cursor_guide)
+
+
+InputMode = Literal["normal", "bash", "command"]
+
+
+@dataclass(frozen=True, slots=True)
+class QueuedMessage:
+    """Represents a queued user message awaiting processing.
+
+    Attributes:
+        text: The message text content.
+        mode: The input mode that determines message routing.
+    """
+
+    text: str
+    mode: InputMode
 
 
 class TextualTokenTracker:
@@ -346,11 +384,15 @@ class DeepAgentsApp(App):
         *,
         agent: Pregel | None = None,
         assistant_id: str | None = None,
-        backend: Any = None,  # CompositeBackend
+        backend: CompositeBackend | None = None,
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
+        checkpointer: BaseCheckpointSaver | None = None,
+        tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+        sandbox: SandboxBackendProtocol | None = None,
+        sandbox_type: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -363,6 +405,10 @@ class DeepAgentsApp(App):
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
+            checkpointer: Checkpointer for session persistence (enables model hot-swap)
+            tools: Tools used to create the agent (for model hot-swap)
+            sandbox: Sandbox backend (for model hot-swap)
+            sandbox_type: Type of sandbox provider (for model hot-swap)
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -374,6 +420,11 @@ class DeepAgentsApp(App):
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
         self._initial_prompt = initial_prompt
+        # Store for model hot-swap
+        self._checkpointer = checkpointer
+        self._tools = tools or []
+        self._sandbox = sandbox
+        self._sandbox_type = sandbox_type
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -385,6 +436,12 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
+        # User message queue for sequential processing
+        self._pending_messages: deque[QueuedMessage] = deque()
+        self._queued_widgets: deque[QueuedUserMessage] = deque()
+        self._processing_pending = False
+        # Message virtualization store
+        self._message_store = MessageStore()
 
     def compose(self) -> ComposeResult:
         """Compose the application layout.
@@ -437,6 +494,8 @@ class DeepAgentsApp(App):
                 on_auto_approve_enabled=self._on_auto_approve_enabled,
                 scroll_to_bottom=self._scroll_chat_to_bottom,
                 set_spinner=self._set_spinner,
+                set_active_message=self._set_active_message,
+                sync_message_content=self._sync_message_content,
             )
             self._ui_adapter.set_token_tracker(self._token_tracker)
 
@@ -472,6 +531,10 @@ class DeepAgentsApp(App):
         except NoMatches:
             pass  # Spacer already removed, no action needed
 
+    def on_scroll_up(self, _event: ScrollUp) -> None:
+        """Handle scroll up to check if we need to hydrate older messages."""
+        self._check_hydration_needed()
+
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
         if self._status_bar:
@@ -505,6 +568,150 @@ class DeepAgentsApp(App):
         if distance_from_bottom < 100:
             chat.scroll_end(animate=False)
 
+    def _check_hydration_needed(self) -> None:
+        """Check if we need to hydrate messages from the store.
+
+        Called when user scrolls up near the top of visible messages.
+        """
+        if not self._message_store.has_messages_above:
+            return
+
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            logger.debug("Skipping hydration check: #chat container not found")
+            return
+
+        scroll_y = chat.scroll_y
+        viewport_height = chat.size.height
+
+        if self._message_store.should_hydrate_above(scroll_y, viewport_height):
+            self.call_later(self._hydrate_messages_above)
+
+    async def _hydrate_messages_above(self) -> None:
+        """Hydrate older messages when user scrolls near the top.
+
+        This recreates widgets for archived messages and inserts them
+        at the top of the messages container.
+        """
+        if not self._message_store.has_messages_above:
+            return
+
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            logger.debug("Skipping hydration: #chat not found")
+            return
+
+        try:
+            messages_container = self.query_one("#messages", Container)
+        except NoMatches:
+            logger.debug("Skipping hydration: #messages not found")
+            return
+
+        to_hydrate = self._message_store.get_messages_to_hydrate()
+        if not to_hydrate:
+            return
+
+        old_scroll_y = chat.scroll_y
+        first_child = (
+            messages_container.children[0] if messages_container.children else None
+        )
+
+        # Build widgets in chronological order, then mount in reverse so
+        # each is inserted before the previous first_child, resulting in
+        # correct chronological order in the DOM.
+        hydrated_count = 0
+        hydrated_widgets: list[tuple] = []  # (widget, msg_data)
+        for msg_data in to_hydrate:
+            try:
+                widget = msg_data.to_widget()
+                hydrated_widgets.append((widget, msg_data))
+            except Exception:
+                logger.warning(
+                    "Failed to create widget for message %s",
+                    msg_data.id,
+                    exc_info=True,
+                )
+
+        for widget, _msg_data in reversed(hydrated_widgets):
+            try:
+                if first_child:
+                    await messages_container.mount(widget, before=first_child)
+                else:
+                    await messages_container.mount(widget)
+                first_child = widget
+                hydrated_count += 1
+            except Exception:
+                logger.warning(
+                    "Failed to mount hydrated widget %s",
+                    widget.id,
+                    exc_info=True,
+                )
+
+        # Only update store for the number we actually mounted
+        if hydrated_count > 0:
+            self._message_store.mark_hydrated(hydrated_count)
+
+        # Adjust scroll position to maintain the user's view.
+        # Widget heights aren't known until after layout, so we use a
+        # heuristic. A more accurate approach would measure actual heights
+        # via call_after_refresh.
+        estimated_height_per_message = 5  # terminal rows, rough estimate
+        added_height = hydrated_count * estimated_height_per_message
+        chat.scroll_y = old_scroll_y + added_height
+
+    async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
+        """Mount a widget in the messages container, before any queued widgets.
+
+        Queued-message widgets must stay at the bottom of the container so
+        they remain visually anchored below the current agent response.
+        This helper inserts `widget` just before the first queued widget,
+        or appends at the end when the queue is empty.
+
+        Args:
+            container: The `#messages` container to mount into.
+            widget: The widget to mount.
+        """
+        first_queued = self._queued_widgets[0] if self._queued_widgets else None
+        if first_queued is not None and first_queued.parent is container:
+            try:
+                await container.mount(widget, before=first_queued)
+            except Exception:
+                logger.warning(
+                    "Stale queued-widget reference; appending at end",
+                    exc_info=True,
+                )
+            else:
+                return
+        await container.mount(widget)
+
+    def _is_spinner_at_correct_position(self, container: Container) -> bool:
+        """Check whether the loading spinner is already correctly positioned.
+
+        The spinner should be immediately before the first queued widget, or
+        at the very end of the container when the queue is empty.
+
+        Args:
+            container: The `#messages` container.
+
+        Returns:
+            `True` if the spinner is already in the correct position.
+        """
+        children = list(container.children)
+        if not children or self._loading_widget not in children:
+            return False
+
+        if self._queued_widgets:
+            first_queued = self._queued_widgets[0]
+            if first_queued not in children:
+                return False
+            return children.index(self._loading_widget) == (
+                children.index(first_queued) - 1
+            )
+
+        return children[-1] == self._loading_widget
+
     async def _set_spinner(self, status: str | None) -> None:
         """Show, update, or hide the loading spinner.
 
@@ -524,15 +731,14 @@ class DeepAgentsApp(App):
         if self._loading_widget is None:
             # Create new
             self._loading_widget = LoadingWidget(status)
-            await messages.mount(self._loading_widget)
+            await self._mount_before_queued(messages, self._loading_widget)
         else:
             # Update existing
             self._loading_widget.set_status(status)
-            # Reposition if not at the end (e.g., after tool message was added)
-            children = list(messages.children)
-            if children and children[-1] != self._loading_widget:
+            # Reposition if not already at the correct location
+            if not self._is_spinner_at_correct_position(messages):
                 await self._loading_widget.remove()
-                await messages.mount(self._loading_widget)
+                await self._mount_before_queued(messages, self._loading_widget)
         # NOTE: Don't call _scroll_chat_to_bottom() here - it would re-anchor
         # and drag user back to bottom if they've scrolled away during streaming
 
@@ -611,7 +817,7 @@ class DeepAgentsApp(App):
                         auto_msg = AppMessage(
                             f"✓ Auto-approved shell command (allow-list): {command}"
                         )
-                        await messages.mount(auto_msg)
+                        await self._mount_before_queued(messages, auto_msg)
                     self._scroll_chat_to_bottom()
                 except NoMatches:
                     # Cosmetic only: approval already granted via result_future.
@@ -639,7 +845,7 @@ class DeepAgentsApp(App):
         # Mount approval inline in messages area (not replacing ChatInput)
         try:
             messages = self.query_one("#messages", Container)
-            await messages.mount(menu)
+            await self._mount_before_queued(messages, menu)
             # Scroll to make approval visible (but don't re-anchor)
             self.call_after_refresh(menu.scroll_visible)
             # Focus approval menu
@@ -669,24 +875,40 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.auto_approve = True
 
+    async def _process_message(self, value: str, mode: InputMode) -> None:
+        """Route a message to the appropriate handler based on mode.
+
+        Args:
+            value: The message text to process.
+            mode: The input mode that determines message routing.
+        """
+        if mode == "bash":
+            await self._handle_bash_command(value.removeprefix("!"))
+        elif mode == "command":
+            await self._handle_command(value)
+        elif mode == "normal":
+            await self._handle_user_message(value)
+        else:
+            logger.warning("Unrecognized input mode %r, treating as normal", mode)
+            await self._handle_user_message(value)
+
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
         value = event.value
-        mode = event.mode
+        mode: InputMode = event.mode  # type: ignore[assignment]
 
         # Reset quit pending state on any input
         self._quit_pending = False
 
-        # Handle different modes
-        if mode == "bash":
-            # Bash command - strip the ! prefix
-            await self._handle_bash_command(value.removeprefix("!"))
-        elif mode == "command":
-            # Slash command
-            await self._handle_command(value)
-        else:
-            # Normal message - will be sent to agent
-            await self._handle_user_message(value)
+        # If agent is running, enqueue message instead of processing immediately
+        if self._agent_running:
+            self._pending_messages.append(QueuedMessage(text=value, mode=mode))
+            queued_widget = QueuedUserMessage(value)
+            self._queued_widgets.append(queued_widget)
+            await self._mount_message(queued_widget)
+            return
+
+        await self._process_message(value, mode)
 
     def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
         """Update status bar when input mode changes."""
@@ -774,14 +996,16 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = (
-                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+                "Commands: /quit, /clear, /model [--default], /remember, "
+                "/tokens, /threads, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
-                "  !command        Run bash commands directly"
+                "  !command        Run bash commands directly\n\n"
+                "Docs: https://docs.langchain.com/oss/python/deepagents/cli"
             )
             await self._mount_message(AppMessage(help_text))
 
@@ -797,6 +1021,8 @@ class DeepAgentsApp(App):
             except Exception:
                 await self._mount_message(AppMessage("deepagents version: unknown"))
         elif cmd == "/clear":
+            self._pending_messages.clear()
+            self._queued_widgets.clear()
             await self._clear_messages()
             if self._token_tracker:
                 self._token_tracker.reset()
@@ -805,6 +1031,11 @@ class DeepAgentsApp(App):
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
+                try:
+                    banner = self.query_one("#welcome-banner", WelcomeBanner)
+                    banner.update_thread_id(new_thread_id)
+                except NoMatches:
+                    pass
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
@@ -847,9 +1078,52 @@ class DeepAgentsApp(App):
             # Send as a user message to the agent
             await self._handle_user_message(final_prompt)
             return  # _handle_user_message already mounts the message
+        elif cmd == "/model" or cmd.startswith("/model "):
+            model_arg = None
+            set_default = False
+            if cmd.startswith("/model "):
+                raw_arg = command.strip()[len("/model ") :].strip()
+                if raw_arg.startswith("--default"):
+                    set_default = True
+                    model_arg = raw_arg[len("--default") :].strip() or None
+                else:
+                    model_arg = raw_arg
+
+            if set_default:
+                await self._mount_message(UserMessage(command))
+                if model_arg == "--clear":
+                    await self._clear_default_model()
+                elif model_arg:
+                    await self._set_default_model(model_arg)
+                else:
+                    await self._mount_message(
+                        AppMessage(
+                            "Usage: /model --default provider:model\n"
+                            "       /model --default --clear"
+                        )
+                    )
+            elif model_arg:
+                # Direct switch: /model claude-sonnet-4-5
+                await self._mount_message(UserMessage(command))
+                await self._switch_model(model_arg)
+            else:
+                await self._show_model_selector()
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
+
+        # Scroll to bottom after command output is rendered.
+        # Use call_after_refresh so the layout pass completes first;
+        # otherwise max_scroll_y is still stale.
+        def _scroll_after_command() -> None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+                if chat.max_scroll_y > 0:
+                    chat.scroll_end(animate=False)
+            except NoMatches:
+                pass
+
+        self.call_after_refresh(_scroll_after_command)
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
@@ -861,18 +1135,19 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(message))
 
         # Scroll to bottom when user sends a new message
-        chat = self.query_one("#chat", VerticalScroll)
-        if chat.max_scroll_y > 0:
-            chat.scroll_end(animate=False)
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            if chat.max_scroll_y > 0:
+                chat.scroll_end(animate=False)
+        except NoMatches:
+            pass
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
             self._agent_running = True
 
-            # Disable submission while agent is working (user can still type)
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
-                self._chat_input.set_submit_enabled(enabled=False)
 
             # Use run_worker to avoid blocking the main event loop
             # This allows the UI to remain responsive during agent execution
@@ -911,6 +1186,39 @@ class DeepAgentsApp(App):
             # Clean up loading widget and agent state
             await self._cleanup_agent_task()
 
+    async def _process_next_from_queue(self) -> None:
+        """Process the next message from the queue if any exist.
+
+        Dequeues and processes the next pending message in FIFO order.
+        Uses the `_processing_pending` flag to prevent reentrant execution.
+        """
+        if self._processing_pending or not self._pending_messages:
+            return
+
+        self._processing_pending = True
+        try:
+            msg = self._pending_messages.popleft()
+
+            # Remove the ephemeral queued-message widget
+            if self._queued_widgets:
+                widget = self._queued_widgets.popleft()
+                await widget.remove()
+
+            await self._process_message(msg.text, msg.mode)
+        except Exception:
+            logger.exception("Failed to process queued message")
+            await self._mount_message(
+                ErrorMessage(f"Failed to process queued message: {msg.text[:60]}")
+            )
+        finally:
+            self._processing_pending = False
+
+        # Bash/command mode messages complete synchronously without spawning
+        # a worker, so _cleanup_agent_task won't fire again. Continue
+        # draining the queue if no worker was started.
+        if not self._agent_running and self._pending_messages:
+            await self._process_next_from_queue()
+
     async def _cleanup_agent_task(self) -> None:
         """Clean up after agent task completes or is cancelled."""
         self._agent_running = False
@@ -919,14 +1227,15 @@ class DeepAgentsApp(App):
         # Remove spinner if present
         await self._set_spinner(None)
 
-        # Re-enable submission now that agent is done
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
-            self._chat_input.set_submit_enabled(enabled=True)
 
         # Ensure token display is restored (in case of early cancellation)
         if self._token_tracker:
             self._token_tracker.show()
+
+        # Process next message from queue if any
+        await self._process_next_from_queue()
 
     async def _load_thread_history(self) -> None:
         """Load and render message history when resuming a thread.
@@ -1049,18 +1358,108 @@ class DeepAgentsApp(App):
     ) -> None:
         """Mount a message widget to the messages area.
 
+        This method also stores the message data and handles pruning
+        when the widget count exceeds the maximum.
+
+        If the ``#messages`` container is not present (e.g. the screen has
+        been torn down during an interruption), the call is silently skipped
+        to avoid cascading `NoMatches` errors.
+
         Args:
             widget: The message widget to mount
         """
         await self._remove_spacer()
-        messages = self.query_one("#messages", Container)
-        await messages.mount(widget)
+
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+
+        # Store message data for virtualization
+        message_data = MessageData.from_widget(widget)
+        self._message_store.append(message_data)
+
+        # Queued-message widgets must always stay at the bottom so they
+        # remain visually anchored below the current agent response.
+        if isinstance(widget, QueuedUserMessage):
+            await messages.mount(widget)
+        else:
+            await self._mount_before_queued(messages, widget)
+
+        # Prune old widgets if window exceeded
+        await self._prune_old_messages()
+
         # Scroll to keep input bar visible
-        input_container = self.query_one("#bottom-app-container", Container)
-        input_container.scroll_visible()
+        try:
+            input_container = self.query_one("#bottom-app-container", Container)
+            input_container.scroll_visible()
+        except NoMatches:
+            pass
+
+    async def _prune_old_messages(self) -> None:
+        """Prune oldest message widgets if we exceed the window size.
+
+        This removes widgets from the DOM but keeps data in MessageStore
+        for potential re-hydration when scrolling up.
+        """
+        if not self._message_store.window_exceeded():
+            return
+
+        try:
+            messages_container = self.query_one("#messages", Container)
+        except NoMatches:
+            logger.debug("Skipping pruning: #messages container not found")
+            return
+
+        to_prune = self._message_store.get_messages_to_prune()
+        if not to_prune:
+            return
+
+        pruned_ids: list[str] = []
+        for msg_data in to_prune:
+            try:
+                widget = messages_container.query_one(f"#{msg_data.id}")
+                await widget.remove()
+                pruned_ids.append(msg_data.id)
+            except NoMatches:
+                # Widget not found -- do NOT mark as pruned to avoid
+                # desyncing the store from the actual DOM state
+                logger.debug(
+                    "Widget %s not found during pruning, skipping",
+                    msg_data.id,
+                )
+
+        if pruned_ids:
+            self._message_store.mark_pruned(pruned_ids)
+
+    def _set_active_message(self, message_id: str | None) -> None:
+        """Set the active streaming message (won't be pruned).
+
+        Args:
+            message_id: The ID of the active message, or None to clear.
+        """
+        self._message_store.set_active_message(message_id)
+
+    def _sync_message_content(self, message_id: str, content: str) -> None:
+        """Sync final message content back to the store after streaming.
+
+        Called when streaming finishes so the store holds the full text
+        instead of the empty string captured at mount time.
+
+        Args:
+            message_id: The ID of the message to update.
+            content: The final content after streaming.
+        """
+        self._message_store.update_message(
+            message_id,
+            content=content,
+            is_streaming=False,
+        )
 
     async def _clear_messages(self) -> None:
-        """Clear the messages area."""
+        """Clear the messages area and message store."""
+        # Clear the message store first
+        self._message_store.clear()
         try:
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
@@ -1077,8 +1476,12 @@ class DeepAgentsApp(App):
         3. If double press (quit_pending), quit
         4. Otherwise show quit hint
         """
-        # If agent is running, interrupt it
+        # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
+            self._queued_widgets.clear()
             self._agent_worker.cancel()
             self._quit_pending = False
             return
@@ -1106,8 +1509,12 @@ class DeepAgentsApp(App):
             self.screen.dismiss(None)
             return
 
-        # If agent is running, interrupt it
+        # If agent is running, interrupt it and discard queued messages
         if self._agent_running and self._agent_worker:
+            self._pending_messages.clear()
+            for w in self._queued_widgets:
+                w.remove()
+            self._queued_widgets.clear()
             self._agent_worker.cancel()
             return
 
@@ -1232,16 +1639,214 @@ class DeepAgentsApp(App):
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
+    # =========================================================================
+    # Model Switching
+    # =========================================================================
+
+    async def _show_model_selector(self) -> None:
+        """Show interactive model selector as a modal screen."""
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            """Handle the model selector result."""
+            if result is not None:
+                model_spec, _ = result
+                self.call_later(self._switch_model, model_spec)
+            # Refocus input after modal closes
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ModelSelectorScreen(
+            current_model=settings.model_name,
+            current_provider=settings.model_provider,
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _switch_model(self, model_spec: str) -> None:
+        """Switch to a new model, preserving conversation history.
+
+        Args:
+            model_spec: The model specification to switch to.
+
+                Can be in `provider:model` format
+                (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
+                for auto-detection.
+        """
+        logger.info("Switching model to %s", model_spec)
+
+        # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
+        model_spec = model_spec.removeprefix(":")
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if parsed:
+            provider: str | None = parsed.provider
+            model_name = parsed.model
+        else:
+            model_name = model_spec
+            provider = detect_provider(model_spec)
+
+        # Check credentials
+        if provider and has_provider_credentials(provider) is False:
+            env_var = get_credential_env_var(provider)
+            if env_var:
+                detail = f"{env_var} is not set or is empty"
+            else:
+                detail = (
+                    f"provider '{provider}' is not recognized. "
+                    "Add it to ~/.deepagents/config.toml with an api_key_env field"
+                )
+            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
+            return
+
+        # Check if already using this exact model
+        if model_name == settings.model_name and (
+            not provider or provider == settings.model_provider
+        ):
+            current = f"{settings.model_provider}:{settings.model_name}"
+            await self._mount_message(AppMessage(f"Already using {current}"))
+            return
+
+        # Check if we have what we need for hot-swap
+        if not self._checkpointer:
+            # No checkpointer means we can't hot-swap
+            # Save the preference and notify user
+            if save_recent_model(model_spec):
+                await self._mount_message(
+                    AppMessage(
+                        f"Model preference set to {model_spec}. "
+                        "Restart the CLI for the change to take effect."
+                    )
+                )
+            else:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Could not save model preference. "
+                        "Check permissions for ~/.deepagents/"
+                    )
+                )
+            return
+
+        try:
+            result = create_model(model_spec)
+        except ModelConfigError as e:
+            await self._mount_message(ErrorMessage(str(e)))
+            return
+        except Exception as e:
+            logger.exception("Failed to create model from spec %s", model_spec)
+            await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
+            return
+
+        try:
+            new_agent, new_backend = create_cli_agent(
+                model=result.model,
+                assistant_id=self._assistant_id or "default",
+                tools=self._tools,
+                sandbox=self._sandbox,
+                sandbox_type=self._sandbox_type,
+                auto_approve=self._auto_approve,
+                checkpointer=self._checkpointer,
+            )
+        except Exception as e:
+            logger.exception("Failed to create agent for model switch")
+            await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
+            return
+
+        # Both model and agent succeeded — now commit to settings atomically.
+        result.apply_to_settings()
+
+        # Swap agent
+        self._agent = new_agent
+        self._backend = new_backend
+
+        # Post-swap: update UI and save config
+        display = f"{settings.model_provider}:{settings.model_name}"
+        if self._status_bar:
+            self._status_bar.set_model(display)
+
+        config_saved = save_recent_model(display)
+        if config_saved:
+            await self._mount_message(AppMessage(f"Switched to {display}"))
+        else:
+            await self._mount_message(
+                AppMessage(
+                    f"Switched to {display} (preference not saved - "
+                    "check ~/.deepagents/ permissions)"
+                )
+            )
+
+        logger.info("Model switched to %s", display)
+
+        # Scroll to bottom so the confirmation message is visible
+        def _scroll_after_switch() -> None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+                if chat.max_scroll_y > 0:
+                    chat.scroll_end(animate=False)
+            except NoMatches:
+                pass
+
+        self.call_after_refresh(_scroll_after_switch)
+
+    async def _set_default_model(self, model_spec: str) -> None:
+        """Set the default model in config without switching the current session.
+
+        Updates `[models].default` in `~/.deepagents/config.toml` so that
+        future CLI launches use this model. Does not affect the running session.
+
+        Args:
+            model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
+        """
+        model_spec = model_spec.removeprefix(":")
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if not parsed:
+            provider = detect_provider(model_spec)
+            if provider:
+                model_spec = f"{provider}:{model_spec}"
+
+        if save_default_model(model_spec):
+            await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not save default model. Check permissions for ~/.deepagents/"
+                )
+            )
+
+    async def _clear_default_model(self) -> None:
+        """Remove the default model from config.
+
+        After clearing, future launches fall back to `[models].recent` or
+        environment auto-detection.
+        """
+        if clear_default_model():
+            await self._mount_message(
+                AppMessage(
+                    "Default model cleared. "
+                    "Future launches will use recent model or auto-detect."
+                )
+            )
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not clear default model. "
+                    "Check permissions for ~/.deepagents/"
+                )
+            )
+
 
 async def run_textual_app(
     *,
     agent: Pregel | None = None,
     assistant_id: str | None = None,
-    backend: Any = None,  # CompositeBackend
+    backend: CompositeBackend | None = None,
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
+    tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+    sandbox: SandboxBackendProtocol | None = None,
+    sandbox_type: str | None = None,
 ) -> int:
     """Run the Textual application.
 
@@ -1253,6 +1858,10 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
+        checkpointer: Checkpointer for session persistence (enables model hot-swap)
+        tools: Tools used to create the agent (for model hot-swap)
+        sandbox: Sandbox backend (for model hot-swap)
+        sandbox_type: Type of sandbox provider (for model hot-swap)
 
     Returns:
         The app's return code (0 for success, non-zero for error).
@@ -1265,6 +1874,10 @@ async def run_textual_app(
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,
+        checkpointer=checkpointer,
+        tools=tools,
+        sandbox=sandbox,
+        sandbox_type=sandbox_type,
     )
     await app.run_async()
     return app.return_code or 0

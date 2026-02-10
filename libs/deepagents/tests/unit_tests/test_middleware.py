@@ -14,12 +14,21 @@ from langgraph.types import Command, Overwrite
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
-from deepagents.backends.utils import create_file_data, truncate_if_too_long, update_file_data
+from deepagents.backends.utils import (
+    TRUNCATION_GUIDANCE,
+    create_file_data,
+    format_content_with_line_numbers,
+    format_read_response,
+    sanitize_tool_call_id,
+    truncate_if_too_long,
+    update_file_data,
+)
 from deepagents.middleware.filesystem import (
     FileData,
     FilesystemMiddleware,
     FilesystemState,
     _create_content_preview,
+    _supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
@@ -87,7 +96,7 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_with_composite_backend(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
         middleware = FilesystemMiddleware(backend=backend_factory)
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
@@ -100,7 +109,7 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 7  # All tools including execute
 
     def test_init_custom_system_prompt_with_composite(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
         middleware = FilesystemMiddleware(backend=backend_factory, system_prompt="Custom system prompt")
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt == "Custom system prompt"
@@ -114,7 +123,7 @@ class TestFilesystemMiddleware:
         assert ls_tool.description == "Custom ls tool description"
 
     def test_init_custom_tool_descriptions_with_composite(self):
-        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": (lambda r: StoreBackend(r))})
+        backend_factory = lambda rt: build_composite_state_backend(rt, routes={"/memories/": StoreBackend})
         middleware = FilesystemMiddleware(backend=backend_factory, custom_tool_descriptions={"ls": "Custom ls tool description"})
         assert callable(middleware.backend)
         assert middleware._custom_system_prompt is None
@@ -424,8 +433,6 @@ class TestFilesystemMiddleware:
         assert isinstance(result, str)
         assert len(result.split(", ")) < 2000  # Should be truncated to fewer files
         # Last element should be the truncation message
-        from deepagents.backends.utils import TRUNCATION_GUIDANCE
-
         # Need to do the :-2 to account for the wrapping list characters
         assert result[:-2].endswith(TRUNCATION_GUIDANCE)
 
@@ -780,8 +787,6 @@ class TestFilesystemMiddleware:
 
     def test_format_content_with_line_numbers_short_lines(self):
         """Test that short lines (<=10000 chars) are displayed normally."""
-        from deepagents.backends.utils import format_content_with_line_numbers
-
         content = ["short line 1", "short line 2", "short line 3"]
         result = format_content_with_line_numbers(content, start_line=1)
 
@@ -793,8 +798,6 @@ class TestFilesystemMiddleware:
 
     def test_format_content_with_line_numbers_long_line_with_continuation(self):
         """Test that long lines (>5000 chars) are split with continuation markers."""
-        from deepagents.backends.utils import format_content_with_line_numbers
-
         long_line = "a" * 25000
         content = ["short line", long_line, "another short line"]
         result = format_content_with_line_numbers(content, start_line=1)
@@ -816,8 +819,6 @@ class TestFilesystemMiddleware:
 
     def test_format_content_with_line_numbers_multiple_long_lines(self):
         """Test multiple long lines in sequence with proper line numbering."""
-        from deepagents.backends.utils import format_content_with_line_numbers
-
         long_line_1 = "x" * 15000
         long_line_2 = "y" * 15000
         content = [long_line_1, "middle", long_line_2]
@@ -840,8 +841,6 @@ class TestFilesystemMiddleware:
 
     def test_format_content_with_line_numbers_exact_limit(self):
         """Test that a line exactly at the 5000 char limit is not split."""
-        from deepagents.backends.utils import format_content_with_line_numbers
-
         exact_line = "b" * 5000
         content = [exact_line]
         result = format_content_with_line_numbers(content, start_line=1)
@@ -853,8 +852,6 @@ class TestFilesystemMiddleware:
 
     def test_read_file_with_long_lines_shows_continuation_markers(self):
         """Test that read_file displays long lines with continuation markers."""
-        from deepagents.backends.utils import create_file_data, format_read_response
-
         long_line = "z" * 15000
         content = f"first line\n{long_line}\nthird line"
         file_data = create_file_data(content)
@@ -872,8 +869,6 @@ class TestFilesystemMiddleware:
 
     def test_read_file_with_offset_and_long_lines(self):
         """Test that read_file with offset handles long lines correctly."""
-        from deepagents.backends.utils import create_file_data, format_read_response
-
         long_line = "m" * 12000
         content = f"line1\nline2\n{long_line}\nline4"
         file_data = create_file_data(content)
@@ -902,8 +897,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_long_toolmessage(self):
         """Test that large ToolMessages are intercepted and saved to filesystem."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
@@ -918,8 +911,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_long_toolmessage_preserves_name(self):
         """Test that ToolMessage name is preserved after eviction."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
@@ -933,8 +924,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_command_with_short_toolmessage(self):
         """Test that Commands with small messages pass through unchanged."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
@@ -949,8 +938,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_command_with_long_toolmessage(self):
         """Test that Commands with large messages are intercepted."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
@@ -966,8 +953,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_command_with_files_and_long_toolmessage(self):
         """Test that file updates are properly merged with existing files and other keys preserved."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
@@ -985,16 +970,12 @@ class TestFilesystemMiddleware:
 
     def test_sanitize_tool_call_id(self):
         """Test that tool_call_id is sanitized to prevent path traversal."""
-        from deepagents.backends.utils import sanitize_tool_call_id
-
         assert sanitize_tool_call_id("call_123") == "call_123"
         assert sanitize_tool_call_id("call/123") == "call_123"
         assert sanitize_tool_call_id("test.id") == "test_id"
 
     def test_intercept_sanitizes_tool_call_id(self):
         """Test that tool_call_id with dangerous characters is sanitized in file path."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})
@@ -1008,8 +989,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_content_block_with_large_text(self):
         """Test that content blocks with large text get evicted and converted to string."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_cb", store=None, stream_writer=lambda _: None, config={})
@@ -1043,8 +1022,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_content_block_non_text_type(self):
         """Test that content blocks with non-text type get evicted if large when stringified."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_other", store=None, stream_writer=lambda _: None, config={})
@@ -1060,8 +1037,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_list_content_gets_evicted_if_large(self):
         """Test that list content gets evicted if large when stringified."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_list", store=None, stream_writer=lambda _: None, config={})
@@ -1077,8 +1052,6 @@ class TestFilesystemMiddleware:
 
     def test_single_text_block_extracts_text_directly(self):
         """Test that single text block extracts text content directly, not stringified structure."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_single", store=None, stream_writer=lambda _: None, config={})
@@ -1098,8 +1071,6 @@ class TestFilesystemMiddleware:
 
     def test_multiple_text_blocks_stringifies_structure(self):
         """Test that multiple text blocks stringify entire structure."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_multi", store=None, stream_writer=lambda _: None, config={})
@@ -1121,8 +1092,6 @@ class TestFilesystemMiddleware:
 
     def test_mixed_content_blocks_stringifies_all(self):
         """Test that mixed content block types (text + image) stringify entire structure."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=100)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_mixed", store=None, stream_writer=lambda _: None, config={})
@@ -1278,7 +1247,6 @@ class TestFilesystemMiddleware:
 
     def test_supports_execution_helper_with_composite_backend(self):
         """Test _supports_execution correctly identifies CompositeBackend capabilities."""
-        from deepagents.middleware.filesystem import _supports_execution
 
         # Mock sandbox backend
         class TestSandboxBackend(SandboxBackendProtocol, StateBackend):
@@ -1317,8 +1285,6 @@ class TestFilesystemMiddleware:
 
     def test_intercept_truncates_content_sample_lines(self):
         """Test that content sample shows head and tail with truncation notice and lines limited to 1000 chars."""
-        from langgraph.types import Command
-
         middleware = FilesystemMiddleware(tool_token_limit_before_evict=1000)
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(state=state, context=None, tool_call_id="test_123", store=None, stream_writer=lambda _: None, config={})

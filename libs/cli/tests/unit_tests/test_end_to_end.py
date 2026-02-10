@@ -9,11 +9,14 @@ from unittest.mock import patch
 
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
+from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from pydantic import Field
 
 from deepagents_cli.agent import create_cli_agent
 
@@ -27,6 +30,8 @@ def sample_tool(sample_input: str) -> str:
 class FixedGenericFakeChatModel(GenericFakeChatModel):
     """Fixed version of GenericFakeChatModel that properly handles bind_tools."""
 
+    captured_calls: list[tuple[list[Any], Any]] = Field(default_factory=list)
+
     def bind_tools(
         self,
         tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
@@ -36,6 +41,20 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
         return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        """Override _generate to capture inputs and outputs."""
+        result = super()._generate(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+        self.captured_calls.append((messages, result))
+        return result
 
 
 @contextmanager
@@ -183,9 +202,33 @@ class TestDeepAgentsCLIEndToEnd:
                 {"messages": input_messages},
                 {"configurable": {"thread_id": thread_id}},
             )
+            assert len(result["messages"]) == 8  # 7 inputs + response
+            assert result["messages"][-1].content == "response"
+
+            # two calls: one to summarize, one for response
+            assert len(model.captured_calls) == 2
+
+            # summarization call
+            summarization_input_messages, summarization_response = model.captured_calls[
+                0
+            ]
+            assert len(summarization_input_messages) == 1
+            assert "Messages to summarize:" in summarization_input_messages[0].content
             assert (
-                result["messages"][0].additional_kwargs["lc_source"] == "summarization"
+                summarization_response.generations[0].message.content
+                == "summary goes here"
             )
+
+            # model call on reduced context
+            summarized_messages, agent_response = model.captured_calls[1]
+            assert len(summarized_messages) < len(input_messages)
+            assert isinstance(summarized_messages[0], SystemMessage)
+            summary_message = summarized_messages[1]
+            assert isinstance(summary_message, HumanMessage)
+            assert "summary goes here" in summary_message.content
+            assert agent_response.generations[0].message.content == "response"
+
+            # Verify conversation history was offloaded to backend
             assert backend.ls_info("/conversation_history/")
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:

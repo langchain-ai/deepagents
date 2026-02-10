@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "agent-client-protocol>=0.7.1",
+    "agent-client-protocol>=0.8.0",
     "deepagents",
     "python-dotenv>=1.2.1",
 ]

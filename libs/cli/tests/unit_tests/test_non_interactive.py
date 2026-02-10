@@ -1,14 +1,18 @@
 """Tests for non-interactive mode HITL decision logic."""
 
+import io
+import sys
 from collections.abc import AsyncIterator, Generator
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 from rich.console import Console
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_cli.config import ModelResult
 from deepagents_cli.non_interactive import (
     _build_non_interactive_header,
     _get_thread_url,
@@ -291,7 +295,11 @@ class TestSandboxSetupForwarding:
         with (
             patch(
                 "deepagents_cli.non_interactive.create_model",
-                return_value=MagicMock(),
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
             ),
             patch(
                 "deepagents_cli.non_interactive.generate_thread_id",
@@ -337,6 +345,146 @@ class TestSandboxSetupForwarding:
 
         assert len(captured_kwargs) == 1
         assert captured_kwargs[0]["setup_script_path"] == "/path/to/setup.sh"
+
+
+class TestQuietMode:
+    """Tests for --quiet flag in run_non_interactive."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("quiet", "expected_kwargs"),
+        [
+            pytest.param(True, {"stderr": True}, id="quiet-redirects-to-stderr"),
+            pytest.param(False, {}, id="default-uses-stdout"),
+        ],
+    )
+    async def test_console_creation(
+        self, quiet: bool, expected_kwargs: dict[str, object]
+    ) -> None:
+        """Console should use stderr when quiet=True, stdout otherwise."""
+        mock_console = MagicMock(spec=Console)
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.Console",
+                return_value=mock_console,
+            ) as mock_console_cls,
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+            ) as mock_checkpointer,
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            mock_cp = MagicMock()
+            mock_checkpointer.return_value.__aenter__ = MagicMock(return_value=mock_cp)
+            mock_checkpointer.return_value.__aexit__ = MagicMock(return_value=None)
+
+            mock_agent = MagicMock()
+            mock_agent.astream = MagicMock(return_value=_async_iter([]))
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(message="test", quiet=quiet)
+
+        mock_console_cls.assert_called_once_with(**expected_kwargs)
+
+    @pytest.mark.asyncio
+    async def test_quiet_stdout_contains_only_agent_text(self) -> None:
+        """In quiet mode, stdout should have only agent text."""
+        # Build a fake AI message with a text block followed by a tool-call block
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {"type": "text", "text": "Hello from agent"},
+            {"type": "tool_call_chunk", "name": "read_file", "id": "tc1", "index": 0},
+        ]
+        stream_chunks = [
+            # 3-tuple: (namespace, stream_mode, data)
+            ("", "messages", (ai_msg, {})),
+        ]
+
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+
+        mock_cp = MagicMock()
+        mock_checkpointer_cm = AsyncMock()
+        mock_checkpointer_cm.__aenter__.return_value = mock_cp
+        mock_checkpointer_cm.__aexit__.return_value = None
+
+        with (
+            patch(
+                "deepagents_cli.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_cli.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_cli.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_cli.non_interactive.get_langsmith_project_name",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.get_checkpointer",
+                return_value=mock_checkpointer_cm,
+            ),
+            patch(
+                "deepagents_cli.non_interactive.create_cli_agent",
+            ) as mock_create_agent,
+            patch.object(sys, "stdout", stdout_buf),
+            patch.object(sys, "stderr", stderr_buf),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            mock_agent = MagicMock()
+            mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
+            mock_create_agent.return_value = (mock_agent, MagicMock())
+
+            await run_non_interactive(message="test", quiet=True)
+
+        stdout = stdout_buf.getvalue()
+        stderr = stderr_buf.getvalue()
+
+        # Agent response text goes to stdout
+        assert "Hello from agent" in stdout
+        # Diagnostic messages should NOT be on stdout
+        assert "Calling tool" not in stdout
+        assert "Task completed" not in stdout
+        assert "Running task" not in stdout
+        # Diagnostic messages go to stderr
+        assert "Calling tool" in stderr or "read_file" in stderr
+        assert "Task completed" in stderr
 
 
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029

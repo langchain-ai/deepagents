@@ -1,5 +1,6 @@
 """Configuration, constants, and model creation for the CLI."""
 
+import importlib
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
+from typing import Any
 
 import dotenv
 from rich.console import Console
@@ -31,8 +33,15 @@ if _deepagents_project:
     os.environ["LANGSMITH_PROJECT"] = _deepagents_project
 
 # E402: Now safe to import LangChain modules
+from langchain.chat_models import init_chat_model  # noqa: E402
 from langchain_core.language_models import BaseChatModel  # noqa: E402
 from langchain_core.runnables import RunnableConfig  # noqa: E402
+
+from deepagents_cli.model_config import (  # noqa: E402
+    ModelConfig,
+    ModelConfigError,
+    ModelSpec,
+)
 
 # Color scheme
 COLORS = {
@@ -70,6 +79,7 @@ class Glyphs:
     pause: str  # ⏸ vs ||
     newline: str  # ⏎ vs \\n
     warning: str  # ⚠ vs [!]
+    question: str  # ? vs [?]
     arrow_up: str  # up arrow vs ^
     arrow_down: str  # down arrow vs v
     bullet: str  # bullet vs -
@@ -101,6 +111,7 @@ UNICODE_GLYPHS = Glyphs(
     pause="⏸",
     newline="⏎",
     warning="⚠",
+    question="?",
     arrow_up="↑",
     arrow_down="↓",
     bullet="•",
@@ -127,6 +138,7 @@ ASCII_GLYPHS = Glyphs(
     pause="||",
     newline="\\n",
     warning="[!]",
+    question="[?]",
     arrow_up="^",
     arrow_down="v",
     bullet="-",
@@ -220,12 +232,14 @@ def reset_glyphs_cache() -> None:
 # Text art banners (Unicode and ASCII variants)
 
 _UNICODE_BANNER = f"""
-██████╗  ███████╗ ███████╗ ██████╗
-██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗
-██║  ██║ █████╗   █████╗   ██████╔╝
-██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝
-██████╔╝ ███████╗ ███████╗ ██║
-╚═════╝  ╚══════╝ ╚══════╝ ╚═╝
+██████╗  ███████╗ ███████╗ ██████╗    ▄▓▓▄
+██╔══██╗ ██╔════╝ ██╔════╝ ██╔══██╗  ▓•███▙
+██║  ██║ █████╗   █████╗   ██████╔╝  ░▀▀████▙▖
+██║  ██║ ██╔══╝   ██╔══╝   ██╔═══╝      █▓████▙▖
+██████╔╝ ███████╗ ███████╗ ██║          ▝█▓█████▙
+╚═════╝  ╚══════╝ ╚══════╝ ╚═╝           ░▜█▓████▙
+                                          ░█▀█▛▀▀▜▙▄
+                                        ░▀░▀▒▛░░  ▝▀▘
 
  █████╗   ██████╗  ███████╗ ███╗   ██╗ ████████╗ ███████╗
 ██╔══██╗ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝ ██╔════╝
@@ -235,7 +249,6 @@ _UNICODE_BANNER = f"""
 ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝
                                                   v{__version__}
 """
-
 _ASCII_BANNER = f"""
  ____  ____  ____  ____
 |  _ \\| ___|| ___||  _ \\
@@ -407,8 +420,7 @@ class Settings:
         user_langchain_project: Original LANGSMITH_PROJECT from environment
             (for user code).
         model_name: Currently active model name (set after model creation).
-        model_provider: Provider identifier (e.g. openai, anthropic, google,
-            vertexai).
+        model_provider: Provider identifier (e.g., openai, anthropic, google_genai).
         model_context_limit: Maximum input token count from the model profile.
         project_root: Current project root directory (if in a git project).
         shell_allow_list: List of shell commands that don't require approval.
@@ -429,7 +441,7 @@ class Settings:
 
     # Model configuration
     model_name: str | None = None  # Currently active model name
-    model_provider: str | None = None  # Provider (openai, anthropic, google)
+    model_provider: str | None = None  # Provider name (see PROVIDER_API_KEY_ENV)
     model_context_limit: int | None = None  # Max input tokens from model profile
 
     # Project information
@@ -1023,195 +1035,339 @@ def get_default_coding_instructions() -> str:
     return default_prompt_path.read_text()
 
 
-def _detect_provider(model_name: str) -> str | None:
+def detect_provider(model_name: str) -> str | None:
     """Auto-detect provider from model name.
 
+    Intentionally duplicates a subset of LangChain's
+    `_attempt_infer_model_provider` because we need to resolve the provider
+    **before** calling `init_chat_model` in order to:
+
+    1. Build provider-specific kwargs (API base URLs, headers, etc.) that are
+       passed *into* `init_chat_model`.
+    2. Validate credentials early to surface user-friendly errors.
+
     Args:
-        model_name: Model name to detect provider from
+        model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google, vertexai) or None if can't detect
+        Provider name (openai, anthropic, google_genai, google_vertexai) or
+            `None` if the provider cannot be determined from the name alone.
     """
     model_lower = model_name.lower()
 
-    # Check for model name patterns
-    if any(x in model_lower for x in ["gpt", "o1", "o3"]):
+    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
         return "openai"
-    if "claude" in model_lower:
+
+    if model_lower.startswith("claude"):
         if not settings.has_anthropic and settings.has_vertex_ai:
-            return "vertexai"
+            return "google_vertexai"
         return "anthropic"
-    if "gemini" in model_lower:
-        if settings.has_vertex_ai:
-            return "vertexai"
-        return "google"
+
+    if model_lower.startswith("gemini"):
+        if settings.has_vertex_ai and not settings.has_google:
+            return "google_vertexai"
+        return "google_genai"
 
     return None
 
 
-def create_model(model_name_override: str | None = None) -> BaseChatModel:
-    """Create the appropriate model based on available API keys.
+def _get_default_model_spec() -> str:
+    """Get default model specification based on available credentials.
 
-    Uses the global settings instance to determine which model to create.
+    Checks in order:
 
-    Args:
-        model_name_override: Optional model name to use instead of environment variable
+    1. `[models].default` in config file (user's intentional preference).
+    2. `[models].recent` in config file (last `/model` switch).
+    3. Auto-detection based on available API credentials.
 
     Returns:
-        ChatModel instance (OpenAI, Anthropic, or Google)
+        Model specification in provider:model format.
 
     Raises:
-        SystemExit if no API key is configured or model provider can't be determined
+        ModelConfigError: If no credentials are configured.
     """
-    # Determine provider and model
-    if model_name_override:
-        # Use provided model, auto-detect provider
-        provider = _detect_provider(model_name_override)
-        if not provider:
-            console.print(
-                "[bold red]Error:[/bold red] Could not detect provider "
-                f"from model name: {model_name_override}"
-            )
-            console.print("\nSupported model name patterns:")
-            console.print("  - OpenAI: gpt-*, o1-*, o3-*")
-            console.print("  - Anthropic: claude-*")
-            console.print("  - Google: gemini-* (requires GOOGLE_API_KEY)")
-            console.print(
-                "  - VertexAI: claude-*/gemini-* (requires GOOGLE_CLOUD_PROJECT, "
-                "uses Application Default Credentials)"
-            )
-            sys.exit(1)
+    config = ModelConfig.load()
+    if config.default_model:
+        return config.default_model
 
-        # Check if credentials for detected provider are available
-        if provider == "openai" and not settings.has_openai:
-            console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
-                "requires OPENAI_API_KEY"
-            )
-            sys.exit(1)
-        elif provider == "anthropic" and not settings.has_anthropic:
-            console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
-                "requires ANTHROPIC_API_KEY"
-            )
-            sys.exit(1)
-        elif provider == "google" and not settings.has_google:
-            console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' "
-                "requires GOOGLE_API_KEY"
-            )
-            sys.exit(1)
-        elif provider == "vertexai" and not settings.has_vertex_ai:
-            console.print(
-                f"[bold red]Error:[/bold red] Model '{model_name_override}' requires "
-                "GOOGLE_CLOUD_PROJECT to be set"
-            )
-            console.print("\nPlease set GOOGLE_CLOUD_PROJECT environment variable.")
-            console.print("Also ensure you have authenticated with:")
-            console.print("  gcloud auth application-default login")
-            sys.exit(1)
+    if config.recent_model:
+        return config.recent_model
 
-        model_name = model_name_override
-    # Use environment variable defaults, detect provider by API key priority
-    elif settings.has_openai:
-        provider = "openai"
-        model_name = os.environ.get("OPENAI_MODEL", "gpt-5.2")
-    elif settings.has_anthropic:
-        provider = "anthropic"
-        model_name = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
-    elif settings.has_google:
-        provider = "google"
-        model_name = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
-    elif settings.has_vertex_ai:
-        provider = "vertexai"
-        model_name = os.environ.get("VERTEX_AI_MODEL", "gemini-3-pro-preview")
-    else:
-        console.print("[bold red]Error:[/bold red] No credentials configured.")
-        console.print("\nPlease set one of the following environment variables:")
-        console.print("  - OPENAI_API_KEY     (for OpenAI models like gpt-5.2)")
-        console.print("  - ANTHROPIC_API_KEY  (for Claude models)")
-        console.print("  - GOOGLE_API_KEY     (for Google Gemini models)")
-        console.print(
-            "  - GOOGLE_CLOUD_PROJECT (for VertexAI models, "
-            "with Application Default Credentials)"
+    if settings.has_openai:
+        model = os.environ.get("OPENAI_MODEL", "gpt-5.2")
+        return f"openai:{model}"
+    if settings.has_anthropic:
+        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+        return f"anthropic:{model}"
+    if settings.has_google:
+        model = os.environ.get("GOOGLE_MODEL", "gemini-3-pro-preview")
+        return f"google_genai:{model}"
+    if settings.has_vertex_ai:
+        model = os.environ.get("VERTEX_AI_MODEL", "gemini-3-pro-preview")
+        return f"google_vertexai:{model}"
+
+    msg = (
+        "No credentials configured. Please set one of: "
+        "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
+        "or GOOGLE_CLOUD_PROJECT"
+    )
+    raise ModelConfigError(msg)
+
+
+def _get_provider_kwargs(
+    provider: str, *, model_name: str | None = None
+) -> dict[str, Any]:
+    """Get provider-specific kwargs from the config file.
+
+    Reads `base_url`, `api_key_env`, and the `params` table from the user's
+    `config.toml` for the given provider.
+
+    When `model_name` is provided, per-model overrides from the `params`
+    sub-table are shallow-merged on top.
+
+    Args:
+        provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
+        model_name: Optional model name for per-model overrides.
+
+    Returns:
+        Dictionary of provider-specific kwargs.
+    """
+    config = ModelConfig.load()
+    result: dict[str, Any] = config.get_kwargs(provider, model_name=model_name)
+    base_url = config.get_base_url(provider)
+    if base_url:
+        result["base_url"] = base_url
+    api_key_env = config.get_api_key_env(provider)
+    if api_key_env:
+        api_key = os.environ.get(api_key_env)
+        if api_key:
+            result["api_key"] = api_key
+    return result
+
+
+def _create_model_from_class(
+    class_path: str,
+    model_name: str,
+    provider: str,
+    kwargs: dict[str, Any],
+) -> BaseChatModel:
+    """Import and instantiate a custom `BaseChatModel` class.
+
+    Args:
+        class_path: Fully-qualified class in `module.path:ClassName` format.
+        model_name: Model identifier to pass as `model` kwarg.
+        provider: Provider name (for error messages).
+        kwargs: Additional keyword arguments for the constructor.
+
+    Returns:
+        Instantiated `BaseChatModel`.
+
+    Raises:
+        ModelConfigError: If the class cannot be imported, is not a
+            `BaseChatModel` subclass, or fails to instantiate.
+    """
+    if ":" not in class_path:
+        msg = (
+            f"Invalid class_path '{class_path}' for provider '{provider}': "
+            "must be in module.path:ClassName format"
         )
-        console.print("\nExample:")
-        console.print("  export OPENAI_API_KEY=your_api_key_here")
-        console.print("\nOr add it to your .env file.")
-        sys.exit(1)
+        raise ModelConfigError(msg)
 
-    # Store model info in settings for display
-    settings.model_name = model_name
-    settings.model_provider = provider
+    module_path, class_name = class_path.rsplit(":", 1)
 
-    # Create the model
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as e:
+        msg = f"Could not import module '{module_path}' for provider '{provider}': {e}"
+        raise ModelConfigError(msg) from e
+
+    cls = getattr(module, class_name, None)
+    if cls is None:
+        msg = (
+            f"Class '{class_name}' not found in module '{module_path}' "
+            f"for provider '{provider}'"
+        )
+        raise ModelConfigError(msg)
+
+    if not (isinstance(cls, type) and issubclass(cls, BaseChatModel)):
+        msg = (
+            f"'{class_path}' is not a BaseChatModel subclass (got {type(cls).__name__})"
+        )
+        raise ModelConfigError(msg)
+
+    try:
+        return cls(model=model_name, **kwargs)
+    except Exception as e:
+        msg = f"Failed to instantiate '{class_path}' for '{provider}:{model_name}': {e}"
+        raise ModelConfigError(msg) from e
+
+
+def _create_model_via_init(
+    model_name: str,
+    provider: str,
+    kwargs: dict[str, Any],
+) -> BaseChatModel:
+    """Create a model using langchain's `init_chat_model`.
+
+    Args:
+        model_name: Model identifier.
+        provider: Provider name (may be empty for auto-detection).
+        kwargs: Additional keyword arguments.
+
+    Returns:
+        Instantiated `BaseChatModel`.
+
+    Raises:
+        ModelConfigError: On import, value, or runtime errors.
+    """
+    try:
+        if provider:
+            return init_chat_model(model_name, model_provider=provider, **kwargs)
+        return init_chat_model(model_name, **kwargs)
+    except ImportError as e:
+        package_map = {
+            "anthropic": "langchain-anthropic",
+            "openai": "langchain-openai",
+            "google_genai": "langchain-google-genai",
+            "google_vertexai": "langchain-google-vertexai",
+        }
+        package = package_map.get(provider, f"langchain-{provider}")
+        msg = (
+            f"Missing package for provider '{provider}'. Install: pip install {package}"
+        )
+        raise ModelConfigError(msg) from e
+    except (ValueError, TypeError) as e:
+        spec = f"{provider}:{model_name}" if provider else model_name
+        msg = f"Invalid model configuration for '{spec}': {e}"
+        raise ModelConfigError(msg) from e
+    except Exception as e:  # provider SDK auth/network errors
+        spec = f"{provider}:{model_name}" if provider else model_name
+        msg = f"Failed to initialize model '{spec}': {e}"
+        raise ModelConfigError(msg) from e
+
+
+@dataclass(frozen=True)
+class ModelResult:
+    """Result of creating a chat model, bundling the model with its metadata.
+
+    This separates model creation from settings mutation so callers can decide
+    when to commit the metadata to global settings.
+
+    Attributes:
+        model: The instantiated chat model.
+        model_name: Resolved model name.
+        provider: Resolved provider name.
+        context_limit: Max input tokens from the model profile, or `None`.
+    """
+
     model: BaseChatModel
-    if provider == "openai":
-        from langchain_openai import ChatOpenAI
+    model_name: str
+    provider: str
+    context_limit: int | None = None
 
-        model = ChatOpenAI(model=model_name)  # type: ignore[call-arg]
-    elif provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
+    def apply_to_settings(self) -> None:
+        """Commit this result's metadata to global `settings`."""
+        settings.model_name = self.model_name
+        settings.model_provider = self.provider
+        if self.context_limit is not None:
+            settings.model_context_limit = self.context_limit
 
-        model = ChatAnthropic(
-            model_name=model_name,
-            max_tokens=20_000,
-        )
-    elif provider == "google":
-        from langchain_google_genai import ChatGoogleGenerativeAI
 
-        model = ChatGoogleGenerativeAI(
-            model=model_name,
-            temperature=0,
-            max_tokens=None,
-        )
-    elif provider == "vertexai":
-        model_lower = model_name.lower()
+def create_model(
+    model_spec: str | None = None,
+    *,
+    extra_kwargs: dict[str, Any] | None = None,
+) -> ModelResult:
+    """Create a chat model.
 
-        if "claude" in model_lower:
-            try:
-                from langchain_google_vertexai.model_garden import (  # type: ignore[unresolved-import]
-                    ChatAnthropicVertex,
-                )
-            except ImportError:
-                console.print(
-                    "[bold red]Error:[/bold red] langchain-google-vertexai "
-                    "package is required for this model"
-                )
-                console.print("\nInstall it with:")
-                console.print("  pip install deepagents-cli[vertexai]", markup=False)
-                sys.exit(1)
+    Uses `init_chat_model` for standard providers, or imports a custom
+    `BaseChatModel` subclass when the provider has a `class_path` in config.
 
-            model = ChatAnthropicVertex(
-                # Remove version tag (e.g., "claude-haiku-4-5@20251015" ->
-                # "claude-haiku-4-5"). ChatAnthropicVertex expects just the base
-                # model name without the @version suffix.
-                model_name=model_name,
-                project=settings.google_cloud_project,
-                location=os.environ.get("GOOGLE_CLOUD_LOCATION"),
-                max_tokens=20_000,
-            )
+    Supports `provider:model` format (e.g., `'anthropic:claude-sonnet-4-5'`)
+    for explicit provider selection, or bare model names for auto-detection.
+
+    Args:
+        model_spec: Model specification in `provider:model` format (e.g.,
+            `'anthropic:claude-sonnet-4-5'`, `'openai:gpt-4o'`) or just the model
+            name for auto-detection (e.g., `'claude-sonnet-4-5'`).
+
+                If not provided, uses environment-based defaults.
+        extra_kwargs: Additional kwargs to pass to the model constructor.
+
+            These take highest priority, overriding values from the config file.
+
+    Returns:
+        A `ModelResult` containing the model and its metadata.
+
+    Raises:
+        ModelConfigError: If provider cannot be determined from the model name,
+            required provider package is not installed, or no credentials are
+            configured.
+
+    Examples:
+        >>> model = create_model("anthropic:claude-sonnet-4-5")
+        >>> model = create_model("openai:gpt-4o")
+        >>> model = create_model("gpt-4o")  # Auto-detects openai
+        >>> model = create_model()  # Uses environment defaults
+    """
+    if not model_spec:
+        model_spec = _get_default_model_spec()
+
+    # Parse provider:model syntax
+    provider: str
+    model_name: str
+    parsed = ModelSpec.try_parse(model_spec)
+    if parsed:
+        # Explicit provider:model (e.g., "anthropic:claude-sonnet-4-5")
+        provider, model_name = parsed.provider, parsed.model
+    elif ":" in model_spec:
+        # Contains colon but ModelSpec rejected it (empty provider or model)
+        _, _, after = model_spec.partition(":")
+        if after:
+            # Leading colon (e.g., ":claude-opus-4-6") — treat as bare model name
+            model_name = after
+            provider = detect_provider(model_name) or ""
         else:
-            from langchain_google_genai import ChatGoogleGenerativeAI
-
-            model = ChatGoogleGenerativeAI(
-                model=model_name,
-                project=settings.google_cloud_project,
-                vertexai=True,
-                temperature=0,
-                max_tokens=None,
+            msg = (
+                f"Invalid model spec '{model_spec}': model name is required "
+                "(e.g., 'anthropic:claude-sonnet-4-5' or 'claude-sonnet-4-5')"
             )
+            raise ModelConfigError(msg)
     else:
-        # Should not reach here due to earlier validation
-        console.print(f"[bold red]Error:[/bold red] Unknown provider: {provider}")
-        sys.exit(1)
+        # Bare model name — auto-detect provider or let init_chat_model infer
+        model_name = model_spec
+        provider = detect_provider(model_spec) or ""
+
+    # Provider-specific kwargs (with per-model overrides)
+    kwargs = _get_provider_kwargs(provider, model_name=model_name)
+
+    # CLI --model-params take highest priority
+    if extra_kwargs:
+        kwargs.update(extra_kwargs)
+
+    # Check if this provider uses a custom BaseChatModel class
+    config = ModelConfig.load()
+    class_path = config.get_class_path(provider) if provider else None
+
+    if class_path:
+        model = _create_model_from_class(class_path, model_name, provider, kwargs)
+    else:
+        model = _create_model_via_init(model_name, provider, kwargs)
+
+    resolved_provider = provider or getattr(model, "_model_provider", provider)
 
     # Extract context limit from model profile (if available)
+    context_limit: int | None = None
     profile = getattr(model, "profile", None)
     if isinstance(profile, dict) and isinstance(profile.get("max_input_tokens"), int):
-        settings.model_context_limit = profile["max_input_tokens"]
+        context_limit = profile["max_input_tokens"]
 
-    return model
+    return ModelResult(
+        model=model,
+        model_name=model_name,
+        provider=resolved_provider,
+        context_limit=context_limit,
+    )
 
 
 def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:

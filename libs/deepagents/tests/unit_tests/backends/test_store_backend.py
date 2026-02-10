@@ -1,12 +1,15 @@
+import warnings
 from dataclasses import dataclass
 from typing import Any, Never
 
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.store import BackendContext, StoreBackend, _validate_namespace
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime():
@@ -119,10 +122,6 @@ def test_store_backend_ls_trailing_slash():
 
 def test_store_backend_intercept_large_tool_result():
     """Test that StoreBackend properly handles large tool result interception."""
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime()
     middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r, namespace=lambda _ctx: ("filesystem",)), tool_token_limit_before_evict=1000)
 
@@ -250,7 +249,6 @@ def test_store_backend_namespace_isolation() -> None:
 
 def test_store_backend_namespace_error_handling() -> None:
     """Test that factory errors propagate correctly."""
-    import pytest
 
     def bad_factory(_ctx: BackendContext[Any, Any]) -> Never:
         msg = "user_id"
@@ -273,8 +271,6 @@ def test_store_backend_namespace_error_handling() -> None:
 
 def test_store_backend_namespace_legacy_mode() -> None:
     """Test that legacy mode still works when no namespace is provided, but emits deprecation warning."""
-    import warnings
-
     store = InMemoryStore()
     rt = ToolRuntime(
         state={"messages": []},

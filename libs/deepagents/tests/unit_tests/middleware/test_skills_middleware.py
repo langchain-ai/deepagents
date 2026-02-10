@@ -434,11 +434,6 @@ def test_validate_metadata_valid_dict_passthrough() -> None:
 
 
 def test_parse_skill_metadata_allowed_tools_yaml_list() -> None:
-    """Test _parse_skill_metadata handles allowed-tools as a YAML list.
-
-    Users may naturally write allowed-tools as a YAML list instead of a
-    space-delimited string. Both forms should produce the same result.
-    """
     content = """---
 name: test-skill
 description: A test skill
@@ -454,6 +449,27 @@ Content
     result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
     assert result["allowed_tools"] == ["Bash", "Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_ignored() -> None:
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools:
+  - Read
+  - 123
+  - true
+  -
+  - "  "
+  - Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Read", "Write"]
 
 
 def test_parse_skill_metadata_license_boolean_coerced() -> None:

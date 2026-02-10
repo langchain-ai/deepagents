@@ -557,7 +557,7 @@ class TestGetProviderKwargsConfigFallback:
         """Returns base_url from config for non-hardcoded provider."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.fireworks]
+[models.providers.fireworks]
 models = ["llama-v3p1-70b"]
 base_url = "https://api.fireworks.ai/inference/v1"
 api_key_env = "FIREWORKS_API_KEY"
@@ -575,7 +575,7 @@ api_key_env = "FIREWORKS_API_KEY"
         """Returns resolved api_key from config-file api_key_env."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.together]
+[models.providers.together]
 models = ["meta-llama/Llama-3-70b"]
 api_key_env = "TOGETHER_API_KEY"
 """)
@@ -592,7 +592,7 @@ api_key_env = "TOGETHER_API_KEY"
         """Omits api_key when the env var is not set."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.fireworks]
+[models.providers.fireworks]
 models = ["llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
@@ -621,12 +621,12 @@ api_key_env = "FIREWORKS_API_KEY"
         """Merges kwargs from config with base_url and api_key."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.custom]
+[models.providers.custom]
 models = ["my-model"]
 base_url = "https://my-endpoint.example.com"
 api_key_env = "CUSTOM_KEY"
 
-[providers.custom.kwargs]
+[models.providers.custom.kwargs]
 temperature = 0
 max_tokens = 4096
 """)
@@ -645,14 +645,14 @@ max_tokens = 4096
         """Per-model kwargs are merged when model_name is provided."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b", "llama3"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 num_ctx = 8192
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 num_ctx = 4000
 """)
@@ -666,13 +666,13 @@ num_ctx = 4000
         """model_name=None returns provider kwargs without per-model merge."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
@@ -684,12 +684,12 @@ temperature = 0.5
         """base_url/api_key from config fields override same keys in kwargs."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.custom]
+[models.providers.custom]
 models = ["my-model"]
 base_url = "https://correct-url.com"
 api_key_env = "CUSTOM_KEY"
 
-[providers.custom.kwargs]
+[models.providers.custom.kwargs]
 base_url = "https://wrong-url.com"
 """)
         with (
@@ -820,11 +820,11 @@ class TestCreateModelWithCustomClass:
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.custom]
+[models.providers.custom]
 class_path = "my_pkg.models:MyChatModel"
 models = ["my-model"]
 
-[providers.custom.kwargs]
+[models.providers.custom.kwargs]
 temperature = 0
 """)
         mock_instance = MagicMock(spec=BaseChatModel)
@@ -859,7 +859,7 @@ temperature = 0
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.fireworks]
+[models.providers.fireworks]
 models = ["llama"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
@@ -902,10 +902,10 @@ class TestCreateModelExtraKwargs:
         """extra_kwargs override values from config file."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 
-[providers.anthropic.kwargs]
+[models.providers.anthropic.kwargs]
 temperature = 0
 max_tokens = 1024
 """)

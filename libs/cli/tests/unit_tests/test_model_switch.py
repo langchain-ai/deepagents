@@ -329,7 +329,7 @@ class TestModelSwitchConfigProvider:
         """
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.fireworks]
+[models.providers.fireworks]
 models = ["llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
@@ -378,7 +378,7 @@ api_key_env = "FIREWORKS_API_KEY"
         """Config provider with missing credentials shows appropriate error."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.fireworks]
+[models.providers.fireworks]
 models = ["llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
@@ -413,7 +413,7 @@ api_key_env = "FIREWORKS_API_KEY"
         """Ollama (no api_key_env) passes credential check."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["llama3"]
 """)
         app = DeepAgentsApp()

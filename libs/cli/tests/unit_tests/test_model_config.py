@@ -164,11 +164,11 @@ model = "claude-sonnet-4-5"
         """Loads provider configurations."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5", "claude-haiku-4-5"]
 api_key_env = "ANTHROPIC_API_KEY"
 
-[providers.openai]
+[models.providers.openai]
 models = ["gpt-4o"]
 api_key_env = "OPENAI_API_KEY"
 """)
@@ -186,7 +186,7 @@ api_key_env = "OPENAI_API_KEY"
         """Loads custom base_url for providers."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.local-ollama]
+[models.providers.local-ollama]
 base_url = "http://localhost:11434/v1"
 models = ["llama3"]
 """)
@@ -239,10 +239,10 @@ class TestModelConfigGetAllModels:
         """Returns list of (model, provider) tuples."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5", "claude-haiku-4-5"]
 
-[providers.openai]
+[models.providers.openai]
 models = ["gpt-4o"]
 """)
         config = ModelConfig.load(config_path)
@@ -265,7 +265,7 @@ class TestModelConfigGetProviderForModel:
         """Returns provider name for known model."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 """)
         config = ModelConfig.load(config_path)
@@ -285,7 +285,7 @@ class TestModelConfigHasCredentials:
         """Returns None when api_key_env not specified (unknown status)."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.local]
+[models.providers.local]
 models = ["llama3"]
 """)
         config = ModelConfig.load(config_path)
@@ -296,7 +296,7 @@ models = ["llama3"]
         """Returns True when api_key_env is set in environment."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 api_key_env = "ANTHROPIC_API_KEY"
 """)
@@ -309,7 +309,7 @@ api_key_env = "ANTHROPIC_API_KEY"
         """Returns False when api_key_env not set in environment."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 api_key_env = "ANTHROPIC_API_KEY"
 """)
@@ -331,7 +331,7 @@ class TestModelConfigGetBaseUrl:
         """Returns None when base_url not in config."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 """)
         config = ModelConfig.load(config_path)
@@ -342,7 +342,7 @@ models = ["claude-sonnet-4-5"]
         """Returns configured base_url."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.local]
+[models.providers.local]
 base_url = "http://localhost:11434/v1"
 models = ["llama3"]
 """)
@@ -363,7 +363,7 @@ class TestModelConfigGetApiKeyEnv:
         """Returns configured api_key_env."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 api_key_env = "ANTHROPIC_API_KEY"
 """)
@@ -391,7 +391,7 @@ class TestSaveDefaultModel:
 [default]
 model = "old-model"
 
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 """)
         model_config.save_default_model("new-model", config_path)
@@ -400,13 +400,13 @@ models = ["claude-sonnet-4-5"]
         assert 'model = "new-model"' in content
         assert "old-model" not in content
         # Should preserve other config
-        assert "[providers.anthropic]" in content
+        assert "[models.providers.anthropic]" in content
 
     def test_adds_default_section(self, tmp_path):
         """Adds [default] section if missing."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 """)
         model_config.save_default_model("claude-sonnet-4-5", config_path)
@@ -574,7 +574,7 @@ class TestGetAvailableModelsMergesConfig:
         """Config-file provider not in profiles gets appended."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.fireworks]
+[models.providers.fireworks]
 models = ["accounts/fireworks/models/llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
@@ -594,7 +594,7 @@ api_key_env = "FIREWORKS_API_KEY"
         """Config-file models for an existing provider get appended."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-custom-finetune"]
 """)
         fake_profiles = {
@@ -623,7 +623,7 @@ models = ["claude-custom-finetune"]
         """Config-file models already in profiles are not duplicated."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 """)
         fake_profiles = {
@@ -651,7 +651,7 @@ models = ["claude-sonnet-4-5"]
         """Config provider with empty models list is not added."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.empty]
+[models.providers.empty]
 api_key_env = "SOME_KEY"
 """)
         with (
@@ -673,7 +673,7 @@ class TestHasProviderCredentialsFallback:
         """Returns None for config provider with no api_key_env (unknown)."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["llama3"]
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
@@ -683,7 +683,7 @@ models = ["llama3"]
         """Returns True for config provider with api_key_env set in env."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.fireworks]
+[models.providers.fireworks]
 models = ["llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
@@ -697,7 +697,7 @@ api_key_env = "FIREWORKS_API_KEY"
         """Returns False for config provider with api_key_env not in env."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.fireworks]
+[models.providers.fireworks]
 models = ["llama-v3p1-70b"]
 api_key_env = "FIREWORKS_API_KEY"
 """)
@@ -735,7 +735,7 @@ class TestModelConfigGetClassPath:
         """Returns None when class_path not in config."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 """)
         config = ModelConfig.load(config_path)
@@ -745,7 +745,7 @@ models = ["claude-sonnet-4-5"]
         """Returns configured class_path."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.custom]
+[models.providers.custom]
 class_path = "my_package.models:MyChatModel"
 models = ["my-model"]
 """)
@@ -765,7 +765,7 @@ class TestModelConfigGetKwargs:
         """Returns empty dict when kwargs not in config."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.custom]
+[models.providers.custom]
 models = ["my-model"]
 """)
         config = ModelConfig.load(config_path)
@@ -775,10 +775,10 @@ models = ["my-model"]
         """Returns configured kwargs."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.custom]
+[models.providers.custom]
 models = ["my-model"]
 
-[providers.custom.kwargs]
+[models.providers.custom.kwargs]
 temperature = 0
 max_tokens = 4096
 """)
@@ -790,10 +790,10 @@ max_tokens = 4096
         """Returns a copy, not the original dict."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.custom]
+[models.providers.custom]
 models = ["my-model"]
 
-[providers.custom.kwargs]
+[models.providers.custom.kwargs]
 temperature = 0
 """)
         config = ModelConfig.load(config_path)
@@ -807,17 +807,17 @@ class TestModelConfigGetKwargsPerModel:
     """Tests for ModelConfig.get_kwargs() with per-model overrides."""
 
     def test_model_override_replaces_provider_value(self, tmp_path):
-        """model_params entry overrides same key from provider kwargs."""
+        """Params entry overrides same key from provider kwargs."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b", "llama3"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 num_ctx = 8192
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 num_ctx = 4000
 """)
@@ -826,17 +826,17 @@ num_ctx = 4000
         assert kwargs == {"temperature": 0.5, "num_ctx": 4000}
 
     def test_no_override_returns_provider_kwargs(self, tmp_path):
-        """Model without model_params entry gets provider kwargs only."""
+        """Model without params entry gets provider kwargs only."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b", "llama3"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 num_ctx = 8192
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -844,16 +844,16 @@ temperature = 0.5
         assert kwargs == {"temperature": 0, "num_ctx": 8192}
 
     def test_model_adds_new_keys(self, tmp_path):
-        """model_params can introduce keys not in provider kwargs."""
+        """Params can introduce keys not in provider kwargs."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 top_p = 0.9
 """)
         config = ModelConfig.load(config_path)
@@ -861,18 +861,18 @@ top_p = 0.9
         assert kwargs == {"temperature": 0, "top_p": 0.9}
 
     def test_shallow_merge(self, tmp_path):
-        """Merge is shallow — provider keys not in model_params are preserved."""
+        """Merge is shallow — provider keys not in params are preserved."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 num_ctx = 8192
 seed = 42
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -883,13 +883,13 @@ temperature = 0.5
         """model_name=None returns provider kwargs without merging."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -900,13 +900,13 @@ temperature = 0.5
         """Returned dict is a copy — mutations don't affect config."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -915,14 +915,14 @@ temperature = 0.5
         fresh = config.get_kwargs("ollama", model_name="qwen3:4b")
         assert "injected" not in fresh
 
-    def test_no_provider_kwargs_only_model_params(self, tmp_path):
-        """Works when provider has no kwargs, only model_params."""
+    def test_no_provider_kwargs_only_params(self, tmp_path):
+        """Works when provider has no kwargs, only params."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -930,55 +930,55 @@ temperature = 0.5
         assert kwargs == {"temperature": 0.5}
 
 
-class TestModelConfigValidateModelParams:
-    """Tests for _validate() model_params warnings."""
+class TestModelConfigValidateParams:
+    """Tests for _validate() params warnings."""
 
-    def test_warns_on_unknown_model_in_model_params(self, tmp_path, caplog):
-        """Warns when model_params references a model not in models list."""
+    def test_warns_on_unknown_model_in_params(self, tmp_path, caplog):
+        """Warns when params references a model not in models list."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["llama3"]
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 """)
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
             ModelConfig.load(config_path)
 
         assert any(
-            "model_params for 'qwen3:4b'" in record.message for record in caplog.records
+            "params for 'qwen3:4b'" in record.message for record in caplog.records
         )
 
     def test_no_warning_when_model_in_list(self, tmp_path, caplog):
-        """No warning when model_params references a model in models list."""
+        """No warning when params references a model in models list."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.model_params."qwen3:4b"]
+[models.providers.ollama.params."qwen3:4b"]
 temperature = 0.5
 """)
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
             ModelConfig.load(config_path)
 
-        assert not any("model_params" in record.message for record in caplog.records)
+        assert not any("params for" in record.message for record in caplog.records)
 
-    def test_no_warning_when_no_model_params(self, tmp_path, caplog):
-        """No warning when model_params section is absent."""
+    def test_no_warning_when_no_params(self, tmp_path, caplog):
+        """No warning when params section is absent."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.ollama]
+[models.providers.ollama]
 models = ["llama3"]
 
-[providers.ollama.kwargs]
+[models.providers.ollama.kwargs]
 temperature = 0
 """)
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
             ModelConfig.load(config_path)
 
-        assert not any("model_params" in record.message for record in caplog.records)
+        assert not any("params for" in record.message for record in caplog.records)
 
 
 class TestModelConfigValidateClassPath:
@@ -988,7 +988,7 @@ class TestModelConfigValidateClassPath:
         """Warns when class_path lacks colon separator."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.bad]
+[models.providers.bad]
 class_path = "my_package.MyChatModel"
 models = ["my-model"]
 """)
@@ -1001,7 +1001,7 @@ models = ["my-model"]
         """No warning when class_path has colon separator."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
-[providers.good]
+[models.providers.good]
 class_path = "my_package.models:MyChatModel"
 models = ["my-model"]
 """)
@@ -1341,7 +1341,7 @@ class TestSaveRecentModel:
 [recent]
 model = "old-model"
 
-[providers.anthropic]
+[models.providers.anthropic]
 models = ["claude-sonnet-4-5"]
 """)
         save_recent_model("new-model", config_path)
@@ -1350,7 +1350,7 @@ models = ["claude-sonnet-4-5"]
         assert 'model = "new-model"' in content
         assert "old-model" not in content
         # Should preserve other config
-        assert "[providers.anthropic]" in content
+        assert "[models.providers.anthropic]" in content
 
     def test_preserves_existing_default(self, tmp_path):
         """Does not overwrite [default].model when saving recent."""

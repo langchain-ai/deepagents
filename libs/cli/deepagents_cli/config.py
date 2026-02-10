@@ -1122,7 +1122,7 @@ def _get_provider_kwargs(
     Reads `base_url`, `api_key_env`, and the `kwargs` table from the user's
     `config.toml` for the given provider.
 
-    When `model_name` is provided, per-model overrides from `model_params` are
+    When `model_name` is provided, per-model overrides from `params` are
     shallow-merged on top.
 
     Args:

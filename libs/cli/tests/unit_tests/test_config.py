@@ -14,6 +14,7 @@ from deepagents_cli.config import (
     _find_project_root,
     _get_provider_kwargs,
     create_model,
+    detect_provider,
     fetch_langsmith_project_url,
     get_langsmith_project_name,
     parse_shell_allow_list,
@@ -955,3 +956,75 @@ max_tokens = 1024
 
         create_model("anthropic:claude-sonnet-4-5", extra_kwargs={})
         mock_init_chat_model.assert_called_once()
+
+
+class TestDetectProvider:
+    """Tests for detect_provider() auto-detection from model names."""
+
+    @pytest.mark.parametrize(
+        ("model_name", "expected"),
+        [
+            ("gpt-4o", "openai"),
+            ("gpt-5.2", "openai"),
+            ("o1-preview", "openai"),
+            ("o3-mini", "openai"),
+            ("o4-mini", "openai"),
+            ("claude-sonnet-4-5", "anthropic"),
+            ("claude-opus-4-5", "anthropic"),
+            ("gemini-3-pro-preview", "google_genai"),
+            ("llama3", None),
+            ("mistral-large", None),
+            ("some-unknown-model", None),
+        ],
+    )
+    def test_detect_known_patterns(self, model_name: str, expected: str | None) -> None:
+        """detect_provider returns the correct provider for known patterns."""
+        # Ensure both Anthropic and Google credentials are "available" so the
+        # default paths are taken (not the Vertex AI fallbacks).
+        settings.anthropic_api_key = "test"
+        settings.google_api_key = "test"
+        try:
+            assert detect_provider(model_name) == expected
+        finally:
+            settings.anthropic_api_key = None
+            settings.google_api_key = None
+
+    def test_claude_falls_back_to_vertex_when_no_anthropic(self) -> None:
+        """Claude models route to google_vertexai when only Vertex AI is configured."""
+        settings.anthropic_api_key = None
+        settings.google_cloud_project = "my-project"
+        settings.google_api_key = None
+        try:
+            assert detect_provider("claude-sonnet-4-5") == "google_vertexai"
+        finally:
+            settings.google_cloud_project = None
+
+    def test_gemini_falls_back_to_vertex_when_no_google(self) -> None:
+        """Gemini models route to google_vertexai when only Vertex AI is configured."""
+        settings.google_api_key = None
+        settings.google_cloud_project = "my-project"
+        try:
+            assert detect_provider("gemini-3-pro") == "google_vertexai"
+        finally:
+            settings.google_cloud_project = None
+
+    def test_gemini_prefers_google_genai_when_both_available(self) -> None:
+        """Gemini prefers google_genai when both Google and Vertex AI are configured."""
+        settings.google_api_key = "test"
+        settings.google_cloud_project = "my-project"
+        try:
+            # has_vertex_ai is False when google_api_key is set, so this
+            # tests the google_genai path which is preferred.
+            assert detect_provider("gemini-3-pro") == "google_genai"
+        finally:
+            settings.google_api_key = None
+            settings.google_cloud_project = None
+
+    def test_case_insensitive(self) -> None:
+        """detect_provider is case-insensitive."""
+        settings.anthropic_api_key = "test"
+        try:
+            assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
+            assert detect_provider("GPT-4o") == "openai"
+        finally:
+            settings.anthropic_api_key = None

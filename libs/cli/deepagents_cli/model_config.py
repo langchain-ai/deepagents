@@ -343,6 +343,13 @@ def get_available_models() -> dict[str, list[str]]:
                 "Could not import profiles from %s (package may not be installed)",
                 module_path,
             )
+        except Exception:
+            logger.warning(
+                "Failed to load profiles from %s, skipping provider '%s'",
+                module_path,
+                provider,
+                exc_info=True,
+            )
 
     # Merge in models from config file (custom providers like ollama, fireworks)
     config = ModelConfig.load()
@@ -678,6 +685,49 @@ class ModelConfig:
         return result
 
 
+def _save_model_field(
+    section: str, model_spec: str, config_path: Path | None = None
+) -> bool:
+    """Read-modify-write a `[section].model` field in the config file.
+
+    Args:
+        section: TOML section name (e.g., `'default'` or `'recent'`).
+        model_spec: The model to save in `provider:model` format.
+        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing config or start fresh
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        if section not in data:
+            data[section] = {}
+        data[section]["model"] = model_spec
+
+        # Write back with proper TOML formatting
+        with config_path.open("wb") as f:
+            tomli_w.dump(data, f)
+    except (OSError, PermissionError, tomllib.TOMLDecodeError) as e:
+        logger.warning("Could not save %s model preference: %s", section, e)
+        return False
+    else:
+        # Invalidate config cache so the next load() picks up the change.
+        global _default_config_cache  # noqa: PLW0603
+        _default_config_cache = None
+        return True
+
+
 def save_default_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the default model in config file.
 
@@ -694,35 +744,7 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
     Note:
         This function does not preserve comments in the config file.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-
-    try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Read existing config or start fresh
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
-
-        # Update the default model
-        if "default" not in data:
-            data["default"] = {}
-        data["default"]["model"] = model_spec
-
-        # Write back with proper TOML formatting
-        with config_path.open("wb") as f:
-            tomli_w.dump(data, f)
-    except (OSError, PermissionError, tomllib.TOMLDecodeError) as e:
-        logger.warning("Could not save default model preference: %s", e)
-        return False
-    else:
-        # Invalidate config cache so the next load() picks up the change.
-        global _default_config_cache  # noqa: PLW0603
-        _default_config_cache = None
-        return True
+    return _save_model_field("default", model_spec, config_path)
 
 
 def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
@@ -741,32 +763,4 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     Note:
         This function does not preserve comments in the config file.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-
-    try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Read existing config or start fresh
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
-
-        # Update the recent model
-        if "recent" not in data:
-            data["recent"] = {}
-        data["recent"]["model"] = model_spec
-
-        # Write back with proper TOML formatting
-        with config_path.open("wb") as f:
-            tomli_w.dump(data, f)
-    except (OSError, PermissionError, tomllib.TOMLDecodeError) as e:
-        logger.warning("Could not save recent model preference: %s", e)
-        return False
-    else:
-        # Invalidate config cache so the next load() picks up the change.
-        global _default_config_cache  # noqa: PLW0603
-        _default_config_cache = None
-        return True
+    return _save_model_field("recent", model_spec, config_path)

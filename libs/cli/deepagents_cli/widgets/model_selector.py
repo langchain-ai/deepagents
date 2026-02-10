@@ -382,19 +382,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 is_current = model_spec == current_spec
                 is_selected = flat_index == self._selected_index
 
-                cursor = f"{glyphs.cursor} " if is_selected else "  "
-                current_mark = " [dim](current)[/dim]" if is_current else ""
-
                 classes = "model-option"
                 if is_selected:
                     classes += " model-option-selected"
                 if is_current:
                     classes += " model-option-current"
 
-                spec_text = (
-                    f"[yellow]{model_spec}[/yellow]" if not has_creds else model_spec
+                label = self._format_option_label(
+                    model_spec,
+                    selected=is_selected,
+                    current=is_current,
+                    has_creds=has_creds,
                 )
-                label = f"{cursor}{spec_text}{current_mark}"
                 widget = ModelOption(
                     label=label,
                     model_spec=model_spec,
@@ -423,6 +422,31 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             else:
                 selected_widget.scroll_visible(animate=False)
 
+    @staticmethod
+    def _format_option_label(
+        model_spec: str,
+        *,
+        selected: bool,
+        current: bool,
+        has_creds: bool | None,
+    ) -> str:
+        """Build the display label for a model option.
+
+        Args:
+            model_spec: The `provider:model` string.
+            selected: Whether this option is currently highlighted.
+            current: Whether this is the active model.
+            has_creds: Credential status (True/False/None).
+
+        Returns:
+            Rich-markup label string.
+        """
+        glyphs = get_glyphs()
+        cursor = f"{glyphs.cursor} " if selected else "  "
+        spec_text = f"[yellow]{model_spec}[/yellow]" if not has_creds else model_spec
+        suffix = " [dim](current)[/dim]" if current else ""
+        return f"{cursor}{spec_text}{suffix}"
+
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected widgets.
 
@@ -437,31 +461,29 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         new_index = (old_index + delta) % count
         self._selected_index = new_index
 
-        glyphs = get_glyphs()
-
         # Update the previously selected widget
         old_widget = self._option_widgets[old_index]
         old_widget.remove_class("model-option-selected")
-        is_current = old_widget.model_spec == self._current_spec
-        suffix = " [dim](current)[/dim]" if is_current else ""
-        old_spec = (
-            old_widget.model_spec
-            if old_widget.has_creds
-            else f"[yellow]{old_widget.model_spec}[/yellow]"
+        old_widget.update(
+            self._format_option_label(
+                old_widget.model_spec,
+                selected=False,
+                current=old_widget.model_spec == self._current_spec,
+                has_creds=old_widget.has_creds,
+            )
         )
-        old_widget.update(f"  {old_spec}{suffix}")
 
         # Update the newly selected widget
         new_widget = self._option_widgets[new_index]
         new_widget.add_class("model-option-selected")
-        is_current = new_widget.model_spec == self._current_spec
-        suffix = " [dim](current)[/dim]" if is_current else ""
-        new_spec = (
-            new_widget.model_spec
-            if new_widget.has_creds
-            else f"[yellow]{new_widget.model_spec}[/yellow]"
+        new_widget.update(
+            self._format_option_label(
+                new_widget.model_spec,
+                selected=True,
+                current=new_widget.model_spec == self._current_spec,
+                has_creds=new_widget.has_creds,
+            )
         )
-        new_widget.update(f"{glyphs.cursor} {new_spec}{suffix}")
 
         # Scroll the selected item into view
         if new_index == 0:

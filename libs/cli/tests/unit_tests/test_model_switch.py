@@ -17,9 +17,11 @@ def _restore_settings() -> Iterator[None]:
     """Save and restore global settings mutated by tests."""
     original_name = settings.model_name
     original_provider = settings.model_provider
+    original_context_limit = settings.model_context_limit
     yield
     settings.model_name = original_name
     settings.model_provider = original_provider
+    settings.model_context_limit = original_context_limit
 
 
 class TestModelSwitchNoOp:
@@ -162,8 +164,8 @@ class TestModelSwitchErrorHandling:
         assert "Invalid model" in captured_errors[0]
 
     @pytest.mark.asyncio
-    async def test_agent_recreation_failure_shows_error(self) -> None:
-        """_switch_model shows error when create_cli_agent fails."""
+    async def test_agent_recreation_failure_shows_error_and_rolls_back(self) -> None:
+        """_switch_model shows error and rolls back settings on agent failure."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._checkpointer = MagicMock()
@@ -171,6 +173,7 @@ class TestModelSwitchErrorHandling:
         # Set a different current model
         settings.model_name = "gpt-4o"
         settings.model_provider = "openai"
+        settings.model_context_limit = 128_000
 
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
@@ -194,6 +197,11 @@ class TestModelSwitchErrorHandling:
         assert len(captured_errors) == 1
         assert "Model switch failed" in captured_errors[0]
         assert "Agent creation failed" in captured_errors[0]
+
+        # Settings must be rolled back to their original values
+        assert settings.model_name == "gpt-4o"
+        assert settings.model_provider == "openai"
+        assert settings.model_context_limit == 128_000
 
     @pytest.mark.asyncio
     async def test_no_checkpointer_saves_preference(self) -> None:
@@ -355,3 +363,104 @@ models = ["llama3"]
             await app._switch_model("ollama:llama3")
 
         assert any("Switched to" in m for m in captured_messages)
+
+
+class TestModelSwitchBareModelName:
+    """Tests for _switch_model with bare model names (no provider prefix)."""
+
+    @pytest.mark.asyncio
+    async def test_bare_model_name_auto_detects_provider(self) -> None:
+        """Bare model name like 'gpt-4o' auto-detects provider and succeeds."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "claude-sonnet-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        mock_model = MagicMock()
+        mock_agent = MagicMock()
+        mock_backend = MagicMock()
+
+        with (
+            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch("deepagents_cli.app.create_model", return_value=mock_model),
+            patch(
+                "deepagents_cli.app.create_cli_agent",
+                return_value=(mock_agent, mock_backend),
+            ),
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("gpt-4o")
+
+        assert any("Switched to" in m for m in captured_messages)
+
+    @pytest.mark.asyncio
+    async def test_bare_model_name_missing_credentials(self) -> None:
+        """Bare model name shows credential error when provider creds are missing."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "claude-sonnet-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.app.has_provider_credentials", return_value=False),
+            patch(
+                "deepagents_cli.app.get_credential_env_var",
+                return_value="OPENAI_API_KEY",
+            ),
+            patch.object(ErrorMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("gpt-4o")
+
+        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        assert len(captured_errors) == 1
+        assert "Missing credentials" in captured_errors[0]
+        assert "OPENAI_API_KEY" in captured_errors[0]
+
+    @pytest.mark.asyncio
+    async def test_bare_model_name_already_using(self) -> None:
+        """Bare model name matching current model shows 'Already using'."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch("deepagents_cli.app.detect_provider", return_value="openai"),
+            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("gpt-4o")
+
+        app._mount_message.assert_called_once()  # type: ignore[union-attr]
+        assert len(captured_messages) == 1
+        assert "Already using" in captured_messages[0]

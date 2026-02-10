@@ -196,6 +196,36 @@ models = ["llama3"]
             config.providers["local-ollama"]["base_url"] == "http://localhost:11434/v1"
         )
 
+    def test_corrupt_toml_returns_empty_config(self, tmp_path, caplog):
+        """Corrupt TOML file returns empty config and logs a warning."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[[invalid toml content")
+
+        with caplog.at_level(logging.WARNING):
+            config = ModelConfig.load(config_path)
+
+        assert config.default_model is None
+        assert config.providers == {}
+        assert any("invalid TOML syntax" in r.message for r in caplog.records)
+
+    def test_unreadable_file_returns_empty_config(self, tmp_path, caplog):
+        """Unreadable config file returns empty config and logs a warning."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[default]\nmodel = 'test'")
+        config_path.chmod(0o000)
+
+        try:
+            with caplog.at_level(logging.WARNING):
+                config = ModelConfig.load(config_path)
+
+            assert config.default_model is None
+            assert config.providers == {}
+            assert any(
+                "Could not read config file" in r.message for r in caplog.records
+            )
+        finally:
+            config_path.chmod(0o644)
+
 
 class TestModelConfigGetAllModels:
     """Tests for ModelConfig.get_all_models() method."""

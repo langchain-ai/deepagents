@@ -29,8 +29,8 @@ from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
-    _detect_provider,
     create_model,
+    detect_provider,
     is_shell_command_allowed,
     settings,
 )
@@ -1644,45 +1644,32 @@ class DeepAgentsApp(App):
 
         parsed = ModelSpec.try_parse(model_spec)
         if parsed:
-            provider, model_name = parsed.provider, parsed.model
+            provider: str | None = parsed.provider
+            model_name = parsed.model
+        else:
+            model_name = model_spec
+            provider = detect_provider(model_spec)
 
-            # Check credentials for the specified provider
-            if has_provider_credentials(provider) is False:
-                env_var = get_credential_env_var(provider)
-                if env_var:
-                    detail = f"{env_var} not set"
-                else:
-                    detail = f"no credentials configured for '{provider}'"
-                await self._mount_message(
-                    ErrorMessage(f"Missing credentials: {detail}")
+        # Check credentials
+        if provider and has_provider_credentials(provider) is False:
+            env_var = get_credential_env_var(provider)
+            if env_var:
+                detail = f"{env_var} is not set or is empty"
+            else:
+                detail = (
+                    f"provider '{provider}' is not recognized. "
+                    "Add it to ~/.deepagents/config.toml with an api_key_env field"
                 )
-                return
+            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
+            return
 
-            # Check if already using this exact model
-            if (
-                provider == settings.model_provider
-                and model_name == settings.model_name
-            ):
-                await self._mount_message(AppMessage(f"Already using {model_spec}"))
-                return
-        elif model_spec == settings.model_name:
-            # Just model name - check if already using this model
+        # Check if already using this exact model
+        if model_name == settings.model_name and (
+            not provider or provider == settings.model_provider
+        ):
             current = f"{settings.model_provider}:{settings.model_name}"
             await self._mount_message(AppMessage(f"Already using {current}"))
             return
-        else:
-            # Bare model name that differs from current — check credentials
-            detected = _detect_provider(model_spec)
-            if detected and has_provider_credentials(detected) is False:
-                env_var = get_credential_env_var(detected)
-                if env_var:
-                    detail = f"{env_var} not set"
-                else:
-                    detail = f"no credentials configured for '{detected}'"
-                await self._mount_message(
-                    ErrorMessage(f"Missing credentials: {detail}")
-                )
-                return
 
         # Check if we have what we need for hot-swap
         if not self._checkpointer:
@@ -1704,7 +1691,9 @@ class DeepAgentsApp(App):
                 )
             return
 
-        # Save previous settings for rollback if agent creation fails
+        # Save previous settings for rollback if agent creation fails.
+        # create_model mutates settings only after the model is created
+        # successfully, so only the create_cli_agent path needs rollback.
         prev_model_name = settings.model_name
         prev_model_provider = settings.model_provider
         prev_context_limit = settings.model_context_limit

@@ -1036,14 +1036,14 @@ def get_default_coding_instructions() -> str:
     return default_prompt_path.read_text()
 
 
-def _detect_provider(model_name: str) -> str | None:
+def detect_provider(model_name: str) -> str | None:
     """Auto-detect provider from model name.
 
     Args:
-        model_name: Model name to detect provider from
+        model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google_genai, google_vertexai) or None
+        Provider name (openai, anthropic, google_genai, google_vertexai) or None.
     """
     model_lower = model_name.lower()
 
@@ -1288,7 +1288,7 @@ def create_model(
         if after:
             # Leading colon (e.g., ":claude-opus-4-6") — treat as bare model name
             model_name = after
-            provider = _detect_provider(model_name) or ""
+            provider = detect_provider(model_name) or ""
         else:
             msg = (
                 f"Invalid model spec '{model_spec}': model name is required "
@@ -1298,7 +1298,7 @@ def create_model(
     else:
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
-        provider = _detect_provider(model_spec) or ""
+        provider = detect_provider(model_spec) or ""
 
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)

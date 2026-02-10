@@ -138,7 +138,7 @@ class ProviderConfig(TypedDict, total=False):
     kwargs: dict[str, Any]
     """Extra keyword arguments forwarded to the model constructor."""
 
-    model_kwargs: dict[str, dict[str, Any]]
+    model_params: dict[str, dict[str, Any]]
     """Per-model overrides that shallow-merge on top of `kwargs`.
 
     Keys are model names; values are dicts of kwargs that override or extend
@@ -552,7 +552,7 @@ class ModelConfig:
                 self.recent_model,
             )
 
-        # Validate class_path format and model_kwargs references
+        # Validate class_path format and model_params references
         for name, provider in self.providers.items():
             class_path = provider.get("class_path")
             if class_path and ":" not in class_path:
@@ -564,12 +564,12 @@ class ModelConfig:
                     class_path,
                 )
 
-            model_kwargs = provider.get("model_kwargs", {})
+            model_params = provider.get("model_params", {})
             models = set(provider.get("models", []))
-            for model in model_kwargs:
+            for model in model_params:
                 if model not in models:
                     logger.warning(
-                        "Provider '%s' has model_kwargs for '%s' "
+                        "Provider '%s' has model_params for '%s' "
                         "which is not in its models list",
                         name,
                         model,
@@ -667,7 +667,7 @@ class ModelConfig:
         """Get extra constructor kwargs for a provider.
 
         When `model_name` is given and a matching entry exists in
-        `model_kwargs`, those values are shallow-merged on top of the
+        `model_params`, those values are shallow-merged on top of the
         provider-level `kwargs` (model wins on conflict).
 
         Args:
@@ -682,7 +682,7 @@ class ModelConfig:
             return {}
         result = dict(provider.get("kwargs", {}))
         if model_name:
-            overrides = provider.get("model_kwargs", {}).get(model_name)
+            overrides = provider.get("model_params", {}).get(model_name)
             if overrides:
                 result.update(overrides)
         return result

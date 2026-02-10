@@ -641,7 +641,7 @@ max_tokens = 4096
         assert kwargs["base_url"] == "https://my-endpoint.example.com"
         assert kwargs["api_key"] == "secret"
 
-    def test_passes_model_name_for_per_model_kwargs(self, tmp_path: Path) -> None:
+    def test_passes_model_name_for_per_model_params(self, tmp_path: Path) -> None:
         """Per-model kwargs are merged when model_name is provided."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
@@ -652,7 +652,7 @@ models = ["qwen3:4b", "llama3"]
 temperature = 0
 num_ctx = 8192
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 num_ctx = 4000
 """)
@@ -672,7 +672,7 @@ models = ["qwen3:4b"]
 [providers.ollama.kwargs]
 temperature = 0
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
@@ -881,7 +881,7 @@ api_key_env = "FIREWORKS_API_KEY"
 
 
 class TestCreateModelExtraKwargs:
-    """Tests for create_model() with extra_kwargs from --model-kwargs."""
+    """Tests for create_model() with extra_kwargs from --model-params."""
 
     @patch("deepagents_cli.config.init_chat_model")
     def test_extra_kwargs_passed_to_model(self, mock_init_chat_model: Mock) -> None:

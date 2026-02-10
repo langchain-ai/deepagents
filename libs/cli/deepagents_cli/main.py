@@ -252,7 +252,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--model-kwargs",
+        "--model-params",
         metavar="JSON",
         help="Extra kwargs to pass to the model as a JSON string "
         '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
@@ -350,7 +350,7 @@ async def run_textual_cli_async(
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
     model_name: str | None = None,
-    model_kwargs: dict[str, Any] | None = None,
+    model_params: dict[str, Any] | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
@@ -366,7 +366,7 @@ async def run_textual_cli_async(
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
-        model_kwargs: Extra kwargs from `--model-kwargs` to pass to the model.
+        model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
         thread_id: Thread ID to use (new or resumed)
@@ -379,7 +379,7 @@ async def run_textual_cli_async(
     from deepagents_cli.app import run_textual_app
 
     try:
-        result = create_model(model_name, extra_kwargs=model_kwargs)
+        result = create_model(model_name, extra_kwargs=model_params)
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1
@@ -487,19 +487,19 @@ def cli_main() -> None:
 
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
-        model_kwargs: dict[str, Any] | None = None
-        raw_kwargs = getattr(args, "model_kwargs", None)
+        model_params: dict[str, Any] | None = None
+        raw_kwargs = getattr(args, "model_params", None)
         if raw_kwargs:
             try:
-                model_kwargs = json.loads(raw_kwargs)
+                model_params = json.loads(raw_kwargs)
             except json.JSONDecodeError as e:
                 console.print(
-                    f"[bold red]Error:[/bold red] --model-kwargs is not valid JSON: {e}"
+                    f"[bold red]Error:[/bold red] --model-params is not valid JSON: {e}"
                 )
                 sys.exit(1)
-            if not isinstance(model_kwargs, dict):
+            if not isinstance(model_params, dict):
                 console.print(
-                    "[bold red]Error:[/bold red] --model-kwargs must be a JSON object"
+                    "[bold red]Error:[/bold red] --model-params must be a JSON object"
                 )
                 sys.exit(1)
 
@@ -535,7 +535,7 @@ def cli_main() -> None:
                     message=args.non_interactive_message,
                     assistant_id=args.agent,
                     model_name=getattr(args, "model", None),
-                    model_kwargs=model_kwargs,
+                    model_params=model_params,
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
@@ -619,7 +619,7 @@ def cli_main() -> None:
                         sandbox_id=args.sandbox_id,
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
-                        model_kwargs=model_kwargs,
+                        model_params=model_params,
                         thread_id=thread_id,
                         is_resumed=is_resumed,
                         initial_prompt=getattr(args, "initial_prompt", None),

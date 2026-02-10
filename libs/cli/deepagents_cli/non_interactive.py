@@ -540,7 +540,7 @@ async def run_non_interactive(
     message: str,
     assistant_id: str = "agent",
     model_name: str | None = None,
-    model_kwargs: dict[str, Any] | None = None,
+    model_params: dict[str, Any] | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
@@ -563,7 +563,7 @@ async def run_non_interactive(
         message: The task/message to execute.
         assistant_id: Agent identifier for memory storage.
         model_name: Optional model name to use.
-        model_kwargs: Extra kwargs from `--model-kwargs` to pass to the model.
+        model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
         sandbox_type: Type of sandbox (`'none'`, `'modal'`,
@@ -582,7 +582,7 @@ async def run_non_interactive(
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
     try:
-        result = create_model(model_name, extra_kwargs=model_kwargs)
+        result = create_model(model_name, extra_kwargs=model_params)
     except ModelConfigError as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         return 1

@@ -1038,22 +1038,32 @@ def get_default_coding_instructions() -> str:
 def detect_provider(model_name: str) -> str | None:
     """Auto-detect provider from model name.
 
+    Intentionally duplicates a subset of LangChain's
+    `_attempt_infer_model_provider` because we need to resolve the provider
+    **before** calling `init_chat_model` in order to:
+
+    1. Build provider-specific kwargs (API base URLs, headers, etc.) that are
+       passed *into* `init_chat_model`.
+    2. Validate credentials early to surface user-friendly errors.
+
     Args:
         model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google_genai, google_vertexai) or None.
+        Provider name (openai, anthropic, google_genai, google_vertexai) or
+            `None` if the provider cannot be determined from the name alone.
     """
     model_lower = model_name.lower()
 
-    # Check for model name patterns
-    if any(x in model_lower for x in ["gpt", "o1", "o3", "o4"]):
+    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
         return "openai"
-    if "claude" in model_lower:
+
+    if model_lower.startswith("claude"):
         if not settings.has_anthropic and settings.has_vertex_ai:
             return "google_vertexai"
         return "anthropic"
-    if "gemini" in model_lower:
+
+    if model_lower.startswith("gemini"):
         if settings.has_vertex_ai and not settings.has_google:
             return "google_vertexai"
         return "google_genai"
@@ -1112,7 +1122,7 @@ def _get_provider_kwargs(
     Reads `base_url`, `api_key_env`, and the `kwargs` table from the user's
     `config.toml` for the given provider.
 
-    When `model_name` is provided, per-model overrides from `model_kwargs` are
+    When `model_name` is provided, per-model overrides from `model_params` are
     shallow-merged on top.
 
     Args:
@@ -1331,7 +1341,7 @@ def create_model(
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
 
-    # CLI --model-kwargs take highest priority
+    # CLI --model-params take highest priority
     if extra_kwargs:
         kwargs.update(extra_kwargs)
 

@@ -807,7 +807,7 @@ class TestModelConfigGetKwargsPerModel:
     """Tests for ModelConfig.get_kwargs() with per-model overrides."""
 
     def test_model_override_replaces_provider_value(self, tmp_path):
-        """model_kwargs entry overrides same key from provider kwargs."""
+        """model_params entry overrides same key from provider kwargs."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
@@ -817,7 +817,7 @@ models = ["qwen3:4b", "llama3"]
 temperature = 0
 num_ctx = 8192
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 num_ctx = 4000
 """)
@@ -826,7 +826,7 @@ num_ctx = 4000
         assert kwargs == {"temperature": 0.5, "num_ctx": 4000}
 
     def test_no_override_returns_provider_kwargs(self, tmp_path):
-        """Model without model_kwargs entry gets provider kwargs only."""
+        """Model without model_params entry gets provider kwargs only."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
@@ -836,7 +836,7 @@ models = ["qwen3:4b", "llama3"]
 temperature = 0
 num_ctx = 8192
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -844,7 +844,7 @@ temperature = 0.5
         assert kwargs == {"temperature": 0, "num_ctx": 8192}
 
     def test_model_adds_new_keys(self, tmp_path):
-        """model_kwargs can introduce keys not in provider kwargs."""
+        """model_params can introduce keys not in provider kwargs."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
@@ -853,7 +853,7 @@ models = ["qwen3:4b"]
 [providers.ollama.kwargs]
 temperature = 0
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 top_p = 0.9
 """)
         config = ModelConfig.load(config_path)
@@ -861,7 +861,7 @@ top_p = 0.9
         assert kwargs == {"temperature": 0, "top_p": 0.9}
 
     def test_shallow_merge(self, tmp_path):
-        """Merge is shallow — provider keys not in model_kwargs are preserved."""
+        """Merge is shallow — provider keys not in model_params are preserved."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
@@ -872,7 +872,7 @@ temperature = 0
 num_ctx = 8192
 seed = 42
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -889,7 +889,7 @@ models = ["qwen3:4b"]
 [providers.ollama.kwargs]
 temperature = 0
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -906,7 +906,7 @@ models = ["qwen3:4b"]
 [providers.ollama.kwargs]
 temperature = 0
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -915,14 +915,14 @@ temperature = 0.5
         fresh = config.get_kwargs("ollama", model_name="qwen3:4b")
         assert "injected" not in fresh
 
-    def test_no_provider_kwargs_only_model_kwargs(self, tmp_path):
-        """Works when provider has no kwargs, only model_kwargs."""
+    def test_no_provider_kwargs_only_model_params(self, tmp_path):
+        """Works when provider has no kwargs, only model_params."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 """)
         config = ModelConfig.load(config_path)
@@ -930,43 +930,43 @@ temperature = 0.5
         assert kwargs == {"temperature": 0.5}
 
 
-class TestModelConfigValidateModelKwargs:
-    """Tests for _validate() model_kwargs warnings."""
+class TestModelConfigValidateModelParams:
+    """Tests for _validate() model_params warnings."""
 
-    def test_warns_on_unknown_model_in_model_kwargs(self, tmp_path, caplog):
-        """Warns when model_kwargs references a model not in models list."""
+    def test_warns_on_unknown_model_in_model_params(self, tmp_path, caplog):
+        """Warns when model_params references a model not in models list."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
 models = ["llama3"]
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 """)
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
             ModelConfig.load(config_path)
 
         assert any(
-            "model_kwargs for 'qwen3:4b'" in record.message for record in caplog.records
+            "model_params for 'qwen3:4b'" in record.message for record in caplog.records
         )
 
     def test_no_warning_when_model_in_list(self, tmp_path, caplog):
-        """No warning when model_kwargs references a model in models list."""
+        """No warning when model_params references a model in models list."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
 models = ["qwen3:4b"]
 
-[providers.ollama.model_kwargs."qwen3:4b"]
+[providers.ollama.model_params."qwen3:4b"]
 temperature = 0.5
 """)
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
             ModelConfig.load(config_path)
 
-        assert not any("model_kwargs" in record.message for record in caplog.records)
+        assert not any("model_params" in record.message for record in caplog.records)
 
-    def test_no_warning_when_no_model_kwargs(self, tmp_path, caplog):
-        """No warning when model_kwargs section is absent."""
+    def test_no_warning_when_no_model_params(self, tmp_path, caplog):
+        """No warning when model_params section is absent."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [providers.ollama]
@@ -978,7 +978,7 @@ temperature = 0
         with caplog.at_level(logging.WARNING, logger="deepagents_cli.model_config"):
             ModelConfig.load(config_path)
 
-        assert not any("model_kwargs" in record.message for record in caplog.records)
+        assert not any("model_params" in record.message for record in caplog.records)
 
 
 class TestModelConfigValidateClassPath:

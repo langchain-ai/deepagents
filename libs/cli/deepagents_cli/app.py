@@ -37,8 +37,10 @@ from deepagents_cli.config import (
 from deepagents_cli.model_config import (
     ModelConfigError,
     ModelSpec,
+    clear_default_model,
     get_credential_env_var,
     has_provider_credentials,
+    save_default_model,
     save_recent_model,
 )
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
@@ -994,7 +996,7 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_text = (
-                "Commands: /quit, /clear, /model, /remember, "
+                "Commands: /quit, /clear, /model [--default], /remember, "
                 "/tokens, /threads, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -1078,10 +1080,29 @@ class DeepAgentsApp(App):
             return  # _handle_user_message already mounts the message
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
+            set_default = False
             if cmd.startswith("/model "):
-                model_arg = command.strip()[len("/model ") :].strip()
+                raw_arg = command.strip()[len("/model ") :].strip()
+                if raw_arg.startswith("--default"):
+                    set_default = True
+                    model_arg = raw_arg[len("--default") :].strip() or None
+                else:
+                    model_arg = raw_arg
 
-            if model_arg:
+            if set_default:
+                await self._mount_message(UserMessage(command))
+                if model_arg == "--clear":
+                    await self._clear_default_model()
+                elif model_arg:
+                    await self._set_default_model(model_arg)
+                else:
+                    await self._mount_message(
+                        AppMessage(
+                            "Usage: /model --default provider:model\n"
+                            "       /model --default --clear"
+                        )
+                    )
+            elif model_arg:
                 # Direct switch: /model claude-sonnet-4-5
                 await self._mount_message(UserMessage(command))
                 await self._switch_model(model_arg)
@@ -1764,6 +1785,53 @@ class DeepAgentsApp(App):
                 pass
 
         self.call_after_refresh(_scroll_after_switch)
+
+    async def _set_default_model(self, model_spec: str) -> None:
+        """Set the default model in config without switching the current session.
+
+        Updates `[models].default` in `~/.deepagents/config.toml` so that
+        future CLI launches use this model. Does not affect the running session.
+
+        Args:
+            model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
+        """
+        model_spec = model_spec.removeprefix(":")
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if not parsed:
+            provider = detect_provider(model_spec)
+            if provider:
+                model_spec = f"{provider}:{model_spec}"
+
+        if save_default_model(model_spec):
+            await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not save default model. Check permissions for ~/.deepagents/"
+                )
+            )
+
+    async def _clear_default_model(self) -> None:
+        """Remove the default model from config.
+
+        After clearing, future launches fall back to `[models].recent` or
+        environment auto-detection.
+        """
+        if clear_default_model():
+            await self._mount_message(
+                AppMessage(
+                    "Default model cleared. "
+                    "Future launches will use recent model or auto-detect."
+                )
+            )
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not clear default model. "
+                    "Check permissions for ~/.deepagents/"
+                )
+            )
 
 
 async def run_textual_app(

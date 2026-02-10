@@ -84,6 +84,7 @@ class Glyphs:
     arrow_down: str  # down arrow vs v
     bullet: str  # bullet vs -
     cursor: str  # cursor vs >
+    pin: str  # ★ vs [D]
 
     # Box-drawing characters
     box_vertical: str  # │ vs |
@@ -116,6 +117,7 @@ UNICODE_GLYPHS = Glyphs(
     arrow_down="↓",
     bullet="•",
     cursor="›",  # noqa: RUF001
+    pin="★",
     # Box-drawing characters
     box_vertical="│",
     box_horizontal="─",
@@ -143,6 +145,7 @@ ASCII_GLYPHS = Glyphs(
     arrow_down="v",
     bullet="-",
     cursor=">",
+    pin="[D]",
     # Box-drawing characters
     box_vertical="|",
     box_horizontal="-",

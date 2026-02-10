@@ -18,8 +18,11 @@ if TYPE_CHECKING:
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.model_config import (
+    ModelConfig,
+    clear_default_model,
     get_available_models,
     has_provider_credentials,
+    save_default_model,
 )
 
 
@@ -96,6 +99,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("tab", "move_down", "Down", show=False, priority=True),
         Binding("shift+tab", "move_up", "Up", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
+        Binding("ctrl+s", "set_default", "Set default", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
 
@@ -212,6 +216,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if current_model and current_provider:
             self._current_spec = f"{current_provider}:{current_model}"
 
+        config = ModelConfig.load()
+        self._default_spec: str | None = config.default_model
+
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
 
@@ -260,7 +267,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # Help text
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
-                f"Enter select {glyphs.bullet} Esc cancel"
+                f"Enter select {glyphs.bullet} Ctrl+S set default "
+                f"{glyphs.bullet} Esc cancel"
             )
             yield Static(help_text, classes="model-selector-help")
 
@@ -389,6 +397,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     selected=is_selected,
                     current=is_current,
                     has_creds=has_creds,
+                    is_default=model_spec == self._default_spec,
                 )
                 widget = ModelOption(
                     label=label,
@@ -425,6 +434,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         selected: bool,
         current: bool,
         has_creds: bool | None,
+        is_default: bool = False,
     ) -> str:
         """Build the display label for a model option.
 
@@ -433,15 +443,22 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             selected: Whether this option is currently highlighted.
             current: Whether this is the active model.
             has_creds: Credential status (True/False/None).
+            is_default: Whether this is the configured default model.
 
         Returns:
             Rich-markup label string.
         """
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
-        spec_text = f"[yellow]{model_spec}[/yellow]" if not has_creds else model_spec
+        if not has_creds:
+            spec_text = f"[yellow]{model_spec}[/yellow]"
+        elif is_default:
+            spec_text = f"[cyan]{model_spec}[/cyan]"
+        else:
+            spec_text = model_spec
         suffix = " [dim](current)[/dim]" if current else ""
-        return f"{cursor}{spec_text}{suffix}"
+        default_suffix = f" [cyan]{glyphs.pin} default[/cyan]" if is_default else ""
+        return f"{cursor}{spec_text}{suffix}{default_suffix}"
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected widgets.
@@ -466,6 +483,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 selected=False,
                 current=old_widget.model_spec == self._current_spec,
                 has_creds=old_widget.has_creds,
+                is_default=old_widget.model_spec == self._default_spec,
             )
         )
 
@@ -478,6 +496,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 selected=True,
                 current=new_widget.model_spec == self._current_spec,
                 has_creds=new_widget.has_creds,
+                is_default=new_widget.model_spec == self._default_spec,
             )
         )
 
@@ -513,6 +532,50 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self.dismiss((custom_input, provider))
         elif custom_input:
             self.dismiss((custom_input, ""))
+
+    def action_set_default(self) -> None:
+        """Toggle the highlighted model as the default.
+
+        If the highlighted model is already the default, clears it.
+        Otherwise sets it as the new default.
+        """
+        if not self._filtered_models or not self._option_widgets:
+            return
+
+        model_spec, _provider = self._filtered_models[self._selected_index]
+        help_widget = self.query_one(".model-selector-help", Static)
+
+        if model_spec == self._default_spec:
+            # Already default — clear it
+            if clear_default_model():
+                self._default_spec = None
+                self._rebuild_needed = True
+                self.call_after_refresh(self._update_display)
+                help_widget.update("[bold]Default cleared[/bold]")
+                self.set_timer(3.0, self._restore_help_text)
+            else:
+                help_widget.update("[bold red]Failed to clear default[/bold red]")
+                self.set_timer(3.0, self._restore_help_text)
+        elif save_default_model(model_spec):
+            self._default_spec = model_spec
+            self._rebuild_needed = True
+            self.call_after_refresh(self._update_display)
+            help_widget.update(f"[bold]Default set to {model_spec}[/bold]")
+            self.set_timer(3.0, self._restore_help_text)
+        else:
+            help_widget.update("[bold red]Failed to save default[/bold red]")
+            self.set_timer(3.0, self._restore_help_text)
+
+    def _restore_help_text(self) -> None:
+        """Restore the default help text after a temporary message."""
+        glyphs = get_glyphs()
+        help_text = (
+            f"{glyphs.arrow_up}/{glyphs.arrow_down}/tab navigate {glyphs.bullet} "
+            f"Enter select {glyphs.bullet} Ctrl+S set default "
+            f"{glyphs.bullet} Esc cancel"
+        )
+        help_widget = self.query_one(".model-selector-help", Static)
+        help_widget.update(help_text)
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

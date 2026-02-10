@@ -760,6 +760,52 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
     return _save_model_field("default", model_spec, config_path)
 
 
+def clear_default_model(config_path: Path | None = None) -> bool:
+    """Remove the default model from the config file.
+
+    Deletes the `[models].default` key so that future launches fall back to
+    `[models].recent` or environment auto-detection.
+
+    Args:
+        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed (or was already absent), False on I/O error.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    if not config_path.exists():
+        return True  # Nothing to clear
+
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        models_section = data.get("models")
+        if not isinstance(models_section, dict) or "default" not in models_section:
+            return True  # Already absent
+
+        del models_section["default"]
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not clear default model preference")
+        return False
+    else:
+        global _default_config_cache  # noqa: PLW0603
+        _default_config_cache = None
+        return True
+
+
 def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     """Update the recently used model in config file.
 

@@ -18,6 +18,7 @@ from deepagents_cli.model_config import (
     _get_provider_profile_modules,
     _load_provider_profiles,
     clear_caches,
+    clear_default_model,
     get_available_models,
     has_provider_credentials,
     save_recent_model,
@@ -441,6 +442,86 @@ default = "claude-sonnet-4-5"
         content = config_path.read_text()
         assert 'default = "anthropic:claude-opus-4-5"' in content
         assert "claude-sonnet-4-5" not in content
+
+    def test_preserves_existing_recent(self, tmp_path):
+        """Does not overwrite [models].recent when saving default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+recent = "anthropic:claude-sonnet-4-5"
+""")
+        model_config.save_default_model("ollama:qwen3:4b", config_path)
+
+        content = config_path.read_text()
+        assert 'recent = "anthropic:claude-sonnet-4-5"' in content
+        assert 'default = "ollama:qwen3:4b"' in content
+
+
+class TestClearDefaultModel:
+    """Tests for clear_default_model() function."""
+
+    def test_removes_default_key(self, tmp_path):
+        """Removes [models].default from config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+default = "anthropic:claude-sonnet-4-5"
+""")
+        result = clear_default_model(config_path)
+
+        assert result is True
+        content = config_path.read_text()
+        assert "default" not in content
+
+    def test_preserves_recent(self, tmp_path):
+        """Does not remove [models].recent when clearing default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+default = "anthropic:claude-sonnet-4-5"
+recent = "openai:gpt-5.2"
+""")
+        clear_default_model(config_path)
+
+        content = config_path.read_text()
+        assert "default" not in content
+        assert 'recent = "openai:gpt-5.2"' in content
+
+    def test_preserves_providers(self, tmp_path):
+        """Does not affect provider configuration."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+default = "anthropic:claude-sonnet-4-5"
+
+[models.providers.anthropic]
+models = ["claude-sonnet-4-5"]
+""")
+        clear_default_model(config_path)
+
+        content = config_path.read_text()
+        assert "default" not in content
+        assert "[models.providers.anthropic]" in content
+
+    def test_noop_when_no_default(self, tmp_path):
+        """Returns True when no default is set (nothing to clear)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+recent = "openai:gpt-5.2"
+""")
+        result = clear_default_model(config_path)
+
+        assert result is True
+        content = config_path.read_text()
+        assert 'recent = "openai:gpt-5.2"' in content
+
+    def test_noop_when_file_missing(self, tmp_path):
+        """Returns True when config file doesn't exist."""
+        config_path = tmp_path / "nonexistent.toml"
+        result = clear_default_model(config_path)
+
+        assert result is True
 
 
 class TestModelPersistenceBetweenSessions:

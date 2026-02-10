@@ -260,6 +260,25 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--default-model",
+        metavar="MODEL",
+        nargs="?",
+        const="__SHOW__",
+        default=None,
+        help="Set the default model for future launches "
+        "(e.g., anthropic:claude-opus-4-6). "
+        "Use --default-model with no argument to show the current default. "
+        "Use --clear-default-model to remove it.",
+    )
+
+    parser.add_argument(
+        "--clear-default-model",
+        action="store_true",
+        help="Clear the default model, falling back to recent model "
+        "or environment auto-detection.",
+    )
+
+    parser.add_argument(
         "-m",
         "--message",
         dest="initial_prompt",
@@ -502,6 +521,55 @@ def cli_main() -> None:
                     "[bold red]Error:[/bold red] --model-params must be a JSON object"
                 )
                 sys.exit(1)
+
+        # Handle --default-model / --clear-default-model (headless, no session)
+        if args.clear_default_model:
+            from deepagents_cli.model_config import clear_default_model
+
+            if clear_default_model():
+                console.print("Default model cleared.")
+            else:
+                console.print(
+                    "[bold red]Error:[/bold red] Could not clear default model. "
+                    "Check permissions for ~/.deepagents/"
+                )
+                sys.exit(1)
+            sys.exit(0)
+
+        if args.default_model is not None:
+            from deepagents_cli.model_config import (
+                ModelConfig,
+                save_default_model,
+            )
+
+            if args.default_model == "__SHOW__":
+                config = ModelConfig.load()
+                if config.default_model:
+                    console.print(f"Default model: {config.default_model}")
+                else:
+                    console.print("No default model set.")
+                sys.exit(0)
+
+            model_spec = args.default_model
+            # Auto-detect provider for bare model names
+            from deepagents_cli.config import detect_provider
+            from deepagents_cli.model_config import ModelSpec
+
+            parsed = ModelSpec.try_parse(model_spec)
+            if not parsed:
+                provider = detect_provider(model_spec)
+                if provider:
+                    model_spec = f"{provider}:{model_spec}"
+
+            if save_default_model(model_spec):
+                console.print(f"Default model set to {model_spec}")
+            else:
+                console.print(
+                    "[bold red]Error:[/bold red] Could not save default model. "
+                    "Check permissions for ~/.deepagents/"
+                )
+                sys.exit(1)
+            sys.exit(0)
 
         if args.command == "help":
             show_help()

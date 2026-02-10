@@ -1091,6 +1091,19 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
 
+        # Scroll to bottom after command output is rendered.
+        # Use call_after_refresh so the layout pass completes first;
+        # otherwise max_scroll_y is still stale.
+        def _scroll_after_command() -> None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+                if chat.max_scroll_y > 0:
+                    chat.scroll_end(animate=False)
+            except NoMatches:
+                pass
+
+        self.call_after_refresh(_scroll_after_command)
+
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
 
@@ -1750,6 +1763,17 @@ class DeepAgentsApp(App):
             )
 
         logger.info("Model switched to %s", display)
+
+        # Scroll to bottom so the confirmation message is visible
+        def _scroll_after_switch() -> None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+                if chat.max_scroll_y > 0:
+                    chat.scroll_end(animate=False)
+            except NoMatches:
+                pass
+
+        self.call_after_refresh(_scroll_after_switch)
 
 
 async def run_textual_app(

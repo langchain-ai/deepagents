@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ralph Mode - Single run for DeepAgents
+Ralph Mode - Single run for Deep Agents
 
 Usage:
     uv pip install deepagents-cli
@@ -46,7 +46,7 @@ async def ralph(model_name: str = None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Ralph Mode - Single run for DeepAgents",
+        description="Ralph Mode - Single run for Deep Agents",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

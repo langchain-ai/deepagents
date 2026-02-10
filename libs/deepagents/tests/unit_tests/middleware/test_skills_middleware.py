@@ -1069,7 +1069,7 @@ def test_skills_middleware_with_state_backend_factory() -> None:
     # This is the recommended pattern for StateBackend since it needs runtime context
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=lambda rt: StateBackend(rt),
+        backend=StateBackend,
         sources=sources,
     )
 
@@ -1099,7 +1099,7 @@ def test_skills_middleware_with_store_backend_factory() -> None:
     # This is the recommended pattern for StoreBackend since it needs runtime context with store
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=sources,
     )
 
@@ -1433,7 +1433,7 @@ def create_store_skill_item(content: str) -> dict:
 def test_skills_middleware_with_store_backend_assistant_id() -> None:
     """Test namespace isolation: each assistant_id gets its own skills namespace."""
     middleware = SkillsMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=["/skills/user"],
     )
     store = InMemoryStore()
@@ -1491,7 +1491,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
 def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
     middleware = SkillsMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=["/skills/user"],
     )
     store = InMemoryStore()
@@ -1526,7 +1526,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
 async def test_skills_middleware_with_store_backend_assistant_id_async() -> None:
     """Test namespace isolation with async: each assistant_id gets its own skills namespace."""
     middleware = SkillsMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=["/skills/user"],
     )
     store = InMemoryStore()

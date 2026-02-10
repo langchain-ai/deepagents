@@ -166,7 +166,7 @@ def create_deep_agent(
     # Compute summarization defaults based on model profile
     summarization_defaults = _compute_summarization_defaults(model)
 
-    backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+    backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware] = [

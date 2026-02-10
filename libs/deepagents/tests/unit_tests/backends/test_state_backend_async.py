@@ -261,7 +261,7 @@ async def test_state_backend_aglob_recursive():
 async def test_state_backend_intercept_large_tool_result_async():
     """Test that StateBackend properly handles large tool result interception in async context."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StateBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=StateBackend, tool_token_limit_before_evict=1000)
 
     large_content = "x" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_123")

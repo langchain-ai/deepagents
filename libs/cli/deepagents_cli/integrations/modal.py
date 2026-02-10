@@ -11,9 +11,9 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
+from deepagents.backends.sandbox import BaseSandbox
+
+from deepagents_cli.integrations.sandbox_provider import (
     SandboxProvider,
 )
 
@@ -136,7 +136,7 @@ class ModalBackend(BaseSandbox):
         return responses
 
 
-class ModalProvider(SandboxProvider[dict[str, Any]]):
+class ModalProvider(SandboxProvider):
     """Modal sandbox provider implementation.
 
     Manages Modal sandbox lifecycle using the Modal SDK.
@@ -152,20 +152,6 @@ class ModalProvider(SandboxProvider[dict[str, Any]]):
 
         self._app_name = app_name
         self.app = modal.App.lookup(name=app_name, create_if_missing=True)
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Modal sandboxes.
-
-        Raises:
-            NotImplementedError: Modal doesn't provide a list API.
-        """
-        msg = "Listing Modal sandboxes is not supported yet."
-        raise NotImplementedError(msg)
 
     def get_or_create(
         self,

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, WriteResult
@@ -367,7 +368,7 @@ class TestOffloadingBasic:
         runtime = make_mock_runtime()
 
         with mock_get_config():
-            result, modified_request = call_wrap_model_call(middleware, state, runtime)
+            result, _ = call_wrap_model_call(middleware, state, runtime)
 
         # Should have triggered summarization
         assert isinstance(result, ExtendedModelResponse)
@@ -718,7 +719,7 @@ class TestNoSummarizationTriggered:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization)
         assert not isinstance(result, ExtendedModelResponse)
@@ -1009,7 +1010,7 @@ class TestAsyncBehavior:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
 
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
@@ -1121,7 +1122,7 @@ class TestMarkdownFormatting:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
         assert result.command.update is not None
@@ -1155,7 +1156,7 @@ class TestDownloadFilesException:
         runtime = make_mock_runtime()
 
         # Should not raise - summarization should continue
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
 
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
@@ -1184,7 +1185,7 @@ class TestDownloadFilesException:
         runtime = make_mock_runtime()
 
         # Should not raise - summarization should continue
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
 
         assert isinstance(result, ExtendedModelResponse)
         assert result.command is not None
@@ -1339,7 +1340,7 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+        result, _ = call_wrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization) because cutoff_index would be 0 or negative
         assert not isinstance(result, ExtendedModelResponse)
@@ -1363,7 +1364,7 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization)
         assert not isinstance(result, ExtendedModelResponse)
@@ -1393,7 +1394,7 @@ class TestCutoffIndexEdgeCases:
         state = cast("AgentState[Any]", {"messages": messages})
         runtime = make_mock_runtime()
 
-        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+        result, _ = await call_awrap_model_call(middleware, state, runtime)
 
         # Should return ModelResponse (no summarization) because cutoff_index would be 0 or negative
         assert not isinstance(result, ExtendedModelResponse)
@@ -1439,7 +1440,7 @@ def test_no_truncation_when_trigger_is_none() -> None:
     state = {"messages": messages}
     runtime = make_mock_runtime()
 
-    result, modified_request = call_wrap_model_call(middleware, state, runtime)
+    result, _ = call_wrap_model_call(middleware, state, runtime)
 
     # Should return ModelResponse (no truncation, no summarization)
     assert not isinstance(result, ExtendedModelResponse)
@@ -2218,3 +2219,100 @@ def test_chained_summarization_cutoff_index() -> None:
     assert [m.content for m in modified_request.messages[1:]] == ["S18", "S19"]
     _, content = backend.write_calls[2]
     assert offloaded_labels(content) == ["S12", "S13", "S14", "S15", "S16", "S17"]
+
+
+# -----------------------------------------------------------------------------
+# ContextOverflowError fallback tests
+# -----------------------------------------------------------------------------
+
+
+def test_context_overflow_triggers_summarization() -> None:
+    """Test that ContextOverflowError triggers fallback to summarization."""
+    backend = MockBackend()
+    mock_model = make_mock_model(summary_response="Fallback summary")
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),  # High threshold - won't trigger normally
+        keep=("messages", 2),
+    )
+
+    messages = make_conversation_messages(num_old=6, num_recent=2)
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    # Create a handler that raises ContextOverflowError on first call
+    call_count = {"count": 0}
+
+    def handler_with_overflow(_req: ModelRequest) -> "ModelResponse":
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            # First call with unsummarized messages throws overflow
+            raise ContextOverflowError
+        # Second call with summarized messages succeeds
+        return AIMessage(content="Success after summarization")
+
+    request = make_model_request(state, runtime)
+
+    with mock_get_config():
+        result = middleware.wrap_model_call(request, handler_with_overflow)
+
+    # Should have triggered summarization as fallback
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert result.command.update is not None
+    assert result.command.update["_summarization_event"]
+
+    # Should have called handler twice (once failed, once succeeded)
+    assert call_count["count"] == 2
+
+    # Backend should have offloaded messages
+    assert len(backend.write_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_async_context_overflow_triggers_summarization() -> None:
+    """Test that ContextOverflowError triggers fallback to summarization (async)."""
+    backend = MockBackend()
+    mock_model = make_mock_model(summary_response="Fallback summary")
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async fallback summary"))
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 100),  # High threshold - won't trigger normally
+        keep=("messages", 2),
+    )
+
+    messages = make_conversation_messages(num_old=6, num_recent=2)
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    # Create a handler that raises ContextOverflowError on first call
+    call_count = {"count": 0}
+
+    async def handler_with_overflow(_req: ModelRequest) -> "ModelResponse":
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            # First call with unsummarized messages throws overflow
+            raise ContextOverflowError
+        # Second call with summarized messages succeeds
+        return AIMessage(content="Success after summarization")
+
+    request = make_model_request(state, runtime)
+
+    with mock_get_config():
+        result = await middleware.awrap_model_call(request, handler_with_overflow)
+
+    # Should have triggered summarization as fallback
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert result.command.update is not None
+    assert "_summarization_event" in result.command.update
+
+    # Should have called handler twice (once failed, once succeeded)
+    assert call_count["count"] == 2
+
+    # Backend should have offloaded messages
+    assert len(backend.write_calls) == 1

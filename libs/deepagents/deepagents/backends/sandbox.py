@@ -13,9 +13,6 @@ import base64
 import json
 import shlex
 from abc import ABC, abstractmethod
-from typing import NotRequired
-
-from typing_extensions import TypedDict
 
 from deepagents.backends.protocol import (
     EditResult,
@@ -27,128 +24,6 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-
-
-class SandboxInfo(TypedDict):
-    """Metadata for a single sandbox instance.
-
-    This lightweight structure is returned from list operations and provides
-    basic information about a sandbox without requiring a full connection.
-
-    Type Parameters:
-        MetadataT: Type of the metadata field. Providers should define a TypedDict
-            for type-safe metadata access.
-
-    Attributes:
-        sandbox_id: Unique identifier for the sandbox instance.
-        metadata: Optional provider-specific metadata (e.g., creation time, status,
-            resource limits, template information). Structure is provider-defined.
-
-    Example:
-        ```python
-        # Using default dict[str, Any]
-        info: SandboxInfo = {
-            "sandbox_id": "sb_abc123",
-            "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z", "template": "python-3.11"},
-        }
-
-
-        # Using typed metadata
-        class MyMetadata(TypedDict, total=False):
-            status: Literal["running", "stopped"]
-            created_at: str
-
-
-        typed_info: SandboxInfo[MyMetadata] = {
-            "sandbox_id": "sb_abc123",
-            "metadata": {"status": "running", "created_at": "2024-01-15T10:30:00Z"},
-        }
-        ```
-    """
-
-    sandbox_id: str
-    metadata: NotRequired[dict[str, object]]
-
-
-class SandboxListResponse(TypedDict):
-    """Paginated response from a sandbox list operation.
-
-    This structure supports cursor-based pagination for efficiently browsing
-    large collections of sandboxes.
-
-    Type Parameters:
-        MetadataT: Type of the metadata field in SandboxInfo items.
-
-    Attributes:
-        items: List of sandbox metadata objects for the current page.
-        cursor: Opaque continuation token for retrieving the next page.
-            None indicates no more pages available. Clients should treat this
-            as an opaque string and pass it to subsequent list() calls.
-
-    Example:
-        ```python
-        response: SandboxListResponse[MyMetadata] = {
-            "items": [{"sandbox_id": "sb_001", "metadata": {"status": "running"}}, {"sandbox_id": "sb_002", "metadata": {"status": "stopped"}}],
-            "cursor": "eyJvZmZzZXQiOjEwMH0=",
-        }
-
-        # Fetch next page
-        next_response = provider.list(cursor=response["cursor"])
-        ```
-    """
-
-    items: list[SandboxInfo]
-    cursor: str | None
-
-    """Abstract base class for third-party sandbox provider implementations.
-
-    Defines the lifecycle management interface for sandbox providers. Implementations
-    should integrate with their respective SDKs to provide standardized sandbox
-    lifecycle operations (list, get_or_create, delete).
-
-    Implementations can add provider-specific parameters as keyword-only arguments
-    with defaults, maintaining compatibility while providing type-safe APIs.
-
-    Sync/Async Convention: Following LangChain convention, providers should offer both
-    sync and async methods in the same namespace if possible (doesn't hurt performance)
-    (e.g., both `list()` and `alist()` in one class). The default async implementations
-    delegate to sync methods via a thread pool. Providers can override async methods to
-    provide optimized async implementations if needed.
-
-    Alternatively, if necessary for performance optimization, providers may split into
-    separate implementations (e.g., `MySyncProvider` and `MyAsyncProvider`). In this
-    case, unimplemented methods should raise NotImplementedError with clear guidance
-    (e.g., "This provider only supports async operations. Use 'await provider.alist()'
-    or switch to MySyncProvider for synchronous code").
-
-    Example Implementation:
-        ```python
-        class CustomMetadata(TypedDict, total=False):
-            status: Literal["running", "stopped"]
-            template: str
-            created_at: str
-
-
-        class CustomSandboxProvider(SandboxProvider[CustomMetadata]):
-            def list(
-                self, *, cursor=None, status: Literal["running", "stopped"] | None = None, template_id: str | None = None, **kwargs: Any
-            ) -> SandboxListResponse[CustomMetadata]:
-                # Type-safe parameters with IDE autocomplete
-                # ... query provider API
-                return {"items": [...], "cursor": None}
-
-            def get_or_create(
-                self, *, sandbox_id=None, template_id: str = "default", timeout_minutes: int | None = None, **kwargs: Any
-            ) -> SandboxBackendProtocol:
-                # Type-safe parameters with IDE autocomplete
-                return CustomSandbox(sandbox_id or self._create_new(), template_id)
-
-            def delete(self, *, sandbox_id: str, force: bool = False, **kwargs: Any) -> None:
-                # Implementation
-                self._client.delete(sandbox_id, force=force)
-        ```
-    """
-
 
 _GLOB_COMMAND_TEMPLATE = """python3 -c "
 import glob

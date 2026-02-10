@@ -17,7 +17,7 @@ test_watch:
 	uv run ptw . -- $(TEST_FILE)
 
 toad:
-	uv run toad acp "deepacp"
+	uv run toad acp 'bash run.sh'
 
 
 ######################

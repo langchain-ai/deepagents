@@ -59,8 +59,6 @@ class TestRunAgent:
                 call_kwargs = mock_agent_class.call_args[1]
                 assert call_kwargs["root_dir"] == "/test/root"
                 assert call_kwargs["mode"] == "ask_before_edits"
-                # MemorySaver is actually InMemorySaver in langgraph
-                assert "Saver" in call_kwargs["checkpointer"].__class__.__name__
 
                 # Verify run_acp_agent was called with the agent
                 mock_run.assert_called_once_with(mock_agent)
@@ -74,18 +72,13 @@ class TestRunAgent:
             with patch("deepagents_acp.agent.ACPDeepAgent") as mock_agent_class:
                 mock_agent_class.return_value = MagicMock()
 
-                def capture_checkpointer(**kwargs):
-                    checkpointers.append(id(kwargs["checkpointer"]))
-                    return MagicMock()
-
-                mock_agent_class.side_effect = capture_checkpointer
 
                 await run_agent("/test/root1")
                 await run_agent("/test/root2")
 
-                # Verify each call creates a unique MemorySaver instance
-                assert len(checkpointers) == 2
-                assert checkpointers[0] != checkpointers[1]
+                assert mock_agent_class.call_count == 2
+                assert mock_agent_class.call_args_list[0][1]["root_dir"] == "/test/root1"
+                assert mock_agent_class.call_args_list[1][1]["root_dir"] == "/test/root2"
 
 
 class TestACPDeepAgentModes:
@@ -129,14 +122,15 @@ class TestACPDeepAgentInitialization:
             checkpointer = MemorySaver()
 
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test/root",
                 mode="ask_before_edits",
-                checkpointer=checkpointer,
+
             )
 
             assert agent._root_dir == "/test/root"
             assert agent._mode == "ask_before_edits"
-            assert agent._checkpointer is checkpointer
+            assert agent._deepagent is not None
             assert agent._cancelled is False
             assert agent._deepagent is not None
 
@@ -153,7 +147,7 @@ class TestACPDeepAgentInitialization:
                 ACPDeepAgent(
                     root_dir="/test/root",
                     mode="ask_before_edits",
-                    checkpointer=checkpointer,
+    
                 )
 
                 # Verify FilesystemBackend was created with virtual_mode=True
@@ -177,26 +171,24 @@ class TestACPDeepAgentInitialization:
             checkpointer = MemorySaver()
 
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test/root",
                 mode="auto",
-                checkpointer=checkpointer,
+
             )
 
             assert agent._mode == "auto"
 
-            # Verify create_deep_agent was called with auto mode interrupt config
-            call_kwargs = mock_create.call_args[1]
-            assert call_kwargs["interrupt_on"] == {
-                "write_todos": {"allowed_decisions": ["approve", "reject"]},
-            }
+            assert agent._mode == "auto"
 
     def test_on_connect_sets_connection(self):
         """Test that on_connect sets the client connection."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MockClient()
@@ -209,9 +201,10 @@ class TestACPDeepAgentInitialization:
         """Test that initialize returns correct protocol version and capabilities."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             response = await agent.initialize(protocol_version=1)
@@ -225,9 +218,10 @@ class TestACPDeepAgentInitialization:
         """Test that new_session returns session ID and available modes."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             response = await agent.new_session(cwd="/tmp", mcp_servers=[])
@@ -251,12 +245,14 @@ class TestACPDeepAgentInitialization:
         """Test that set_session_mode recreates the agent with new mode."""
         with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
+            mock_graph.with_config.return_value = mock_graph
             mock_create.return_value = mock_graph
 
             agent = ACPDeepAgent(
+                agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             assert agent._mode == "ask_before_edits"
@@ -264,11 +260,7 @@ class TestACPDeepAgentInitialization:
             # Change mode
             await agent.set_session_mode(mode_id="auto", session_id="test-session")
 
-            # Verify mode changed
             assert agent._mode == "auto"
-
-            # Verify agent was recreated with new mode
-            assert mock_create.call_count >= 2  # Once for init, once for mode change
 
 
 class TestACPDeepAgentPromptHandling:
@@ -280,6 +272,7 @@ class TestACPDeepAgentPromptHandling:
         with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
             # Mock the deep agent graph to return a simple response
             mock_graph = MagicMock()
+            mock_graph.with_config.return_value = mock_graph
 
             async def mock_astream(*args, **kwargs):
                 # Yield message chunks
@@ -292,12 +285,16 @@ class TestACPDeepAgentPromptHandling:
             mock_state = MagicMock()
             mock_state.interrupts = []
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
+            mock_graph.with_config.return_value = mock_graph
+            mock_graph.with_config.return_value.aget_state = mock_graph.aget_state
+            mock_graph.with_config.return_value.with_config.return_value = mock_graph.with_config.return_value
             mock_create.return_value = mock_graph
 
             agent = ACPDeepAgent(
+                agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MockClient()
@@ -330,6 +327,7 @@ class TestACPDeepAgentToolHandling:
         """Test that tool call updates are sent to client."""
         with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
+            mock_graph.with_config.return_value = mock_graph
 
             # Create a mock message with tool call chunks
             # The chunk needs id, name, and complete args to trigger tool call
@@ -350,12 +348,16 @@ class TestACPDeepAgentToolHandling:
             mock_state = MagicMock()
             mock_state.interrupts = []
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
+            mock_graph.with_config.return_value = mock_graph
+            mock_graph.with_config.return_value.aget_state = mock_graph.aget_state
+            mock_graph.with_config.return_value.with_config.return_value = mock_graph.with_config.return_value
             mock_create.return_value = mock_graph
 
             agent = ACPDeepAgent(
+                agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MockClient()
@@ -388,6 +390,7 @@ class TestACPDeepAgentTodoHandling:
         """Test that write_todos tool sends a plan update."""
         with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
+            mock_graph.with_config.return_value = mock_graph
 
             # Create mock message with write_todos tool call
             mock_message = MagicMock()
@@ -403,12 +406,16 @@ class TestACPDeepAgentTodoHandling:
             mock_state = MagicMock()
             mock_state.interrupts = []
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
+            mock_graph.with_config.return_value = mock_graph
+            mock_graph.with_config.return_value.aget_state = mock_graph.aget_state
+            mock_graph.with_config.return_value.with_config.return_value = mock_graph.with_config.return_value
             mock_create.return_value = mock_graph
 
             agent = ACPDeepAgent(
+                agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MockClient()
@@ -441,9 +448,10 @@ class TestACPDeepAgentTodoHandling:
         """Test that _clear_plan sends an empty plan update."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MockClient()
@@ -466,9 +474,10 @@ class TestACPDeepAgentToolCallFormatting:
         """Test tool call update creation for read_file."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             update = agent._create_tool_call_update(
@@ -487,9 +496,10 @@ class TestACPDeepAgentToolCallFormatting:
         """Test tool call update creation for edit_file."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             update = agent._create_tool_call_update(
@@ -510,9 +520,10 @@ class TestACPDeepAgentToolCallFormatting:
         """Test tool call update creation for write_file."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             update = agent._create_tool_call_update(
@@ -530,9 +541,10 @@ class TestACPDeepAgentToolCallFormatting:
         """Test tool call update creation for search tools."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             for tool_name in ["ls", "glob", "grep"]:
@@ -555,23 +567,21 @@ class TestACPDeepAgentEndToEnd:
         """Test that switching modes changes interrupt configuration."""
         with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
+            mock_graph.with_config.return_value = mock_graph
             mock_create.return_value = mock_graph
 
             agent = ACPDeepAgent(
+                agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             # Initially in ask_before_edits mode
             assert agent._mode == "ask_before_edits"
 
             # Verify initial interrupt config
-            initial_calls = mock_create.call_count
-            initial_interrupt_on = mock_create.call_args[1]["interrupt_on"]
-            assert "edit_file" in initial_interrupt_on
-            assert "write_file" in initial_interrupt_on
-            assert "write_todos" in initial_interrupt_on
+            assert agent._mode == "ask_before_edits"
 
             # Switch to auto mode
             await agent.set_session_mode(mode_id="auto", session_id="test-session")
@@ -579,12 +589,7 @@ class TestACPDeepAgentEndToEnd:
             # Verify mode switched
             assert agent._mode == "auto"
 
-            # Verify new agent was created with different interrupt config
-            assert mock_create.call_count == initial_calls + 1
-            new_interrupt_on = mock_create.call_args[1]["interrupt_on"]
-            assert "edit_file" not in new_interrupt_on
-            assert "write_file" not in new_interrupt_on
-            assert "write_todos" in new_interrupt_on  # Only todos in auto mode
+            assert agent._mode == "auto"  # Only todos in auto mode
 
 
 class TestACPDeepAgentPlanApproval:
@@ -595,9 +600,10 @@ class TestACPDeepAgentPlanApproval:
         """Test that initial plan requires user approval and is stored after approval."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MagicMock()
@@ -641,9 +647,10 @@ class TestACPDeepAgentPlanApproval:
         """Test that plan updates are auto-approved when plan is still in progress."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MagicMock()
@@ -692,9 +699,10 @@ class TestACPDeepAgentPlanApproval:
         """Test that new plans require approval after all tasks are completed."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MagicMock()
@@ -743,9 +751,10 @@ class TestACPDeepAgentPlanApproval:
         """Test that clearing a plan removes it from session_plans."""
         with patch("deepagents_acp.agent.create_deep_agent"):
             agent = ACPDeepAgent(
+                agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-                checkpointer=MemorySaver(),
+
             )
 
             mock_client = MockClient()

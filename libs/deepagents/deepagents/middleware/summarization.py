@@ -789,10 +789,7 @@ A condensed summary follows:
             try:
                 return handler(request.override(messages=truncated_messages))
             except ContextOverflowError:
-                logger.warning(
-                    "ContextOverflowError during model call with %d tokens",
-                    total_tokens,
-                )
+                pass
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
@@ -879,10 +876,7 @@ A condensed summary follows:
             try:
                 return await handler(request.override(messages=truncated_messages))
             except ContextOverflowError:
-                logger.warning(
-                    "ContextOverflowError during model call with %d tokens",
-                    total_tokens,
-                )
+                pass
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization

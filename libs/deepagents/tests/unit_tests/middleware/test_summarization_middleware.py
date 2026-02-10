@@ -2109,7 +2109,7 @@ def test_context_overflow_triggers_summarization() -> None:
     assert isinstance(result, ExtendedModelResponse)
     assert result.command is not None
     assert result.command.update is not None
-    assert "_summarization_event" in result.command.update
+    assert result.command.update["_summarization_event"]
 
     # Should have called handler twice (once failed, once succeeded)
     assert call_count["count"] == 2

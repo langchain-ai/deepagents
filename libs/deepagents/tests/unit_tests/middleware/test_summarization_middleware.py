@@ -2316,3 +2316,186 @@ async def test_async_context_overflow_triggers_summarization() -> None:
 
     # Backend should have offloaded messages
     assert len(backend.write_calls) == 1
+
+
+def test_profile_inference_triggers_summary() -> None:
+    """Ensure automatic profile inference triggers summarization when limits are exceeded."""
+
+    def token_counter(messages: list[BaseMessage], **_kwargs: Any) -> int:
+        return len(messages) * 200
+
+    # Create a mock model with profile
+    mock_model = make_mock_model()
+    mock_model.profile = {"max_input_tokens": 1000}
+
+    backend = MockBackend()
+
+    # Test 1: Don't engage summarization when below threshold
+    # total_tokens = 4 * 200 = 800, threshold = 0.81 * 1000 = 810
+    # 800 < 810, so no summarization
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("fraction", 0.81),
+        keep=("fraction", 0.5),
+        token_counter=token_counter,
+    )
+
+    messages: list[BaseMessage] = [
+        HumanMessage(content="Message 1", id="h1"),
+        AIMessage(content="Message 2", id="a1"),
+        HumanMessage(content="Message 3", id="h2"),
+        AIMessage(content="Message 4", id="a2"),
+    ]
+
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        result, _ = call_wrap_model_call(middleware, state, runtime)
+
+    # Should not trigger summarization
+    assert not isinstance(result, ExtendedModelResponse)
+    assert len(backend.write_calls) == 0
+
+    # Test 2: Engage summarization when at threshold
+    # total_tokens = 4 * 200 = 800, threshold = 0.80 * 1000 = 800
+    # 800 >= 800, so summarization triggers
+    backend = MockBackend()  # Reset backend
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("fraction", 0.80),
+        keep=("fraction", 0.5),
+        token_counter=token_counter,
+    )
+
+    with mock_get_config():
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+
+    # Should trigger summarization
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert result.command.update is not None
+    assert "_summarization_event" in result.command.update
+    assert len(backend.write_calls) == 1
+
+    # Check the modified messages
+    assert modified_request is not None
+    summary_message = modified_request.messages[0]
+    assert isinstance(summary_message, HumanMessage)
+    assert "summarized" in summary_message.content.lower()
+    assert "<summary>" in summary_message.content
+
+    # Should preserve last 2 messages (keep=0.5 * 1000 = 500 tokens, 500/200 = 2.5 messages)
+    preserved_messages = modified_request.messages[1:]
+    assert len(preserved_messages) == 2
+    assert [msg.content for msg in preserved_messages] == ["Message 3", "Message 4"]
+
+    # Test 3: With keep=("fraction", 0.6), preserve more messages
+    # target tokens = 0.6 * 1000 = 600, 600/200 = 3 messages
+    backend = MockBackend()
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("fraction", 0.80),
+        keep=("fraction", 0.6),
+        token_counter=token_counter,
+    )
+
+    with mock_get_config():
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+
+    assert isinstance(result, ExtendedModelResponse)
+    assert modified_request is not None
+    preserved_messages = modified_request.messages[1:]
+    assert len(preserved_messages) == 3
+    assert [msg.content for msg in preserved_messages] == ["Message 2", "Message 3", "Message 4"]
+
+    # Test 4: With keep=("fraction", 0.8), keep everything (no summarization needed)
+    # target tokens = 0.8 * 1000 = 800, which equals total tokens, so keep all
+    backend = MockBackend()
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("fraction", 0.80),
+        keep=("fraction", 0.8),
+        token_counter=token_counter,
+    )
+
+    with mock_get_config():
+        result, _ = call_wrap_model_call(middleware, state, runtime)
+
+    # Should not trigger summarization since we'd keep everything anyway
+    assert not isinstance(result, ExtendedModelResponse)
+    assert len(backend.write_calls) == 0
+
+
+def test_usage_metadata_trigger() -> None:
+    """Test that usage_metadata from AI messages can trigger summarization.
+
+    This tests advanced triggering based on `usage_metadata` from AI messages,
+    particularly for models like Anthropic that report token usage in response metadata.
+    """
+    backend = MockBackend()
+    mock_model = make_mock_model()
+    # Mock the model to appear as Anthropic - need to match ls_provider
+    mock_model._llm_type = "anthropic-chat"
+    mock_model._get_ls_params.return_value = {"ls_provider": "anthropic"}
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("tokens", 10_000),
+        keep=("messages", 4),
+    )
+
+    messages: list[BaseMessage] = [
+        HumanMessage(content="msg1", id="h1"),
+        AIMessage(
+            content="msg2",
+            id="a1",
+            tool_calls=[{"name": "tool", "args": {}, "id": "call1"}],
+            response_metadata={"model_provider": "anthropic"},
+            usage_metadata={
+                "input_tokens": 5000,
+                "output_tokens": 1000,
+                "total_tokens": 6000,
+            },
+        ),
+        ToolMessage(content="result", tool_call_id="call1", id="t1"),
+        AIMessage(
+            content="msg3",
+            id="a2",
+            response_metadata={"model_provider": "anthropic"},
+            usage_metadata={
+                "input_tokens": 6100,
+                "output_tokens": 900,
+                "total_tokens": 7000,
+            },
+        ),
+        HumanMessage(content="msg4", id="h2"),
+        AIMessage(
+            content="msg5",
+            id="a3",
+            response_metadata={"model_provider": "anthropic"},
+            usage_metadata={
+                "input_tokens": 7500,
+                "output_tokens": 2501,
+                "total_tokens": 10_001,
+            },
+        ),
+    ]
+
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        result, _ = call_wrap_model_call(middleware, state, runtime)
+
+    # Should trigger summarization because usage_metadata shows we exceeded 10k tokens
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert result.command.update is not None
+    assert "_summarization_event" in result.command.update
+    assert len(backend.write_calls) == 1

@@ -69,11 +69,12 @@ class ACPDeepAgent(ACPAgent):
         *,
         root_dir: str,
     ) -> None:
+        """Initialize the ACPDeepAgent."""
         super().__init__()
         self._root_dir = root_dir
-        self._agent = agent
+        self._agent_factory = agent
         self._mode = mode
-        self._deepagent = self._create_deepagent(agent, mode)
+        self._agent = self._create_deepagent(agent, mode)
         self._cancelled = False
         self._session_plans: dict[str, list[dict[str, Any]]] = {}
 
@@ -164,7 +165,7 @@ class ACPDeepAgent(ACPAgent):
         **kwargs: Any,
     ) -> SetSessionModeResponse:
         # Recreate the deep agent with new mode configuration
-        self._deepagent = self._create_deepagent(self._agent, mode_id)
+        self._agent = self._create_deepagent(self._agent_factory, mode_id)
         self._mode = mode_id
         return SetSessionModeResponse()
 
@@ -446,7 +447,7 @@ class ACPDeepAgent(ACPAgent):
                 self._cancelled = False  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
-            async for message_chunk, metadata in self._deepagent.astream(
+            async for message_chunk, metadata in self._agent.astream(
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
                 else {"messages": [{"role": "user", "content": content_blocks}]},
@@ -504,7 +505,7 @@ class ACPDeepAgent(ACPAgent):
                         await self._log_text(text=text, session_id=session_id)
 
             # Check if the agent is interrupted (waiting for HITL approval)
-            current_state = await self._deepagent.aget_state(config)
+            current_state = await self._agent.aget_state(config)
             user_decisions = await self._handle_interrupts(
                 current_state=current_state,
                 session_id=session_id,

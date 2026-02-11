@@ -228,7 +228,7 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
 
             return S()
 
-    agent._deepagent = Graph()  # type: ignore[assignment]
+    agent._agent = Graph()  # type: ignore[assignment]
 
     resp = await agent.prompt(
         [TextContentBlock(type="text", text="hi")], session_id=session.session_id

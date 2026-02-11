@@ -132,10 +132,30 @@ class LocalContextMiddleware(AgentMiddleware):
                 if "master" in branches:
                     main_branches.append("master")
 
+            # Get uncommitted change count
+            dirty_count = 0
+            # S603: git_path is validated via shutil.which(), args are hardcoded
+            result = subprocess.run(  # noqa: S603
+                [git_path, "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                cwd=Path.cwd(),
+                check=False,
+            )
+            if result.returncode == 0:
+                dirty_count = len(
+                    [line for line in result.stdout.strip().split("\n") if line.strip()]
+                )
+
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return {}
         else:
-            return {"branch": current_branch, "main_branches": main_branches}
+            return {
+                "branch": current_branch,
+                "main_branches": main_branches,
+                "dirty_count": dirty_count,
+            }
 
     @staticmethod
     def _get_file_list(max_files: int = 20) -> list[str]:
@@ -406,6 +426,37 @@ class LocalContextMiddleware(AgentMiddleware):
         return info
 
     @staticmethod
+    def _detect_runtime_versions() -> dict[str, str]:
+        """Detect installed runtime versions.
+
+        Checks for python3 and node and returns their version strings.
+
+        Returns:
+            Dict mapping runtime name to version string (e.g. ``{"Python": "3.12.4"}``).
+        """
+        versions: dict[str, str] = {}
+        for cmd, label in [("python3", "Python"), ("node", "Node")]:
+            exe = shutil.which(cmd)
+            if not exe:
+                continue
+            try:
+                # S603: exe is validated via shutil.which(), args are hardcoded
+                result = subprocess.run(  # noqa: S603
+                    [exe, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    # "Python 3.12.4" -> "3.12.4", "v20.11.0" -> "20.11.0"
+                    ver = result.stdout.strip().split()[-1].lstrip("v")
+                    versions[label] = ver
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                continue
+        return versions
+
+    @staticmethod
     def _detect_test_command() -> str | None:
         """Detect how to run tests based on project structure.
 
@@ -517,6 +568,12 @@ class LocalContextMiddleware(AgentMiddleware):
         if pkg_managers:
             sections.extend([f"**Package Manager**: {', '.join(pkg_managers)}", ""])
 
+        # Runtime versions
+        runtimes = self._detect_runtime_versions()
+        if runtimes:
+            rt_text = ", ".join(f"{k} {v}" for k, v in runtimes.items())
+            sections.extend([f"**Runtimes**: {rt_text}", ""])
+
         # Git info
         git_info = self._get_git_info()
         if git_info:
@@ -524,6 +581,9 @@ class LocalContextMiddleware(AgentMiddleware):
             if git_info.get("main_branches"):
                 main_branches = ", ".join(f"`{b}`" for b in git_info["main_branches"])
                 git_text += f", main branch available: {main_branches}"
+            dirty_count = git_info.get("dirty_count", 0)
+            if dirty_count:
+                git_text += f", {dirty_count} uncommitted change{'s' if dirty_count != 1 else ''}"
             sections.extend([git_text, ""])
 
         # Test command

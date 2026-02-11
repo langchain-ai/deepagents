@@ -283,10 +283,13 @@ class AgentServerACP(ACPAgent):
 
                 # Initialize accumulator for this index if we have id and name
                 if chunk_id and chunk_name:
-                    if (
-                        chunk_index not in tool_call_accumulator
-                        or chunk_id != tool_call_accumulator[chunk_index]
-                    ):
+                    if chunk_index not in tool_call_accumulator:
+                        tool_call_accumulator[chunk_index] = {
+                            "id": chunk_id,
+                            "name": chunk_name,
+                            "args_str": "",
+                        }
+                    elif chunk_id != tool_call_accumulator[chunk_index].get("id"):
                         tool_call_accumulator[chunk_index] = {
                             "id": chunk_id,
                             "name": chunk_name,
@@ -298,7 +301,7 @@ class AgentServerACP(ACPAgent):
                     tool_call_accumulator[chunk_index]["args_str"] += chunk_args
 
             # After processing chunks, try to start any tool calls with complete args
-            for index, acc in tool_call_accumulator.items():
+            for index, acc in list(tool_call_accumulator.items()):
                 tool_id = acc.get("id")
                 tool_name = acc.get("name")
                 args_str = acc.get("args_str", "")
@@ -413,10 +416,6 @@ class AgentServerACP(ACPAgent):
         session_id: str,
         **kwargs: Any,
     ) -> PromptResponse:
-        if False:
-            raise RequestError(
-                -32600, "Invalid request: debug short-circuit", {"debug": "short-circuit"}
-            )
         # Reset cancellation flag for new prompt
         self._cancelled = False
 
@@ -521,7 +520,8 @@ class AgentServerACP(ACPAgent):
                 )
 
                 if isinstance(message_chunk, str):
-                    await self._log_text(text=message_chunk, session_id=session_id)
+                    if not _namespace:
+                        await self._log_text(text=message_chunk, session_id=session_id)
                 # Check for tool results (ToolMessage responses)
                 elif hasattr(message_chunk, "type") and message_chunk.type == "tool":
                     # This is a tool result message
@@ -554,7 +554,7 @@ class AgentServerACP(ACPAgent):
                     else:
                         text = str(message_chunk.content)
 
-                    if text:
+                    if text and not _namespace:
                         await self._log_text(text=text, session_id=session_id)
 
             # Check if the agent is interrupted (waiting for HITL approval)

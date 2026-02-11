@@ -66,12 +66,9 @@ class TestRunAgent:
     @pytest.mark.asyncio
     async def test_run_agent_creates_new_memory_saver(self) -> None:
         """Test that run_agent creates a fresh MemorySaver for each invocation."""
-        checkpointers = []
-
         with patch("deepagents_acp.agent.run_acp_agent", new_callable=AsyncMock):
             with patch("deepagents_acp.agent.ACPDeepAgent") as mock_agent_class:
                 mock_agent_class.return_value = MagicMock()
-
 
                 await run_agent("/test/root1")
                 await run_agent("/test/root2")
@@ -119,13 +116,11 @@ class TestACPDeepAgentInitialization:
         """Test that ACPDeepAgent initialization sets all required attributes."""
         with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
             mock_create.return_value = MagicMock()
-            checkpointer = MemorySaver()
 
             agent = ACPDeepAgent(
                 agent=MagicMock(),
                 root_dir="/test/root",
                 mode="ask_before_edits",
-
             )
 
             assert agent._root_dir == "/test/root"
@@ -147,7 +142,6 @@ class TestACPDeepAgentInitialization:
                 ACPDeepAgent(
                     root_dir="/test/root",
                     mode="ask_before_edits",
-    
                 )
 
                 # Verify FilesystemBackend was created with virtual_mode=True
@@ -168,13 +162,11 @@ class TestACPDeepAgentInitialization:
         """Test that ACPDeepAgent can be initialized with auto mode."""
         with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
             mock_create.return_value = MagicMock()
-            checkpointer = MemorySaver()
 
             agent = ACPDeepAgent(
                 agent=MagicMock(),
                 root_dir="/test/root",
                 mode="auto",
-
             )
 
             assert agent._mode == "auto"
@@ -188,7 +180,6 @@ class TestACPDeepAgentInitialization:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MockClient()
@@ -204,7 +195,6 @@ class TestACPDeepAgentInitialization:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             response = await agent.initialize(protocol_version=1)
@@ -221,7 +211,6 @@ class TestACPDeepAgentInitialization:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             response = await agent.new_session(cwd="/tmp", mcp_servers=[])
@@ -252,7 +241,6 @@ class TestACPDeepAgentInitialization:
                 agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             assert agent._mode == "ask_before_edits"
@@ -287,14 +275,15 @@ class TestACPDeepAgentPromptHandling:
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
             mock_graph.with_config.return_value = mock_graph
             mock_graph.with_config.return_value.aget_state = mock_graph.aget_state
-            mock_graph.with_config.return_value.with_config.return_value = mock_graph.with_config.return_value
+            mock_graph.with_config.return_value.with_config.return_value = (
+                mock_graph.with_config.return_value
+            )
             mock_create.return_value = mock_graph
 
             agent = ACPDeepAgent(
                 agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MockClient()
@@ -350,14 +339,15 @@ class TestACPDeepAgentToolHandling:
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
             mock_graph.with_config.return_value = mock_graph
             mock_graph.with_config.return_value.aget_state = mock_graph.aget_state
-            mock_graph.with_config.return_value.with_config.return_value = mock_graph.with_config.return_value
+            mock_graph.with_config.return_value.with_config.return_value = (
+                mock_graph.with_config.return_value
+            )
             mock_create.return_value = mock_graph
 
             agent = ACPDeepAgent(
                 agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MockClient()
@@ -408,14 +398,15 @@ class TestACPDeepAgentTodoHandling:
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
             mock_graph.with_config.return_value = mock_graph
             mock_graph.with_config.return_value.aget_state = mock_graph.aget_state
-            mock_graph.with_config.return_value.with_config.return_value = mock_graph.with_config.return_value
+            mock_graph.with_config.return_value.with_config.return_value = (
+                mock_graph.with_config.return_value
+            )
             mock_create.return_value = mock_graph
 
             agent = ACPDeepAgent(
                 agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MockClient()
@@ -451,7 +442,6 @@ class TestACPDeepAgentTodoHandling:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MockClient()
@@ -477,7 +467,6 @@ class TestACPDeepAgentToolCallFormatting:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             update = agent._create_tool_call_update(
@@ -499,7 +488,6 @@ class TestACPDeepAgentToolCallFormatting:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             update = agent._create_tool_call_update(
@@ -523,7 +511,6 @@ class TestACPDeepAgentToolCallFormatting:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             update = agent._create_tool_call_update(
@@ -544,7 +531,6 @@ class TestACPDeepAgentToolCallFormatting:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             for tool_name in ["ls", "glob", "grep"]:
@@ -574,7 +560,6 @@ class TestACPDeepAgentEndToEnd:
                 agent=mock_graph,
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             # Initially in ask_before_edits mode
@@ -603,7 +588,6 @@ class TestACPDeepAgentPlanApproval:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MagicMock()
@@ -650,7 +634,6 @@ class TestACPDeepAgentPlanApproval:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MagicMock()
@@ -702,7 +685,6 @@ class TestACPDeepAgentPlanApproval:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MagicMock()
@@ -754,7 +736,6 @@ class TestACPDeepAgentPlanApproval:
                 agent=MagicMock(),
                 root_dir="/test",
                 mode="ask_before_edits",
-
             )
 
             mock_client = MockClient()

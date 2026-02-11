@@ -19,7 +19,6 @@ from acp import (
     update_tool_call,
 )
 from acp.interfaces import Client
-from deepagents import create_deep_agent
 from acp.schema import (
     AgentCapabilities,
     AgentPlanUpdate,
@@ -41,6 +40,7 @@ from acp.schema import (
     ToolCallStart,
     ToolCallUpdate,
 )
+from deepagents import create_deep_agent
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
@@ -648,7 +648,11 @@ async def run_agent(root_dir: str) -> None:
                 },
             )
 
-        return create_deep_agent(checkpointer=checkpointer, backend=create_backend)
+        return create_deep_agent(
+            model="openai:gpt-5.2",
+            checkpointer=checkpointer,
+            backend=create_backend,
+        )
 
     acp_agent = ACPDeepAgent(agent=build_agent, mode=mode_id, root_dir=root_dir)
     await run_acp_agent(acp_agent)

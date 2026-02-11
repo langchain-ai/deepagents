@@ -11,13 +11,13 @@ all: help
 TEST_FILE ?= tests/
 
 test:
-	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10
+	uv run pytest --disable-socket --allow-unix-socket $(TEST_FILE) --timeout 10 --cov=deepagents_acp --cov-report=term-missing --cov-report=xml
 
 test_watch:
 	uv run ptw . -- $(TEST_FILE)
 
 toad:
-	uv run toad acp 'bash run.sh'
+	uv run toad acp 'bash ./run.sh'
 
 
 ######################
@@ -50,5 +50,6 @@ help:
 	@echo 'lint                         - run linters'
 	@echo '-- TESTS --'
 	@echo 'test                         - run unit tests'
+	@echo 'test_cov                     - run unit tests with coverage'
 	@echo 'test TEST_FILE=<test_file>   - run all tests in file'
 	@echo '-- DOCUMENTATION tasks are from the top-level Makefile --'

@@ -61,6 +61,7 @@ from deepagents_cli.widgets.messages import (
 )
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
+from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
@@ -1062,13 +1063,7 @@ class DeepAgentsApp(App):
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
         elif cmd == "/threads":
-            await self._mount_message(UserMessage(command))
-            if self._session_state:
-                await self._mount_message(
-                    AppMessage(f"Current thread: {self._session_state.thread_id}")
-                )
-            else:
-                await self._mount_message(AppMessage("No active thread"))
+            await self._show_thread_selector()
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:
@@ -1682,6 +1677,57 @@ class DeepAgentsApp(App):
             current_provider=settings.model_provider,
         )
         self.push_screen(screen, handle_result)
+
+    async def _show_thread_selector(self) -> None:
+        """Show interactive thread selector as a modal screen."""
+        current = self._session_state.thread_id if self._session_state else None
+
+        def handle_result(result: str | None) -> None:
+            """Handle the thread selector result."""
+            if result is not None:
+                self.call_later(self._resume_thread, result)
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ThreadSelectorScreen(current_thread=current)
+        self.push_screen(screen, handle_result)
+
+    async def _resume_thread(self, thread_id: str) -> None:
+        """Resume a previously saved thread.
+
+        Clears the current conversation, switches to the selected thread,
+        and loads its message history.
+
+        Args:
+            thread_id: The thread ID to resume.
+        """
+        # Skip if already on this thread
+        if self._session_state and self._session_state.thread_id == thread_id:
+            await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
+            return
+
+        # Clear current conversation (same cleanup as /clear)
+        self._pending_messages.clear()
+        self._queued_widgets.clear()
+        await self._clear_messages()
+        if self._token_tracker:
+            self._token_tracker.reset()
+        self._update_status("")
+
+        # Switch to the selected thread
+        if self._session_state:
+            self._session_state.thread_id = thread_id
+        self._lc_thread_id = thread_id
+
+        # Update welcome banner
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.update_thread_id(thread_id)
+        except NoMatches:
+            pass
+
+        # Load thread history
+        await self._load_thread_history()
 
     async def _switch_model(self, model_spec: str) -> None:
         """Switch to a new model, preserving conversation history.

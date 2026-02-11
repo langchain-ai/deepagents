@@ -102,7 +102,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/remember", "Update memory and skills from conversation"),
     ("/quit", "Exit app"),
     ("/tokens", "Token usage"),
-    ("/threads", "Show thread info"),
+    ("/threads", "Browse and resume previous threads"),
     ("/version", "Show version"),
 ]
 """Built-in slash commands with descriptions."""

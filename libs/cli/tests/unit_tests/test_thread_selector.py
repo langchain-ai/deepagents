@@ -1,7 +1,7 @@
 """Tests for ThreadSelectorScreen."""
 
 from typing import Any, ClassVar
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -10,9 +10,11 @@ from textual.containers import Container, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_cli.app import DeepAgentsApp
+from deepagents_cli.sessions import ThreadInfo
 from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
-MOCK_THREADS = [
+MOCK_THREADS: list[ThreadInfo] = [
     {
         "thread_id": "abc12345",
         "agent_name": "my-agent",
@@ -34,11 +36,11 @@ MOCK_THREADS = [
 ]
 
 
-def _patch_list_threads(threads: list[dict] | None = None) -> Any:  # noqa: ANN401
-    """Return a patch context manager for list_threads.
+def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa: ANN401
+    """Return a patch context manager for `list_threads`.
 
     Args:
-        threads: Thread list to return. Defaults to MOCK_THREADS.
+        threads: Thread list to return. Defaults to `MOCK_THREADS`.
     """
     data = threads if threads is not None else MOCK_THREADS
     return patch(
@@ -289,6 +291,30 @@ class TestThreadSelectorEmptyState:
                 assert app.dismissed is True
                 assert app.result is None
 
+    @pytest.mark.asyncio
+    async def test_arrow_keys_on_empty_list_do_not_crash(self) -> None:
+        """Arrow keys, j/k, and page keys on empty list should be no-ops."""
+        with _patch_list_threads(threads=[]):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._threads) == 0
+
+                # All navigation keys should be safe on an empty list
+                for key in ("up", "down", "j", "k", "pageup", "pagedown"):
+                    await pilot.press(key)
+                    await pilot.pause()
+
+                assert screen._selected_index == 0
+
+                await pilot.press("escape")
+                await pilot.pause()
+                assert app.dismissed is True
+
 
 class TestThreadSelectorNavigateAndSelect:
     """Tests for navigating then selecting a specific thread."""
@@ -400,7 +426,7 @@ class TestThreadSelectorPageNavigation:
                 await pilot.pause()
 
                 # Should move forward (clamped to last item with 3 threads)
-                assert screen._selected_index > 0
+                assert screen._selected_index == len(MOCK_THREADS) - 1
 
     @pytest.mark.asyncio
     async def test_pageup_at_top_is_noop(self) -> None:
@@ -435,13 +461,20 @@ class TestThreadSelectorClickHandling:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
 
-                # Click the second option
+                # Post a Clicked message from the second option widget.
+                # (pilot.click(type) always hits the first match, so we
+                # exercise the handler directly for an exact-widget test.)
+                from deepagents_cli.widgets.thread_selector import ThreadOption
+
                 if len(screen._option_widgets) > 1:
-                    await pilot.click(type(screen._option_widgets[1]))
+                    second = screen._option_widgets[1]
+                    second.post_message(
+                        ThreadOption.Clicked(second.thread_id, second.index)
+                    )
                     await pilot.pause()
 
                     assert app.dismissed is True
-                    assert app.result is not None
+                    assert app.result == "def67890"
 
 
 class TestThreadSelectorFormatLabel:
@@ -478,7 +511,7 @@ class TestThreadSelectorFormatLabel:
 
     def test_missing_agent_name_shows_unknown(self) -> None:
         """Thread with no agent_name should show 'unknown'."""
-        thread = {"thread_id": "test123", "updated_at": None}
+        thread = ThreadInfo(thread_id="test123", agent_name=None, updated_at=None)
         label = ThreadSelectorScreen._format_option_label(
             thread, selected=False, current=False
         )
@@ -502,12 +535,12 @@ class TestThreadSelectorFormatLabel:
 
     def test_long_values_are_truncated(self) -> None:
         """Thread ID and agent name exceeding column width are truncated."""
-        thread = {
-            "thread_id": "abcdef1234567890",
-            "agent_name": "very-long-agent-name-here",
-            "updated_at": None,
-            "message_count": 0,
-        }
+        thread = ThreadInfo(
+            thread_id="abcdef1234567890",
+            agent_name="very-long-agent-name-here",
+            updated_at=None,
+            message_count=0,
+        )
         label = ThreadSelectorScreen._format_option_label(
             thread, selected=False, current=False
         )
@@ -588,3 +621,115 @@ class TestThreadSelectorErrorHandling:
 
                 assert app.dismissed is True
                 assert app.result is None
+
+
+def _get_widget_text(widget: Static) -> str:
+    """Extract text content from a message widget.
+
+    Args:
+        widget: A message widget (e.g., `AppMessage`).
+
+    Returns:
+        The text content of the widget.
+    """
+    return str(getattr(widget, "_content", ""))
+
+
+class TestResumeThread:
+    """Tests for DeepAgentsApp._resume_thread."""
+
+    @pytest.mark.asyncio
+    async def test_no_agent_shows_error(self) -> None:
+        """_resume_thread with no agent should show an error message."""
+        app = DeepAgentsApp()
+        mounted: list[Static] = []
+        app._mount_message = AsyncMock(side_effect=lambda w: mounted.append(w))  # type: ignore[assignment]
+        app._agent = None
+
+        await app._resume_thread("thread-123")
+
+        assert len(mounted) == 1
+        assert "no active agent" in _get_widget_text(mounted[0])
+
+    @pytest.mark.asyncio
+    async def test_no_session_state_shows_error(self) -> None:
+        """_resume_thread with no session state should show an error message."""
+        app = DeepAgentsApp()
+        mounted: list[Static] = []
+        app._mount_message = AsyncMock(side_effect=lambda w: mounted.append(w))  # type: ignore[assignment]
+        app._agent = MagicMock()
+        app._session_state = None
+
+        await app._resume_thread("thread-123")
+
+        assert len(mounted) == 1
+        assert "no active session" in _get_widget_text(mounted[0])
+
+    @pytest.mark.asyncio
+    async def test_already_on_thread_shows_message(self) -> None:
+        """_resume_thread when already on the thread should show info message."""
+        app = DeepAgentsApp()
+        mounted: list[Static] = []
+        app._mount_message = AsyncMock(side_effect=lambda w: mounted.append(w))  # type: ignore[assignment]
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "thread-123"
+
+        await app._resume_thread("thread-123")
+
+        assert len(mounted) == 1
+        assert "Already on thread" in _get_widget_text(mounted[0])
+
+    @pytest.mark.asyncio
+    async def test_successful_switch_updates_ids(self) -> None:
+        """Successful _resume_thread should update thread IDs and load history."""
+        from textual.css.query import NoMatches as _NoMatches
+
+        app = DeepAgentsApp(thread_id="old-thread")
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "old-thread"
+        app._pending_messages = MagicMock()
+        app._queued_widgets = MagicMock()
+        app._clear_messages = AsyncMock()  # type: ignore[assignment]
+        app._token_tracker = MagicMock()
+        app._update_status = MagicMock()  # type: ignore[assignment]
+        app._load_thread_history = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+
+        await app._resume_thread("new-thread")
+
+        assert app._lc_thread_id == "new-thread"
+        assert app._session_state.thread_id == "new-thread"
+        app._pending_messages.clear.assert_called_once()
+        app._queued_widgets.clear.assert_called_once()
+        app._clear_messages.assert_awaited_once()  # type: ignore[union-attr]
+        app._token_tracker.reset.assert_called_once()
+        app._load_thread_history.assert_awaited_once()  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_failure_restores_previous_thread_ids(self) -> None:
+        """If _clear_messages raises, thread IDs should be restored."""
+        from textual.css.query import NoMatches as _NoMatches
+
+        app = DeepAgentsApp(thread_id="old-thread")
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "old-thread"
+        app._pending_messages = MagicMock()
+        app._queued_widgets = MagicMock()
+        app._clear_messages = AsyncMock(side_effect=RuntimeError("UI gone"))  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+
+        await app._resume_thread("new-thread")
+
+        # Thread IDs should be restored to previous values
+        assert app._lc_thread_id == "old-thread"
+        assert app._session_state.thread_id == "old-thread"
+        # Should show error message
+        assert any(
+            "Failed to switch" in _get_widget_text(call.args[0])
+            for call in app._mount_message.call_args_list  # type: ignore[union-attr]
+        )

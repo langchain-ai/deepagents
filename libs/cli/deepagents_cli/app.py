@@ -1481,8 +1481,10 @@ class DeepAgentsApp(App):
             messages = self.query_one("#messages", Container)
             await messages.remove_children()
         except NoMatches:
-            # Widget not found - can happen during shutdown
-            pass
+            logger.warning(
+                "Messages container (#messages) not found during clear; "
+                "UI may be out of sync with message store"
+            )
 
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.
@@ -1696,7 +1698,7 @@ class DeepAgentsApp(App):
         """Resume a previously saved thread.
 
         Clears the current conversation, switches to the selected thread,
-        and loads its message history.
+        updates the welcome banner, and loads its message history.
 
         Args:
             thread_id: The thread ID to resume.
@@ -1707,36 +1709,63 @@ class DeepAgentsApp(App):
             )
             return
 
+        if not self._session_state:
+            await self._mount_message(
+                AppMessage("Cannot switch threads: no active session")
+            )
+            return
+
         # Skip if already on this thread
-        if self._session_state and self._session_state.thread_id == thread_id:
+        if self._session_state.thread_id == thread_id:
             await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
             return
 
-        # Clear conversation (similar to /clear, without creating a new thread)
-        self._pending_messages.clear()
-        self._queued_widgets.clear()
-        await self._clear_messages()
-        if self._token_tracker:
-            self._token_tracker.reset()
-        self._update_status("")
+        # Save previous state for rollback on failure
+        prev_thread_id = self._lc_thread_id
+        prev_session_thread = self._session_state.thread_id
 
-        # Switch to the selected thread
-        if self._session_state:
-            self._session_state.thread_id = thread_id
-        self._lc_thread_id = thread_id
-
-        # Update welcome banner
         try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.update_thread_id(thread_id)
-        except NoMatches:
-            logger.debug(
-                "Welcome banner not found during thread switch to %s",
-                thread_id,
-            )
+            # Clear conversation (similar to /clear, without creating a new thread)
+            self._pending_messages.clear()
+            self._queued_widgets.clear()
+            await self._clear_messages()
+            if self._token_tracker:
+                self._token_tracker.reset()
+            self._update_status("")
 
-        # Load thread history
-        await self._load_thread_history()
+            # Switch to the selected thread
+            self._session_state.thread_id = thread_id
+            self._lc_thread_id = thread_id
+
+            # Update welcome banner
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.update_thread_id(thread_id)
+            except NoMatches:
+                logger.debug(
+                    "Welcome banner not found during thread switch to %s",
+                    thread_id,
+                )
+
+            # Load thread history
+            await self._load_thread_history()
+
+        except Exception:
+            logger.exception("Failed to switch to thread %s", thread_id)
+            # Restore previous thread IDs so the user can retry
+            self._session_state.thread_id = prev_session_thread
+            self._lc_thread_id = prev_thread_id
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.update_thread_id(prev_session_thread)
+            except NoMatches:
+                pass
+            await self._mount_message(
+                AppMessage(
+                    f"Failed to switch to thread {thread_id}. "
+                    "Use /threads to try again."
+                )
+            )
 
     async def _switch_model(self, model_spec: str) -> None:
         """Switch to a new model, preserving conversation history.

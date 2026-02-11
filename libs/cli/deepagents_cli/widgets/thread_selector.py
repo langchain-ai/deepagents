@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
-from deepagents_cli.sessions import _format_timestamp, list_threads
+from deepagents_cli.sessions import ThreadInfo, _format_timestamp, list_threads
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     """Modal dialog for browsing and resuming threads.
 
     Displays recent threads with keyboard navigation. The current thread
-    is highlighted.
+    is pre-selected and visually marked.
 
     Returns a `thread_id` string on selection, or `None` on cancel.
     """
@@ -178,7 +179,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         super().__init__()
         self._current_thread = current_thread
-        self._threads: list[dict] = []
+        self._threads: list[ThreadInfo] = []
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
 
@@ -213,20 +214,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             yield Static(help_text, classes="thread-selector-help")
 
     async def on_mount(self) -> None:
-        """Fetch threads and build the list on mount."""
+        """Fetch threads, configure border for ASCII terminals, and build the list."""
         if _detect_charset_mode() == CharsetMode.ASCII:
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", "green")
 
         try:
             self._threads = await list_threads(limit=20, include_message_count=True)
-        except Exception:
+        except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
             scroll = self.query_one(".thread-list", VerticalScroll)
             await scroll.remove_children()
             await scroll.mount(
                 Static(
-                    "[red]Failed to load threads. Press Esc to close.[/red]",
+                    f"[red]Failed to load threads: {exc}. Press Esc to close.[/red]",
                     classes="thread-empty",
                 )
             )
@@ -304,7 +305,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     @staticmethod
     def _format_option_label(
-        thread: dict,
+        thread: ThreadInfo,
         *,
         selected: bool,
         current: bool,
@@ -312,8 +313,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Build the display label for a thread option.
 
         Args:
-            thread: Thread dict. Expected keys: `thread_id` (required),
-                `agent_name`, `updated_at`, `message_count`.
+            thread: Thread metadata from `list_threads`.
             selected: Whether this option is currently highlighted.
             current: Whether this is the active thread.
 

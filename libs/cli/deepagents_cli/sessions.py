@@ -1,10 +1,12 @@
 """Thread management using LangGraph's built-in checkpoint persistence."""
 
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 import aiosqlite
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -12,6 +14,25 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from rich.table import Table
 
 from deepagents_cli.config import COLORS, console
+
+logger = logging.getLogger(__name__)
+
+
+class ThreadInfo(TypedDict):
+    """Thread metadata returned by `list_threads`."""
+
+    thread_id: str
+    """Unique identifier for the thread."""
+
+    agent_name: str | None
+    """Name of the agent that owns the thread."""
+
+    updated_at: str | None
+    """ISO timestamp of the last update."""
+
+    message_count: NotRequired[int]
+    """Number of messages in the thread."""
+
 
 # Patch aiosqlite.Connection to add is_alive() method required by
 # langgraph-checkpoint>=2.1.0
@@ -87,7 +108,7 @@ async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
     include_message_count: bool = False,
-) -> list[dict]:
+) -> list[ThreadInfo]:
     """List threads from checkpoints table.
 
     Args:
@@ -96,8 +117,8 @@ async def list_threads(
         include_message_count: Whether to include message counts.
 
     Returns:
-        List of thread dicts with `thread_id`, `agent_name`, `updated_at`,
-            and optionally `message_count`.
+        List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
+            `updated_at`, and optionally `message_count`.
     """
     db_path = str(get_db_path())
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
@@ -131,8 +152,8 @@ async def list_threads(
 
         async with conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
-            threads = [
-                {"thread_id": r[0], "agent_name": r[1], "updated_at": r[2]}
+            threads: list[ThreadInfo] = [
+                ThreadInfo(thread_id=r[0], agent_name=r[1], updated_at=r[2])
                 for r in rows
             ]
 
@@ -185,7 +206,12 @@ async def _count_messages_from_checkpoint(
             messages = channel_values.get("messages", [])
             return len(messages)
         except (ValueError, TypeError, KeyError):
-            # If deserialization fails, fall back to 0
+            logger.debug(
+                "Failed to deserialize checkpoint for thread %s; "
+                "message count will show as 0",
+                thread_id,
+                exc_info=True,
+            )
             return 0
 
 

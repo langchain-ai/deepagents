@@ -24,15 +24,15 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents",
     "modal",
-] 
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_modal"]
 
 [project.urls]
-Homepage = "https://github.com/langchain-ai/deepagents/tree/master/libs/partners/modal"
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/modal"
 Repository = "https://github.com/langchain-ai/deepagents"
-Documentation = "https://github.com/langchain-ai/deepagents/tree/master/libs/partners/modal"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/modal"
 
 [dependency-groups]
 test = [

@@ -1,6 +1,6 @@
 # Creates release PRs based on conventional commits.
 #
-# When commits land on master, release-please analyzes them and either:
+# When commits land on main, release-please analyzes them and either:
 # - Creates/updates a release PR with changelog and version bump
 # - When a release PR is merged, triggers the release workflow
 #
@@ -12,7 +12,7 @@ name: Release Please (CLI ONLY)
 on:
   push:
     branches:
-      - master
+      - main
 
 jobs:
   release-please:

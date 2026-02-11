@@ -120,7 +120,7 @@ packages = ["deepagents_cli"]
 "deepagents_cli/*.tcss" = "deepagents_cli/"
 
 [tool.uv.sources]
-deepagents = { workspace = true }
+deepagents = { path = "../deepagents", editable = true }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents"]

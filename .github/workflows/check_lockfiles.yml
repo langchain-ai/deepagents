@@ -29,5 +29,10 @@ jobs:
       - name: "🐍 Set up UV"
         uses: astral-sh/setup-uv@v7
 
-      - name: "🔍 Check workspace lockfile"
-        run: uv lock --check
+      - name: "🐍 Set up Python 3.14"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: "🔍 Check all lockfiles"
+        run: make lock-check

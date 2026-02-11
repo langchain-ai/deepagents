@@ -571,7 +571,7 @@ def test_memory_middleware_with_state_backend_factory() -> None:
     """Test that MemoryMiddleware can be initialized with StateBackend factory."""
     sources: list[str] = ["/memory/AGENTS.md"]
     middleware = MemoryMiddleware(
-        backend=lambda rt: StateBackend(rt),
+        backend=StateBackend,
         sources=sources,
     )
 
@@ -598,7 +598,7 @@ def test_memory_middleware_with_store_backend_factory() -> None:
     """Test that MemoryMiddleware can be initialized with StoreBackend factory."""
     sources: list[str] = ["/memory/AGENTS.md"]
     middleware = MemoryMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=sources,
     )
 
@@ -624,7 +624,7 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     """Test namespace isolation: each assistant_id gets its own memory namespace."""
     # Setup
     middleware = MemoryMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=["/memory/AGENTS.md"],
     )
     store = InMemoryStore()
@@ -681,7 +681,7 @@ def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
     """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
     # Setup
     middleware = MemoryMiddleware(
-        backend=lambda rt: StoreBackend(rt),
+        backend=StoreBackend,
         sources=["/memory/AGENTS.md"],
     )
     store = InMemoryStore()

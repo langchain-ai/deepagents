@@ -29,12 +29,14 @@ on:
           - deepagents-acp
           - deepagents-harbor
           - langchain-daytona
+          - langchain-modal
+          - langchain-runloop
         default: deepagents
-      dangerous-nonmaster-release:
+      dangerous-nonmain-release:
         required: false
         type: boolean
         default: false
-        description: "Release from a non-master branch (danger!) - Only use for hotfixes"
+        description: "Release from a non-main branch (danger!) - Only use for hotfixes"
       dangerous-skip-sdk-pin-check:
         required: false
         type: boolean
@@ -76,12 +78,18 @@ jobs:
             deepagents-harbor)
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
-            daytona)
+            langchain-daytona)
               echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
+            langchain-modal)
+              echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT
+              ;;
+            langchain-runloop)
+              echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona, langchain-modal, langchain-runloop"
               exit 1
               ;;
           esac
@@ -90,7 +98,7 @@ jobs:
   # Runs in isolated environment with minimal permissions for security
   build:
     needs: setup
-    if: github.ref == 'refs/heads/master' || inputs.dangerous-nonmaster-release
+    if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -235,10 +243,10 @@ jobs:
 
                 if [ -n "$GH_USER" ]; then
                   # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
-                  TWITTER=$(echo "$PR_BODY" | grep -iP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
+                  TWITTER=$(echo "$PR_BODY" | grep -ioP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
 
                   # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
-                  LINKEDIN=$(echo "$PR_BODY" | grep -iP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
+                  LINKEDIN=$(echo "$PR_BODY" | grep -ioP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
 
                   # Add user if not seen, or update socials if newly provided
                   if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then

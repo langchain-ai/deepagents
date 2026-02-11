@@ -10,7 +10,7 @@ updates:
       github-actions:
         patterns: ["*"]
 
-  - package-ecosystem: "pip"
+  - package-ecosystem: "uv"
     directories:
       - "/libs/deepagents"
       - "/libs/cli"

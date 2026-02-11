@@ -314,13 +314,19 @@ def _parse_skill_metadata(
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
     raw_tools = frontmatter_data.get("allowed-tools")
-    if raw_tools:
-        if isinstance(raw_tools, list):
-            allowed_tools = [str(t).strip() for t in raw_tools if str(t).strip()]
-        else:
-            # Assume space-delimited string
-            allowed_tools = str(raw_tools).split()
+    if isinstance(raw_tools, str):
+        allowed_tools = [
+            t.strip(",")  # Support commas for compatibility with skills created for Claude Code.
+            for t in raw_tools.split()
+            if t.strip(",")
+        ]
     else:
+        if raw_tools is not None:
+            logger.warning(
+                "Ignoring non-string 'allowed-tools' in %s (got %s)",
+                skill_path,
+                type(raw_tools).__name__,
+            )
         allowed_tools = []
 
     compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None

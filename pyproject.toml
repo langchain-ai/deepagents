@@ -7,9 +7,14 @@ requires-python = ">=3.11,<4.0"
 members = [
     "libs/deepagents",
     "libs/cli",
-    "libs/harbor",
     "libs/acp",
     "libs/partners/*",
+]
+# harbor depends on the `harbor` PyPI package which requires Python >=3.12.
+# uv workspaces enforce all members' requires-python at sync time, so
+# including it would prevent syncing other packages with Python 3.11.
+exclude = [
+    "libs/harbor",
 ]
 
 [tool.uv]
@@ -26,7 +31,6 @@ constraint-dependencies = [
 [tool.uv.sources]
 deepagents = { workspace = true }
 deepagents-cli = { workspace = true }
-deepagents-harbor = { workspace = true }
 deepagents-acp = { workspace = true }
 langchain-daytona = { workspace = true }
 langchain-modal = { workspace = true }

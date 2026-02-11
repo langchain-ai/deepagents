@@ -32,6 +32,9 @@ jobs:
       - name: "🔍 Check workspace lockfile"
         run: uv lock --check
 
+      - name: "🔍 Check harbor lockfile"
+        run: uv lock --check --directory libs/harbor --python 3.12
+
       - name: "🔍 Check example lockfiles"
         run: |
           set -e

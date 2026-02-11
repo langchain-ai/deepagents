@@ -16,10 +16,13 @@ from acp.schema import (
     ToolCallUpdate,
 )
 from deepagents import create_deep_agent
+from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import interrupt
 
 from deepagents_acp.server import AgentServerACP
 from tests.chat_model import GenericFakeChatModel
@@ -373,3 +376,117 @@ async def test_acp_agent_end_to_end_clears_plan() -> None:
     ]
     assert plan_updates
     assert plan_updates[-1].entries == []
+
+
+async def test_acp_agent_nested_agent_tool_call_returns_final_text() -> None:
+    subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="blue")]))
+    subagent = create_deep_agent(model=subagent_model, checkpointer=MemorySaver())
+
+    @tool
+    async def call_agent1(question: str) -> str:
+        """Invoke subagent1 with the provided question."""
+        resp = await subagent.ainvoke({"messages": [{"role": "user", "content": question}]})
+        return resp["messages"][-1].content
+
+    outer_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "call_agent1",
+                            "args": {"question": "what is bobs favorite color"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="blue"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    outer = create_deep_agent(model=outer_model, tools=[call_agent1], checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=outer, mode="auto", root_dir="/tmp")
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    assert any(
+        entry["update"] == update_agent_message(text_block("blue")) for entry in client.updates
+    )
+
+
+async def test_acp_langchain_create_agent_nested_agent_tool_call_messages() -> None:
+    @tool
+    async def ask_user(question: str, runtime: ToolRuntime) -> str:
+        """Ask the user a question via interrupt."""
+        return interrupt(question)
+
+    subagent_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "ask_user",
+                            "args": {"question": "what is bobs favorite color?"},
+                            "id": "call_ask",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="blue"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    subagent = create_agent(subagent_model, tools=[ask_user], checkpointer=True)
+
+    @tool
+    async def call_agent1(question: str, runtime: ToolRuntime) -> str:
+        """Invoke subagent1 with the provided question."""
+        resp = await subagent.ainvoke({"messages": [{"role": "user", "content": question}]})
+        return resp["messages"][-1].content
+
+    outer_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "call_agent1",
+                            "args": {"question": "what is bobs favorite color"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="blue"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    outer = create_agent(outer_model, tools=[call_agent1], checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=outer, mode="auto", root_dir="/tmp")
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    breakpoint()
+    raise ValueError(response)

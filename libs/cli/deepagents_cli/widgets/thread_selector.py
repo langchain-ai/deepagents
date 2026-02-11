@@ -266,11 +266,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self.focus()
 
     def _resolve_thread_url(self) -> None:
-        """Kick off a background worker to resolve the LangSmith thread URL."""
+        """Start exclusive background worker to resolve LangSmith thread URL.
+
+        `exclusive=True` so repeated calls cancel any in-flight resolution.
+        """
         self.run_worker(self._fetch_thread_url, exclusive=True)
 
     async def _fetch_thread_url(self) -> None:
-        """Resolve the LangSmith URL and update the title with a clickable link."""
+        """Resolve the LangSmith URL and update the title with a clickable link.
+
+        Applies a 2-second timeout and silently returns on failure so the
+        title is left as plain text without the link.
+        """
         if not self._current_thread:
             return
         try:
@@ -279,13 +286,28 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 timeout=2.0,
             )
         except (TimeoutError, OSError):
+            logger.debug(
+                "Could not resolve LangSmith thread URL for '%s'",
+                self._current_thread,
+                exc_info=True,
+            )
+            return
+        except Exception:
+            logger.debug(
+                "Unexpected error resolving LangSmith thread URL for '%s'",
+                self._current_thread,
+                exc_info=True,
+            )
             return
         if thread_url:
             try:
                 title_widget = self.query_one("#thread-title", Static)
                 title_widget.update(self._build_title(thread_url))
             except NoMatches:
-                pass
+                logger.debug(
+                    "Title widget #thread-title not found; "
+                    "thread selector may have been dismissed during URL resolution"
+                )
 
     async def _show_mount_error(self, detail: str) -> None:
         """Display an error message inside the thread list and refocus.

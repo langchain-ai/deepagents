@@ -2,6 +2,7 @@
 
 import io
 import os
+import webbrowser
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -546,6 +547,62 @@ class TestTraceCommand:
             app._session_state = None
 
             await app._handle_trace_command("/trace")
+            await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("No active session" in str(w._content) for w in app_msgs)
+
+    @pytest.mark.asyncio
+    async def test_trace_shows_link_when_browser_fails(self) -> None:
+        """Should still display the URL link even if the browser cannot open."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_cli.app.build_langsmith_thread_url",
+                    return_value="https://smith.langchain.com/t/test-thread-123",
+                ),
+                patch(
+                    "deepagents_cli.app.webbrowser.open",
+                    side_effect=webbrowser.Error("no browser"),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("smith.langchain.com" in str(w._content) for w in app_msgs)
+
+    @pytest.mark.asyncio
+    async def test_trace_shows_error_when_url_build_raises(self) -> None:
+        """Should show error message when build_langsmith_thread_url raises."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with patch(
+                "deepagents_cli.app.build_langsmith_thread_url",
+                side_effect=RuntimeError("SDK error"),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("Failed to resolve" in str(w._content) for w in app_msgs)
+
+    @pytest.mark.asyncio
+    async def test_trace_routed_from_handle_command(self) -> None:
+        """'/trace' should be correctly routed through _handle_command."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = None
+
+            await app._handle_command("/trace")
             await pilot.pause()
 
             app_msgs = app.query(AppMessage)

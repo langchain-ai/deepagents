@@ -1006,6 +1006,10 @@ class DeepAgentsApp(App):
     async def _handle_trace_command(self, command: str) -> None:
         """Open the current thread in LangSmith.
 
+        Shows a hint if no conversation has been started yet or if LangSmith
+        tracing is not configured. Otherwise, opens the thread URL in the
+        default browser and displays a clickable link.
+
         Args:
             command: The raw command text (displayed as user message).
         """
@@ -1014,7 +1018,14 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("No active session."))
             return
         thread_id = self._session_state.thread_id
-        url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
+        try:
+            url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
+        except Exception:
+            logger.exception("Failed to build LangSmith thread URL for %s", thread_id)
+            await self._mount_message(
+                AppMessage("Failed to resolve LangSmith thread URL.")
+            )
+            return
         if not url:
             await self._mount_message(
                 AppMessage(
@@ -1023,7 +1034,10 @@ class DeepAgentsApp(App):
                 )
             )
             return
-        webbrowser.open(url)
+        try:
+            webbrowser.open(url)
+        except Exception:
+            logger.debug("Could not open browser for URL: %s", url, exc_info=True)
         link = Text(url, style="dim italic")
         link.stylize(f"link {url}", 0)
         await self._mount_message(AppMessage(link))

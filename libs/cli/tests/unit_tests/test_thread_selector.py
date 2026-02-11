@@ -595,9 +595,134 @@ class TestThreadSelectorBuildTitle:
 
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
-                # Should be able to find the title widget by ID
                 title_widget = screen.query_one("#thread-title", Static)
                 assert title_widget is not None
+
+
+class TestFetchThreadUrl:
+    """Tests for _fetch_thread_url background worker."""
+
+    @pytest.mark.asyncio
+    async def test_successful_url_updates_title(self) -> None:
+        """Background worker should update the title with a clickable link."""
+        from rich.text import Text
+
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_cli.widgets.thread_selector.build_langsmith_thread_url",
+                return_value="https://smith.langchain.com/p/t/abc12345",
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                title_widget = screen.query_one("#thread-title", Static)
+                content = title_widget._Static__content
+                assert isinstance(content, Text)
+                assert "abc12345" in content.plain
+
+    @pytest.mark.asyncio
+    async def test_timeout_leaves_title_unchanged(self) -> None:
+        """Timeout during URL resolution should not crash or change the title."""
+        import time
+
+        def _blocking(_tid: str) -> str:
+            time.sleep(10)
+            return "https://example.com"
+
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_cli.widgets.thread_selector.build_langsmith_thread_url",
+                side_effect=_blocking,
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                title_widget = screen.query_one("#thread-title", Static)
+                assert isinstance(title_widget._Static__content, str)
+
+    @pytest.mark.asyncio
+    async def test_oserror_leaves_title_unchanged(self) -> None:
+        """OSError during URL resolution should not crash or change the title."""
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_cli.widgets.thread_selector.build_langsmith_thread_url",
+                side_effect=OSError("network failure"),
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                title_widget = screen.query_one("#thread-title", Static)
+                assert isinstance(title_widget._Static__content, str)
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_leaves_title_unchanged(self) -> None:
+        """Unexpected exception should not crash the thread selector."""
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_cli.widgets.thread_selector.build_langsmith_thread_url",
+                side_effect=AttributeError("SDK changed"),
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                title_widget = screen.query_one("#thread-title", Static)
+                assert isinstance(title_widget._Static__content, str)
+
+    @pytest.mark.asyncio
+    async def test_none_url_leaves_title_unchanged(self) -> None:
+        """When build returns None the title should remain a plain string."""
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_cli.widgets.thread_selector.build_langsmith_thread_url",
+                return_value=None,
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                title_widget = screen.query_one("#thread-title", Static)
+                content = title_widget._Static__content
+                assert isinstance(content, str)
+                assert "abc12345" in content
 
 
 class TestThreadSelectorColumnHeader:

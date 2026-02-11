@@ -1739,6 +1739,7 @@ class DeepAgentsApp(App):
         # create_cli_agent because it builds the system prompt from global
         # settings (model name, provider, context limit). Otherwise the
         # prompt would describe the old model to the new one.
+        #
         # Save previous values for rollback if agent creation fails.
         prev_name = settings.model_name
         prev_provider = settings.model_provider

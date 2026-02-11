@@ -212,6 +212,69 @@ class TestModelSwitchErrorHandling:
         assert settings.model_context_limit == 128_000
 
     @pytest.mark.asyncio
+    async def test_context_limit_cleared_when_new_model_has_none(self) -> None:
+        """Switching to a model without a context limit clears the old value."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+        settings.model_context_limit = 128_000
+
+        mock_result = ModelResult(
+            model=MagicMock(),
+            model_name="custom-model",
+            provider="ollama",
+            context_limit=None,
+        )
+        mock_agent = MagicMock()
+        mock_backend = MagicMock()
+
+        with (
+            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch("deepagents_cli.app.create_model", return_value=mock_result),
+            patch(
+                "deepagents_cli.app.create_cli_agent",
+                return_value=(mock_agent, mock_backend),
+            ),
+            patch("deepagents_cli.app.save_recent_model", return_value=True),
+        ):
+            await app._switch_model("ollama:custom-model")
+
+        assert settings.model_context_limit is None
+
+    @pytest.mark.asyncio
+    async def test_agent_failure_rollback_with_none_context_limit(self) -> None:
+        """Rollback restores previous context limit when new model has None."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._checkpointer = MagicMock()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+        settings.model_context_limit = 128_000
+
+        mock_result = ModelResult(
+            model=MagicMock(),
+            model_name="custom-model",
+            provider="custom",
+            context_limit=None,
+        )
+
+        with (
+            patch("deepagents_cli.app.has_provider_credentials", return_value=True),
+            patch("deepagents_cli.app.create_model", return_value=mock_result),
+            patch(
+                "deepagents_cli.app.create_cli_agent",
+                side_effect=RuntimeError("fail"),
+            ),
+        ):
+            await app._switch_model("custom:custom-model")
+
+        assert settings.model_context_limit == 128_000
+
+    @pytest.mark.asyncio
     async def test_no_checkpointer_saves_preference(self) -> None:
         """_switch_model without checkpointer saves preference but doesn't hot-swap."""
         app = DeepAgentsApp()

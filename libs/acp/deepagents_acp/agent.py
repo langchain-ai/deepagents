@@ -43,6 +43,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from deepagents.graph import Checkpointer, CompiledStateGraph
 from dotenv import load_dotenv
+from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, StateSnapshot
@@ -65,6 +66,7 @@ class ACPDeepAgent(ACPAgent):
     _root_dir: str
     _checkpointer: Checkpointer
     _mode: str
+    _model: str | BaseChatModel | None
 
     @staticmethod
     def _get_interrupt_config(mode_id: str) -> dict:
@@ -96,6 +98,7 @@ class ACPDeepAgent(ACPAgent):
             )
 
         return create_deep_agent(
+            model=self._model,
             checkpointer=self._checkpointer,
             backend=create_backend,
             interrupt_on=interrupt_config,
@@ -106,10 +109,12 @@ class ACPDeepAgent(ACPAgent):
         root_dir: str,
         checkpointer: Checkpointer,
         mode: str,
+        model: str | BaseChatModel | None = None,
     ):
         self._root_dir = root_dir
         self._checkpointer = checkpointer
         self._mode = mode
+        self._model = model
         self._deepagent = self._create_deepagent(mode)
         self._cancelled = False
         self._session_plans: dict[str, list[dict[str, Any]]] = {}  # Track current plan per session
@@ -634,7 +639,10 @@ class ACPDeepAgent(ACPAgent):
             return user_decisions
 
 
-async def run_agent(root_dir: str) -> None:
+async def run_agent(
+    root_dir: str,
+    model: str | BaseChatModel | None = None,
+) -> None:
     checkpointer = MemorySaver()
 
     # Start with ask_before_edits mode (ask before edits)
@@ -644,5 +652,6 @@ async def run_agent(root_dir: str) -> None:
         root_dir=root_dir,
         mode=mode_id,
         checkpointer=checkpointer,
+        model=model,
     )
     await run_acp_agent(acp_agent)

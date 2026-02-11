@@ -97,6 +97,56 @@ async def test_acp_agent_cancel_stops_prompt() -> None:
     assert resp.stop_reason in {"cancelled", "end_turn"}
 
 
+async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
+    class ListContentMessage:
+        content = [
+            {"type": "text", "text": "Hello"},
+            " ",
+            {"type": "text", "text": "world"},
+        ]
+        tool_call_chunks: list[dict[str, Any]] = []
+
+    async def astream(*args: Any, **kwargs: Any):
+        yield (ListContentMessage(), {})
+
+    class Graph:
+        @staticmethod
+        async def astream(*args: Any, **kwargs: Any):
+            yield (ListContentMessage(), {})
+
+        async def aget_state(self, config: Any) -> Any:
+            class S:
+                next = ()
+                interrupts: list[Any] = []
+
+            return S()
+
+    agent = ACPDeepAgent(
+        agent=create_deep_agent(
+            model=GenericFakeChatModel(
+                messages=iter([AIMessage(content="ok")]), stream_delimiter=None
+            ),
+            checkpointer=MemorySaver(),
+        ),
+        mode="auto",
+        root_dir="/tmp",
+    )
+    agent._agent = Graph()  # type: ignore[assignment]
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    assert any(
+        entry["update"] == update_agent_message(text_block("Hello world"))
+        for entry in client.updates
+    )
+
+
 async def test_acp_agent_initialize_and_modes() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="OK")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())

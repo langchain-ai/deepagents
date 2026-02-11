@@ -165,9 +165,6 @@ class SlashCommandController:
             if cmd.lower().startswith("/" + search)
         ]
 
-        if len(suggestions) > MAX_SUGGESTIONS:
-            suggestions = suggestions[:MAX_SUGGESTIONS]
-
         if suggestions:
             self._suggestions = suggestions
             self._selected_index = 0

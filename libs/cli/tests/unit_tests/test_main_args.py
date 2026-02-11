@@ -126,6 +126,43 @@ class TestNonInteractiveArgument:
             assert parsed.sandbox_setup == "/path/to/setup.sh"
 
 
+class TestNoStreamArgument:
+    """Tests for --no-stream argument parsing."""
+
+    def test_flag_stores_true(self, mock_argv: MockArgvType) -> None:
+        """Test --no-stream sets no_stream to True."""
+        with mock_argv("--no-stream", "-n", "task"):
+            parsed = parse_args()
+            assert parsed.no_stream is True
+
+    def test_not_specified_is_false(self, mock_argv: MockArgvType) -> None:
+        """Test no_stream is False when not provided."""
+        with mock_argv():
+            parsed = parse_args()
+            assert parsed.no_stream is False
+
+    def test_combined_with_quiet(self, mock_argv: MockArgvType) -> None:
+        """Test --no-stream works alongside --quiet."""
+        with mock_argv("--no-stream", "-q", "-n", "task"):
+            parsed = parse_args()
+            assert parsed.no_stream is True
+            assert parsed.quiet is True
+
+    def test_requires_non_interactive(self) -> None:
+        """Test --no-stream without -n or piped stdin exits with code 2."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--no-stream"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+
+
 class TestModelParamsArgument:
     """Tests for --model-params argument parsing."""
 
@@ -219,9 +256,7 @@ class TestApplyStdinPipe:
 
     def test_non_interactive_takes_priority_over_initial_prompt(self) -> None:
         """When both -n and -m are set, stdin is prepended to -n."""
-        args = _make_args(
-            non_interactive_message="task", initial_prompt="ignored"
-        )
+        args = _make_args(non_interactive_message="task", initial_prompt="ignored")
         fake_stdin = io.StringIO("piped")
         fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
         with patch.object(sys, "stdin", fake_stdin):

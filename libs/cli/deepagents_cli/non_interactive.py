@@ -104,6 +104,9 @@ class StreamState:
         quiet: When `True`, diagnostic formatting that would otherwise go
             to stdout (e.g. separator newlines before tool notifications)
             is suppressed so that stdout contains only agent response text.
+        stream: When `True` (default), text chunks are written to stdout
+            as they arrive. When `False`, text is buffered in `full_response`
+            and flushed after the agent finishes.
         full_response: Accumulated text fragments from the AI message stream.
         tool_call_buffers: Maps a tool-call index or ID to its name/ID
             metadata for in-progress tool calls.
@@ -119,6 +122,7 @@ class StreamState:
     """
 
     quiet: bool = False
+    stream: bool = True
     full_response: list[str] = field(default_factory=list)
     tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
         default_factory=dict
@@ -194,7 +198,8 @@ def _process_ai_message(
         if block_type == "text":
             text = block.get("text", "")
             if text:
-                _write_text(text)
+                if state.stream:
+                    _write_text(text)
                 state.full_response.append(text)
         elif block_type in {"tool_call_chunk", "tool_call"}:
             chunk_name = block.get("name")
@@ -419,6 +424,7 @@ async def _run_agent_loop(
     file_op_tracker: FileOpTracker,
     *,
     quiet: bool = False,
+    stream: bool = True,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -432,11 +438,15 @@ async def _run_agent_loop(
         console: Rich console for formatted output.
         file_op_tracker: Tracker for file-operation diffs.
         quiet: Suppress diagnostic formatting on stdout.
+        stream: When `True`, text is written to stdout as it arrives.
+
+            When `False`, the full response is buffered and flushed at
+            the end.
 
     Raises:
         HITLIterationLimitError: If the HITL iteration limit is exceeded.
     """
-    state = StreamState(quiet=quiet)
+    state = StreamState(quiet=quiet, stream=stream)
     stream_input: dict[str, Any] | Command = {
         "messages": [{"role": "user", "content": message}]
     }
@@ -463,6 +473,8 @@ async def _run_agent_loop(
         )
 
     if state.full_response:
+        if not state.stream:
+            _write_text("".join(state.full_response))
         _write_newline()
 
     if not quiet:
@@ -544,6 +556,7 @@ async def run_non_interactive(
     sandbox_setup: str | None = None,
     *,
     quiet: bool = False,
+    stream: bool = True,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -572,6 +585,11 @@ async def run_non_interactive(
         quiet: When `True`, all console output (headers, status messages,
             tool notifications, HITL decisions, errors) is redirected to
             stderr so that only the agent's response text appears on stdout.
+        stream: When `True` (default), text chunks are written to stdout
+            as they arrive.
+
+            When `False`, the full response is buffered and written to stdout in
+            one shot after the agent finishes.
 
     Returns:
         Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
@@ -658,7 +676,13 @@ async def run_non_interactive(
             )
 
             await _run_agent_loop(
-                agent, message, config, console, file_op_tracker, quiet=quiet
+                agent,
+                message,
+                config,
+                console,
+                file_op_tracker,
+                quiet=quiet,
+                stream=stream,
             )
             return 0
 

@@ -409,6 +409,9 @@ class AgentServerACP(ACPAgent):
                 context = AgentSessionContext(cwd=self._cwd, mode=mode)
                 self._agent = self._agent_factory(context)
 
+            if getattr(self._agent, "checkpointer", None) is None:
+                self._agent.checkpointer = MemorySaver()
+
         # Reset cancellation flag for new prompt
         self._cancelled = False
 

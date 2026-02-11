@@ -628,8 +628,8 @@ class AgentServerACP(ACPAgent):
             return user_decisions
 
 
-async def serve_acp_stdio(root_dir: str) -> None:
-    """Run default agent from the root of the repository with ACP integration."""
+async def _serve_test_agent(root_dir: str) -> None:
+    """Run test agent from the root of the repository with ACP integration."""
     from dotenv import load_dotenv
 
     load_dotenv()

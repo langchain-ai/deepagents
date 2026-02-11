@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from rich.text import Text
 from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
@@ -819,13 +820,8 @@ class DeepAgentsApp(App):
                         )
                         await self._mount_before_queued(messages, auto_msg)
                     self._scroll_chat_to_bottom()
-                except NoMatches:
-                    # Cosmetic only: approval already granted via result_future.
-                    logger.warning(
-                        "Could not find #messages container to display "
-                        "auto-approval notification for commands: %s",
-                        approved_commands,
-                    )
+                except Exception:  # noqa: S110
+                    pass  # Don't fail if we can't show the message
 
                 return result_future
 
@@ -995,7 +991,8 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            help_text = (
+            docs_url = "https://docs.langchain.com/oss/python/deepagents/cli"
+            help_text = Text(
                 "Commands: /quit, /clear, /model [--default], /remember, "
                 "/tokens, /threads, /help\n\n"
                 "Interactive Features:\n"
@@ -1005,8 +1002,10 @@ class DeepAgentsApp(App):
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run bash commands directly\n\n"
-                "Docs: https://docs.langchain.com/oss/python/deepagents/cli"
+                f"Docs: {docs_url}",
+                style="dim italic",
             )
+            help_text.stylize(f"link {docs_url}", help_text.plain.index(docs_url))
             await self._mount_message(AppMessage(help_text))
 
         elif cmd == "/version":

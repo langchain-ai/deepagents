@@ -249,7 +249,7 @@ def show_help() -> None:
     )
     console.print()
     console.print(
-        "Docs: https://docs.langchain.com/oss/python/deepagents/cli",
+        "Docs: [link=https://docs.langchain.com/oss/python/deepagents/cli]https://docs.langchain.com/oss/python/deepagents/cli[/link]",
         style=COLORS["dim"],
     )
     console.print()

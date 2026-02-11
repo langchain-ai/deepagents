@@ -1130,7 +1130,7 @@ class TestFilesystemMiddleware:
                     )
                 ]
 
-        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))
+        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(
             state=state,
@@ -1161,7 +1161,7 @@ class TestFilesystemMiddleware:
             def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
                 return [FileDownloadResponse(path=paths[0], content=None, error="file_not_found")]
 
-        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))
+        middleware = FilesystemMiddleware(backend=lambda rt: ImageBackend(rt))  # noqa: PLW0108
         state = FilesystemState(messages=[], files={})
         runtime = ToolRuntime(
             state=state,

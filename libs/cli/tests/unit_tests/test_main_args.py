@@ -163,6 +163,24 @@ class TestNoStreamArgument:
         assert exc_info.value.code == 2
 
 
+class TestQuietRequiresNonInteractive:
+    """Tests for --quiet validation in cli_main (after stdin pipe processing)."""
+
+    def test_quiet_without_non_interactive_exits(self) -> None:
+        """Test --quiet without -n or piped stdin exits with code 2."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-q"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+
+
 class TestModelParamsArgument:
     """Tests for --model-params argument parsing."""
 
@@ -326,6 +344,20 @@ class TestApplyStdinPipe:
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = False
         mock_stdin.read.side_effect = ValueError("I/O operation on closed file")
+        with (
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            apply_stdin_pipe(args)
+        assert exc_info.value.code == 1
+
+    def test_oversized_stdin_exits(self) -> None:
+        """Piped input exceeding the size limit triggers a clean exit."""
+        args = _make_args()
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        # Return more bytes than the 10 MiB limit
+        mock_stdin.read.return_value = "x" * (10 * 1024 * 1024 + 1)
         with (
             patch.object(sys, "stdin", mock_stdin),
             pytest.raises(SystemExit) as exc_info,

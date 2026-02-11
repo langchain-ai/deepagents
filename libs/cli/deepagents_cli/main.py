@@ -534,8 +534,10 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     if is_tty:
         return
 
+    max_stdin_bytes = 10 * 1024 * 1024  # 10 MiB
+
     try:
-        stdin_text = sys.stdin.read().strip()
+        stdin_text = sys.stdin.read(max_stdin_bytes + 1)
     except UnicodeDecodeError:
         msg = "Could not read piped input — ensure the input is valid text"
         console.print(f"[bold red]Error:[/bold red] {msg}")
@@ -544,6 +546,16 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         msg = f"Failed to read piped input: {exc}"
         console.print(f"[bold red]Error:[/bold red] {msg}")
         sys.exit(1)
+
+    if len(stdin_text) > max_stdin_bytes:
+        msg = (
+            f"Piped input exceeds {max_stdin_bytes // (1024 * 1024)} MiB limit. "
+            "Consider writing the content to a file and referencing it instead."
+        )
+        console.print(f"[bold red]Error:[/bold red] {msg}")
+        sys.exit(1)
+
+    stdin_text = stdin_text.strip()
 
     if not stdin_text:
         return
@@ -572,13 +584,22 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         os.close(tty_fd)
         sys.stdin = open(0, encoding="utf-8", closefd=False)  # noqa: SIM115
     except OSError:
+        console.print(
+            "[yellow]Warning:[/yellow] TTY restoration failed. "
+            "Interactive mode (-m) may not work correctly."
+        )
         logger.warning(
-            "TTY restoration failed after opening /dev/tty. "
-            "Interactive mode (-m) may not work correctly.",
+            "TTY restoration failed after opening /dev/tty",
             exc_info=True,
         )
-        with contextlib.suppress(OSError):
+        try:
             os.close(tty_fd)
+        except OSError:
+            logger.warning(
+                "Failed to close TTY fd %d during cleanup",
+                tty_fd,
+                exc_info=True,
+            )
 
 
 def cli_main() -> None:
@@ -629,7 +650,12 @@ def cli_main() -> None:
             # argparse's parser.error() would.
             from rich.console import Console as _Console
 
-            flag = "--quiet" if args.quiet else "--no-stream"
+            flags = []
+            if args.quiet:
+                flags.append("--quiet")
+            if args.no_stream:
+                flags.append("--no-stream")
+            flag = " and ".join(flags)
             _Console(stderr=True).print(
                 f"[bold red]Error:[/bold red] {flag} requires "
                 "--non-interactive (-n) or piped stdin"

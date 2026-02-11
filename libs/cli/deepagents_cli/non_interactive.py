@@ -180,8 +180,10 @@ def _process_ai_message(
 ) -> None:
     """Extract text and tool-call blocks from an AI message and render them.
 
-    Text blocks are streamed to stdout; tool-call blocks are buffered and
-    their names are printed to the console.
+    When streaming is enabled, text blocks are written to stdout immediately;
+    otherwise they are accumulated in `state.full_response` for deferred
+    output. Tool-call blocks are buffered and their names are printed to the
+    console.
 
     Args:
         message_obj: The `AIMessage` received from the stream.
@@ -578,7 +580,7 @@ async def run_non_interactive(
 
             These override config file values.
         sandbox_type: Type of sandbox (`'none'`, `'modal'`,
-            `'runloop'`, `'daytona'`).
+            `'runloop'`, `'daytona'`, `'langsmith'`).
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.

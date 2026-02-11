@@ -268,3 +268,58 @@ async def test_acp_agent_multimodal_prompt_blocks_do_not_error() -> None:
 
     resp = await agent.prompt(blocks, session_id=session.session_id)
     assert resp.stop_reason == "end_turn"
+
+
+async def test_acp_agent_end_to_end_clears_plan() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_todos",
+                            "args": {
+                                "todos": [
+                                    {"content": "a", "status": "in_progress"},
+                                    {"content": "b", "status": "pending"},
+                                ]
+                            },
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_todos": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
+    client = FakeACPClient()
+    client.next_permission = "reject"
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    assert client.permission_requests
+    assert client.permission_requests[0]["tool_call"].title == "Review Plan"
+
+    plan_updates = [
+        entry["update"]
+        for entry in client.updates
+        if getattr(entry["update"], "session_update", None) == "plan"
+    ]
+    assert plan_updates
+    assert plan_updates[-1].entries == []

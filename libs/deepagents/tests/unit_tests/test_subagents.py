@@ -8,13 +8,14 @@ and child agents.
 import warnings
 from pathlib import Path
 from typing import Any, TypedDict
+from unittest.mock import Mock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -1608,8 +1609,6 @@ class TestMessageExtractionFromSubagents:
 
     def test_multipart_content_with_empty_blocks(self) -> None:
         """Test multi-part content that includes empty text blocks."""
-        from unittest.mock import Mock
-
         parent_chat_model = GenericFakeChatModel(
             messages=iter(
                 [
@@ -1704,8 +1703,6 @@ class TestMessageExtractionFromSubagents:
         )
 
         # Simulate what ToolStrategy does: returns messages ending with ToolMessage
-        from langchain_core.messages import ToolMessage
-
         # AIMessage with tool call to structured output tool
         ai_with_toolcall = AIMessage(
             content="", tool_calls=[{"name": "WeatherSchema", "args": {"city": "Tokyo", "temp": 22}, "id": "struct_call", "type": "tool_call"}]

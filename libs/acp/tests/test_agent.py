@@ -1,4 +1,4 @@
-"""Comprehensive tests for ACPDeepAgent and run_agent with the new ACP architecture."""
+"""Comprehensive tests for ACPAgentServer and serve_acp_stdio with the new ACP architecture."""
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,7 +8,7 @@ from acp.schema import TextContentBlock
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
-from deepagents_acp.agent import ACPDeepAgent, run_agent
+from deepagents_acp.server import ACPAgentServer, serve_acp_stdio
 
 
 @tool(description="Read a file from the filesystem")
@@ -42,19 +42,19 @@ class MockClient:
 
 
 class TestRunAgent:
-    """Test suite for the run_agent entry point function."""
+    """Test suite for the serve_acp_stdio entry point function."""
 
     @pytest.mark.asyncio
     async def test_run_agent_initializes_in_ask_before_edits_mode(self) -> None:
-        """Test that run_agent starts with ask_before_edits mode by default."""
-        with patch("deepagents_acp.agent.run_acp_agent", new_callable=AsyncMock) as mock_run:
-            with patch("deepagents_acp.agent.ACPDeepAgent") as mock_agent_class:
+        """Test that serve_acp_stdio starts with ask_before_edits mode by default."""
+        with patch("deepagents_acp.server.run_acp_agent", new_callable=AsyncMock) as mock_run:
+            with patch("deepagents_acp.server.ACPAgentServer") as mock_agent_class:
                 mock_agent = MagicMock()
                 mock_agent_class.return_value = mock_agent
 
-                await run_agent("/test/root")
+                await serve_acp_stdio("/test/root")
 
-                # Verify ACPDeepAgent was initialized with ask_before_edits mode
+                # Verify ACPAgentServer was initialized with ask_before_edits mode
                 mock_agent_class.assert_called_once()
                 call_kwargs = mock_agent_class.call_args[1]
                 assert call_kwargs["root_dir"] == "/test/root"
@@ -67,11 +67,11 @@ class TestRunAgent:
 
     @pytest.mark.asyncio
     async def test_run_agent_creates_new_memory_saver(self) -> None:
-        """Test that run_agent creates a fresh MemorySaver for each invocation."""
+        """Test that serve_acp_stdio creates a fresh MemorySaver for each invocation."""
         checkpointers = []
 
-        with patch("deepagents_acp.agent.run_acp_agent", new_callable=AsyncMock):
-            with patch("deepagents_acp.agent.ACPDeepAgent") as mock_agent_class:
+        with patch("deepagents_acp.server.run_acp_agent", new_callable=AsyncMock):
+            with patch("deepagents_acp.server.ACPAgentServer") as mock_agent_class:
                 mock_agent_class.return_value = MagicMock()
 
                 def capture_checkpointer(**kwargs):
@@ -80,20 +80,20 @@ class TestRunAgent:
 
                 mock_agent_class.side_effect = capture_checkpointer
 
-                await run_agent("/test/root1")
-                await run_agent("/test/root2")
+                await serve_acp_stdio("/test/root1")
+                await serve_acp_stdio("/test/root2")
 
                 # Verify each call creates a unique MemorySaver instance
                 assert len(checkpointers) == 2
                 assert checkpointers[0] != checkpointers[1]
 
 
-class TestACPDeepAgentModes:
-    """Test suite for ACPDeepAgent mode configurations."""
+class TestACPAgentServerModes:
+    """Test suite for ACPAgentServer mode configurations."""
 
     def test_ask_before_edits_mode_config(self) -> None:
         """Test interrupt configuration for ask_before_edits mode."""
-        config = ACPDeepAgent._get_interrupt_config("ask_before_edits")
+        config = ACPAgentServer._get_interrupt_config("ask_before_edits")
 
         assert config == {
             "edit_file": {"allowed_decisions": ["approve", "reject"]},
@@ -103,7 +103,7 @@ class TestACPDeepAgentModes:
 
     def test_auto_mode_config(self) -> None:
         """Test interrupt configuration for auto mode."""
-        config = ACPDeepAgent._get_interrupt_config("auto")
+        config = ACPAgentServer._get_interrupt_config("auto")
 
         # Auto mode only asks for permission on todos, not file operations
         assert config == {
@@ -114,21 +114,21 @@ class TestACPDeepAgentModes:
 
     def test_unknown_mode_returns_empty_config(self) -> None:
         """Test that unknown mode returns no interrupts."""
-        config = ACPDeepAgent._get_interrupt_config("unknown_mode")
+        config = ACPAgentServer._get_interrupt_config("unknown_mode")
 
         assert config == {}
 
 
-class TestACPDeepAgentInitialization:
-    """Test suite for ACPDeepAgent initialization."""
+class TestACPAgentServerInitialization:
+    """Test suite for ACPAgentServer initialization."""
 
     def test_initialization_sets_attributes(self) -> None:
-        """Test that ACPDeepAgent initialization sets all required attributes."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        """Test that ACPAgentServer initialization sets all required attributes."""
+        with patch("deepagents_acp.server.create_deep_agent") as mock_create:
             mock_create.return_value = MagicMock()
             checkpointer = MemorySaver()
 
-            agent = ACPDeepAgent(
+            agent = ACPAgentServer(
                 root_dir="/test/root",
                 mode="ask_before_edits",
                 checkpointer=checkpointer,
@@ -143,14 +143,14 @@ class TestACPDeepAgentInitialization:
     @pytest.mark.skip(reason="test not working yet.")
     def test_create_deepagent_uses_filesystem_backend_with_virtual_mode(self) -> None:
         """Test that _create_deepagent creates a FilesystemBackend with virtual_mode=True."""
-        with patch("deepagents_acp.agent.FilesystemBackend") as mock_backend_class:
-            with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("deepagents_acp.server.FilesystemBackend") as mock_backend_class:
+            with patch("deepagents_acp.server.create_deep_agent") as mock_create:
                 mock_backend = MagicMock()
                 mock_backend_class.return_value = mock_backend
                 mock_create.return_value = MagicMock()
                 checkpointer = MemorySaver()
 
-                ACPDeepAgent(
+                ACPAgentServer(
                     root_dir="/test/root",
                     mode="ask_before_edits",
                     checkpointer=checkpointer,
@@ -171,12 +171,12 @@ class TestACPDeepAgentInitialization:
                 }
 
     def test_initialization_with_auto_mode(self) -> None:
-        """Test that ACPDeepAgent can be initialized with auto mode."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        """Test that ACPAgentServer can be initialized with auto mode."""
+        with patch("deepagents_acp.server.create_deep_agent") as mock_create:
             mock_create.return_value = MagicMock()
             checkpointer = MemorySaver()
 
-            agent = ACPDeepAgent(
+            agent = ACPAgentServer(
                 root_dir="/test/root",
                 mode="auto",
                 checkpointer=checkpointer,
@@ -192,8 +192,8 @@ class TestACPDeepAgentInitialization:
 
     def test_on_connect_sets_connection(self):
         """Test that on_connect sets the client connection."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -207,8 +207,8 @@ class TestACPDeepAgentInitialization:
     @pytest.mark.asyncio
     async def test_initialize_returns_capabilities(self):
         """Test that initialize returns correct protocol version and capabilities."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -223,8 +223,8 @@ class TestACPDeepAgentInitialization:
     @pytest.mark.asyncio
     async def test_new_session_returns_available_modes(self):
         """Test that new_session returns session ID and available modes."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -249,11 +249,11 @@ class TestACPDeepAgentInitialization:
     @pytest.mark.asyncio
     async def test_set_session_mode_changes_mode(self):
         """Test that set_session_mode recreates the agent with new mode."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("deepagents_acp.server.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
             mock_create.return_value = mock_graph
 
-            agent = ACPDeepAgent(
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -271,13 +271,13 @@ class TestACPDeepAgentInitialization:
             assert mock_create.call_count >= 2  # Once for init, once for mode change
 
 
-class TestACPDeepAgentPromptHandling:
-    """Test ACPDeepAgent prompt processing."""
+class TestACPAgentServerPromptHandling:
+    """Test ACPAgentServer prompt processing."""
 
     @pytest.mark.asyncio
     async def test_prompt_with_text_content(self):
         """Test processing a simple text prompt."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("deepagents_acp.server.create_deep_agent") as mock_create:
             # Mock the deep agent graph to return a simple response
             mock_graph = MagicMock()
 
@@ -294,7 +294,7 @@ class TestACPDeepAgentPromptHandling:
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
             mock_create.return_value = mock_graph
 
-            agent = ACPDeepAgent(
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -322,13 +322,13 @@ class TestACPDeepAgentPromptHandling:
             assert len(text_updates) > 0
 
 
-class TestACPDeepAgentToolHandling:
-    """Test ACPDeepAgent tool call handling."""
+class TestACPAgentServerToolHandling:
+    """Test ACPAgentServer tool call handling."""
 
     @pytest.mark.asyncio
     async def test_tool_call_update_sent(self):
         """Test that tool call updates are sent to client."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("deepagents_acp.server.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
 
             # Create a mock message with tool call chunks
@@ -352,7 +352,7 @@ class TestACPDeepAgentToolHandling:
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
             mock_create.return_value = mock_graph
 
-            agent = ACPDeepAgent(
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -380,13 +380,13 @@ class TestACPDeepAgentToolHandling:
             assert tool_update.status == "pending"
 
 
-class TestACPDeepAgentTodoHandling:
-    """Test ACPDeepAgent todo/plan handling."""
+class TestACPAgentServerTodoHandling:
+    """Test ACPAgentServer todo/plan handling."""
 
     @pytest.mark.asyncio
     async def test_write_todos_sends_plan_update(self):
         """Test that write_todos tool sends a plan update."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("deepagents_acp.server.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
 
             # Create mock message with write_todos tool call
@@ -405,7 +405,7 @@ class TestACPDeepAgentTodoHandling:
             mock_graph.aget_state = AsyncMock(return_value=mock_state)
             mock_create.return_value = mock_graph
 
-            agent = ACPDeepAgent(
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -439,8 +439,8 @@ class TestACPDeepAgentTodoHandling:
     @pytest.mark.asyncio
     async def test_clear_plan_sends_empty_update(self):
         """Test that _clear_plan sends an empty plan update."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -459,13 +459,13 @@ class TestACPDeepAgentTodoHandling:
             assert len(update["update"].entries) == 0
 
 
-class TestACPDeepAgentToolCallFormatting:
+class TestACPAgentServerToolCallFormatting:
     """Test tool call update formatting for different tools."""
 
     def test_create_tool_call_update_for_read_file(self):
         """Test tool call update creation for read_file."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -485,8 +485,8 @@ class TestACPDeepAgentToolCallFormatting:
 
     def test_create_tool_call_update_for_edit_file(self):
         """Test tool call update creation for edit_file."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -508,8 +508,8 @@ class TestACPDeepAgentToolCallFormatting:
 
     def test_create_tool_call_update_for_write_file(self):
         """Test tool call update creation for write_file."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -528,8 +528,8 @@ class TestACPDeepAgentToolCallFormatting:
 
     def test_create_tool_call_update_for_search_tools(self):
         """Test tool call update creation for search tools."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -547,17 +547,17 @@ class TestACPDeepAgentToolCallFormatting:
                 assert update.kind == "search"
 
 
-class TestACPDeepAgentEndToEnd:
+class TestACPAgentServerEndToEnd:
     """End-to-end integration tests."""
 
     @pytest.mark.asyncio
     async def test_mode_switch_affects_interrupt_behavior(self):
         """Test that switching modes changes interrupt configuration."""
-        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+        with patch("deepagents_acp.server.create_deep_agent") as mock_create:
             mock_graph = MagicMock()
             mock_create.return_value = mock_graph
 
-            agent = ACPDeepAgent(
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -587,14 +587,14 @@ class TestACPDeepAgentEndToEnd:
             assert "write_todos" in new_interrupt_on  # Only todos in auto mode
 
 
-class TestACPDeepAgentPlanApproval:
-    """Test ACPDeepAgent plan auto-approval behavior."""
+class TestACPAgentServerPlanApproval:
+    """Test ACPAgentServer plan auto-approval behavior."""
 
     @pytest.mark.asyncio
     async def test_initial_plan_requires_approval(self):
         """Test that initial plan requires user approval and is stored after approval."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -639,8 +639,8 @@ class TestACPDeepAgentPlanApproval:
     @pytest.mark.asyncio
     async def test_plan_updates_auto_approved_when_in_progress(self):
         """Test that plan updates are auto-approved when plan is still in progress."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -690,8 +690,8 @@ class TestACPDeepAgentPlanApproval:
     @pytest.mark.asyncio
     async def test_new_plan_requires_approval_after_completion(self):
         """Test that new plans require approval after all tasks are completed."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -741,8 +741,8 @@ class TestACPDeepAgentPlanApproval:
     @pytest.mark.asyncio
     async def test_clear_plan_removes_from_session_plans(self):
         """Test that clearing a plan removes it from session_plans."""
-        with patch("deepagents_acp.agent.create_deep_agent"):
-            agent = ACPDeepAgent(
+        with patch("deepagents_acp.server.create_deep_agent"):
+            agent = ACPAgentServer(
                 root_dir="/test",
                 mode="ask_before_edits",
                 checkpointer=MemorySaver(),
@@ -757,3 +757,6 @@ class TestACPDeepAgentPlanApproval:
             await agent._clear_plan(session_id)
 
             assert agent._session_plans[session_id] == []
+
+
+[]

@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import os
 
-from deepagents_acp.agent import run_agent
+from deepagents_acp.server import serve_acp_stdio
 
 
 def main():
@@ -15,7 +15,7 @@ def main():
     )
     args = parser.parse_args()
     root_dir = args.root_dir if args.root_dir else os.getcwd()
-    asyncio.run(run_agent(root_dir))
+    asyncio.run(serve_acp_stdio(root_dir))
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ from deepagents_acp.utils import (
 load_dotenv()
 
 
-class ACPDeepAgent(ACPAgent):
+class ACPAgentServer(ACPAgent):
     _conn: Client
 
     _deepagent: CompiledStateGraph
@@ -634,13 +634,13 @@ class ACPDeepAgent(ACPAgent):
             return user_decisions
 
 
-async def run_agent(root_dir: str) -> None:
+async def serve_acp_stdio(root_dir: str) -> None:
     checkpointer = MemorySaver()
 
     # Start with ask_before_edits mode (ask before edits)
     mode_id = "ask_before_edits"
 
-    acp_agent = ACPDeepAgent(
+    acp_agent = ACPAgentServer(
         root_dir=root_dir,
         mode=mode_id,
         checkpointer=checkpointer,

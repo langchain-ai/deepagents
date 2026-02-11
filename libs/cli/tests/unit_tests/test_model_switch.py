@@ -206,7 +206,7 @@ class TestModelSwitchErrorHandling:
         assert "Model switch failed" in captured_errors[0]
         assert "Agent creation failed" in captured_errors[0]
 
-        # Settings are never mutated — no rollback needed
+        # Settings are rolled back to previous values on agent creation failure
         assert settings.model_name == "gpt-4o"
         assert settings.model_provider == "openai"
         assert settings.model_context_limit == 128_000

@@ -1246,8 +1246,7 @@ class ModelResult:
         """Commit this result's metadata to global `settings`."""
         settings.model_name = self.model_name
         settings.model_provider = self.provider
-        if self.context_limit is not None:
-            settings.model_context_limit = self.context_limit
+        settings.model_context_limit = self.context_limit
 
 
 def create_model(

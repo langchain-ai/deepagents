@@ -1018,7 +1018,7 @@ class DeepAgentsApp(App):
                 "/tokens, /threads, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
-                "  Ctrl+J          Insert newline\n"
+                "  Shift+Enter     Insert newline\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"

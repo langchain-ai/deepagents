@@ -122,7 +122,7 @@ class WelcomeBanner(Static):
         )
         bullet = get_glyphs().bullet
         banner.append(
-            f"Enter send {bullet} Ctrl+J newline {bullet} @ files {bullet} / commands",
+            f"Enter send {bullet} Shift+Enter newline {bullet} @ files {bullet} / commands",
             style="dim",
         )
         return banner

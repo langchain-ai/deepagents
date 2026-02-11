@@ -304,6 +304,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--no-stream",
+        dest="no_stream",
+        action="store_true",
+        help="Buffer the full response and write it to stdout at once "
+        "instead of streaming token-by-token. Requires -n or piped stdin.",
+    )
+
+    parser.add_argument(
         "--auto-approve",
         action="store_true",
         help=(
@@ -595,14 +603,15 @@ def cli_main() -> None:
 
         apply_stdin_pipe(args)
 
-        if args.quiet and not args.non_interactive_message:
+        if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
             # argparse's parser.error() would.
             from rich.console import Console as _Console
 
+            flag = "--quiet" if args.quiet else "--no-stream"
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --quiet requires "
+                f"[bold red]Error:[/bold red] {flag} requires "
                 "--non-interactive (-n) or piped stdin"
             )
             sys.exit(2)
@@ -693,6 +702,7 @@ def cli_main() -> None:
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
                     quiet=args.quiet,
+                    stream=not args.no_stream,
                 )
             )
             sys.exit(exit_code)

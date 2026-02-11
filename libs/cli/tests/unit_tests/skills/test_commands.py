@@ -238,7 +238,7 @@ class TestValidateSkillPath:
             assert error != ""
         except OSError:
             # Symlink creation might fail on some systems
-            pytest.skip("Symlink creation not supported")
+            pytest.skip("Symlink creation not supported")  # ty: ignore[invalid-argument-type, too-many-positional-arguments]
 
     def test_nonexistent_path_validation(self, tmp_path: Path) -> None:
         """Test validation of paths that don't exist yet."""

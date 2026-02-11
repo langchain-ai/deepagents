@@ -278,7 +278,7 @@ async def test_store_backend_agrep_invalid_regex():
 async def test_store_backend_intercept_large_tool_result_async():
     """Test that StoreBackend properly handles large tool result interception in async context."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -296,7 +296,7 @@ async def test_store_backend_intercept_large_tool_result_async():
 async def test_store_backend_aintercept_large_tool_result_async():
     """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
 
     large_content = "z" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_async_789", name="example_tool")

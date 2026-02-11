@@ -6,7 +6,7 @@ This document describes the release process for the CLI package (`libs/cli`) in 
 
 CLI releases are managed via release-please, which:
 
-1. Analyzes conventional commits on the `master` branch
+1. Analyzes conventional commits on the `main` branch
 2. Creates/updates a release PR with changelog and version bump
 3. When merged, creates a draft GitHub release for review
 4. Publishing the draft triggers PyPI publication
@@ -15,19 +15,19 @@ CLI releases are managed via release-please, which:
 
 ### Automatic Release PRs
 
-When commits land on `master`, release-please analyzes them and either:
+When commits land on `main`, release-please analyzes them and either:
 
 - **Creates a new release PR** if releasable changes exist
 - **Updates an existing release PR** with additional changes
 - **Does nothing** if no releasable commits are found (e.g. commits with type `chore`, `refactor`, etc.)
 
-Release PRs are created on branches named `release-please--branches--master--components--<package>`.
+Release PRs are created on branches named `release-please--branches--main--components--<package>`.
 
 ### Triggering a Release
 
 To release the CLI:
 
-1. Merge conventional commits to `master` (see [Commit Format](#commit-format))
+1. Merge conventional commits to `main` (see [Commit Format](#commit-format))
 2. Wait for release-please to create/update the release PR
 3. Review the generated changelog in the PR
 4. Merge the release PR — this creates a **draft** GitHub release
@@ -135,7 +135,7 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 1. Go to **Actions** > **Package Release**
 2. Click **Run workflow**
 3. Select the CLI
-4. (Optionally enable `dangerous-nonmaster-release` for hotfix branches)
+4. (Optionally enable `dangerous-nonmain-release` for hotfix branches)
 
 > [!WARNING]
 > Manual releases should be rare. Prefer the standard release-please flow.
@@ -166,8 +166,8 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 
 **What's happening:**
 
-1. release-please rebases its branch onto the latest `master`
-2. The PR branch now includes commits from `master` as parent commits
+1. release-please rebases its branch onto the latest `main`
+2. The PR branch now includes commits from `main` as parent commits
 3. GitHub's UI shows all "new" commits that appeared after the force push, including rebased parents
 
 **The actual PR commits** are only:
@@ -278,7 +278,7 @@ gh api -X PATCH repos/langchain-ai/deepagents/releases/$(gh api repos/langchain-
   -f target_commitish=<MERGE_COMMIT_SHA>
 ```
 
-After fixing, the next push to master should properly create new release PRs.
+After fixing, the next push to main should properly create new release PRs.
 
 > [!NOTE]
 > Moving a tag will put the associated GitHub release back into draft state. If the package was already published to PyPI, you can safely re-publish the draft — the publish workflow uses `skip-existing: true`, so it will succeed without re-uploading.

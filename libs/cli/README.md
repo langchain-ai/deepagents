@@ -11,7 +11,7 @@ To help you ship LangChain apps to production faster, check out [LangSmith](http
 LangSmith is a unified developer platform for building, testing, and monitoring LLM applications.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/master/libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
+  <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
 </p>
 
 ## Quick Install

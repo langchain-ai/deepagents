@@ -29,6 +29,10 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Must be set as action input — the config file setting alone is
+          # overridden by the action's default (false), causing duplicate
+          # GitHub releases when mark-release also creates one.
+          skip-github-release: true
 
       # Detect CLI release by checking if this commit updated the CLI's CHANGELOG.md
       # release-please ALWAYS updates CHANGELOG.md when merging a release PR

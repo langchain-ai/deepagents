@@ -14,6 +14,7 @@ from deepagents_cli.config import (
     _find_project_agent_md,
     _find_project_root,
     _get_provider_kwargs,
+    build_langsmith_thread_url,
     create_model,
     detect_provider,
     fetch_langsmith_project_url,
@@ -575,6 +576,99 @@ class TestFetchLangsmithProjectUrl:
         assert first is None
         assert second is None
         mock_client_cls.assert_called_once()
+
+    def test_different_project_name_fetches_again(self) -> None:
+        """Should fetch again when called with a different project name."""
+
+        class FakeProjectA:
+            url = "https://smith.langchain.com/o/org/projects/p/a"
+
+        class FakeProjectB:
+            url = "https://smith.langchain.com/o/org/projects/p/b"
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = [
+                FakeProjectA(),
+                FakeProjectB(),
+            ]
+            first = fetch_langsmith_project_url("project-a")
+            second = fetch_langsmith_project_url("project-b")
+
+        assert first == "https://smith.langchain.com/o/org/projects/p/a"
+        assert second == "https://smith.langchain.com/o/org/projects/p/b"
+        assert mock_client_cls.return_value.read_project.call_count == 2
+
+
+class TestBuildLangsmithThreadUrl:
+    """Tests for build_langsmith_thread_url()."""
+
+    def setup_method(self) -> None:
+        """Clear LangSmith URL cache before each test."""
+        reset_langsmith_url_cache()
+
+    def test_returns_url_when_configured(self) -> None:
+        """Should return a full thread URL when LangSmith is configured."""
+
+        class FakeProject:
+            url = "https://smith.langchain.com/o/org/projects/p/proj"
+
+        with (
+            patch(
+                "deepagents_cli.config.get_langsmith_project_name",
+                return_value="my-project",
+            ),
+            patch("langsmith.Client") as mock_client_cls,
+        ):
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            result = build_langsmith_thread_url("thread-123")
+
+        assert (
+            result == "https://smith.langchain.com/o/org/projects/p/proj/t/thread-123"
+        )
+
+    def test_strips_trailing_slash(self) -> None:
+        """Should not produce double slashes when project URL has trailing slash."""
+
+        class FakeProject:
+            url = "https://smith.langchain.com/o/org/projects/p/proj/"
+
+        with (
+            patch(
+                "deepagents_cli.config.get_langsmith_project_name",
+                return_value="my-project",
+            ),
+            patch("langsmith.Client") as mock_client_cls,
+        ):
+            mock_client_cls.return_value.read_project.return_value = FakeProject()
+            result = build_langsmith_thread_url("thread-123")
+
+        assert (
+            result == "https://smith.langchain.com/o/org/projects/p/proj/t/thread-123"
+        )
+
+    def test_returns_none_when_no_project_name(self) -> None:
+        """Should return None when LangSmith project name is not configured."""
+        with patch(
+            "deepagents_cli.config.get_langsmith_project_name",
+            return_value=None,
+        ):
+            result = build_langsmith_thread_url("thread-123")
+
+        assert result is None
+
+    def test_returns_none_when_fetch_fails(self) -> None:
+        """Should return None when the project URL cannot be resolved."""
+        with (
+            patch(
+                "deepagents_cli.config.get_langsmith_project_name",
+                return_value="my-project",
+            ),
+            patch("langsmith.Client") as mock_client_cls,
+        ):
+            mock_client_cls.return_value.read_project.side_effect = OSError("timeout")
+            result = build_langsmith_thread_url("thread-123")
+
+        assert result is None
 
 
 class TestGetProviderKwargsConfigFallback:

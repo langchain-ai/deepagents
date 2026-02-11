@@ -42,10 +42,9 @@ from deepagents_cli.agent import (
 
 # CRITICAL: Import config FIRST to set LANGSMITH_PROJECT before LangChain loads
 from deepagents_cli.config import (
+    build_langsmith_thread_url,
     console,
     create_model,
-    fetch_langsmith_project_url,
-    get_langsmith_project_name,
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
@@ -844,22 +843,23 @@ def cli_main() -> None:
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
 
-            # Show LangSmith thread link when tracing is configured and the
-            # thread actually has checkpointed content (mirrors the condition
-            # used to surface threads in `/threads`).
-            if thread_id and asyncio.run(thread_exists(thread_id)):
-                project_name = get_langsmith_project_name()
-                if project_name:
-                    project_url = fetch_langsmith_project_url(project_name)
-                    if project_url:
-                        thread_url = f"{project_url.rstrip('/')}/t/{thread_id}"
-                        console.print()
-                        ls_hint = Text("View this thread in LangSmith: ", style="dim")
-                        ls_hint.append(
-                            thread_url,
-                            style=Style(dim=True, link=thread_url),
-                        )
-                        console.print(ls_hint)
+            # Show LangSmith thread link for threads with checkpointed
+            # content (same table that backs the `/threads` listing).
+            try:
+                thread_url = build_langsmith_thread_url(thread_id)
+                if thread_url and asyncio.run(thread_exists(thread_id)):
+                    console.print()
+                    ls_hint = Text("View this thread in LangSmith: ", style="dim")
+                    ls_hint.append(
+                        thread_url,
+                        style=Style(dim=True, link=thread_url),
+                    )
+                    console.print(ls_hint)
+            except Exception:
+                logger.debug(
+                    "Could not display LangSmith thread URL on teardown",
+                    exc_info=True,
+                )
 
             # Show resume hint on exit (only for new threads with successful exit)
             if thread_id and not is_resumed and return_code == 0:

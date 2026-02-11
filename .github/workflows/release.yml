@@ -5,8 +5,8 @@
 # - Manually via workflow_dispatch
 #
 # Flow:
-# - CLI: build -> test-pypi -> pre-release-checks -> DRAFT release (PyPI publish happens when draft is published)
-# - Other packages: build -> test-pypi -> pre-release-checks -> publish -> release
+# - CLI: build -> pre-release-checks -> test-pypi -> DRAFT release (PyPI publish happens when draft is published)
+# - Other packages: build -> pre-release-checks -> test-pypi -> publish -> release
 
 name: "🚀 Package Release"
 run-name: "Release ${{ inputs.package }}"
@@ -16,7 +16,7 @@ on:
       package:
         required: true
         type: string
-        description: "Package to release (deepagents, deepagents-cli, deepagents-acp, or deepagents-harbor)"
+        description: "Package to release"
   workflow_dispatch:
     inputs:
       package:
@@ -28,12 +28,20 @@ on:
           - deepagents-cli
           - deepagents-acp
           - deepagents-harbor
+          - langchain-daytona
+          - langchain-modal
+          - langchain-runloop
         default: deepagents
       dangerous-nonmaster-release:
         required: false
         type: boolean
         default: false
         description: "Release from a non-master branch (danger!) - Only use for hotfixes"
+      dangerous-skip-sdk-pin-check:
+        required: false
+        type: boolean
+        default: false
+        description: "Skip CLI SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
   PYTHON_VERSION: "3.11"
@@ -70,9 +78,18 @@ jobs:
             deepagents-harbor)
               echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
               ;;
+            langchain-daytona)
+              echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
+            langchain-modal)
+              echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT
+              ;;
+            langchain-runloop)
+              echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
+              ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona, langchain-modal, langchain-runloop"
               exit 1
               ;;
           esac
@@ -226,10 +243,10 @@ jobs:
 
                 if [ -n "$GH_USER" ]; then
                   # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
-                  TWITTER=$(echo "$PR_BODY" | grep -iP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
+                  TWITTER=$(echo "$PR_BODY" | grep -ioP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
 
                   # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
-                  LINKEDIN=$(echo "$PR_BODY" | grep -iP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
+                  LINKEDIN=$(echo "$PR_BODY" | grep -ioP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
 
                   # Add user if not seen, or update socials if newly provided
                   if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then
@@ -410,6 +427,7 @@ jobs:
     needs:
       - setup
       - build
+      - pre-release-checks
     runs-on: ubuntu-latest
     permissions:
       # This permission is used for trusted publishing:
@@ -447,7 +465,6 @@ jobs:
     needs:
       - setup
       - build
-      - test-pypi-publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -480,6 +497,24 @@ jobs:
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Verify CLI pins latest SDK version
+        if: needs.build.outputs.pkg-name == 'deepagents-cli' && !inputs.dangerous-skip-sdk-pin-check
+        run: |
+          SDK_VERSION=$(grep -Po '(?<=^version = ")[^"]*' libs/deepagents/pyproject.toml)
+          CLI_SDK_PIN=$(grep -Po '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml)
+
+          if [ "$SDK_VERSION" != "$CLI_SDK_PIN" ]; then
+            echo "::error::CLI SDK pin does not match SDK version!"
+            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
+            echo "CLI SDK pin (libs/cli/pyproject.toml): $CLI_SDK_PIN"
+            echo ""
+            echo "Update the deepagents dependency in libs/cli/pyproject.toml to deepagents==$SDK_VERSION"
+            echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
+            exit 1
+          else
+            echo "CLI SDK pin matches SDK version: $SDK_VERSION"
+          fi
 
       - name: Import dist package
         shell: bash
@@ -593,6 +628,8 @@ jobs:
       # This permission is needed by `ncipollo/release-action` to
       # create the GitHub release/tag
       contents: write
+      # This permission is needed to update release PR labels
+      pull-requests: write
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
@@ -625,3 +662,25 @@ jobs:
           makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' }}
           # CLI uses draft releases for manual review before PyPI publish
           draft: ${{ needs.build.outputs.pkg-name == 'deepagents-cli' }}
+
+      # Mark the release PR as tagged so release-please knows it's been released
+      # This is required because skip-github-release is true in release-please config
+      - name: Update release PR label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the release PR that was merged (look for PR associated with this commit)
+          PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          if [ -n "$PR_NUMBER" ]; then
+            # Only update label if this is actually a release PR (has autorelease: pending label)
+            # This prevents accidentally labeling feature PRs when workflow is manually triggered
+            HAS_PENDING=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | grep -q "autorelease: pending" && echo "true" || echo "false")
+            if [ "$HAS_PENDING" = "true" ]; then
+              echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
+              gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" || true
+            else
+              echo "PR #$PR_NUMBER does not have 'autorelease: pending' label, skipping (not a release PR)"
+            fi
+          else
+            echo "No PR found for commit ${{ github.sha }}, skipping label update"
+          fi

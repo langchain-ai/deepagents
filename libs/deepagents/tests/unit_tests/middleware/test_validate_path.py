@@ -1,8 +1,12 @@
-"""Unit tests for _validate_path() function."""
+"""Unit tests for _validate_path() function.
+
+Note: _validate_path is now defined in backends/utils.py but re-exported
+from middleware.filesystem for backwards compatibility.
+"""
 
 import pytest
 
-from deepagents.middleware.filesystem import _validate_path
+from deepagents.backends.utils import _validate_path
 
 
 class TestValidatePath:

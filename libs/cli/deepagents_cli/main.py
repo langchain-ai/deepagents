@@ -437,6 +437,12 @@ def parse_args() -> argparse.Namespace:
         logger.warning("Unexpected error looking up SDK version", exc_info=True)
         sdk_version = "unknown"
     parser.add_argument(
+        "--acp",
+        action="store_true",
+        help="Run as an ACP server over stdio instead of launching the Textual UI",
+    )
+
+    parser.add_argument(
         "-v",
         "--version",
         action="version",
@@ -896,12 +902,6 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
-        # Apply shell-allow-list from command line if provided (overrides env var)
-        if args.shell_allow_list:
-            from deepagents_cli.config import parse_shell_allow_list
-
-            settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
-
         model_params: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_params", None)
         if raw_kwargs:
@@ -935,6 +935,32 @@ def cli_main() -> None:
                     "--profile-override must be a JSON object"
                 )
                 sys.exit(1)
+
+        if getattr(args, "acp", False):
+            from acp import run_agent as run_acp_agent
+            from deepagents_acp.server import AgentServerACP
+            from deepagents_cli.agent import create_cli_agent
+            from deepagents_cli.config import create_model
+            from deepagents_cli.model_config import ModelConfigError
+
+            try:
+                model_result = create_model(
+                    getattr(args, "model", None),
+                    extra_kwargs=model_params,
+                )
+            except ModelConfigError as e:
+                sys.stderr.write(f"Error: {e}\n")
+                sys.stderr.flush()
+                sys.exit(1)
+            model_result.apply_to_settings()
+
+            agent_graph, _backend = create_cli_agent(
+                model=model_result.model,
+                assistant_id=args.agent,
+            )
+            server = AgentServerACP(agent_graph)
+            asyncio.run(run_acp_agent(server))
+            sys.exit(0)
 
         apply_stdin_pipe(args)
 

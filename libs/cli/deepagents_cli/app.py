@@ -9,6 +9,7 @@ import os
 # S404: subprocess is required for user-initiated shell commands via ! prefix
 import subprocess  # noqa: S404
 import uuid
+import webbrowser
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from textual.widgets import Static
 from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
+    DOCS_URL,
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
@@ -220,6 +222,12 @@ class TextualSessionState:
         self.thread_id = uuid.uuid4().hex[:8]
         return self.thread_id
 
+
+_COMMAND_URLS: dict[str, str] = {
+    "/changelog": "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md",
+    "/docs": DOCS_URL,
+    "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
+}
 
 # Prompt for /remember command - triggers agent to review conversation and update
 # memory/skills
@@ -979,6 +987,20 @@ class DeepAgentsApp(App):
         except OSError as e:
             await self._mount_message(ErrorMessage(str(e)))
 
+    async def _open_url_command(self, command: str, cmd: str) -> None:
+        """Open a URL in the browser and display a clickable link.
+
+        Args:
+            command: The raw command text (displayed as user message).
+            cmd: The normalized slash command used to look up the URL.
+        """
+        url = _COMMAND_URLS[cmd]
+        await self._mount_message(UserMessage(command))
+        webbrowser.open(url)
+        link = Text(url, style="dim italic")
+        link.stylize(f"link {url}", 0)
+        await self._mount_message(AppMessage(link))
+
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
 
@@ -991,10 +1013,9 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            docs_url = "https://docs.langchain.com/oss/python/deepagents/cli"
             help_text = Text(
                 "Commands: /quit, /clear, /model [--default], /remember, "
-                "/tokens, /threads, /changelog, /feedback, /help\n\n"
+                "/tokens, /threads, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -1002,32 +1023,14 @@ class DeepAgentsApp(App):
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run bash commands directly\n\n"
-                f"Docs: {docs_url}",
+                f"Docs: {DOCS_URL}",
                 style="dim italic",
             )
-            help_text.stylize(f"link {docs_url}", help_text.plain.index(docs_url))
+            help_text.stylize(f"link {DOCS_URL}", help_text.plain.index(DOCS_URL))
             await self._mount_message(AppMessage(help_text))
 
-        elif cmd == "/changelog":
-            await self._mount_message(UserMessage(command))
-            import webbrowser
-
-            changelog_url = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
-            webbrowser.open(changelog_url)
-            changelog_text = Text(changelog_url, style="dim italic")
-            changelog_text.stylize(f"link {changelog_url}", 0)
-            await self._mount_message(AppMessage(changelog_text))
-        elif cmd == "/feedback":
-            await self._mount_message(UserMessage(command))
-            import webbrowser
-
-            feedback_url = (
-                "https://github.com/langchain-ai/deepagents/issues/new/choose"
-            )
-            webbrowser.open(feedback_url)
-            feedback_text = Text(feedback_url, style="dim italic")
-            feedback_text.stylize(f"link {feedback_url}", 0)
-            await self._mount_message(AppMessage(feedback_text))
+        elif cmd in {"/changelog", "/docs", "/feedback"}:
+            await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
             # Show CLI package version

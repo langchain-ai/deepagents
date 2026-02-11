@@ -43,6 +43,8 @@ from deepagents_cli.model_config import (  # noqa: E402
     ModelSpec,
 )
 
+DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
+
 # Color scheme
 COLORS = {
     "primary": "#10b981",

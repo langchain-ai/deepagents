@@ -129,7 +129,8 @@ jobs:
       # > from the publish job.
       # https://github.com/pypa/gh-action-pypi-publish#non-goals
       - name: Build project for distribution
-        run: uv build
+        # --out-dir is needed because uv writes dist/ to the workspace root by default
+        run: uv build --out-dir dist
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Upload build

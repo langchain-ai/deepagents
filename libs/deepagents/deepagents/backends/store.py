@@ -100,7 +100,7 @@ class StoreBackend(BackendProtocol):
     The namespace can include an optional assistant_id for multi-agent isolation.
     """
 
-    def __init__(self, runtime: "ToolRuntime", *, namespace: NamespaceFactory | None = None):
+    def __init__(self, runtime: "ToolRuntime[Any, Any]", *, namespace: NamespaceFactory | None = None):
         """Initialize StoreBackend with runtime.
 
         Args:
@@ -145,7 +145,7 @@ class StoreBackend(BackendProtocol):
         """
         if self._namespace is not None:
             state = getattr(self.runtime, "state", None)
-            ctx = BackendContext(state=state, runtime=self.runtime)
+            ctx = BackendContext(state=state, runtime=self.runtime)  # type: ignore[arg-type]
             return _validate_namespace(self._namespace(ctx))
 
         return self._get_namespace_legacy()
@@ -187,7 +187,7 @@ class StoreBackend(BackendProtocol):
             return (namespace,)
 
         try:
-            assistant_id = cfg.get("metadata", {}).get("assistant_id")  # type: ignore[assignment]
+            assistant_id = cfg.get("metadata", {}).get("assistant_id")
         except Exception:
             assistant_id = None
 
@@ -529,7 +529,7 @@ class StoreBackend(BackendProtocol):
     def grep_raw(
         self,
         pattern: str,
-        path: str = "/",
+        path: str | None = None,
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
         store = self._get_store()
@@ -541,7 +541,7 @@ class StoreBackend(BackendProtocol):
                 files[item.key] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-        return grep_matches_from_files(files, pattern, path, glob)
+        return grep_matches_from_files(files, pattern, path or "/", glob)
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         store = self._get_store()

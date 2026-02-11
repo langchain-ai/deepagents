@@ -4,7 +4,7 @@
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -16,6 +16,7 @@ from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
@@ -471,7 +472,7 @@ class FilesystemMiddleware(AgentMiddleware):
             self._create_execute_tool(),
         ]
 
-    def _get_backend(self, runtime: ToolRuntime) -> BackendProtocol:
+    def _get_backend(self, runtime: ToolRuntime[Any, Any] | Runtime[Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
 
         Args:
@@ -481,7 +482,7 @@ class FilesystemMiddleware(AgentMiddleware):
             Resolved backend instance.
         """
         if callable(self.backend):
-            return self.backend(runtime)
+            return self.backend(runtime)  # type: ignore[arg-type]
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:
@@ -839,7 +840,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 )
 
             try:
-                result = resolved_backend.execute(command)
+                result = resolved_backend.execute(command)  # type: ignore[attr-defined]
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -872,7 +873,7 @@ class FilesystemMiddleware(AgentMiddleware):
                 )
 
             try:
-                result = await resolved_backend.aexecute(command)
+                result = await resolved_backend.aexecute(command)  # type: ignore[attr-defined]
             except NotImplementedError as e:
                 # Handle case where execute() exists but raises NotImplementedError
                 return f"Error: Execution not available. {e}"
@@ -1120,7 +1121,7 @@ class FilesystemMiddleware(AgentMiddleware):
         )
         return processed_message, result.files_update
 
-    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+    def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime[Any, Any]) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
 
         Args:
@@ -1176,7 +1177,7 @@ class FilesystemMiddleware(AgentMiddleware):
             return Command(update={**update, "messages": processed_messages, "files": accumulated_file_updates})
         raise AssertionError(f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}")
 
-    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
+    async def _aintercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime[Any, Any]) -> ToolMessage | Command:
         """Async version of _intercept_large_tool_result.
 
         Uses async backend methods to avoid sync calls in async context.

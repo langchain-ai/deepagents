@@ -588,6 +588,9 @@ class SubAgentMiddleware(AgentMiddleware):
 
         if using_old_api and not using_new_api:
             # Legacy API - build subagents from deprecated args
+            if default_model is None:  # pragma: no cover (checked via using_old_api above)
+                msg = "default_model is required when using the legacy API"
+                raise ValueError(msg)
             subagent_specs = _get_subagents_legacy(
                 default_model=default_model,
                 default_tools=default_tools or [],

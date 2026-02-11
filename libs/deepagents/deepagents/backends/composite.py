@@ -124,9 +124,9 @@ class CompositeBackend(BackendProtocol):
                 infos = backend.ls_info(search_path)
                 prefixed: list[FileInfo] = []
                 for fi in infos:
-                    fi = dict(fi)
-                    fi["path"] = f"{route_prefix[:-1]}{fi['path']}"
-                    prefixed.append(fi)
+                    new_fi = dict(fi)
+                    new_fi["path"] = f"{route_prefix[:-1]}{fi['path']}"
+                    prefixed.append(new_fi)  # type: ignore[arg-type]
                 return prefixed
 
         # At root, aggregate default and all routed backends
@@ -161,9 +161,9 @@ class CompositeBackend(BackendProtocol):
                 infos = await backend.als_info(search_path)
                 prefixed: list[FileInfo] = []
                 for fi in infos:
-                    fi = dict(fi)
-                    fi["path"] = f"{route_prefix[:-1]}{fi['path']}"
-                    prefixed.append(fi)
+                    new_fi = dict(fi)
+                    new_fi["path"] = f"{route_prefix[:-1]}{fi['path']}"
+                    prefixed.append(new_fi)  # type: ignore[arg-type]
                 return prefixed
 
         # At root, aggregate default and all routed backends
@@ -251,13 +251,13 @@ class CompositeBackend(BackendProtocol):
                 raw = backend.grep_raw(pattern, search_path or "/", glob)
                 if isinstance(raw, str):
                     return raw
-                return [{**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw]
+                return [GrepMatch(path=f"{route_prefix[:-1]}{m['path']}", line=m["line"], text=m["text"]) for m in raw]
 
         # If path is None or "/", search default and all routed backends and merge
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            raw_default = self.default.grep_raw(pattern, path, glob)  # type: ignore[attr-defined]
+            raw_default = self.default.grep_raw(pattern, path, glob)
             if isinstance(raw_default, str):
                 # This happens if error occurs
                 return raw_default
@@ -268,11 +268,11 @@ class CompositeBackend(BackendProtocol):
                 if isinstance(raw, str):
                     # This happens if error occurs
                     return raw
-                all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)
+                all_matches.extend(GrepMatch(path=f"{route_prefix[:-1]}{m['path']}", line=m["line"], text=m["text"]) for m in raw)
 
             return all_matches
         # Path specified but doesn't match a route - search only default
-        return self.default.grep_raw(pattern, path, glob)  # type: ignore[attr-defined]
+        return self.default.grep_raw(pattern, path, glob)
 
     async def agrep_raw(
         self,
@@ -291,13 +291,13 @@ class CompositeBackend(BackendProtocol):
                 raw = await backend.agrep_raw(pattern, search_path or "/", glob)
                 if isinstance(raw, str):
                     return raw
-                return [{**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw]
+                return [GrepMatch(path=f"{route_prefix[:-1]}{m['path']}", line=m["line"], text=m["text"]) for m in raw]
 
         # If path is None or "/", search default and all routed backends and merge
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
-            raw_default = await self.default.agrep_raw(pattern, path, glob)  # type: ignore[attr-defined]
+            raw_default = await self.default.agrep_raw(pattern, path, glob)
             if isinstance(raw_default, str):
                 # This happens if error occurs
                 return raw_default
@@ -308,11 +308,11 @@ class CompositeBackend(BackendProtocol):
                 if isinstance(raw, str):
                     # This happens if error occurs
                     return raw
-                all_matches.extend({**m, "path": f"{route_prefix[:-1]}{m['path']}"} for m in raw)
+                all_matches.extend(GrepMatch(path=f"{route_prefix[:-1]}{m['path']}", line=m["line"], text=m["text"]) for m in raw)
 
             return all_matches
         # Path specified but doesn't match a route - search only default
-        return await self.default.agrep_raw(pattern, path, glob)  # type: ignore[attr-defined]
+        return await self.default.agrep_raw(pattern, path, glob)
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         results: list[FileInfo] = []
@@ -322,14 +322,14 @@ class CompositeBackend(BackendProtocol):
             if path.startswith(route_prefix.rstrip("/")):
                 search_path = path[len(route_prefix) - 1 :]
                 infos = backend.glob_info(pattern, search_path or "/")
-                return [{**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos]
+                return [FileInfo(path=f"{route_prefix[:-1]}{fi['path']}", **{k: v for k, v in fi.items() if k != "path"}) for fi in infos]
 
         # Path doesn't match any specific route - search default backend AND all routed backends
         results.extend(self.default.glob_info(pattern, path))
 
         for route_prefix, backend in self.routes.items():
             infos = backend.glob_info(pattern, "/")
-            results.extend({**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos)
+            results.extend(FileInfo(path=f"{route_prefix[:-1]}{fi['path']}", **{k: v for k, v in fi.items() if k != "path"}) for fi in infos)
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
@@ -344,14 +344,14 @@ class CompositeBackend(BackendProtocol):
             if path.startswith(route_prefix.rstrip("/")):
                 search_path = path[len(route_prefix) - 1 :]
                 infos = await backend.aglob_info(pattern, search_path or "/")
-                return [{**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos]
+                return [FileInfo(path=f"{route_prefix[:-1]}{fi['path']}", **{k: v for k, v in fi.items() if k != "path"}) for fi in infos]
 
         # Path doesn't match any specific route - search default backend AND all routed backends
         results.extend(await self.default.aglob_info(pattern, path))
 
         for route_prefix, backend in self.routes.items():
             infos = await backend.aglob_info(pattern, "/")
-            results.extend({**fi, "path": f"{route_prefix[:-1]}{fi['path']}"} for fi in infos)
+            results.extend(FileInfo(path=f"{route_prefix[:-1]}{fi['path']}", **{k: v for k, v in fi.items() if k != "path"}) for fi in infos)
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))

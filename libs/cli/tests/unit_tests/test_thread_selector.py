@@ -309,3 +309,214 @@ class TestThreadSelectorNavigateAndSelect:
 
                 assert app.dismissed is True
                 assert app.result == "def67890"
+
+
+class TestThreadSelectorTabNavigation:
+    """Tests for tab/shift+tab navigation."""
+
+    @pytest.mark.asyncio
+    async def test_tab_moves_down(self) -> None:
+        """Tab should move selection down."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert screen._selected_index == 1
+
+    @pytest.mark.asyncio
+    async def test_shift_tab_moves_up(self) -> None:
+        """Shift+tab should move selection up."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                # Move down first, then shift+tab back
+                await pilot.press("tab")
+                await pilot.pause()
+                assert screen._selected_index == 1
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert screen._selected_index == 0
+
+
+class TestThreadSelectorDownWrap:
+    """Tests for wrapping from bottom to top."""
+
+    @pytest.mark.asyncio
+    async def test_down_arrow_wraps_from_bottom(self) -> None:
+        """Down arrow at last index should wrap to first thread."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                count = len(screen._threads)
+
+                # Navigate to the last item
+                for _ in range(count - 1):
+                    await pilot.press("down")
+                    await pilot.pause()
+                assert screen._selected_index == count - 1
+
+                # One more down should wrap to 0
+                await pilot.press("down")
+                await pilot.pause()
+                assert screen._selected_index == 0
+
+
+class TestThreadSelectorPageNavigation:
+    """Tests for pageup/pagedown navigation."""
+
+    @pytest.mark.asyncio
+    async def test_pagedown_moves_selection(self) -> None:
+        """Pagedown should move selection forward."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                await pilot.press("pagedown")
+                await pilot.pause()
+
+                # Should move forward (clamped to last item with 3 threads)
+                assert screen._selected_index > 0
+
+    @pytest.mark.asyncio
+    async def test_pageup_at_top_is_noop(self) -> None:
+        """Pageup at index 0 should be a no-op."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._selected_index == 0
+
+                await pilot.press("pageup")
+                await pilot.pause()
+                assert screen._selected_index == 0
+
+
+class TestThreadSelectorClickHandling:
+    """Tests for mouse click handling."""
+
+    @pytest.mark.asyncio
+    async def test_click_selects_thread(self) -> None:
+        """Clicking a thread option should select and dismiss."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                # Click the second option
+                if len(screen._option_widgets) > 1:
+                    await pilot.click(type(screen._option_widgets[1]))
+                    await pilot.pause()
+
+                    assert app.dismissed is True
+                    assert app.result is not None
+
+
+class TestThreadSelectorFormatLabel:
+    """Tests for _format_option_label static method."""
+
+    def test_selected_shows_cursor(self) -> None:
+        """Selected option should include a cursor glyph."""
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=True, current=False
+        )
+        # Should not start with spaces (cursor glyph present)
+        assert not label.startswith("  ")
+
+    def test_unselected_has_no_cursor(self) -> None:
+        """Unselected option should start with spaces instead of cursor."""
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=False, current=False
+        )
+        assert label.startswith("  ")
+
+    def test_current_shows_suffix(self) -> None:
+        """Current thread should show (current) suffix."""
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=False, current=True
+        )
+        assert "(current)" in label
+
+    def test_not_current_no_suffix(self) -> None:
+        """Non-current thread should not show (current) suffix."""
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=False, current=False
+        )
+        assert "(current)" not in label
+
+    def test_missing_agent_name_shows_unknown(self) -> None:
+        """Thread with no agent_name should show 'unknown'."""
+        thread = {"thread_id": "test123", "updated_at": None}
+        label = ThreadSelectorScreen._format_option_label(
+            thread, selected=False, current=False
+        )
+        assert "unknown" in label
+
+    def test_includes_message_count(self) -> None:
+        """Label should include message count."""
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=False, current=False
+        )
+        assert "5 msgs" in label
+
+
+class TestThreadSelectorErrorHandling:
+    """Tests for error handling when loading threads fails."""
+
+    @pytest.mark.asyncio
+    async def test_list_threads_error_still_dismissable(self) -> None:
+        """Database error should not crash; Escape still works."""
+        with patch(
+            "deepagents_cli.widgets.thread_selector.list_threads",
+            new_callable=AsyncMock,
+            side_effect=OSError("database is locked"),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert len(screen._threads) == 0
+
+                # No option widgets should have been created
+                assert len(screen._option_widgets) == 0
+
+                # Escape should still dismiss
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert app.dismissed is True
+                assert app.result is None

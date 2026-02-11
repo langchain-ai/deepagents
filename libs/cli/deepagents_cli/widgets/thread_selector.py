@@ -1,11 +1,13 @@
-"""Interactive thread selector screen for /resume command."""
+"""Interactive thread selector screen for /threads command."""
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
@@ -18,6 +20,8 @@ if TYPE_CHECKING:
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
 from deepagents_cli.sessions import _format_timestamp, list_threads
+
+logger = logging.getLogger(__name__)
 
 
 class ThreadOption(Static):
@@ -68,7 +72,7 @@ class ThreadOption(Static):
 
 
 class ThreadSelectorScreen(ModalScreen[str | None]):
-    """Full-screen modal for thread selection.
+    """Modal dialog for browsing and resuming threads.
 
     Displays recent threads with keyboard navigation. The current thread
     is highlighted.
@@ -175,9 +179,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         glyphs = get_glyphs()
 
         with Vertical():
-            title = "Select Thread"
-            if self._current_thread:
-                title = f"Select Thread (current: {self._current_thread})"
+            title = (
+                f"Select Thread (current: {self._current_thread})"
+                if self._current_thread
+                else "Select Thread"
+            )
             yield Static(title, classes="thread-selector-title")
 
             with VerticalScroll(classes="thread-list"):
@@ -199,9 +205,21 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", "green")
 
-        self._threads = await list_threads(limit=20, include_message_count=True)
+        try:
+            self._threads = await list_threads(limit=20, include_message_count=True)
+        except Exception:
+            logger.exception("Failed to load threads for thread selector")
+            scroll = self.query_one(".thread-list", VerticalScroll)
+            await scroll.remove_children()
+            await scroll.mount(
+                Static(
+                    "[red]Failed to load threads. Press Esc to close.[/red]",
+                    classes="thread-empty",
+                )
+            )
+            self.focus()
+            return
 
-        # Find current thread index
         for i, t in enumerate(self._threads):
             if t["thread_id"] == self._current_thread:
                 self._selected_index = i
@@ -225,7 +243,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
             return
 
-        widgets: list[ThreadOption] = []
         selected_widget: ThreadOption | None = None
 
         for i, thread in enumerate(self._threads):
@@ -247,13 +264,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 index=i,
                 classes=classes,
             )
-            widgets.append(widget)
             self._option_widgets.append(widget)
 
             if is_selected:
                 selected_widget = widget
 
-        await scroll.mount(*widgets)
+        await scroll.mount(*self._option_widgets)
 
         if selected_widget:
             if self._selected_index == 0:
@@ -271,8 +287,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Build the display label for a thread option.
 
         Args:
-            thread: Thread dict with `thread_id`, `agent_name`, `updated_at`,
-                and optionally `message_count`.
+            thread: Thread dict. Expected keys: `thread_id` (required),
+                `agent_name`, `updated_at`, `message_count`.
             selected: Whether this option is currently highlighted.
             current: Whether this is the active thread.
 
@@ -286,18 +302,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         msgs = thread.get("message_count", 0)
         timestamp = _format_timestamp(thread.get("updated_at"))
 
-        parts = [f"{cursor}{tid}  {agent}  {msgs} msgs"]
+        label = f"{cursor}{tid}  {agent}  {msgs} msgs"
         if timestamp:
-            parts[0] += f"  {timestamp}"
-
-        suffix = " [dim](current)[/dim]" if current else ""
-        return parts[0] + suffix
+            label += f"  {timestamp}"
+        if current:
+            label += " [dim](current)[/dim]"
+        return label
 
     def _move_selection(self, delta: int) -> None:
-        """Move selection by delta, updating only the affected widgets.
+        """Move selection by delta, re-rendering only the old and new widgets.
 
         Args:
-            delta: Number of positions to move (-1 for up, +1 for down).
+            delta: Positions to move (negative for up, positive for down).
         """
         if not self._threads or not self._option_widgets:
             return
@@ -353,7 +369,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         try:
             scroll = self.query_one(".thread-list", VerticalScroll)
             height = scroll.size.height
-        except Exception:  # noqa: BLE001
+        except NoMatches:
             return default_page_size
         if height <= 0:
             return default_page_size
@@ -381,7 +397,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._move_selection(delta)
 
     def action_select(self) -> None:
-        """Select the current thread."""
+        """Confirm the highlighted thread and dismiss the selector."""
         if self._threads:
             thread_id = self._threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
@@ -390,7 +406,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Handle click on a thread option.
 
         Args:
-            event: The click event with thread info.
+            event: The clicked message with thread ID and index.
         """
         self._selected_index = event.index
         self.dismiss(event.thread_id)

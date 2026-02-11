@@ -1701,12 +1701,18 @@ class DeepAgentsApp(App):
         Args:
             thread_id: The thread ID to resume.
         """
+        if not self._agent:
+            await self._mount_message(
+                AppMessage("Cannot switch threads: no active agent")
+            )
+            return
+
         # Skip if already on this thread
         if self._session_state and self._session_state.thread_id == thread_id:
             await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
             return
 
-        # Clear current conversation (same cleanup as /clear)
+        # Clear conversation (similar to /clear, without creating a new thread)
         self._pending_messages.clear()
         self._queued_widgets.clear()
         await self._clear_messages()
@@ -1724,7 +1730,10 @@ class DeepAgentsApp(App):
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.update_thread_id(thread_id)
         except NoMatches:
-            pass
+            logger.debug(
+                "Welcome banner not found during thread switch to %s",
+                thread_id,
+            )
 
         # Load thread history
         await self._load_thread_history()

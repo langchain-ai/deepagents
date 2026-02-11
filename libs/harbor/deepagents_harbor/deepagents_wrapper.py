@@ -1,4 +1,4 @@
-"""A wrapper for DeepAgents to run in Harbor environments."""
+"""A wrapper for Deep Agents to run in Harbor environments."""
 
 import json
 import os
@@ -7,14 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from deepagents import create_deep_agent
+from deepagents_cli.agent import create_cli_agent
 from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
-
-# Load .env file if present
-load_dotenv()
-from deepagents_cli.agent import create_cli_agent
 from harbor.models.trajectories import (
     Agent,
     FinalMetrics,
@@ -29,9 +26,12 @@ from langchain.messages import UsageMetadata
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langsmith import trace
+from langsmith.client import Client
 
 from deepagents_harbor.backend import HarborSandbox
-from deepagents_harbor.tracing import create_example_id_from_instruction
+
+# Load .env file if present
+load_dotenv()
 
 SYSTEM_MESSAGE = """
 You are an autonomous agent executing tasks in a sandboxed environment. Follow these instructions carefully.
@@ -53,9 +53,9 @@ Your current working directory is:
 
 
 class DeepAgentsWrapper(BaseAgent):
-    """Harbor agent implementation using LangChain DeepAgents.
+    """Harbor agent implementation using LangChain Deep Agents.
 
-    Wraps DeepAgents to execute tasks in Harbor environments.
+    Wraps Deep Agents to execute tasks in Harbor environments.
     """
 
     def __init__(
@@ -68,7 +68,7 @@ class DeepAgentsWrapper(BaseAgent):
         *args,
         **kwargs,
     ) -> None:
-        """Initialize DeepAgentsWrapper.
+        """Initialize Deep AgentsWrapper.
 
         Args:
             logs_dir: Directory for storing logs
@@ -76,12 +76,12 @@ class DeepAgentsWrapper(BaseAgent):
             temperature: Temperature setting for the model
             verbose: Enable verbose output
             use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
-                          If False, use create_deep_agent from SDK.
+                If False, use create_deep_agent from SDK.
         """
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
         if model_name is None:
-            # Use DeepAgents default
+            # Use Deep Agents default
             model_name = "anthropic:claude-sonnet-4-5-20250929"
 
         self._model_name = model_name
@@ -93,6 +93,24 @@ class DeepAgentsWrapper(BaseAgent):
         # LangSmith run tracking for feedback
         self._langsmith_run_id: str | None = None
         self._task_name: str | None = None
+
+        # Build instruction->example_id mapping if LANGSMITH_EXPERIMENT is set
+        self._instruction_to_example_id: dict[str, str] = {}
+        langsmith_experiment_name = os.environ.get("LANGSMITH_EXPERIMENT", "").strip() or None
+        if langsmith_experiment_name:
+            try:
+                client = Client()
+                experiment = client.read_project(project_name=langsmith_experiment_name)
+                examples = list(client.list_examples(dataset_id=experiment.reference_dataset_id))
+
+                # Build mapping from instruction to example ID
+                for example in examples:
+                    instruction = example.inputs.get("instruction") if example.inputs else None
+                    if instruction:
+                        self._instruction_to_example_id[instruction] = str(example.id)
+            except Exception as e:
+                # Log error but don't fail initialization
+                print(f"Warning: Failed to build instruction->example_id mapping: {e}")
 
     @staticmethod
     def name() -> str:
@@ -126,7 +144,6 @@ class DeepAgentsWrapper(BaseAgent):
         # Get first 10 files
         total_files = len(ls_info) if ls_info else 0
         first_10_files = ls_info[:10] if ls_info else []
-        has_more = total_files > 10
 
         # Build file listing header based on actual count
         if total_files == 0:
@@ -157,7 +174,7 @@ class DeepAgentsWrapper(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        """Execute the DeepAgent on the given instruction.
+        """Execute the Deep Agent on the given instruction.
 
         Args:
             instruction: The task to complete
@@ -210,9 +227,8 @@ class DeepAgentsWrapper(BaseAgent):
         }
         metadata.update(configuration)
 
-        # Compute example_id from instruction for deterministic linking
-        # This uses the same hashing as create_langsmith_dataset.py
-        example_id = create_example_id_from_instruction(instruction)
+        # Look up example_id from instruction using the mapping built at initialization
+        example_id = self._instruction_to_example_id.get(instruction)
 
         config: RunnableConfig = {
             "run_name": f"{environment.session_id}",
@@ -240,7 +256,7 @@ class DeepAgentsWrapper(BaseAgent):
             ) as run_tree:
                 # Invoke deep agent with LangSmith tracing
                 result = await deep_agent.ainvoke(
-                    {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                    {"messages": [{"role": "user", "content": instruction}]},
                     config=config,
                 )
                 # Extract last AI message and add as output
@@ -250,7 +266,7 @@ class DeepAgentsWrapper(BaseAgent):
         else:
             config["metadata"] = metadata
             result = await deep_agent.ainvoke(
-                {"messages": [{"role": "user", "content": instruction}]},  # type: ignore
+                {"messages": [{"role": "user", "content": instruction}]},
                 config=config,
             )
 

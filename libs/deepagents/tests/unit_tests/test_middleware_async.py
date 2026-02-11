@@ -3,6 +3,7 @@
 import pytest
 from langchain.tools import ToolRuntime
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 
 from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
@@ -455,7 +456,7 @@ class TestFilesystemMiddlewareAsync:
 
     @pytest.mark.asyncio
     async def test_agrep_search_shortterm_regex_pattern(self):
-        """Test async grep with regex pattern."""
+        """Test async grep with literal pattern (not regex)."""
         state = FilesystemState(
             messages=[],
             files={
@@ -468,9 +469,10 @@ class TestFilesystemMiddlewareAsync:
         )
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        # Search for literal "def " - literal search, not regex
         result = await grep_search_tool.ainvoke(
             {
-                "pattern": r"def \w+\(",
+                "pattern": "def ",
                 "output_mode": "content",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
@@ -504,7 +506,7 @@ class TestFilesystemMiddlewareAsync:
 
     @pytest.mark.asyncio
     async def test_agrep_search_shortterm_invalid_regex(self):
-        """Test async grep with invalid regex."""
+        """Test async grep with special characters (literal search, not regex)."""
         state = FilesystemState(
             messages=[],
             files={
@@ -517,13 +519,14 @@ class TestFilesystemMiddlewareAsync:
         )
         middleware = FilesystemMiddleware()
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        # Special characters are treated literally, so no matches expected
         result = await grep_search_tool.ainvoke(
             {
                 "pattern": "[invalid",
                 "runtime": ToolRuntime(state=state, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        assert "Invalid regex pattern" in result
+        assert "No matches found" in result
 
     @pytest.mark.asyncio
     async def test_aread_file(self):
@@ -581,8 +584,6 @@ class TestFilesystemMiddlewareAsync:
     @pytest.mark.asyncio
     async def test_awrite_file(self):
         """Test async write_file tool."""
-        from langgraph.types import Command
-
         state = FilesystemState(messages=[], files={})
         middleware = FilesystemMiddleware()
         write_file_tool = next(tool for tool in middleware.tools if tool.name == "write_file")
@@ -600,8 +601,6 @@ class TestFilesystemMiddlewareAsync:
     @pytest.mark.asyncio
     async def test_aedit_file(self):
         """Test async edit_file tool."""
-        from langgraph.types import Command
-
         state = FilesystemState(
             messages=[],
             files={
@@ -629,8 +628,6 @@ class TestFilesystemMiddlewareAsync:
     @pytest.mark.asyncio
     async def test_aedit_file_replace_all(self):
         """Test async edit_file tool with replace_all."""
-        from langgraph.types import Command
-
         state = FilesystemState(
             messages=[],
             files={

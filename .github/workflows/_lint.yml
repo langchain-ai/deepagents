@@ -20,7 +20,6 @@ permissions:
 env:
   WORKDIR: ${{ inputs.working-directory == '' && '.' || inputs.working-directory }}
   RUFF_OUTPUT_FORMAT: github
-  UV_FROZEN: "true"
   LINT: minimal
 
 jobs:
@@ -30,7 +29,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: "🐍 Set up Python ${{ inputs.python-version }} + UV"
         uses: "./.github/actions/uv_setup"
@@ -42,7 +41,7 @@ jobs:
       - name: "📦 Install Dependencies"
         working-directory: ${{ inputs.working-directory }}
         run: |
-          uv sync --group test --inexact
+          uv sync --group test --locked
 
       - name: "🔍 Run Linters"
         working-directory: ${{ inputs.working-directory }}

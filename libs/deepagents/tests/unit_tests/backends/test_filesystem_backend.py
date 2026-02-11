@@ -1,7 +1,12 @@
 from pathlib import Path
 
+import pytest
+from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
+
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, WriteResult
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def write_file(p: Path, content: str):
@@ -77,9 +82,9 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path):
     g = be.glob_info("**/*.md", path="/")
     assert any(i["path"] == "/dir/b.md" for i in g)
 
-    # invalid regex returns error string
-    err = be.grep_raw("[", path="/")
-    assert isinstance(err, str)
+    # literal search should work with special regex chars like "[" and "("
+    matches_bracket = be.grep_raw("[", path="/")
+    assert isinstance(matches_bracket, list)  # Should not error, returns empty list or matches
 
     # path traversal blocked
     try:
@@ -191,11 +196,6 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
-    from langchain.tools import ToolRuntime
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     root = tmp_path
     rt = ToolRuntime(
         state={"messages": [], "files": {}},
@@ -489,3 +489,35 @@ def test_filesystem_download_directory_as_file(tmp_path: Path):
     assert responses[0].path == "/mydir"
     assert responses[0].content is None
     assert responses[0].error == "is_directory"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected_file"),
+    [
+        ("def __init__(", "test1.py"),  # Parentheses (not regex grouping)
+        ("str | int", "test2.py"),  # Pipe (not regex OR)
+        ("[a-z]", "test3.py"),  # Brackets (not character class)
+        ("(.*)", "test3.py"),  # Multiple special chars
+        ("$19.99", "test4.txt"),  # Dot and $ (not "any character")
+        ("user@example", "test4.txt"),  # @ character (literal)
+    ],
+)
+def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, expected_file: str) -> None:
+    """Test that grep treats patterns as literal strings, not regex.
+
+    Tests with both ripgrep (if available) and Python fallback.
+    """
+    root = tmp_path
+
+    # Create test files with special regex characters
+    (root / "test1.py").write_text("def __init__(self, arg):\n    pass")
+    (root / "test2.py").write_text("@overload\ndef func(x: str | int):\n    return x")
+    (root / "test3.py").write_text("pattern = r'[a-z]+'\nregex_chars = '(.*)'")
+    (root / "test4.txt").write_text("Price: $19.99\nEmail: user@example.com")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # Test literal search with the pattern (uses ripgrep if available, otherwise Python fallback)
+    matches = be.grep_raw(pattern, path="/")
+    assert isinstance(matches, list)
+    assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"

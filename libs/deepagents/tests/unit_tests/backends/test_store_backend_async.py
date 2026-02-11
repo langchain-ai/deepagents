@@ -1,11 +1,12 @@
 """Async tests for StoreBackend."""
 
-import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.store import StoreBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime():
@@ -262,27 +263,22 @@ async def test_store_backend_aupload_adownload():
 
 
 async def test_store_backend_agrep_invalid_regex():
-    """Test async grep with invalid regex pattern."""
+    """Test async grep with special characters (literal search, not regex)."""
     rt = make_runtime()
     be = StoreBackend(rt)
 
     res = await be.awrite("/test.txt", "some content")
     assert res.error is None
 
-    # Invalid regex should return error string
+    # Special characters are treated literally, not regex
     result = await be.agrep_raw("[invalid", path="/")
-    assert isinstance(result, str)
-    assert "Invalid regex" in result or "error" in result.lower()
+    assert isinstance(result, list)  # Returns empty list, not error
 
 
 async def test_store_backend_intercept_large_tool_result_async():
     """Test that StoreBackend properly handles large tool result interception in async context."""
-    from langchain_core.messages import ToolMessage
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StoreBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
@@ -293,5 +289,27 @@ async def test_store_backend_intercept_large_tool_result_async():
     assert "/large_tool_results/test_456" in result.content
 
     stored_content = rt.store.get(("filesystem",), "/large_tool_results/test_456")
+    assert stored_content is not None
+    assert stored_content.value["content"] == [large_content]
+
+
+async def test_store_backend_aintercept_large_tool_result_async():
+    """Test async intercept path uses async store methods (fixes InvalidStateError with BatchedStore)."""
+    rt = make_runtime()
+    middleware = FilesystemMiddleware(backend=StoreBackend, tool_token_limit_before_evict=1000)
+
+    large_content = "z" * 5000
+    tool_message = ToolMessage(content=large_content, tool_call_id="test_async_789", name="example_tool")
+
+    # Use the async intercept path (what awrap_tool_call uses)
+    result = await middleware._aintercept_large_tool_result(tool_message, rt)
+
+    assert isinstance(result, ToolMessage)
+    assert "Tool result too large" in result.content
+    assert "/large_tool_results/test_async_789" in result.content
+    assert result.name == "example_tool"
+
+    # Verify content was stored via async path
+    stored_content = await rt.store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
     assert stored_content.value["content"] == [large_content]

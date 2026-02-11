@@ -1,8 +1,12 @@
 # Builds and publishes deepagents packages to PyPI.
 #
-# Manually triggered, though can be used as a reusable workflow (workflow_call).
+# Triggers:
+# - Automatically via workflow_call from release-please.yml when a release PR is merged
+# - Manually via workflow_dispatch
 #
-# Handles version bumping, building, and publishing to PyPI with authentication.
+# Flow:
+# - CLI: build -> pre-release-checks -> test-pypi -> DRAFT release (PyPI publish happens when draft is published)
+# - Other packages: build -> pre-release-checks -> test-pypi -> publish -> release
 
 name: "🚀 Package Release"
 run-name: "Release ${{ inputs.package }}"
@@ -12,7 +16,7 @@ on:
       package:
         required: true
         type: string
-        description: "Package to release (deepagents or deepagents-cli)"
+        description: "Package to release"
   workflow_dispatch:
     inputs:
       package:
@@ -22,46 +26,91 @@ on:
         options:
           - deepagents
           - deepagents-cli
+          - deepagents-acp
+          - deepagents-harbor
+          - langchain-daytona
+          - langchain-modal
+          - langchain-runloop
         default: deepagents
-      dangerous-nonmaster-release:
+      dangerous-nonmain-release:
         required: false
         type: boolean
         default: false
-        description: "Release from a non-master branch (danger!) - Only use for hotfixes"
+        description: "Release from a non-main branch (danger!) - Only use for hotfixes"
+      dangerous-skip-sdk-pin-check:
+        required: false
+        type: boolean
+        default: false
+        description: "Skip CLI SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
   PYTHON_VERSION: "3.11"
-  UV_FROZEN: "true"
   UV_NO_SYNC: "true"
-  # Map package name to working directory
-  WORKING_DIR: ${{ inputs.package == 'deepagents' && 'libs/deepagents' || (inputs.package == 'deepagents-cli' && 'libs/deepagents-cli' || '__invalid__') }}
 
 permissions:
   contents: write # Required for creating GitHub releases
 
 jobs:
+  # Determine working directory from package input
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.parse.outputs.package }}
+      working-dir: ${{ steps.parse.outputs.working-dir }}
+    steps:
+      - name: Parse package input
+        id: parse
+        run: |
+          PACKAGE="${{ inputs.package }}"
+          echo "package=$PACKAGE" >> $GITHUB_OUTPUT
+
+          # Map package name to working directory
+          case "$PACKAGE" in
+            deepagents)
+              echo "working-dir=libs/deepagents" >> $GITHUB_OUTPUT
+              ;;
+            deepagents-cli)
+              echo "working-dir=libs/cli" >> $GITHUB_OUTPUT
+              ;;
+            deepagents-acp)
+              echo "working-dir=libs/acp" >> $GITHUB_OUTPUT
+              ;;
+            deepagents-harbor)
+              echo "working-dir=libs/harbor" >> $GITHUB_OUTPUT
+              ;;
+            langchain-daytona)
+              echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
+            langchain-modal)
+              echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT
+              ;;
+            langchain-runloop)
+              echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Error: Unknown package '$PACKAGE'"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-harbor, langchain-daytona, langchain-modal, langchain-runloop"
+              exit 1
+              ;;
+          esac
+
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
   build:
-    if: github.ref == 'refs/heads/master' || inputs.dangerous-nonmaster-release
+    needs: setup
+    if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     outputs:
       pkg-name: ${{ steps.check-version.outputs.pkg-name }}
       version: ${{ steps.check-version.outputs.version }}
 
     steps:
-      - name: Validate package name
-        run: |
-          if [ "${{ env.WORKING_DIR }}" = "__invalid__" ]; then
-            echo "Error: Invalid package name '${{ inputs.package }}'"
-            echo "Valid packages are: deepagents, deepagents-cli"
-            exit 1
-          fi
-
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
@@ -84,7 +133,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Upload build
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
@@ -103,24 +152,177 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"pkg-name={pkg_name}\n")
               f.write(f"version={version}\n")
-  release-notes:
+
+  # Collect contributors from merged PRs for release shoutouts
+  collect-contributors:
     needs:
+      - setup
       - build
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
+    outputs:
+      contributors: ${{ steps.collect.outputs.contributors }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Collect contributors from merged PRs
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          # Determine previous tag (same logic as release-notes job)
+          if [[ "$VERSION" == *"-"* ]]; then
+            BASE_VERSION=${VERSION%%-*}
+            REGEX="^$PKG_NAME==$BASE_VERSION\$"
+            PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+            if [ -z "$PREV_TAG" ]; then
+              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
+              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+            fi
+          else
+            PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
+            [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
+            if [ -z "$PREV_TAG" ]; then
+              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
+              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+            fi
+          fi
+
+          # Validate prev tag exists
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
+            GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
+            if [ -z "$GIT_TAG_RESULT" ]; then
+              PREV_TAG=""
+            fi
+          else
+            PREV_TAG=""
+          fi
+
+          echo "Previous tag: $PREV_TAG"
+
+          # Get commits between previous tag and HEAD for this package
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git rev-list HEAD -- "$WORKING_DIR" | head -100)
+          else
+            COMMITS=$(git rev-list "$PREV_TAG"..HEAD -- "$WORKING_DIR" | head -100)
+          fi
+
+          # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
+          declare -A TWITTER_HANDLES  # Map: github_username -> twitter_handle (or empty)
+          declare -A LINKEDIN_URLS    # Map: github_username -> linkedin_url (or empty)
+          SEEN_PRS=""
+
+          for sha in $COMMITS; do
+            # Get PR number for this commit (if merged via PR)
+            PR_NUM=$(gh api "/repos/${{ github.repository }}/commits/$sha/pulls" \
+              --jq '.[0].number // empty' 2>/dev/null || true)
+
+            if [ -n "$PR_NUM" ] && [[ ! "$SEEN_PRS" =~ ":$PR_NUM:" ]]; then
+              SEEN_PRS="$SEEN_PRS:$PR_NUM:"
+
+              # Get PR author, body, and labels
+              PR_DATA=$(gh pr view "$PR_NUM" --json author,body,labels 2>/dev/null || true)
+              if [ -n "$PR_DATA" ]; then
+                GH_USER=$(echo "$PR_DATA" | jq -r '.author.login // empty')
+                PR_BODY=$(echo "$PR_DATA" | jq -r '.body // empty')
+
+                # Skip internal contributors (PRs labeled "internal" by tag-external-contributions workflow)
+                IS_INTERNAL=$(echo "$PR_DATA" | jq -r '.labels[].name // empty' | grep -qx "internal" && echo "true" || echo "false")
+                if [ "$IS_INTERNAL" = "true" ]; then
+                  echo "Skipping internal contributor: $GH_USER (PR #$PR_NUM)"
+                  continue
+                fi
+
+                if [ -n "$GH_USER" ]; then
+                  # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
+                  TWITTER=$(echo "$PR_BODY" | grep -ioP '^\s*Twitter:\s*@?\s*\K[a-zA-Z0-9_]+' || true)
+
+                  # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
+                  LINKEDIN=$(echo "$PR_BODY" | grep -ioP '^\s*LinkedIn:\s*\K(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' || true)
+
+                  # Add user if not seen, or update socials if newly provided
+                  if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then
+                    TWITTER_HANDLES[$GH_USER]="$TWITTER"
+                    LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
+                  else
+                    [ -n "$TWITTER" ] && [ -z "${TWITTER_HANDLES[$GH_USER]}" ] && TWITTER_HANDLES[$GH_USER]="$TWITTER"
+                    [ -n "$LINKEDIN" ] && [ -z "${LINKEDIN_URLS[$GH_USER]}" ] && LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
+                  fi
+                fi
+              fi
+            fi
+          done
+
+          # Build contributor list: @ghuser ([Twitter](url), [LinkedIn](url)) or just @ghuser
+          CONTRIBUTOR_LIST=""
+          for GH_USER in "${!TWITTER_HANDLES[@]}"; do
+            TWITTER="${TWITTER_HANDLES[$GH_USER]}"
+            LINKEDIN="${LINKEDIN_URLS[$GH_USER]}"
+
+            # Build social links
+            SOCIALS=""
+            if [ -n "$TWITTER" ]; then
+              SOCIALS="[Twitter](https://x.com/$TWITTER)"
+            fi
+            if [ -n "$LINKEDIN" ]; then
+              # Ensure LinkedIn URL has https:// prefix
+              if [[ ! "$LINKEDIN" =~ ^https?:// ]]; then
+                LINKEDIN="https://$LINKEDIN"
+              fi
+              if [ -n "$SOCIALS" ]; then
+                SOCIALS="$SOCIALS, [LinkedIn]($LINKEDIN)"
+              else
+                SOCIALS="[LinkedIn]($LINKEDIN)"
+              fi
+            fi
+
+            if [ -n "$SOCIALS" ]; then
+              ENTRY="@$GH_USER ($SOCIALS)"
+            else
+              ENTRY="@$GH_USER"
+            fi
+
+            if [ -z "$CONTRIBUTOR_LIST" ]; then
+              CONTRIBUTOR_LIST="$ENTRY"
+            else
+              CONTRIBUTOR_LIST="$CONTRIBUTOR_LIST, $ENTRY"
+            fi
+          done
+
+          echo "contributors=$CONTRIBUTOR_LIST" >> $GITHUB_OUTPUT
+          echo "Found contributors: $CONTRIBUTOR_LIST"
+
+  # Generate release notes from CHANGELOG.md (with git log fallback)
+  release-notes:
+    needs:
+      - setup
+      - build
+      - collect-contributors
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     outputs:
       release-body: ${{ steps.generate-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
-      prev-tag: ${{ steps.check-tags.outputs.prev-tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           path: deepagents
-          sparse-checkout: | # this only grabs files for relevant dir
+          sparse-checkout: |
             ${{ env.WORKING_DIR }}
-          ref: ${{ github.ref }} # this scopes to just ref'd branch
-          fetch-depth: 0 # this fetches entire commit history
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
       - name: Check tags
         id: check-tags
         shell: bash
@@ -129,80 +331,103 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          # Handle regular versions and pre-release versions differently
-          if [[ "$VERSION" == *"-"* ]]; then
-            # This is a pre-release version (contains a hyphen)
-            # Extract the base version without the pre-release suffix
-            BASE_VERSION=${VERSION%%-*}
-            # Look for the latest release of the same base version
-            REGEX="^$PKG_NAME==$BASE_VERSION\$"
-            PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
-
-            # If no exact base version match, look for the latest release of any kind
-            if [ -z "$PREV_TAG" ]; then
-              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
-            fi
-          else
-            # Regular version handling
-            PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"; [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
-
-            # backup case if releasing e.g. 0.3.0, looks up last release
-            # note if last release (chronologically) was e.g. 0.1.47 it will get
-            # that instead of the last 0.2 release
-            if [ -z "$PREV_TAG" ]; then
-              REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
-            fi
-          fi
-
-          # if PREV_TAG is empty or came out to 0.0.0, let it be empty
-          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$PKG_NAME==0.0.0" ]; then
-            echo "No previous tag found - first release"
-          else
-            # confirm prev-tag actually exists in git repo with git tag
-            GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
-            if [ -z "$GIT_TAG_RESULT" ]; then
-              echo "Previous tag $PREV_TAG not found in git repo"
-              exit 1
-            fi
-          fi
-
-
           TAG="${PKG_NAME}==${VERSION}"
-          if [ "$TAG" == "$PREV_TAG" ]; then
-            echo "No new version to release"
-            exit 1
-          fi
           echo tag="$TAG" >> $GITHUB_OUTPUT
-          echo prev-tag="$PREV_TAG" >> $GITHUB_OUTPUT
+
       - name: Generate release body
         id: generate-release-body
         working-directory: deepagents
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
-          TAG: ${{ steps.check-tags.outputs.tag }}
-          PREV_TAG: ${{ steps.check-tags.outputs.prev-tag }}
+          VERSION: ${{ needs.build.outputs.version }}
           WORKING_DIR: ${{ env.WORKING_DIR }}
+          CONTRIBUTORS: ${{ needs.collect-contributors.outputs.contributors }}
         run: |
-          PREAMBLE="Changes since $PREV_TAG"
-          # if PREV_TAG is empty or 0.0.0, then we are releasing the first version
-          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$PKG_NAME==0.0.0" ]; then
-            PREAMBLE="Initial release"
-            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+          CHANGELOG_PATH="$WORKING_DIR/CHANGELOG.md"
+          RELEASE_BODY=""
+
+          # Try to extract current version's section from CHANGELOG.md
+          if [ -f "$CHANGELOG_PATH" ]; then
+            echo "Found CHANGELOG.md, extracting version $VERSION section..."
+
+            # Extract section between current version header and next version header (or EOF)
+            # Matches headers like: ## [0.0.16] or ## 0.0.16
+            RELEASE_BODY=$(awk -v ver="$VERSION" '
+              BEGIN { found=0; printing=0 }
+              /^## \[?[0-9]+\.[0-9]+\.[0-9]+/ {
+                if (printing) { exit }
+                if (index($0, ver)) { found=1; printing=1; next }
+              }
+              printing { print }
+            ' "$CHANGELOG_PATH")
+
+            if [ -n "$RELEASE_BODY" ]; then
+              echo "Successfully extracted changelog for version $VERSION"
+            else
+              echo "Could not find version $VERSION in CHANGELOG.md"
+            fi
+          else
+            echo "No CHANGELOG.md found at $CHANGELOG_PATH"
           fi
+
+          # Fallback to git log if CHANGELOG extraction failed
+          if [ -z "$RELEASE_BODY" ]; then
+            echo "Falling back to git log for release notes..."
+
+            # Determine previous tag
+            if [[ "$VERSION" == *"-"* ]]; then
+              BASE_VERSION=${VERSION%%-*}
+              REGEX="^$PKG_NAME==$BASE_VERSION\$"
+              PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+              if [ -z "$PREV_TAG" ]; then
+                REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
+                PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+              fi
+            else
+              PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
+              [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
+              if [ -z "$PREV_TAG" ]; then
+                REGEX="^$PKG_NAME==\\d+\\.\\d+\\.\\d+\$"
+                PREV_TAG=$(git tag --sort=-creatordate | (grep -P "$REGEX" || true) | head -1)
+              fi
+            fi
+
+            # Validate prev tag exists
+            if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
+              GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
+              [ -z "$GIT_TAG_RESULT" ] && PREV_TAG=""
+            else
+              PREV_TAG=""
+            fi
+
+            if [ -z "$PREV_TAG" ]; then
+              PREAMBLE="Initial release"
+              PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+            else
+              PREAMBLE="Changes since $PREV_TAG"
+            fi
+
+            GIT_LOG=$(git log --format="%s" "$PREV_TAG"..HEAD -- "$WORKING_DIR")
+            RELEASE_BODY=$(printf "%s\n%s" "$PREAMBLE" "$GIT_LOG")
+          fi
+
+          # Append contributor shoutouts
+          if [ -n "$CONTRIBUTORS" ]; then
+            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our contributors: %s" "$RELEASE_BODY" "$CONTRIBUTORS")
+          fi
+
+          # Output release body using heredoc for proper multiline handling
           {
             echo 'release-body<<EOF'
-            echo $PREAMBLE
-            echo
-            git log --format="%s" "$PREV_TAG"..HEAD -- "$WORKING_DIR"
+            echo "$RELEASE_BODY"
             echo EOF
           } >> "$GITHUB_OUTPUT"
 
   test-pypi-publish:
     needs:
+      - setup
       - build
-      - release-notes
+      - pre-release-checks
     runs-on: ubuntu-latest
     permissions:
       # This permission is used for trusted publishing:
@@ -211,11 +436,13 @@ jobs:
       # Trusted publishing has to also be configured on PyPI for each package:
       # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
       id-token: write
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
@@ -236,15 +463,16 @@ jobs:
 
   pre-release-checks:
     needs:
+      - setup
       - build
-      - release-notes
-      - test-pypi-publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
     timeout-minutes: 20
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       # We explicitly *don't* set up caching here. This ensures our tests are
       # maximally sensitive to catching breakage.
@@ -265,10 +493,28 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Verify CLI pins latest SDK version
+        if: needs.build.outputs.pkg-name == 'deepagents-cli' && !inputs.dangerous-skip-sdk-pin-check
+        run: |
+          SDK_VERSION=$(grep -Po '(?<=^version = ")[^"]*' libs/deepagents/pyproject.toml)
+          CLI_SDK_PIN=$(grep -Po '(?<=deepagents==)[0-9]+\.[0-9]+\.[0-9]+' libs/cli/pyproject.toml)
+
+          if [ "$SDK_VERSION" != "$CLI_SDK_PIN" ]; then
+            echo "::error::CLI SDK pin does not match SDK version!"
+            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
+            echo "CLI SDK pin (libs/cli/pyproject.toml): $CLI_SDK_PIN"
+            echo ""
+            echo "Update the deepagents dependency in libs/cli/pyproject.toml to deepagents==$SDK_VERSION"
+            echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
+            exit 1
+          else
+            echo "CLI SDK pin matches SDK version: $SDK_VERSION"
+          fi
 
       - name: Import dist package
         shell: bash
@@ -296,7 +542,7 @@ jobs:
           uv run python -c "import $IMPORT_NAME; print(dir($IMPORT_NAME))"
 
       - name: Import test dependencies
-        run: uv sync --group test
+        run: uv sync --group test --locked
         working-directory: ${{ env.WORKING_DIR }}
 
       # Overwrite the local version of the package with the built version
@@ -315,17 +561,19 @@ jobs:
 
       - name: Run integration tests
         # Only run integration tests if they exist (currently only for deepagents package)
-        if: false  # Temporarily disabled
+        if: false # Temporarily disabled
         run: make integration_test || echo "No integration tests found, skipping..."
         working-directory: ${{ env.WORKING_DIR }}
 
   publish:
     # Publishes the package to PyPI
+    # Skipped for CLI - PyPI publish happens via release-publish.yml when draft is published
     needs:
+      - setup
       - build
-      - release-notes
       - test-pypi-publish
       - pre-release-checks
+    if: needs.build.outputs.pkg-name != 'deepagents-cli'
     runs-on: ubuntu-latest
     permissions:
       # This permission is used for trusted publishing:
@@ -334,20 +582,22 @@ jobs:
       # Trusted publishing has to also be configured on PyPI for each package:
       # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
       id-token: write
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
@@ -361,44 +611,76 @@ jobs:
           # Temp workaround since attestations are on by default as of gh-action-pypi-publish v1.11.0
           attestations: false
 
+  # Create GitHub release after checks pass
+  # For CLI: creates a DRAFT release (user edits notes, then publishes to trigger PyPI upload)
+  # For other packages: creates a published release (PyPI upload already done)
   mark-release:
-    # Marks the GitHub release with the new version tag
     needs:
+      - setup
       - build
       - release-notes
       - test-pypi-publish
       - pre-release-checks
       - publish
+    if: always() && needs.pre-release-checks.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       # This permission is needed by `ncipollo/release-action` to
       # create the GitHub release/tag
       contents: write
+      # This permission is needed to update release PR labels
+      pull-requests: write
+    env:
+      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
-      - name: Create Tag
+      - name: Create Release
         uses: ncipollo/release-action@v1
         with:
           artifacts: "${{ env.WORKING_DIR }}/dist/*"
           token: ${{ secrets.GITHUB_TOKEN }}
           generateReleaseNotes: false
-          tag: ${{needs.build.outputs.pkg-name}}==${{ needs.build.outputs.version }}
+          tag: ${{ needs.build.outputs.pkg-name }}==${{ needs.build.outputs.version }}
           body: ${{ needs.release-notes.outputs.release-body }}
           commit: ${{ github.sha }}
-          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents'}}
+          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' }}
+          # CLI uses draft releases for manual review before PyPI publish
+          draft: ${{ needs.build.outputs.pkg-name == 'deepagents-cli' }}
+
+      # Mark the release PR as tagged so release-please knows it's been released
+      # This is required because skip-github-release is true in release-please config
+      - name: Update release PR label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Find the release PR that was merged (look for PR associated with this commit)
+          PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          if [ -n "$PR_NUMBER" ]; then
+            # Only update label if this is actually a release PR (has autorelease: pending label)
+            # This prevents accidentally labeling feature PRs when workflow is manually triggered
+            HAS_PENDING=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | grep -q "autorelease: pending" && echo "true" || echo "false")
+            if [ "$HAS_PENDING" = "true" ]; then
+              echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
+              gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" || true
+            else
+              echo "PR #$PR_NUMBER does not have 'autorelease: pending' label, skipping (not a release PR)"
+            fi
+          else
+            echo "No PR found for commit ${{ github.sha }}, skipping label update"
+          fi

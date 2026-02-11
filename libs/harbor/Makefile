@@ -48,24 +48,24 @@ run-terminal-bench-runloop:
 
 # Define a variable for Python and notebook files.
 lint format: PYTHON_FILES=deepagents_harbor/ tests/
-lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d master | grep -E '\.py$$|\.ipynb$$')
+lint_diff format_diff: PYTHON_FILES=$(shell git diff --relative=. --name-only --diff-filter=d main | grep -E '\.py$$|\.ipynb$$')
 
 lint lint_diff:
-	[ "$(PYTHON_FILES)" = "" ] ||	uv run ruff format $(PYTHON_FILES) --diff
+	[ "$(PYTHON_FILES)" = "" ] ||	uv run --group test ruff format $(PYTHON_FILES) --diff
 	@if [ "$(LINT)" != "minimal" ]; then \
 		if [ "$(PYTHON_FILES)" != "" ]; then \
-			uv run ruff check $(PYTHON_FILES) --diff; \
+			uv run --group test ruff check $(PYTHON_FILES) --diff; \
 		fi; \
 	fi
-	# [ "$(PYTHON_FILES)" = "" ] || uv run mypy $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ty check $(PYTHON_FILES)
 
 format format_diff:
-	[ "$(PYTHON_FILES)" = "" ] || uv run ruff format $(PYTHON_FILES)
-	[ "$(PYTHON_FILES)" = "" ] || uv run ruff check --fix $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff format $(PYTHON_FILES)
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff check --fix $(PYTHON_FILES)
 
 format_unsafe:
-	[ "$(PYTHON_FILES)" = "" ] || uv run ruff format --unsafe-fixes $(PYTHON_FILES)
-	
+	[ "$(PYTHON_FILES)" = "" ] || uv run --group test ruff format --unsafe-fixes $(PYTHON_FILES)
+
 
 ######################
 # HELP
@@ -80,5 +80,3 @@ help:
 	@echo 'test                         - run unit tests'
 	@echo 'test TEST_FILE=<test_file>   - run all tests in file'
 	@echo '-- DOCUMENTATION tasks are from the top-level Makefile --'
-
-

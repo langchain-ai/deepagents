@@ -16,7 +16,9 @@ from acp.schema import (
     ToolCallUpdate,
 )
 from deepagents import create_deep_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
 from deepagents_acp.agent import ACPDeepAgent
@@ -116,49 +118,52 @@ async def test_acp_agent_initialize_and_modes() -> None:
     assert session2.modes.current_mode_id == "ask_before_edits"
 
 
-async def test_acp_agent_ask_before_edits_requests_permission_for_plan() -> None:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
-    graph = create_deep_agent(model=model, checkpointer=MemorySaver())
+@tool(description="Write a file")
+def write_file_tool(file_path: str, content: str) -> str:
+    return "ok"
 
-    agent = ACPDeepAgent(agent=graph, mode="ask_before_edits", root_dir="/root")
+
+async def test_acp_agent_hitl_requests_permission_via_public_api() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file_tool",
+                            "args": {"file_path": "/tmp/x.txt", "content": "hi"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        tools=[write_file_tool],
+        middleware=[HumanInTheLoopMiddleware(interrupt_on={"write_file_tool": True})],
+        checkpointer=MemorySaver(),
+    )
+
+    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
     client = FakeACPClient()
     client.next_permission = "approve"
     agent.on_connect(client)  # type: ignore[arg-type]
 
-    session = await agent.new_session(cwd="/root", mcp_servers=[])
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
 
-    interrupt_value = {
-        "action_requests": [
-            {
-                "name": "write_todos",
-                "args": {"todos": [{"content": "a", "status": "pending"}]},
-            }
-        ]
-    }
-
-    class _Interrupt:
-        id = "tc_1"
-        value = interrupt_value
-
-    class _State:
-        next = ("x",)
-        interrupts = [_Interrupt()]
-
-    current_state = _State()
-
-    decisions = await agent._handle_interrupts(
-        current_state=current_state,
-        session_id=session.session_id,
-        active_tool_calls={},
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
     )
-    assert decisions == [{"type": "approve"}]
+    assert resp.stop_reason == "end_turn"
 
-    assert len(client.permission_requests) == 1
-    assert client.permission_requests[0]["tool_call"].title == "Review Plan"
-    assert [o.option_id for o in client.permission_requests[0]["options"]] == [
-        "approve",
-        "reject",
-    ]
+    assert client.permission_requests
+    assert client.permission_requests[0]["tool_call"].title == "write_file_tool"
 
 
 async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:

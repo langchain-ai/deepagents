@@ -19,12 +19,13 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
+from deepagents.backends.sandbox import BaseSandbox
+from runloop_api_client import Runloop
+
+from deepagents_cli.integrations.sandbox_provider import (
+    SandboxNotFoundError,
     SandboxProvider,
 )
-from runloop_api_client import Runloop
 
 
 class RunloopBackend(BaseSandbox):
@@ -147,7 +148,7 @@ class RunloopBackend(BaseSandbox):
         return responses
 
 
-class RunloopProvider(SandboxProvider[dict[str, Any]]):
+class RunloopProvider(SandboxProvider):
     """Runloop sandbox provider implementation.
 
     Manages Runloop devbox lifecycle using the Runloop SDK.
@@ -168,20 +169,6 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
             raise ValueError(msg)
         self._client = Runloop(bearer_token=self._api_key)
 
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Runloop devboxes.
-
-        Raises:
-            NotImplementedError: Runloop SDK doesn't expose a list API yet.
-        """
-        msg = "Listing with Runloop SDK not yet implemented"
-        raise NotImplementedError(msg)
-
     def get_or_create(
         self,
         *,
@@ -201,9 +188,13 @@ class RunloopProvider(SandboxProvider[dict[str, Any]]):
 
         Raises:
             RuntimeError: Devbox startup failed
+            SandboxNotFoundError: If sandbox_id is provided but does not exist
         """
         if sandbox_id:
-            devbox = self._client.devboxes.retrieve(id=sandbox_id)
+            try:
+                devbox = self._client.devboxes.retrieve(id=sandbox_id)
+            except KeyError as e:
+                raise SandboxNotFoundError(sandbox_id) from e
         else:
             devbox = self._client.devboxes.create()
 

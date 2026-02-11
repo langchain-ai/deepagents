@@ -8,13 +8,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from deepagents.backends.protocol import SandboxBackendProtocol
-from deepagents.backends.sandbox import SandboxProvider
 
 from deepagents_cli.config import console, get_glyphs
 from deepagents_cli.integrations.daytona import DaytonaProvider
 from deepagents_cli.integrations.langsmith import LangSmithProvider
 from deepagents_cli.integrations.modal import ModalProvider
 from deepagents_cli.integrations.runloop import RunloopProvider
+from deepagents_cli.integrations.sandbox_provider import SandboxProvider
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:

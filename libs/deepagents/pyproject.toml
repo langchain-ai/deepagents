@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.3.12"
+version = "0.4.0"
 description = "General purpose 'deep agent' with sub-agent spawning, todo list capabilities, and mock file system. Built on LangGraph."
 readme = "README.md"
 license = { text = "MIT" }
@@ -19,9 +19,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain-core>=1.2.7,<2.0.0",
-    "langchain>=1.2.7,<2.0.0",
-    "langchain-anthropic>=1.3.1,<2.0.0",
+    "langchain-core>=1.2.10,<2.0.0",
+    "langchain>=1.2.10,<2.0.0",
+    "langchain-anthropic>=1.3.2,<2.0.0",
     "langchain-google-genai>=4.2.0,<5.0.0",
     "wcmatch",
 ]
@@ -77,7 +77,6 @@ ignore = [
     "ISC001",  # Messes with the formatter
     "PERF203", # Rarely useful
     "SLF001",  # Private member access
-    "PLC0415", # Imports should be at the top. Not always desirable
     "PLR0913", # Too many arguments in function definition
     "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
     "C901",    # Too complex
@@ -109,7 +108,7 @@ ignore-var-parameters = true
     "ARG002",  # https://docs.astral.sh/ruff/rules/unused-method-argument/
 ]
 
-"deepagents/backends/composite.py" = ["B007", "BLE001", "D102", "EM101", "FBT001", "FBT002", "PLW2901", "S110"]
+"deepagents/backends/composite.py" = ["B007", "BLE001", "D102", "EM101", "FBT001", "FBT002", "PLC0415", "PLW2901", "S110"]
 "deepagents/backends/filesystem.py" = ["BLE001", "D102", "D205", "D417", "DTZ006", "EM101", "EM102", "FBT001", "FBT002", "PLR0912", "S112", "TRY003"]
 "deepagents/backends/protocol.py" = ["B024", "B027", "FBT001", "FBT002"]
 "deepagents/backends/sandbox.py" = ["FBT001", "FBT002", "PLC0105", "PLR2004"]

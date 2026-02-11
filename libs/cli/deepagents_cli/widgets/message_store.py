@@ -272,7 +272,7 @@ class MessageData:
         if isinstance(widget, AppMessage):
             return cls(
                 type=MessageType.APP,
-                content=widget._content,
+                content=str(widget._content),
                 id=widget_id,
             )
 

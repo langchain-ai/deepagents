@@ -13,11 +13,9 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
-    SandboxProvider,
-)
+from deepagents.backends.sandbox import BaseSandbox
+
+from deepagents_cli.integrations.sandbox_provider import SandboxProvider
 
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox, SandboxClient, SandboxTemplate
@@ -126,7 +124,7 @@ class LangSmithBackend(BaseSandbox):
         return responses
 
 
-class LangSmithProvider(SandboxProvider[dict[str, Any]]):
+class LangSmithProvider(SandboxProvider):
     """LangSmith sandbox provider implementation.
 
     Manages LangSmith sandbox lifecycle using the LangSmith SDK.
@@ -148,20 +146,6 @@ class LangSmithProvider(SandboxProvider[dict[str, Any]]):
             msg = "LANGSMITH_API_KEY environment variable not set"
             raise ValueError(msg)
         self._client: SandboxClient = sandbox.SandboxClient(api_key=self._api_key)
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available LangSmith sandboxes.
-
-        Raises:
-            NotImplementedError: LangSmith SDK list API not yet implemented.
-        """
-        msg = "Listing with LangSmith SDK not yet implemented"
-        raise NotImplementedError(msg)
 
     def get_or_create(
         self,

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, TextArea
@@ -115,7 +115,7 @@ class CompletionOption(Static):
         self.post_message(self.Clicked(self._index))
 
 
-class CompletionPopup(Vertical):
+class CompletionPopup(VerticalScroll):
     """Popup widget that displays completion suggestions as clickable options."""
 
     DEFAULT_CSS = """
@@ -179,6 +179,10 @@ class CompletionPopup(Vertical):
             self._options.append(option)
             await self.mount(option)
 
+        # Scroll selected option into view
+        if 0 <= selected_index < len(self._options):
+            self._options[selected_index].scroll_visible()
+
     def update_selection(self, selected_index: int) -> None:
         """Update which option is selected without rebuilding the list."""
         if self._selected_index == selected_index:
@@ -192,6 +196,7 @@ class CompletionPopup(Vertical):
         self._selected_index = selected_index
         if 0 <= selected_index < len(self._options):
             self._options[selected_index].set_selected(selected=True)
+            self._options[selected_index].scroll_visible()
 
     def on_completion_option_clicked(self, event: CompletionOption.Clicked) -> None:
         """Handle click on a completion option."""
@@ -366,7 +371,7 @@ class ChatInput(Vertical):
     ChatInput {
         height: auto;
         min-height: 3;
-        max-height: 12;
+        max-height: 25;
         padding: 0;
         background: $surface;
         border: solid $primary;

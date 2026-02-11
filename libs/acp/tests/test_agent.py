@@ -488,5 +488,4 @@ async def test_acp_langchain_create_agent_nested_agent_tool_call_messages() -> N
     response = await agent.prompt(
         [TextContentBlock(type="text", text="hi")], session_id=session.session_id
     )
-    breakpoint()
     raise ValueError(response)

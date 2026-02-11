@@ -612,7 +612,7 @@ class FilesystemMiddleware(AgentMiddleware):
                     media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
                     image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
                     return ToolMessage(
-                        conten_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
                         name="read_file",
                         tool_call_id=runtime.tool_call_id,
                         additional_kwargs={

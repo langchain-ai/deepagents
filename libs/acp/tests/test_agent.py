@@ -21,7 +21,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
-from deepagents_acp.agent import ACPDeepAgent
+from deepagents_acp.server import AgentServerACP
 from tests.chat_model import GenericFakeChatModel
 
 
@@ -55,7 +55,7 @@ async def test_acp_agent_prompt_streams_text() -> None:
     )
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -77,7 +77,7 @@ async def test_acp_agent_cancel_stops_prompt() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="Should not appear")]))
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -121,7 +121,7 @@ async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
 
             return S()
 
-    agent = ACPDeepAgent(
+    agent = AgentServerACP(
         agent=create_deep_agent(
             model=GenericFakeChatModel(
                 messages=iter([AIMessage(content="ok")]), stream_delimiter=None
@@ -151,7 +151,7 @@ async def test_acp_agent_initialize_and_modes() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="OK")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -200,7 +200,7 @@ async def test_acp_agent_hitl_requests_permission_via_public_api() -> None:
         checkpointer=MemorySaver(),
     )
 
-    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
     client = FakeACPClient()
     client.next_permission = "approve"
     agent.on_connect(client)  # type: ignore[arg-type]
@@ -220,7 +220,7 @@ async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -256,7 +256,7 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -290,7 +290,7 @@ async def test_acp_agent_multimodal_prompt_blocks_do_not_error() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/root")
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/root")
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -351,7 +351,7 @@ async def test_acp_agent_end_to_end_clears_plan() -> None:
         checkpointer=MemorySaver(),
     )
 
-    agent = ACPDeepAgent(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
     client = FakeACPClient()
     client.next_permission = "reject"
     agent.on_connect(client)  # type: ignore[arg-type]

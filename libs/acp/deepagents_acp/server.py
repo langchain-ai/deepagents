@@ -59,7 +59,7 @@ from deepagents_acp.utils import (
 )
 
 
-class ACPDeepAgent(ACPAgent):
+class AgentServerACP(ACPAgent):
     _conn: Client
 
     def __init__(
@@ -69,7 +69,7 @@ class ACPDeepAgent(ACPAgent):
         *,
         root_dir: str,
     ) -> None:
-        """Initialize the ACPDeepAgent."""
+        """Initialize the AgentServerACP."""
         super().__init__()
         self._root_dir = root_dir
         self._agent_factory = agent
@@ -628,7 +628,7 @@ class ACPDeepAgent(ACPAgent):
             return user_decisions
 
 
-async def run_agent(root_dir: str) -> None:
+async def serve_acp_stdio(root_dir: str) -> None:
     """Run default agent from the root of the repository with ACP integration."""
     from dotenv import load_dotenv
 
@@ -656,5 +656,5 @@ async def run_agent(root_dir: str) -> None:
             backend=create_backend,
         )
 
-    acp_agent = ACPDeepAgent(agent=build_agent, mode=mode_id, root_dir=root_dir)
+    acp_agent = AgentServerACP(agent=build_agent, mode=mode_id, root_dir=root_dir)
     await run_acp_agent(acp_agent)

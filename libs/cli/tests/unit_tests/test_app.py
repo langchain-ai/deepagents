@@ -18,6 +18,7 @@ from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_ON,
     DeepAgentsApp,
     QueuedMessage,
+    TextualSessionState,
     _write_iterm_escape,
 )
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -489,3 +490,63 @@ class TestMessageQueue:
             # message should also have been picked up (mounted as UserMessage)
             user_msgs = app.query(UserMessage)
             assert any(w._content == "hello agent" for w in user_msgs)
+
+
+class TestTraceCommand:
+    """Test /trace slash command."""
+
+    @pytest.mark.asyncio
+    async def test_trace_opens_browser_when_configured(self) -> None:
+        """Should open the LangSmith thread URL in the browser."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_cli.app.build_langsmith_thread_url",
+                    return_value="https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123",
+                ),
+                patch("deepagents_cli.app.webbrowser.open") as mock_open,
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            mock_open.assert_called_once_with(
+                "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
+            )
+            app_msgs = app.query(AppMessage)
+            assert any("smith.langchain.com" in str(w._content) for w in app_msgs)
+
+    @pytest.mark.asyncio
+    async def test_trace_shows_error_when_not_configured(self) -> None:
+        """Should show configuration hint when LangSmith is not set up."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState()
+
+            with patch(
+                "deepagents_cli.app.build_langsmith_thread_url",
+                return_value=None,
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("LANGSMITH_API_KEY" in str(w._content) for w in app_msgs)
+
+    @pytest.mark.asyncio
+    async def test_trace_shows_error_when_no_session(self) -> None:
+        """Should show error when there is no active session."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = None
+
+            await app._handle_trace_command("/trace")
+            await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            assert any("No active session" in str(w._content) for w in app_msgs)

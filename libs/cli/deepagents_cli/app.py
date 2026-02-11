@@ -32,6 +32,7 @@ from deepagents_cli.config import (
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
+    build_langsmith_thread_url,
     create_model,
     detect_provider,
     is_shell_command_allowed,
@@ -1002,6 +1003,31 @@ class DeepAgentsApp(App):
         link.stylize(f"link {url}", 0)
         await self._mount_message(AppMessage(link))
 
+    async def _handle_trace_command(self, command: str) -> None:
+        """Open the current thread in LangSmith.
+
+        Args:
+            command: The raw command text (displayed as user message).
+        """
+        await self._mount_message(UserMessage(command))
+        if not self._session_state:
+            await self._mount_message(AppMessage("No active session."))
+            return
+        thread_id = self._session_state.thread_id
+        url = await asyncio.to_thread(build_langsmith_thread_url, thread_id)
+        if not url:
+            await self._mount_message(
+                AppMessage(
+                    "LangSmith tracing is not configured. "
+                    "Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to enable."
+                )
+            )
+            return
+        webbrowser.open(url)
+        link = Text(url, style="dim italic")
+        link.stylize(f"link {url}", 0)
+        await self._mount_message(AppMessage(link))
+
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
 
@@ -1016,7 +1042,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_text = Text(
                 "Commands: /quit, /clear, /model [--default], /remember, "
-                "/tokens, /threads, /changelog, /docs, /feedback, /help\n\n"
+                "/tokens, /threads, /trace, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -1064,6 +1090,8 @@ class DeepAgentsApp(App):
                 )
         elif cmd == "/threads":
             await self._show_thread_selector()
+        elif cmd == "/trace":
+            await self._handle_trace_command(command)
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._token_tracker and self._token_tracker.current_context > 0:

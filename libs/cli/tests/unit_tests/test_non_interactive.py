@@ -202,7 +202,7 @@ class TestBuildNonInteractiveHeader:
                 assert style.link == url
                 break
         else:
-            pytest.fail("Thread ID span with hyperlink not found")  # ty: ignore[invalid-argument-type]
+            pytest.fail("Thread ID span with hyperlink not found")
 
 
 class TestSandboxSetupForwarding:

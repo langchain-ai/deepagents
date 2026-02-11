@@ -553,6 +553,53 @@ class TestThreadSelectorFormatLabel:
         assert "very-long-agen" in label
 
 
+class TestThreadSelectorBuildTitle:
+    """Tests for _build_title with clickable thread ID."""
+
+    def test_no_current_thread(self) -> None:
+        """Title without current thread should be plain text."""
+        screen = ThreadSelectorScreen(current_thread=None)
+        assert screen._build_title() == "Select Thread"
+
+    def test_current_thread_no_url(self) -> None:
+        """Title with current thread but no URL should be a plain string."""
+        screen = ThreadSelectorScreen(current_thread="abc12345")
+        title = screen._build_title()
+        assert isinstance(title, str)
+        assert "abc12345" in title
+
+    def test_current_thread_with_url(self) -> None:
+        """Title with a LangSmith URL should produce a Rich Text with a link."""
+        from rich.text import Text
+
+        screen = ThreadSelectorScreen(current_thread="abc12345")
+        title = screen._build_title(
+            thread_url="https://smith.langchain.com/p/t/abc12345"
+        )
+        assert isinstance(title, Text)
+        assert "abc12345" in title.plain
+
+        # Verify the thread ID span carries a cyan + link style
+        spans = [s for s in title._spans if s.style and "link" in str(s.style)]
+        assert len(spans) > 0
+        assert "cyan" in str(spans[0].style)
+
+    @pytest.mark.asyncio
+    async def test_title_widget_has_id(self) -> None:
+        """Title widget should be queryable by ID for URL updates."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                # Should be able to find the title widget by ID
+                title_widget = screen.query_one("#thread-title", Static)
+                assert title_widget is not None
+
+
 class TestThreadSelectorColumnHeader:
     """Tests for the anchored column header."""
 
@@ -706,9 +753,9 @@ class TestResumeThread:
         assert app._session_state.thread_id == "new-thread"
         app._pending_messages.clear.assert_called_once()
         app._queued_widgets.clear.assert_called_once()
-        app._clear_messages.assert_awaited_once()  # type: ignore[union-attr]
+        app._clear_messages.assert_awaited_once()
         app._token_tracker.reset.assert_called_once()
-        app._load_thread_history.assert_awaited_once()  # type: ignore[union-attr]
+        app._load_thread_history.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_failure_restores_previous_thread_ids(self) -> None:

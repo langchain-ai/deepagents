@@ -1,5 +1,6 @@
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
@@ -34,7 +35,6 @@ from acp.schema import (
     PlanEntry,
     PromptCapabilities,
     ResourceContentBlock,
-    SessionMode,
     SessionModeState,
     SseMcpServer,
     TextContentBlock,
@@ -60,56 +60,39 @@ from deepagents_acp.utils import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class AgentSessionContext:
+    cwd: str
+    mode: str
+
+
 class AgentServerACP(ACPAgent):
     _conn: Client
 
     def __init__(
         self,
-        agent: CompiledStateGraph | Callable[[str], CompiledStateGraph],
-        mode: str,
+        agent: CompiledStateGraph | Callable[[AgentSessionContext], CompiledStateGraph],
         *,
-        root_dir: str,
+        modes: SessionModeState | None = None,
     ) -> None:
-        """Initialize the AgentServerACP."""
+        """Initialize the ACP agent server with the given agent factory or compiled graph."""
         super().__init__()
-        self._root_dir = root_dir
+        self._cwd = ""
         self._agent_factory = agent
-        self._mode = mode
-        self._agent = self._create_deepagent(agent, mode)
-        self._cancelled = False
-        self._session_plans: dict[str, list[dict[str, Any]]] = {}
-
-    @staticmethod
-    def _get_interrupt_config(mode_id: str) -> dict:
-        """Get interrupt configuration for a given mode"""
-        mode_to_interrupt = {
-            "ask_before_edits": {
-                "edit_file": {"allowed_decisions": ["approve", "reject"]},
-                "write_file": {"allowed_decisions": ["approve", "reject"]},
-                "write_todos": {"allowed_decisions": ["approve", "reject"]},
-            },
-            "auto": {
-                "write_todos": {"allowed_decisions": ["approve", "reject"]},
-            },
-        }
-        return mode_to_interrupt.get(mode_id, {})
-
-    def _create_deepagent(
-        self,
-        agent: CompiledStateGraph | Callable[[str], CompiledStateGraph],
-        mode: str,
-    ) -> CompiledStateGraph:
-        interrupt_config = self._get_interrupt_config(mode)
+        self._agent: CompiledStateGraph | None = None
 
         if isinstance(agent, CompiledStateGraph):
-            compiled = agent
+            if modes is not None:
+                raise ValueError("modes can only be provided when agent is a factory")
+            self._modes: SessionModeState | None = None
         else:
-            compiled = agent(self._root_dir)
+            self._modes = modes
 
-        if interrupt_config:
-            compiled = compiled.with_config({"interrupt_on": interrupt_config})
-
-        return compiled
+        self._session_modes: dict[str, str] = {}
+        self._session_mode_states: dict[str, SessionModeState] = {}
+        self._cancelled = False
+        self._session_plans: dict[str, list[dict[str, Any]]] = {}
+        self._session_cwds: dict[str, str] = {}
 
     def on_connect(self, conn: Client) -> None:
         self._conn = conn
@@ -137,27 +120,18 @@ class AgentServerACP(ACPAgent):
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio],
         **kwargs: Any,
     ) -> NewSessionResponse:
-        # Define available modes
-        available_modes = [
-            SessionMode(
-                id="ask_before_edits",
-                name="Ask before edits",
-                description="Ask permission before edits and writes",
-            ),
-            SessionMode(
-                id="auto",
-                name="Accept edits",
-                description="Auto-accept edit operations",
-            ),
-        ]
+        session_id = uuid4().hex
+        self._session_cwds[session_id] = cwd
 
-        return NewSessionResponse(
-            session_id=uuid4().hex,
-            modes=SessionModeState(
-                available_modes=available_modes,
-                current_mode_id=self._mode,
-            ),
-        )
+        if self._modes is not None:
+            self._session_modes[session_id] = self._modes.current_mode_id
+            self._session_mode_states[session_id] = self._modes
+            return NewSessionResponse(session_id=session_id, modes=self._modes)
+
+        if not isinstance(self._agent_factory, CompiledStateGraph):
+            return NewSessionResponse(session_id=session_id)
+
+        return NewSessionResponse(session_id=session_id)
 
     async def set_session_mode(
         self,
@@ -165,9 +139,14 @@ class AgentServerACP(ACPAgent):
         session_id: str,
         **kwargs: Any,
     ) -> SetSessionModeResponse:
-        # Recreate the deep agent with new mode configuration
-        self._agent = self._create_deepagent(self._agent_factory, mode_id)
-        self._mode = mode_id
+        if self._modes is not None and session_id in self._session_mode_states:
+            state = self._session_mode_states[session_id]
+            self._session_modes[session_id] = mode_id
+            self._session_mode_states[session_id] = SessionModeState(
+                available_modes=state.available_modes,
+                current_mode_id=mode_id,
+            )
+        self._agent = None
         return SetSessionModeResponse()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -416,6 +395,20 @@ class AgentServerACP(ACPAgent):
         session_id: str,
         **kwargs: Any,
     ) -> PromptResponse:
+        if self._agent is None:
+            cwd = self._session_cwds.get(session_id)
+            if cwd is not None:
+                self._cwd = cwd
+            if isinstance(self._agent_factory, CompiledStateGraph):
+                self._agent = self._agent_factory
+            else:
+                mode = self._session_modes.get(
+                    session_id,
+                    self._modes.current_mode_id if self._modes is not None else "auto",
+                )
+                context = AgentSessionContext(cwd=self._cwd, mode=mode)
+                self._agent = self._agent_factory(context)
+
         # Reset cancellation flag for new prompt
         self._cancelled = False
 
@@ -431,7 +424,7 @@ class AgentServerACP(ACPAgent):
                 content_blocks.extend(convert_audio_block_to_content_blocks(block))
             elif isinstance(block, ResourceContentBlock):
                 content_blocks.extend(
-                    convert_resource_block_to_content_blocks(block, root_dir=self._root_dir)
+                    convert_resource_block_to_content_blocks(block, root_dir=self._cwd)
                 )
             elif isinstance(block, EmbeddedResourceContentBlock):
                 content_blocks.extend(convert_embedded_resource_block_to_content_blocks(block))
@@ -685,10 +678,11 @@ async def _serve_test_agent(root_dir: str) -> None:
     load_dotenv()
 
     checkpointer: Checkpointer = MemorySaver()
-    mode_id = "ask_before_edits"
 
-    def build_agent(_root_dir: str) -> CompiledStateGraph:
+    def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
         """Agent factory based in the given root directory."""
+
+        _root_dir = context.cwd
 
         def create_backend(run_time: ToolRuntime) -> CompositeBackend:
             ephemeral_backend = StateBackend(run_time)
@@ -706,5 +700,5 @@ async def _serve_test_agent(root_dir: str) -> None:
             backend=create_backend,
         )
 
-    acp_agent = AgentServerACP(agent=build_agent, mode=mode_id, root_dir=root_dir)
+    acp_agent = AgentServerACP(agent=build_agent)
     await run_acp_agent(acp_agent)

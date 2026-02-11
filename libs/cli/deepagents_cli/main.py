@@ -14,6 +14,7 @@ import contextlib
 import functools
 import importlib.util
 import json
+import logging
 import os
 import sys
 import traceback
@@ -27,6 +28,8 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 from rich.text import Text
 
 from deepagents_cli._version import __version__
+
+logger = logging.getLogger(__name__)
 
 # Now safe to import agent (which imports LangChain modules)
 from deepagents_cli.agent import (
@@ -498,7 +501,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
         ```bash
         cat context.txt | deepagents -n "summarize this"
-        # non_interactive_message = "<context.txt>\n\nsummarize this"
+        # non_interactive_message = "{contents of context.txt}\n\nsummarize this"
         ```
 
     - If `initial_prompt` is already set (`-m`, but not `-n`), prepends
@@ -506,7 +509,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
         ```bash
         cat error.log | deepagents -m "explain this"
-        # initial_prompt = "<error.log>\n\nexplain this"
+        # initial_prompt = "{contents of error.log}\n\nexplain this"
         ```
 
     - Otherwise, sets `non_interactive_message` to the piped text, causing
@@ -537,8 +540,10 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         msg = "Could not read piped input — ensure the input is valid text"
         console.print(f"[bold red]Error:[/bold red] {msg}")
         sys.exit(1)
-    except (OSError, ValueError):
-        return
+    except (OSError, ValueError) as exc:
+        msg = f"Failed to read piped input: {exc}"
+        console.print(f"[bold red]Error:[/bold red] {msg}")
+        sys.exit(1)
 
     if not stdin_text:
         return
@@ -554,11 +559,26 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     # (used by the -m path) can read keyboard/mouse input normally.
     # Textual's driver reads from file descriptor 0 directly (not sys.stdin),
     # so we must replace the underlying fd with /dev/tty using os.dup2.
-    with contextlib.suppress(OSError):
+    try:
         tty_fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        # No controlling terminal (CI, Docker, headless). Non-interactive
+        # path still works; interactive -m path will fail later with a
+        # clear "not a terminal" error from Textual.
+        return
+
+    try:
         os.dup2(tty_fd, 0)
         os.close(tty_fd)
         sys.stdin = open(0, encoding="utf-8", closefd=False)  # noqa: SIM115
+    except OSError:
+        logger.warning(
+            "TTY restoration failed after opening /dev/tty. "
+            "Interactive mode (-m) may not work correctly.",
+            exc_info=True,
+        )
+        with contextlib.suppress(OSError):
+            os.close(tty_fd)
 
 
 def cli_main() -> None:

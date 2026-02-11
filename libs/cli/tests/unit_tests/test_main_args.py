@@ -307,6 +307,32 @@ class TestApplyStdinPipe:
             apply_stdin_pipe(args)
         assert exc_info.value.code == 1
 
+    def test_read_os_error_exits(self) -> None:
+        """An OSError during stdin.read() exits with code 1."""
+        args = _make_args()
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.side_effect = OSError("I/O error")
+        with (
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            apply_stdin_pipe(args)
+        assert exc_info.value.code == 1
+
+    def test_read_value_error_exits(self) -> None:
+        """A ValueError during stdin.read() exits with code 1."""
+        args = _make_args()
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.side_effect = ValueError("I/O operation on closed file")
+        with (
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            apply_stdin_pipe(args)
+        assert exc_info.value.code == 1
+
     def test_stdin_restores_tty(self) -> None:
         """After reading piped input, fd 0 is replaced with /dev/tty."""
         args = _make_args()
@@ -324,3 +350,15 @@ class TestApplyStdinPipe:
         mock_dup2.assert_called_once_with(99, 0)
         mock_close.assert_called_once_with(99)
         mock_open.assert_called_once_with(0, encoding="utf-8", closefd=False)
+
+    def test_tty_open_failure_preserves_input(self) -> None:
+        """When /dev/tty cannot be opened, piped input is still captured."""
+        args = _make_args()
+        fake_stdin = io.StringIO("hello")
+        fake_stdin.isatty = lambda: False  # type: ignore[attr-defined]
+        with (
+            patch.object(sys, "stdin", fake_stdin),
+            patch("os.open", side_effect=OSError("No controlling terminal")),
+        ):
+            apply_stdin_pipe(args)
+        assert args.non_interactive_message == "hello"

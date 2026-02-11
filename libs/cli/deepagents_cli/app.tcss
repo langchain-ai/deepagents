@@ -42,7 +42,7 @@ Screen {
 #input-area {
     height: auto;
     min-height: 3;
-    max-height: 12;
+    max-height: 25;
 }
 
 /* Approval Menu - inline in messages area */

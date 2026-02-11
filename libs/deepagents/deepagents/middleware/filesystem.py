@@ -203,6 +203,12 @@ Usage:
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
 - Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) are returned as multimodal image content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
+
+For image tasks:
+- Use `read_file(file_path=...)` for `.png/.jpg/.jpeg/.gif/.webp`
+- Do NOT use `offset`/`limit` for images (pagination is text-only)
+- If image details were compacted from history, call `read_file` again on the same path
+
 - You should ALWAYS make sure a file has been read before editing it."""
 
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.

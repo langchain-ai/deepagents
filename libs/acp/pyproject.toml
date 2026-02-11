@@ -51,9 +51,6 @@ Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Twitter = "https://x.com/LangChain"
 
-[project.scripts]
-deepagents-acp = "deepagents_acp.__main__:main"
-
 [tool.uv]
 package = true
 

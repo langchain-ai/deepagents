@@ -39,10 +39,14 @@ from acp.schema import (
     TextContentBlock,
     ToolCallStart,
     ToolCallUpdate,
+    ToolKind,
 )
 from deepagents import create_deep_agent
-from dotenv import load_dotenv
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+from deepagents.graph import Checkpointer
+from langchain.tools import ToolRuntime
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
@@ -53,8 +57,6 @@ from deepagents_acp.utils import (
     convert_resource_block_to_content_blocks,
     convert_text_block_to_content_blocks,
 )
-
-load_dotenv()
 
 
 class ACPDeepAgent(ACPAgent):
@@ -164,7 +166,6 @@ class ACPDeepAgent(ACPAgent):
         # Recreate the deep agent with new mode configuration
         self._deepagent = self._create_deepagent(self._agent, mode_id)
         self._mode = mode_id
-
         return SetSessionModeResponse()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -331,7 +332,7 @@ class ACPDeepAgent(ACPAgent):
         self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
     ) -> ToolCallStart:
         """Create a tool call update based on tool type and arguments."""
-        kind_map: dict = {
+        kind_map: dict[str, ToolKind] = {
             "read_file": "read",
             "edit_file": "edit",
             "write_file": "edit",
@@ -627,18 +628,21 @@ class ACPDeepAgent(ACPAgent):
 
 
 async def run_agent(root_dir: str) -> None:
-    from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
-    from deepagents.graph import Checkpointer
-    from langgraph.checkpoint.memory import MemorySaver
+    """Run default agent from the root of the repository with ACP integration."""
+    from dotenv import load_dotenv
+
+    load_dotenv()
 
     checkpointer: Checkpointer = MemorySaver()
     mode_id = "ask_before_edits"
 
-    def build_agent(rd: str) -> CompiledStateGraph:
-        def create_backend(tr: object) -> CompositeBackend:
-            ephemeral_backend = StateBackend(tr)
+    def build_agent(_root_dir: str) -> CompiledStateGraph:
+        """Agent factory based in the given root directory."""
+
+        def create_backend(run_time: ToolRuntime) -> CompositeBackend:
+            ephemeral_backend = StateBackend(run_time)
             return CompositeBackend(
-                default=FilesystemBackend(root_dir=rd, virtual_mode=True),
+                default=FilesystemBackend(root_dir=_root_dir, virtual_mode=True),
                 routes={
                     "/memories/": ephemeral_backend,
                     "/conversation_history/": ephemeral_backend,

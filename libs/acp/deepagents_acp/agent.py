@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -38,13 +39,15 @@ from acp.schema import (
     TextContentBlock,
     ToolCallStart,
     ToolCallUpdate,
+    ToolKind,
 )
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
-from deepagents.graph import Checkpointer, CompiledStateGraph
-from dotenv import load_dotenv
+from deepagents.graph import Checkpointer
+from langchain.tools import ToolRuntime
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
 from deepagents_acp.utils import (
@@ -55,16 +58,25 @@ from deepagents_acp.utils import (
     convert_text_block_to_content_blocks,
 )
 
-load_dotenv()
-
 
 class ACPDeepAgent(ACPAgent):
     _conn: Client
 
-    _deepagent: CompiledStateGraph
-    _root_dir: str
-    _checkpointer: Checkpointer
-    _mode: str
+    def __init__(
+        self,
+        agent: CompiledStateGraph | Callable[[str], CompiledStateGraph],
+        mode: str,
+        *,
+        root_dir: str,
+    ) -> None:
+        """Initialize the ACPDeepAgent."""
+        super().__init__()
+        self._root_dir = root_dir
+        self._agent_factory = agent
+        self._mode = mode
+        self._agent = self._create_deepagent(agent, mode)
+        self._cancelled = False
+        self._session_plans: dict[str, list[dict[str, Any]]] = {}
 
     @staticmethod
     def _get_interrupt_config(mode_id: str) -> dict:
@@ -81,39 +93,22 @@ class ACPDeepAgent(ACPAgent):
         }
         return mode_to_interrupt.get(mode_id, {})
 
-    def _create_deepagent(self, mode: str):
-        """Create a DeepAgent with the appropriate configuration for the given mode"""
+    def _create_deepagent(
+        self,
+        agent: CompiledStateGraph | Callable[[str], CompiledStateGraph],
+        mode: str,
+    ) -> CompiledStateGraph:
         interrupt_config = self._get_interrupt_config(mode)
 
-        def create_backend(tr):
-            ephemeral_backend = StateBackend(tr)
-            return CompositeBackend(
-                default=FilesystemBackend(root_dir=self._root_dir, virtual_mode=True),
-                routes={
-                    "/memories/": ephemeral_backend,
-                    "/conversation_history/": ephemeral_backend,
-                },
-            )
+        if isinstance(agent, CompiledStateGraph):
+            compiled = agent
+        else:
+            compiled = agent(self._root_dir)
 
-        return create_deep_agent(
-            checkpointer=self._checkpointer,
-            backend=create_backend,
-            interrupt_on=interrupt_config,
-        )
+        if interrupt_config:
+            compiled = compiled.with_config({"interrupt_on": interrupt_config})
 
-    def __init__(
-        self,
-        root_dir: str,
-        checkpointer: Checkpointer,
-        mode: str,
-    ):
-        self._root_dir = root_dir
-        self._checkpointer = checkpointer
-        self._mode = mode
-        self._deepagent = self._create_deepagent(mode)
-        self._cancelled = False
-        self._session_plans: dict[str, list[dict[str, Any]]] = {}  # Track current plan per session
-        super().__init__()
+        return compiled
 
     def on_connect(self, conn: Client) -> None:
         self._conn = conn
@@ -170,9 +165,8 @@ class ACPDeepAgent(ACPAgent):
         **kwargs: Any,
     ) -> SetSessionModeResponse:
         # Recreate the deep agent with new mode configuration
-        self._deepagent = self._create_deepagent(mode_id)
+        self._agent = self._create_deepagent(self._agent_factory, mode_id)
         self._mode = mode_id
-
         return SetSessionModeResponse()
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -339,7 +333,7 @@ class ACPDeepAgent(ACPAgent):
         self, tool_id: str, tool_name: str, tool_args: dict[str, Any]
     ) -> ToolCallStart:
         """Create a tool call update based on tool type and arguments."""
-        kind_map: dict = {
+        kind_map: dict[str, ToolKind] = {
             "read_file": "read",
             "edit_file": "edit",
             "write_file": "edit",
@@ -453,7 +447,7 @@ class ACPDeepAgent(ACPAgent):
                 self._cancelled = False  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
-            async for message_chunk, metadata in self._deepagent.astream(
+            async for message_chunk, metadata in self._agent.astream(
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
                 else {"messages": [{"role": "user", "content": content_blocks}]},
@@ -511,7 +505,7 @@ class ACPDeepAgent(ACPAgent):
                         await self._log_text(text=text, session_id=session_id)
 
             # Check if the agent is interrupted (waiting for HITL approval)
-            current_state = await self._deepagent.aget_state(config)
+            current_state = await self._agent.aget_state(config)
             user_decisions = await self._handle_interrupts(
                 current_state=current_state,
                 session_id=session_id,
@@ -635,14 +629,32 @@ class ACPDeepAgent(ACPAgent):
 
 
 async def run_agent(root_dir: str) -> None:
-    checkpointer = MemorySaver()
+    """Run default agent from the root of the repository with ACP integration."""
+    from dotenv import load_dotenv
 
-    # Start with ask_before_edits mode (ask before edits)
+    load_dotenv()
+
+    checkpointer: Checkpointer = MemorySaver()
     mode_id = "ask_before_edits"
 
-    acp_agent = ACPDeepAgent(
-        root_dir=root_dir,
-        mode=mode_id,
-        checkpointer=checkpointer,
-    )
+    def build_agent(_root_dir: str) -> CompiledStateGraph:
+        """Agent factory based in the given root directory."""
+
+        def create_backend(run_time: ToolRuntime) -> CompositeBackend:
+            ephemeral_backend = StateBackend(run_time)
+            return CompositeBackend(
+                default=FilesystemBackend(root_dir=_root_dir, virtual_mode=True),
+                routes={
+                    "/memories/": ephemeral_backend,
+                    "/conversation_history/": ephemeral_backend,
+                },
+            )
+
+        return create_deep_agent(
+            model="openai:gpt-5.2",
+            checkpointer=checkpointer,
+            backend=create_backend,
+        )
+
+    acp_agent = ACPDeepAgent(agent=build_agent, mode=mode_id, root_dir=root_dir)
     await run_acp_agent(acp_agent)

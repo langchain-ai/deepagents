@@ -1152,6 +1152,24 @@ test = [
 name = "deepagents-workspace"
 version = "0.0.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "deepagents" },
+    { name = "deepagents-acp" },
+    { name = "deepagents-cli" },
+    { name = "langchain-daytona" },
+    { name = "langchain-modal" },
+    { name = "langchain-runloop" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "deepagents", editable = "libs/deepagents" },
+    { name = "deepagents-acp", editable = "libs/acp" },
+    { name = "deepagents-cli", editable = "libs/cli" },
+    { name = "langchain-daytona", editable = "libs/partners/daytona" },
+    { name = "langchain-modal", editable = "libs/partners/modal" },
+    { name = "langchain-runloop", editable = "libs/partners/runloop" },
+]
 
 [[package]]
 name = "deprecated"
@@ -2008,7 +2026,7 @@ name = "importlib-metadata"
 version = "8.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp", marker = "python_full_version < '3.13'" },
+    { name = "zipp", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f3/49/3b30cad09e7771a4982d9975a8cbf64f00d4a1ececb53297f1d9a7be1b10/importlib_metadata-8.7.1.tar.gz", hash = "sha256:49fef1ae6440c182052f407c8d34a68f72efc36db9ca90dc0113398f2fdde8bb", size = 57107, upload-time = "2025-12-21T10:00:19.278Z" }
 wheels = [

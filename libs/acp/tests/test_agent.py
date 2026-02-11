@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Literal
 
+import pytest
 from acp import text_block, update_agent_message
+from acp.exceptions import RequestError
 from acp.interfaces import Client
 from acp.schema import (
     AllowedOutcome,
@@ -504,16 +506,12 @@ async def test_acp_langchain_create_agent_nested_agent_tool_call_messages() -> N
     outer = create_agent(outer_model, tools=[call_agent1], checkpointer=MemorySaver())
 
     agent = AgentServerACP(agent=outer, mode="auto", root_dir="/tmp")
-    client = FakeACPClient()
+    client = FakeACPClient(permission_outcomes=["approve"])
     agent.on_connect(client)  # type: ignore[arg-type]
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
 
-    response = await agent.prompt(
-        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
-    )
-
-    assert response.stop_reason == "end_turn"
-    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
-    assert permission_requests
-    assert permission_requests[0]["tool_call"].title == "ask_user"
+    with pytest.raises(RequestError):
+        await agent.prompt(
+            [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+        )

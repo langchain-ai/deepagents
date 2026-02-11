@@ -241,6 +241,52 @@ async def test_acp_agent_hitl_requests_permission_via_public_api() -> None:
     assert permission_requests[0]["tool_call"].title == "write_file_tool"
 
 
+async def test_acp_deep_agent_hitl_interrupt_on_edit_file_requests_permission() -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {
+                                "file_path": "/tmp/x.txt",
+                                "old_string": "a",
+                                "new_string": "b",
+                            },
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        checkpointer=MemorySaver(),
+        interrupt_on={"edit_file": True},
+    )
+
+    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    client = FakeACPClient(permission_outcomes=["approve"])
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert permission_requests
+    assert permission_requests[0]["tool_call"].title == "Edit `/tmp/x.txt`"
+
+
 async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())

@@ -105,9 +105,6 @@ class ACPDeepAgent(ACPAgent):
         if interrupt_config:
             compiled = compiled.with_config({"interrupt_on": interrupt_config})
 
-        if self._mode == "ask_before_edits":
-            return create_deep_agent()
-
         return compiled
 
     def on_connect(self, conn: Client) -> None:

@@ -4,6 +4,7 @@ import asyncio
 import io
 import os
 import webbrowser
+import signal
 from typing import ClassVar, Never, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -628,6 +629,7 @@ class TestBashInterrupt:
             """Minimal async subprocess stand-in for interrupt tests."""
 
             def __init__(self) -> None:
+                self.pid = 43210
                 self.returncode: int | None = None
                 self._done = asyncio.Event()
                 self.terminated = False
@@ -650,9 +652,19 @@ class TestBashInterrupt:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch(
-                "deepagents_cli.app.asyncio.create_subprocess_shell",
-                new=AsyncMock(return_value=fake_process),
+
+            def _killpg(_pgid: int, _sig: int) -> None:
+                fake_process.returncode = 130
+                fake_process._done.set()
+
+            with (
+                patch(
+                    "deepagents_cli.app.asyncio.create_subprocess_shell",
+                    new=AsyncMock(return_value=fake_process),
+                ),
+                patch(
+                    "deepagents_cli.app.os.killpg", side_effect=_killpg
+                ) as mock_killpg,
             ):
                 task = asyncio.create_task(app._handle_bash_command("sleep 60"))
                 await pilot.pause()
@@ -661,6 +673,7 @@ class TestBashInterrupt:
 
                 app.action_interrupt()
                 await task
+                mock_killpg.assert_called_once_with(fake_process.pid, signal.SIGTERM)
 
             assert fake_process.terminated is True
             assert app._bash_process is None
@@ -697,6 +710,7 @@ class TestBashInterrupt:
 
         class FakeProcess:
             def __init__(self) -> None:
+                self.pid = 43210
                 self.returncode: int | None = None
                 self.killed = False
 

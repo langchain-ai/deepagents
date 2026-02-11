@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
+import subprocess  # noqa: S404
 import uuid
 import webbrowser
 from collections import deque
@@ -443,6 +445,7 @@ class DeepAgentsApp(App):
         self._agent_worker: Worker[None] | None = None
         self._agent_running = False
         self._bash_process: asyncio.subprocess.Process | None = None
+        self._bash_pgid: int | None = None
         self._bash_interrupted = False
         self._loading_widget: LoadingWidget | None = None
         self._token_tracker: TextualTokenTracker | None = None
@@ -947,13 +950,25 @@ class DeepAgentsApp(App):
         # S602: shell execution is intentional for !-prefixed user commands
         try:
             self._bash_interrupted = False
+            create_kwargs: dict[str, Any] = {
+                "stdout": asyncio.subprocess.PIPE,
+                "stderr": asyncio.subprocess.PIPE,
+                "cwd": self._cwd,
+            }
+            if os.name == "nt":
+                creation_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                if creation_flag:
+                    create_kwargs["creationflags"] = creation_flag
+            else:
+                # Run in a new session so escape/ctrl+c can terminate the full
+                # shell command group (for example `!sleep 60`).
+                create_kwargs["start_new_session"] = True
             process = await asyncio.create_subprocess_shell(
                 command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self._cwd,
+                **create_kwargs,
             )
             self._bash_process = process
+            self._bash_pgid = process.pid if os.name != "nt" else None
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     process.communicate(), timeout=60
@@ -966,6 +981,7 @@ class DeepAgentsApp(App):
                 return
             finally:
                 self._bash_process = None
+                self._bash_pgid = None
 
             output = (
                 stdout_bytes.decode(errors="replace").strip() if stdout_bytes else ""
@@ -1001,6 +1017,7 @@ class DeepAgentsApp(App):
             await self._mount_message(ErrorMessage(str(e)))
         finally:
             self._bash_process = None
+            self._bash_pgid = None
             self._bash_interrupted = False
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
@@ -1648,7 +1665,14 @@ class DeepAgentsApp(App):
             return False
 
         self._bash_interrupted = True
-        with suppress(ProcessLookupError):
+        if os.name != "nt" and self._bash_pgid is not None:
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(self._bash_pgid, signal.SIGTERM)
+        elif os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+            with suppress(ProcessLookupError, OSError):
+                self._bash_process.send_signal(signal.CTRL_BREAK_EVENT)
+
+        with suppress(ProcessLookupError, OSError):
             self._bash_process.terminate()
         return True
 

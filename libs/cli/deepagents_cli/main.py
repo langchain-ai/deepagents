@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import functools
 import importlib.util
+import json
 import os
 import sys
 import traceback
@@ -42,6 +43,7 @@ from deepagents_cli.config import (
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
+from deepagents_cli.model_config import ModelConfigError
 from deepagents_cli.sessions import (
     delete_thread_command,
     find_similar_threads,
@@ -250,6 +252,33 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--model-params",
+        metavar="JSON",
+        help="Extra kwargs to pass to the model as a JSON string "
+        '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
+        "These take priority, overriding config file values.",
+    )
+
+    parser.add_argument(
+        "--default-model",
+        metavar="MODEL",
+        nargs="?",
+        const="__SHOW__",
+        default=None,
+        help="Set the default model for future launches "
+        "(e.g., anthropic:claude-opus-4-6). "
+        "Use --default-model with no argument to show the current default. "
+        "Use --clear-default-model to remove it.",
+    )
+
+    parser.add_argument(
+        "--clear-default-model",
+        action="store_true",
+        help="Clear the default model, falling back to recent model "
+        "or environment auto-detection.",
+    )
+
+    parser.add_argument(
         "-m",
         "--message",
         dest="initial_prompt",
@@ -340,6 +369,7 @@ async def run_textual_cli_async(
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
     model_name: str | None = None,
+    model_params: dict[str, Any] | None = None,
     thread_id: str | None = None,
     is_resumed: bool = False,
     initial_prompt: str | None = None,
@@ -355,6 +385,9 @@ async def run_textual_cli_async(
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
+        model_params: Extra kwargs from `--model-params` to pass to the model.
+
+            These override config file values.
         thread_id: Thread ID to use (new or resumed)
         is_resumed: Whether this is a resumed session
         initial_prompt: Optional prompt to auto-submit when session starts
@@ -364,7 +397,14 @@ async def run_textual_cli_async(
     """
     from deepagents_cli.app import run_textual_app
 
-    model = create_model(model_name)
+    try:
+        result = create_model(model_name, extra_kwargs=model_params)
+    except ModelConfigError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        return 1
+
+    model = result.model
+    result.apply_to_settings()
 
     # Show thread info
     if is_resumed:
@@ -379,7 +419,7 @@ async def run_textual_cli_async(
     # Use async context manager for checkpointer
     async with get_checkpointer() as checkpointer:
         # Create agent with conditional tools
-        tools = [http_request, fetch_url]
+        tools: list[Callable[..., Any] | dict[str, Any]] = [http_request, fetch_url]
         if settings.has_tavily:
             tools.append(web_search)
 
@@ -429,6 +469,10 @@ async def run_textual_cli_async(
                 cwd=Path.cwd(),
                 thread_id=thread_id,
                 initial_prompt=initial_prompt,
+                checkpointer=checkpointer,
+                tools=tools,
+                sandbox=sandbox_backend,
+                sandbox_type=sandbox_type if sandbox_type != "none" else None,
             )
         finally:
             # Clean up sandbox after app exits (success or error)
@@ -462,6 +506,71 @@ def cli_main() -> None:
 
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
+        model_params: dict[str, Any] | None = None
+        raw_kwargs = getattr(args, "model_params", None)
+        if raw_kwargs:
+            try:
+                model_params = json.loads(raw_kwargs)
+            except json.JSONDecodeError as e:
+                console.print(
+                    f"[bold red]Error:[/bold red] --model-params is not valid JSON: {e}"
+                )
+                sys.exit(1)
+            if not isinstance(model_params, dict):
+                console.print(
+                    "[bold red]Error:[/bold red] --model-params must be a JSON object"
+                )
+                sys.exit(1)
+
+        # Handle --default-model / --clear-default-model (headless, no session)
+        if args.clear_default_model:
+            from deepagents_cli.model_config import clear_default_model
+
+            if clear_default_model():
+                console.print("Default model cleared.")
+            else:
+                console.print(
+                    "[bold red]Error:[/bold red] Could not clear default model. "
+                    "Check permissions for ~/.deepagents/"
+                )
+                sys.exit(1)
+            sys.exit(0)
+
+        if args.default_model is not None:
+            from deepagents_cli.model_config import (
+                ModelConfig,
+                save_default_model,
+            )
+
+            if args.default_model == "__SHOW__":
+                config = ModelConfig.load()
+                if config.default_model:
+                    console.print(f"Default model: {config.default_model}")
+                else:
+                    console.print("No default model set.")
+                sys.exit(0)
+
+            model_spec = args.default_model
+            # Auto-detect provider for bare model names
+            from deepagents_cli.config import detect_provider
+            from deepagents_cli.model_config import ModelSpec
+
+            parsed = ModelSpec.try_parse(model_spec)
+            if not parsed:
+                provider = detect_provider(model_spec)
+                if provider:
+                    model_spec = f"{provider}:{model_spec}"
+
+            if save_default_model(model_spec):
+                console.print(f"Default model set to {model_spec}")
+            else:
+                console.print(
+                    "[bold red]Error:[/bold red] Could not save default model. "
+                    "Check permissions for ~/.deepagents/"
+                )
+                sys.exit(1)
+            sys.exit(0)
+
         if args.command == "help":
             show_help()
         elif args.command == "list":
@@ -494,6 +603,7 @@ def cli_main() -> None:
                     message=args.non_interactive_message,
                     assistant_id=args.agent,
                     model_name=getattr(args, "model", None),
+                    model_params=model_params,
                     sandbox_type=args.sandbox,
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
@@ -577,6 +687,7 @@ def cli_main() -> None:
                         sandbox_id=args.sandbox_id,
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
+                        model_params=model_params,
                         thread_id=thread_id,
                         is_resumed=is_resumed,
                         initial_prompt=getattr(args, "initial_prompt", None),

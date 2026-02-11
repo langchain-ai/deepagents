@@ -1,6 +1,6 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -37,7 +37,7 @@ class StateBackend(BackendProtocol):
     This is indicated by the uses_state=True flag.
     """
 
-    def __init__(self, runtime: "ToolRuntime[Any, Any]"):
+    def __init__(self, runtime: "ToolRuntime"):
         """Initialize StateBackend with runtime."""
         self.runtime = runtime
 
@@ -167,11 +167,11 @@ class StateBackend(BackendProtocol):
     def grep_raw(
         self,
         pattern: str,
-        path: str | None = None,
+        path: str = "/",
         glob: str | None = None,
     ) -> list[GrepMatch] | str:
         files = self.runtime.state.get("files", {})
-        return grep_matches_from_files(files, pattern, path or "/", glob)
+        return grep_matches_from_files(files, pattern, path, glob)
 
     def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
         """Get FileInfo for files matching glob pattern."""

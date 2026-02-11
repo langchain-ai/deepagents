@@ -16,7 +16,7 @@ def append_to_system_message(
     Returns:
         New SystemMessage with the text appended.
     """
-    new_content: list[str | dict[str, str]] = list(system_message.content_blocks) if system_message else []  # type: ignore[assignment]
+    new_content: list[str | dict[str, str]] = list(system_message.content_blocks) if system_message else []
     if new_content:
         text = f"\n\n{text}"
     new_content.append({"type": "text", "text": text})

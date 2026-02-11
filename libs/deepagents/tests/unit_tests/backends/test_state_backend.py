@@ -1,9 +1,11 @@
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
 from deepagents.backends.protocol import EditResult, WriteResult
 from deepagents.backends.state import StateBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
 def make_runtime(files=None):
@@ -145,12 +147,8 @@ def test_state_backend_ls_trailing_slash():
 
 def test_state_backend_intercept_large_tool_result():
     """Test that StateBackend properly handles large tool result interception."""
-    from langgraph.types import Command
-
-    from deepagents.middleware.filesystem import FilesystemMiddleware
-
     rt = make_runtime()
-    middleware = FilesystemMiddleware(backend=lambda r: StateBackend(r), tool_token_limit_before_evict=1000)
+    middleware = FilesystemMiddleware(backend=StateBackend, tool_token_limit_before_evict=1000)
 
     large_content = "x" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_123")

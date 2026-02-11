@@ -1,9 +1,11 @@
 """Middleware for providing filesystem tools to an agent."""
 # ruff: noqa: E501
 
+import base64
 import os
 import re
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import Annotated, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
@@ -15,6 +17,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
+from langchain_core.messages.content import create_image_block
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from typing_extensions import TypedDict
@@ -40,6 +43,15 @@ EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 LINE_NUMBER_WIDTH = 6
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
 
 # Template for truncation message in read_file
 # {file_path} will be filled in at runtime
@@ -190,6 +202,13 @@ Usage:
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
+- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) are returned as multimodal image content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).
+
+For image tasks:
+- Use `read_file(file_path=...)` for `.png/.jpg/.jpeg/.gif/.webp`
+- Do NOT use `offset`/`limit` for images (pagination is text-only)
+- If image details were compacted from history, call `read_file` again on the same path
+
 - You should ALWAYS make sure a file has been read before editing it."""
 
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
@@ -343,13 +362,12 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
 
 
 TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
-You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-You can do this by specifying an offset and limit in the read_file tool call.
-For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
 
-Here is a preview showing the head and tail of the result (lines of the form
-... [N lines truncated] ...
-indicate omitted lines in the middle of the content):
+You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
+
+You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
+
+Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
 
 {content_sample}
 """
@@ -455,7 +473,7 @@ class FilesystemMiddleware(AgentMiddleware):
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
         """
         # Use provided backend or default to StateBackend factory
-        self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+        self.backend = backend if backend is not None else (StateBackend)
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -536,13 +554,33 @@ class FilesystemMiddleware(AgentMiddleware):
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = _validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
+
+            ext = Path(validated_path).suffix.lower()
+            if ext in IMAGE_EXTENSIONS:
+                responses = resolved_backend.download_files([validated_path])
+                if responses and responses[0].content is not None:
+                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
+                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
+                    return ToolMessage(
+                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        name="read_file",
+                        tool_call_id=runtime.tool_call_id,
+                        additional_kwargs={
+                            "read_file_path": validated_path,
+                            "read_file_media_type": media_type,
+                        },
+                    )
+                if responses and responses[0].error:
+                    return f"Error reading image: {responses[0].error}"
+                return "Error reading image: unknown error"
+
             result = resolved_backend.read(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)
@@ -565,13 +603,33 @@ class FilesystemMiddleware(AgentMiddleware):
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = _validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
+
+            ext = Path(validated_path).suffix.lower()
+            if ext in IMAGE_EXTENSIONS:
+                responses = await resolved_backend.adownload_files([validated_path])
+                if responses and responses[0].content is not None:
+                    media_type = IMAGE_MEDIA_TYPES.get(ext, "image/png")
+                    image_b64 = base64.standard_b64encode(responses[0].content).decode("utf-8")
+                    return ToolMessage(
+                        content_blocks=[create_image_block(base64=image_b64, mime_type=media_type)],
+                        name="read_file",
+                        tool_call_id=runtime.tool_call_id,
+                        additional_kwargs={
+                            "read_file_path": validated_path,
+                            "read_file_media_type": media_type,
+                        },
+                    )
+                if responses and responses[0].error:
+                    return f"Error reading image: {responses[0].error}"
+                return "Error reading image: unknown error"
+
             result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
 
             lines = result.splitlines(keepends=True)

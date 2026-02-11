@@ -59,3 +59,7 @@ body:
     attributes:
       label: Additional context (optional)
       description: Links, examples, or related issues
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Deep Agents.

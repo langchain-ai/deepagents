@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -11,8 +12,10 @@ from deepagents.backends.utils import perform_string_replacement
 
 from deepagents_cli.config import settings
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
-    from deepagents.backends.protocol import BACKEND_TYPES
+    from deepagents.backends.protocol import BackendProtocol
 
 FileOpStatus = Literal["pending", "success", "error"]
 
@@ -36,7 +39,8 @@ def _safe_read(path: Path) -> str | None:
     """
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as e:
+        logger.debug("Failed to read file %s: %s", path, e)
         return None
 
 
@@ -270,7 +274,7 @@ class FileOpTracker:
     """Collect file operation metrics during a CLI interaction."""
 
     def __init__(
-        self, *, assistant_id: str | None, backend: BACKEND_TYPES | None = None
+        self, *, assistant_id: str | None, backend: BackendProtocol | None = None
     ) -> None:
         """Initialize the tracker."""
         self.assistant_id = assistant_id
@@ -309,49 +313,14 @@ class FileOpTracker:
                         record.before_content = responses[0].content.decode("utf-8")
                     else:
                         record.before_content = ""
-                except Exception:
+                except (OSError, UnicodeDecodeError, AttributeError) as e:
+                    logger.debug(
+                        "Failed to read before_content for %s: %s", path_str, e
+                    )
                     record.before_content = ""
             elif record.physical_path:
                 record.before_content = _safe_read(record.physical_path) or ""
         self.active[tool_call_id] = record
-
-    def update_args(self, tool_call_id: str, args: dict[str, Any]) -> None:
-        """Update args for an active operation and retry capturing before_content."""
-        record = self.active.get(tool_call_id)
-        if not record:
-            return
-
-        record.args.update(args)
-
-        # If we haven't captured before_content yet, try again now that we
-        # might have the path
-        if record.before_content is None and record.tool_name in {
-            "write_file",
-            "edit_file",
-        }:
-            path_str = str(
-                record.args.get("file_path") or record.args.get("path") or ""
-            )
-            if path_str:
-                record.display_path = format_display_path(path_str)
-                record.physical_path = resolve_physical_path(
-                    path_str, self.assistant_id
-                )
-                if self.backend:
-                    try:
-                        responses = self.backend.download_files([path_str])
-                        if (
-                            responses
-                            and responses[0].content is not None
-                            and responses[0].error is None
-                        ):
-                            record.before_content = responses[0].content.decode("utf-8")
-                        else:
-                            record.before_content = ""
-                    except Exception:
-                        record.before_content = ""
-                elif record.physical_path:
-                    record.before_content = _safe_read(record.physical_path) or ""
 
     def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:
         """Complete a file operation with the tool message result.
@@ -485,7 +454,12 @@ class FileOpTracker:
                         record.after_content = None
                 else:
                     record.after_content = None
-            except Exception:
+            except (OSError, UnicodeDecodeError, AttributeError) as e:
+                logger.debug(
+                    "Failed to read after_content for %s: %s",
+                    record.args.get("file_path") or record.args.get("path"),
+                    e,
+                )
                 record.after_content = None
         else:
             # Fallback: direct filesystem read when no backend provided

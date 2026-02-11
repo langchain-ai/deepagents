@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-acp"
-version = "0.0.1"
+version = "0.0.2"
 description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
 ]
@@ -23,15 +23,13 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "agent-client-protocol>=0.6.2",
+    "agent-client-protocol>=0.8.0",
     "deepagents",
-    "deepagents-cli",
+    "python-dotenv>=1.2.1",
 ]
 
 [dependency-groups]
-dev = [
-    "batrachian-toad>=0.5.2",
-    "dirty-equals>=0.11",
+test = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
@@ -45,6 +43,7 @@ dev = [
 
 
 
+
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
@@ -52,9 +51,8 @@ Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Twitter = "https://x.com/LangChain"
 
-[project.scripts]
-deepacp = "deepagents_acp.server:cli_main"
-
+[tool.uv]
+package = true
 
 [tool.ruff]
 line-length = 100
@@ -70,3 +68,6 @@ known-first-party = ["deepagents_acp"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto" # or "strict"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"

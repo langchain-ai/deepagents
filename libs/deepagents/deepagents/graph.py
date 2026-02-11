@@ -1,4 +1,5 @@
-"""Deepagents come with planning, filesystem, and subagents."""
+"""Deep Agents come with planning, filesystem, and subagents."""
+# ruff: noqa: ERA001
 
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -24,8 +25,13 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.subagents import (
+    GENERAL_PURPOSE_SUBAGENT,
+    CompiledSubAgent,
+    SubAgent,
+    SubAgentMiddleware,
+)
+from deepagents.middleware.summarization import SummarizationMiddleware, _compute_summarization_defaults
 
 BASE_AGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
@@ -139,52 +145,99 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
     elif isinstance(model, str):
-        model = init_chat_model(model)
+        if model.startswith("openai:"):
+            # Use Responses API by default. To use chat completions, use
+            # `model=init_chat_model("openai:...")`
+            # To disable data retention with the Responses API, use
+            # ```
+            # model=init_chat_model(
+            #     "openai:...",
+            #     use_responses_api=True,
+            #     store=False,
+            #     include=["reasoning.encrypted_content"],
+            # )
+            # ```
+            model_init_params: dict = {"use_responses_api": True}
+        else:
+            model_init_params = {}
 
-    if (
-        model.profile is not None
-        and isinstance(model.profile, dict)
-        and "max_input_tokens" in model.profile
-        and isinstance(model.profile["max_input_tokens"], int)
-    ):
-        trigger = ("fraction", 0.85)
-        keep = ("fraction", 0.10)
-        truncate_args_settings = {
-            "trigger": ("fraction", 0.85),
-            "keep": ("fraction", 0.10),
-        }
-    else:
-        trigger = ("tokens", 170000)
-        keep = ("messages", 6)
-        truncate_args_settings = {
-            "trigger": ("messages", 20),
-            "keep": ("messages", 20),
-        }
+        model = init_chat_model(model, **model_init_params)
 
-    # Build middleware stack for subagents (includes skills if provided)
-    subagent_middleware: list[AgentMiddleware] = [
+    # Compute summarization defaults based on model profile
+    summarization_defaults = _compute_summarization_defaults(model)
+
+    backend = backend if backend is not None else (StateBackend)
+
+    # Build general-purpose subagent with default middleware stack
+    gp_middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
+        FilesystemMiddleware(backend=backend),
+        SummarizationMiddleware(
+            model=model,
+            backend=backend,
+            trigger=summarization_defaults["trigger"],
+            keep=summarization_defaults["keep"],
+            trim_tokens_to_summarize=None,
+            truncate_args_settings=summarization_defaults["truncate_args_settings"],
+        ),
+        AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+        PatchToolCallsMiddleware(),
     ]
-
-    backend = backend if backend is not None else (lambda rt: StateBackend(rt))
-
     if skills is not None:
-        subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-    subagent_middleware.extend(
-        [
-            FilesystemMiddleware(backend=backend),
-            SummarizationMiddleware(
-                model=model,
-                backend=backend,
-                trigger=trigger,
-                keep=keep,
-                trim_tokens_to_summarize=None,
-                truncate_args_settings=truncate_args_settings,
-            ),
-            AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
-            PatchToolCallsMiddleware(),
-        ]
-    )
+        gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    if interrupt_on is not None:
+        gp_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    general_purpose_spec: SubAgent = {
+        **GENERAL_PURPOSE_SUBAGENT,
+        "model": model,
+        "tools": tools or [],
+        "middleware": gp_middleware,
+    }
+
+    # Process user-provided subagents to fill in defaults for model, tools, and middleware
+    processed_subagents: list[SubAgent | CompiledSubAgent] = []
+    for spec in subagents or []:
+        if "runnable" in spec:
+            # CompiledSubAgent - use as-is
+            processed_subagents.append(spec)
+        else:
+            # SubAgent - fill in defaults and prepend base middleware
+            subagent_model = spec.get("model", model)
+            if isinstance(subagent_model, str):
+                subagent_model = init_chat_model(subagent_model)
+
+            # Build middleware: base stack + skills (if specified) + user's middleware
+            subagent_summarization_defaults = _compute_summarization_defaults(subagent_model)
+            subagent_middleware: list[AgentMiddleware] = [
+                TodoListMiddleware(),
+                FilesystemMiddleware(backend=backend),
+                SummarizationMiddleware(
+                    model=subagent_model,
+                    backend=backend,
+                    trigger=subagent_summarization_defaults["trigger"],
+                    keep=subagent_summarization_defaults["keep"],
+                    trim_tokens_to_summarize=None,
+                    truncate_args_settings=subagent_summarization_defaults["truncate_args_settings"],
+                ),
+                AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
+                PatchToolCallsMiddleware(),
+            ]
+            subagent_skills = spec.get("skills")
+            if subagent_skills:
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+            subagent_middleware.extend(spec.get("middleware", []))
+
+            processed_spec: SubAgent = {
+                **spec,
+                "model": subagent_model,
+                "tools": spec.get("tools", tools or []),
+                "middleware": subagent_middleware,
+            }
+            processed_subagents.append(processed_spec)
+
+    # Combine GP with processed user-provided subagents
+    all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware] = [
@@ -198,20 +251,16 @@ def create_deep_agent(
         [
             FilesystemMiddleware(backend=backend),
             SubAgentMiddleware(
-                default_model=model,
-                default_tools=tools,
-                subagents=subagents if subagents is not None else [],
-                default_middleware=subagent_middleware,
-                default_interrupt_on=interrupt_on,
-                general_purpose_agent=True,
+                backend=backend,
+                subagents=all_subagents,
             ),
             SummarizationMiddleware(
                 model=model,
                 backend=backend,
-                trigger=trigger,
-                keep=keep,
+                trigger=summarization_defaults["trigger"],
+                keep=summarization_defaults["keep"],
                 trim_tokens_to_summarize=None,
-                truncate_args_settings=truncate_args_settings,
+                truncate_args_settings=summarization_defaults["truncate_args_settings"],
             ),
             AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"),
             PatchToolCallsMiddleware(),

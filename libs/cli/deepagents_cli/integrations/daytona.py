@@ -12,9 +12,9 @@ from deepagents.backends.protocol import (
     FileUploadResponse,
     SandboxBackendProtocol,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    SandboxListResponse,
+from deepagents.backends.sandbox import BaseSandbox
+
+from deepagents_cli.integrations.sandbox_provider import (
     SandboxProvider,
 )
 
@@ -92,7 +92,9 @@ class DaytonaBackend(BaseSandbox):
         return [
             FileDownloadResponse(
                 path=resp.source,
-                content=resp.result,
+                content=resp.result.encode()
+                if isinstance(resp.result, str)
+                else resp.result,
                 error=None,  # TODO: map resp.error to FileOperationError
             )
             for resp in daytona_responses
@@ -127,7 +129,7 @@ class DaytonaBackend(BaseSandbox):
         return [FileUploadResponse(path=path, error=None) for path, _ in files]
 
 
-class DaytonaProvider(SandboxProvider[dict[str, Any]]):
+class DaytonaProvider(SandboxProvider):
     """Daytona sandbox provider implementation.
 
     Manages Daytona sandbox lifecycle using the Daytona SDK.
@@ -149,20 +151,6 @@ class DaytonaProvider(SandboxProvider[dict[str, Any]]):
             msg = "DAYTONA_API_KEY environment variable not set"
             raise ValueError(msg)
         self._client = Daytona(DaytonaConfig(api_key=self._api_key))
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        **kwargs: Any,
-    ) -> SandboxListResponse[dict[str, Any]]:
-        """List available Daytona sandboxes.
-
-        Raises:
-            NotImplementedError: Daytona SDK doesn't expose a list API yet.
-        """
-        msg = "Listing with Daytona SDK not yet implemented"
-        raise NotImplementedError(msg)
 
     def get_or_create(
         self,

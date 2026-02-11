@@ -11,7 +11,7 @@ Thank you for contributing to Deep Agents! Follow these steps to have your pull 
     - fix(sdk): resolve flag parsing error
     - feat(cli): add multi-tenant support
     - test(acp): update API usage tests
-  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/master/.github/workflows/pr_lint.yml#L15-L26
+  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml#L15-L26
 
 2. PR description:
 

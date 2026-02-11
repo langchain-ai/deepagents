@@ -252,11 +252,13 @@ class TestQuietArg:
         assert args.quiet is True
         assert args.non_interactive_message == "run tests"
 
-    def test_quiet_without_non_interactive_exits(self) -> None:
-        """Verify --quiet without -n triggers parser.error (exit code 2)."""
-        with (
-            patch.object(sys, "argv", ["deepagents", "-q"]),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            parse_args()
-        assert exc_info.value.code == 2
+    def test_quiet_without_non_interactive_parses(self) -> None:
+        """Verify --quiet without -n parses successfully.
+
+        The usage-error guard now lives in `cli_main` (after stdin pipe
+        processing), so `parse_args` itself should not reject this combo.
+        """
+        with patch.object(sys, "argv", ["deepagents", "-q"]):
+            args = parse_args()
+        assert args.quiet is True
+        assert args.non_interactive_message is None

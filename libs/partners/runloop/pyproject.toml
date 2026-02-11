@@ -24,16 +24,16 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents",
     "runloop-api-client",
-] 
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_runloop"]
 
 
 [project.urls]
-Homepage = "https://github.com/langchain-ai/deepagents/tree/master/libs/partners/runloop"
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/runloop"
 Repository = "https://github.com/langchain-ai/deepagents"
-Documentation = "https://github.com/langchain-ai/deepagents/tree/master/libs/partners/runloop"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/runloop"
 
 [dependency-groups]
 test = [
@@ -88,4 +88,3 @@ filterwarnings = []
 
 [tool.ruff.lint.extend-per-file-ignores]
 "tests/**/*.py" = ["D", "S101"]
-

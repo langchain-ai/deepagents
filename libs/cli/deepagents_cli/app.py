@@ -9,6 +9,7 @@ import os
 # S404: subprocess is required for user-initiated shell commands via ! prefix
 import subprocess  # noqa: S404
 import uuid
+import webbrowser
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from rich.text import Text
 from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
@@ -26,6 +28,7 @@ from textual.widgets import Static
 from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
+    DOCS_URL,
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
@@ -219,6 +222,12 @@ class TextualSessionState:
         self.thread_id = uuid.uuid4().hex[:8]
         return self.thread_id
 
+
+_COMMAND_URLS: dict[str, str] = {
+    "/changelog": "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md",
+    "/docs": DOCS_URL,
+    "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
+}
 
 # Prompt for /remember command - triggers agent to review conversation and update
 # memory/skills
@@ -819,13 +828,8 @@ class DeepAgentsApp(App):
                         )
                         await self._mount_before_queued(messages, auto_msg)
                     self._scroll_chat_to_bottom()
-                except NoMatches:
-                    # Cosmetic only: approval already granted via result_future.
-                    logger.warning(
-                        "Could not find #messages container to display "
-                        "auto-approval notification for commands: %s",
-                        approved_commands,
-                    )
+                except Exception:  # noqa: S110
+                    pass  # Don't fail if we can't show the message
 
                 return result_future
 
@@ -983,6 +987,20 @@ class DeepAgentsApp(App):
         except OSError as e:
             await self._mount_message(ErrorMessage(str(e)))
 
+    async def _open_url_command(self, command: str, cmd: str) -> None:
+        """Open a URL in the browser and display a clickable link.
+
+        Args:
+            command: The raw command text (displayed as user message).
+            cmd: The normalized slash command used to look up the URL.
+        """
+        url = _COMMAND_URLS[cmd]
+        await self._mount_message(UserMessage(command))
+        webbrowser.open(url)
+        link = Text(url, style="dim italic")
+        link.stylize(f"link {url}", 0)
+        await self._mount_message(AppMessage(link))
+
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
 
@@ -995,9 +1013,9 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            help_text = (
+            help_text = Text(
                 "Commands: /quit, /clear, /model [--default], /remember, "
-                "/tokens, /threads, /help\n\n"
+                "/tokens, /threads, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -1005,10 +1023,14 @@ class DeepAgentsApp(App):
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run bash commands directly\n\n"
-                "Docs: https://docs.langchain.com/oss/python/deepagents/cli"
+                f"Docs: {DOCS_URL}",
+                style="dim italic",
             )
+            help_text.stylize(f"link {DOCS_URL}", help_text.plain.index(DOCS_URL))
             await self._mount_message(AppMessage(help_text))
 
+        elif cmd in {"/changelog", "/docs", "/feedback"}:
+            await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
             # Show CLI package version
@@ -1735,6 +1757,17 @@ class DeepAgentsApp(App):
             await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
             return
 
+        # When switching models, settings must be updated before
+        # create_cli_agent because it builds the system prompt from global
+        # settings (model name, provider, context limit). Otherwise the
+        # prompt would describe the old model to the new one.
+        #
+        # Save previous values for rollback if agent creation fails.
+        prev_name = settings.model_name
+        prev_provider = settings.model_provider
+        prev_context_limit = settings.model_context_limit
+        result.apply_to_settings()
+
         try:
             new_agent, new_backend = create_cli_agent(
                 model=result.model,
@@ -1746,12 +1779,13 @@ class DeepAgentsApp(App):
                 checkpointer=self._checkpointer,
             )
         except Exception as e:
+            # Roll back settings so the running agent isn't misrepresented.
+            settings.model_name = prev_name
+            settings.model_provider = prev_provider
+            settings.model_context_limit = prev_context_limit
             logger.exception("Failed to create agent for model switch")
             await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
             return
-
-        # Both model and agent succeeded — now commit to settings atomically.
-        result.apply_to_settings()
 
         # Swap agent
         self._agent = new_agent

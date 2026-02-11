@@ -1163,7 +1163,7 @@ class TestGetBuiltinProviders:
         # Delete _BUILTIN_PROVIDERS if it exists so fallback is exercised
         had_builtin = hasattr(base_module, "_BUILTIN_PROVIDERS")
         if had_builtin:
-            saved = base_module._BUILTIN_PROVIDERS  # type: ignore[attr-defined]
+            saved = base_module._BUILTIN_PROVIDERS
             delattr(base_module, "_BUILTIN_PROVIDERS")
 
         try:
@@ -1172,7 +1172,7 @@ class TestGetBuiltinProviders:
             assert result is legacy
         finally:
             if had_builtin:
-                base_module._BUILTIN_PROVIDERS = saved  # type: ignore[attr-defined]
+                base_module._BUILTIN_PROVIDERS = saved
 
     def test_returns_empty_when_neither_exists(self):
         """Returns empty dict when neither attribute exists."""

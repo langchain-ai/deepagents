@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 from rich.style import Style
@@ -13,27 +12,11 @@ from textual.widgets import Static
 from deepagents_cli.config import (
     COLORS,
     _is_editable_install,
+    fetch_langsmith_project_url,
     get_banner,
     get_glyphs,
-    settings,
+    get_langsmith_project_name,
 )
-
-
-def _fetch_project_url(project_name: str) -> str | None:
-    """Fetch the LangSmith project URL (blocking, run in a thread).
-
-    Returns:
-        Project URL string if found, None otherwise.
-    """
-    try:
-        # Optional dep
-        from langsmith import Client  # noqa: PLC0415
-
-        project = Client().read_project(project_name=project_name)
-    except (OSError, ValueError, RuntimeError):
-        return None
-    else:
-        return project.url or None
 
 
 class WelcomeBanner(Static):
@@ -56,21 +39,8 @@ class WelcomeBanner(Static):
         """
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id: str | None = thread_id
-        self._project_name: str | None = None
-
-        langsmith_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
-            "LANGCHAIN_API_KEY"
-        )
-        langsmith_tracing = os.environ.get("LANGSMITH_TRACING") or os.environ.get(
-            "LANGCHAIN_TRACING_V2"
-        )
-
-        if langsmith_key and langsmith_tracing:
-            self._project_name = (
-                settings.deepagents_langchain_project
-                or os.environ.get("LANGSMITH_PROJECT")
-                or "default"
-            )
+        self._project_name: str | None = get_langsmith_project_name()
+        self._project_url: str | None = None
 
         super().__init__(self._build_banner(), **kwargs)
 
@@ -85,13 +55,23 @@ class WelcomeBanner(Static):
             return
         try:
             project_url = await asyncio.wait_for(
-                asyncio.to_thread(_fetch_project_url, self._project_name),
+                asyncio.to_thread(fetch_langsmith_project_url, self._project_name),
                 timeout=2.0,
             )
         except (TimeoutError, OSError):
             project_url = None
         if project_url:
+            self._project_url = project_url
             self.update(self._build_banner(project_url))
+
+    def update_thread_id(self, thread_id: str) -> None:
+        """Update the displayed thread ID and re-render the banner.
+
+        Args:
+            thread_id: The new thread ID to display.
+        """
+        self._cli_thread_id = thread_id
+        self.update(self._build_banner(self._project_url))
 
     def _build_banner(self, project_url: str | None = None) -> Text:
         """Build the banner rich text.

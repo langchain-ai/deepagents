@@ -79,7 +79,7 @@ async def test_acp_agent_prompt_streams_text() -> None:
     )
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -103,7 +103,7 @@ async def test_acp_agent_cancel_stops_prompt() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="Should not appear")]))
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -152,8 +152,6 @@ async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
             ),
             checkpointer=MemorySaver(),
         ),
-        mode="auto",
-        root_dir="/tmp",
     )
     agent._agent = Graph()  # type: ignore[assignment]
     client = FakeACPClient()
@@ -176,7 +174,7 @@ async def test_acp_agent_initialize_and_modes() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="OK")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -185,12 +183,7 @@ async def test_acp_agent_initialize_and_modes() -> None:
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
     assert session.session_id
-    assert session.modes.current_mode_id == "auto"
-    assert {m.id for m in session.modes.available_modes} == {"ask_before_edits", "auto"}
-
-    await agent.set_session_mode(mode_id="ask_before_edits", session_id=session.session_id)
-    session2 = await agent.new_session(cwd="/tmp", mcp_servers=[])
-    assert session2.modes.current_mode_id == "ask_before_edits"
+    assert session.modes is None
 
 
 @tool(description="Write a file")
@@ -225,7 +218,7 @@ async def test_acp_agent_hitl_requests_permission_via_public_api() -> None:
         checkpointer=MemorySaver(),
     )
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient(permission_outcomes=["approve"])
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -271,7 +264,7 @@ async def test_acp_deep_agent_hitl_interrupt_on_edit_file_requests_permission() 
         interrupt_on={"edit_file": True},
     )
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient(permission_outcomes=["approve"])
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -291,7 +284,7 @@ async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -327,7 +320,7 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -361,7 +354,7 @@ async def test_acp_agent_multimodal_prompt_blocks_do_not_error() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/root")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -422,7 +415,7 @@ async def test_acp_agent_end_to_end_clears_plan() -> None:
         checkpointer=MemorySaver(),
     )
 
-    agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=graph)
     client = FakeACPClient(permission_outcomes=["reject"])
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -479,7 +472,7 @@ async def test_acp_agent_nested_agent_tool_call_returns_final_text() -> None:
     )
     outer = create_deep_agent(model=outer_model, tools=[call_agent1], checkpointer=MemorySaver())
 
-    agent = AgentServerACP(agent=outer, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=outer)
     client = FakeACPClient()
     agent.on_connect(client)  # type: ignore[arg-type]
 
@@ -551,7 +544,7 @@ async def test_acp_langchain_create_agent_nested_agent_tool_call_messages() -> N
     )
     outer = create_agent(outer_model, tools=[call_agent1], checkpointer=MemorySaver())
 
-    agent = AgentServerACP(agent=outer, mode="auto", root_dir="/tmp")
+    agent = AgentServerACP(agent=outer)
     client = FakeACPClient(permission_outcomes=["approve"])
     agent.on_connect(client)  # type: ignore[arg-type]
 

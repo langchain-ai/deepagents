@@ -339,6 +339,57 @@ class TestQueuedMessage:
         assert msg.mode == "bash"
 
 
+class TestInterruptPriority:
+    """Tests for escape interrupt priority behavior."""
+
+    @pytest.mark.asyncio
+    async def test_escape_rejects_pending_approval_before_canceling_worker(
+        self,
+    ) -> None:
+        """When both HITL approval and worker are active, reject approval first."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        worker = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = approval
+            app._agent_running = True
+            app._agent_worker = worker
+
+            app.action_interrupt()
+
+        approval.action_select_reject.assert_called_once_with()
+        worker.cancel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_escape_cancels_worker_when_no_pending_approval(self) -> None:
+        """Escape should cancel active worker if no approval menu is pending."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        queued_widget_1 = MagicMock()
+        queued_widget_2 = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._pending_approval_widget = None
+            app._agent_running = True
+            app._agent_worker = worker
+            app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+            app._queued_widgets.append(queued_widget_1)
+            app._queued_widgets.append(queued_widget_2)
+
+            app.action_interrupt()
+
+        worker.cancel.assert_called_once_with()
+        queued_widget_1.remove.assert_called_once_with()
+        queued_widget_2.remove.assert_called_once_with()
+        assert len(app._pending_messages) == 0
+        assert len(app._queued_widgets) == 0
+
+
 class TestMessageQueue:
     """Test message queue behavior in DeepAgentsApp."""
 

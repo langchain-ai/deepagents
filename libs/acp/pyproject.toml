@@ -68,3 +68,6 @@ known-first-party = ["deepagents_acp"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto" # or "strict"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"

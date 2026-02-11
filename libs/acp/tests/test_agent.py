@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import Any, Literal
 
 from acp import text_block, update_agent_message
 from acp.interfaces import Client
@@ -29,13 +30,23 @@ from tests.chat_model import GenericFakeChatModel
 
 
 class FakeACPClient(Client):
-    def __init__(self) -> None:
-        self.updates: list[dict[str, Any]] = []
-        self.permission_requests: list[dict[str, Any]] = []
-        self.next_permission: str = "approve"
+    def __init__(
+        self, *, permission_outcomes: list[Literal["approve", "reject"]] | None = None
+    ) -> None:
+        self.events: list[dict[str, Any]] = []
+        self.permission_outcomes: list[Literal["approve", "reject"]] = list(
+            permission_outcomes or ["approve"]
+        )
 
     async def session_update(self, session_id: str, update: Any, source: str) -> None:
-        self.updates.append({"session_id": session_id, "update": update, "source": source})
+        self.events.append(
+            {
+                "type": "session_update",
+                "session_id": session_id,
+                "update": update,
+                "source": source,
+            }
+        )
 
     async def request_permission(
         self,
@@ -44,11 +55,19 @@ class FakeACPClient(Client):
         tool_call: ToolCallUpdate,
         **kwargs: Any,
     ) -> RequestPermissionResponse:
-        self.permission_requests.append(
-            {"session_id": session_id, "tool_call": tool_call, "options": options}
+        self.events.append(
+            {
+                "type": "request_permission",
+                "session_id": session_id,
+                "tool_call": tool_call,
+                "options": options,
+            }
+        )
+        outcome: Literal["approve", "reject"] = (
+            self.permission_outcomes.pop(0) if self.permission_outcomes else "approve"
         )
         return RequestPermissionResponse(
-            outcome=AllowedOutcome(outcome="selected", option_id=self.next_permission)
+            outcome=AllowedOutcome(outcome="selected", option_id=outcome)
         )
 
 
@@ -69,7 +88,9 @@ async def test_acp_agent_prompt_streams_text() -> None:
     assert resp.stop_reason == "end_turn"
 
     texts: list[str] = []
-    for entry in client.updates:
+    for entry in client.events:
+        if entry["type"] != "session_update":
+            continue
         update = entry["update"]
         if update == update_agent_message(text_block("Hello!")):
             texts.append("Hello!")
@@ -88,8 +109,6 @@ async def test_acp_agent_cancel_stops_prompt() -> None:
 
     async def cancel_during_prompt() -> None:
         await agent.cancel(session_id=session.session_id)
-
-    import asyncio
 
     task = asyncio.create_task(
         agent.prompt([TextContentBlock(type="text", text="Hi")], session_id=session.session_id)
@@ -115,7 +134,7 @@ async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
     class Graph:
         @staticmethod
         async def astream(*args: Any, **kwargs: Any):
-            yield (ListContentMessage(), {})
+            yield ((), "messages", (ListContentMessage(), {}))
 
         async def aget_state(self, config: Any) -> Any:
             class S:
@@ -145,8 +164,9 @@ async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
     assert resp.stop_reason == "end_turn"
 
     assert any(
-        entry["update"] == update_agent_message(text_block("Hello world"))
-        for entry in client.updates
+        e["update"] == update_agent_message(text_block("Hello world"))
+        for e in client.events
+        if e["type"] == "session_update"
     )
 
 
@@ -204,8 +224,7 @@ async def test_acp_agent_hitl_requests_permission_via_public_api() -> None:
     )
 
     agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
-    client = FakeACPClient()
-    client.next_permission = "approve"
+    client = FakeACPClient(permission_outcomes=["approve"])
     agent.on_connect(client)  # type: ignore[arg-type]
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
@@ -215,8 +234,9 @@ async def test_acp_agent_hitl_requests_permission_via_public_api() -> None:
     )
     assert resp.stop_reason == "end_turn"
 
-    assert client.permission_requests
-    assert client.permission_requests[0]["tool_call"].title == "write_file_tool"
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert permission_requests
+    assert permission_requests[0]["tool_call"].title == "write_file_tool"
 
 
 async def test_acp_agent_tool_call_chunk_starts_tool_call() -> None:
@@ -269,7 +289,7 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
     agent._cancelled = True
 
     async def one_chunk(*args: Any, **kwargs: Any):
-        yield (msg, {})
+        yield ((), "messages", (msg, {}))
 
     class Graph:
         astream = one_chunk
@@ -355,8 +375,7 @@ async def test_acp_agent_end_to_end_clears_plan() -> None:
     )
 
     agent = AgentServerACP(agent=graph, mode="auto", root_dir="/tmp")
-    client = FakeACPClient()
-    client.next_permission = "reject"
+    client = FakeACPClient(permission_outcomes=["reject"])
     agent.on_connect(client)  # type: ignore[arg-type]
 
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
@@ -366,16 +385,19 @@ async def test_acp_agent_end_to_end_clears_plan() -> None:
     )
     assert resp.stop_reason == "end_turn"
 
-    assert client.permission_requests
-    assert client.permission_requests[0]["tool_call"].title == "Review Plan"
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert permission_requests
+    assert permission_requests[0]["tool_call"].title == "Review Plan"
 
     plan_updates = [
-        entry["update"]
-        for entry in client.updates
-        if getattr(entry["update"], "session_update", None) == "plan"
+        e["update"]
+        for e in client.events
+        if e["type"] == "session_update" and getattr(e["update"], "session_update", None) == "plan"
     ]
     assert plan_updates
-    assert plan_updates[-1].entries == []
+
+    plan_clear_updates = [u for u in plan_updates if getattr(u, "entries", None) == []]
+    assert plan_clear_updates
 
 
 async def test_acp_agent_nested_agent_tool_call_returns_final_text() -> None:
@@ -421,7 +443,9 @@ async def test_acp_agent_nested_agent_tool_call_returns_final_text() -> None:
     assert resp.stop_reason == "end_turn"
 
     assert any(
-        entry["update"] == update_agent_message(text_block("blue")) for entry in client.updates
+        e["update"] == update_agent_message(text_block("blue"))
+        for e in client.events
+        if e["type"] == "session_update"
     )
 
 
@@ -450,7 +474,7 @@ async def test_acp_langchain_create_agent_nested_agent_tool_call_messages() -> N
         ),
         stream_delimiter=None,
     )
-    subagent = create_agent(subagent_model, tools=[ask_user], checkpointer=True)
+    subagent = create_agent(subagent_model, tools=[ask_user], checkpointer=MemorySaver())
 
     @tool
     async def call_agent1(question: str, runtime: ToolRuntime) -> str:
@@ -488,4 +512,8 @@ async def test_acp_langchain_create_agent_nested_agent_tool_call_messages() -> N
     response = await agent.prompt(
         [TextContentBlock(type="text", text="hi")], session_id=session.session_id
     )
-    raise ValueError(response)
+
+    assert response.stop_reason == "end_turn"
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert permission_requests
+    assert permission_requests[0]["tool_call"].title == "ask_user"

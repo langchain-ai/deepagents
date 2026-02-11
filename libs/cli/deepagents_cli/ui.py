@@ -11,6 +11,7 @@ from deepagents_cli._version import __version__
 from deepagents_cli.backends import DEFAULT_EXECUTE_TIMEOUT
 from deepagents_cli.config import (
     COLORS,
+    DOCS_URL,
     MAX_ARG_LENGTH,
     _is_editable_install,
     console,
@@ -249,7 +250,7 @@ def show_help() -> None:
     )
     console.print()
     console.print(
-        "Docs: https://docs.langchain.com/oss/python/deepagents/cli",
+        f"Docs: [link={DOCS_URL}]{DOCS_URL}[/link]",
         style=COLORS["dim"],
     )
     console.print()
@@ -292,6 +293,8 @@ def show_help() -> None:
     console.print(
         "  --shell-allow-list CMDS    Comma-separated local shell commands to allow"
     )
+    console.print("  --default-model [MODEL]    Set, show, or manage the default model")
+    console.print("  --clear-default-model      Clear the default model")
     console.print("  -v, --version              Show deepagents CLI version")
     console.print("  -h, --help                 Show this help message and exit")
     console.print()

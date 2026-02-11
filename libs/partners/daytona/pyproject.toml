@@ -24,15 +24,15 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents",
     "daytona",
-] 
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_daytona"]
 
 [project.urls]
-Homepage = "https://github.com/langchain-ai/deepagents/tree/master/libs/partners/daytona"
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/daytona"
 Repository = "https://github.com/langchain-ai/deepagents"
-Documentation = "https://github.com/langchain-ai/deepagents/tree/master/libs/partners/daytona"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/daytona"
 
 [dependency-groups]
 test = [

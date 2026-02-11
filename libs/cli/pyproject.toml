@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.19"
+version = "0.0.20"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,41 +25,63 @@ classifiers = [
     "Topic :: Terminals",
 ]
 dependencies = [
-  # Framework
-  "deepagents==0.3.12",
-  "langchain>=1.2.7,<2.0.0",
-  "langchain-openai>=1.1.7,<2.0.0",
-  "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
+    # Framework
+    "deepagents==0.4.0",
+    "langchain>=1.2.10,<2.0.0",
+    "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
 
-  # UI/Terminal
-  "textual>=6.0.0,<8.0.0",
-  "textual-autocomplete>=3.0.0,<5.0.0",
-  "prompt-toolkit>=3.0.52,<4.0.0",
-  "rich>=14.0.0,<15.0.0",
-  "markdownify>=0.13.0,<2.0.0",
+    # Require at least one integration package
+    "langchain-openai>=1.1.8,<2.0.0",
 
-  # Sandbox integrations
-  "daytona>=0.113.0,<1.0.0",
-  "langsmith>=0.6.6",
-  "modal>=0.65.0,<2.0.0",
-  "runloop-api-client>=0.69.0",
+    # UI/Terminal
+    "textual>=6.0.0,<8.0.0",
+    "textual-autocomplete>=3.0.0,<5.0.0",
+    "prompt-toolkit>=3.0.52,<4.0.0",
+    "rich>=14.0.0,<15.0.0",
+    "markdownify>=0.13.0,<2.0.0",
 
-  # Tools
-  "tavily-python>=0.7.21,<1.0.0",
+    # Sandbox integrations
+    "langsmith>=0.6.6",
+    "daytona>=0.113.0,<1.0.0",
+    "modal>=0.65.0,<2.0.0",
+    "runloop-api-client>=0.69.0",
 
-  # Clipboard
-  "pyperclip>=1.11.0,<2.0.0",
+    # Tools
+    "tavily-python>=0.7.21,<1.0.0",
 
-  # Utilities
-  "python-dotenv>=1.0.0,<2.0.0",
-  "requests>=2.0.0,<3.0.0",
-  "pillow>=10.0.0,<13.0.0",
-  "pyyaml>=6.0.0",
-  "aiosqlite>=0.19.0,<1.0.0",
+    # Clipboard
+    "pyperclip>=1.11.0,<2.0.0",
+
+    # Utilities
+    "python-dotenv>=1.0.0,<2.0.0",
+    "requests>=2.0.0,<3.0.0",
+    "pillow>=10.0.0,<13.0.0",
+    "pyyaml>=6.0.0",
+    "aiosqlite>=0.19.0,<1.0.0",
+    "tomli-w>=1.0.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
+# Model providers
+anthropic = ["langchain-anthropic>=1.0.0,<2.0.0"]
+bedrock = ["langchain-aws>=1.0.0,<2.0.0"]
+cohere = ["langchain-cohere>=0.5.0,<1.0.0"]
+deepseek = ["langchain-deepseek>=1.0.0,<2.0.0"]
+fireworks = ["langchain-fireworks>=1.0.0,<2.0.0"]
+google-genai = ["langchain-google-genai>=4.0.0,<5.0.0"]
+groq = ["langchain-groq>=1.0.0,<2.0.0"]
+huggingface = ["langchain-huggingface>=1.0.0,<2.0.0"]
+ibm = ["langchain-ibm>=1.0.0,<2.0.0"]
+mistralai = ["langchain-mistralai>=1.0.0,<2.0.0"]
+nvidia = ["langchain-nvidia-ai-endpoints>=1.0.0,<2.0.0"]
+ollama = ["langchain-ollama>=1.0.0,<2.0.0"]
+openai = ["langchain-openai>=1.1.7,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
 vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
+xai = ["langchain-xai>=1.0.0,<2.0.0"]
+all-providers = [
+    "deepagents-cli[anthropic,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,mistralai,nvidia,ollama,openai,perplexity,vertexai,xai]",
+]
 
 [project.scripts]
 deepagents = "deepagents_cli:cli_main"
@@ -70,7 +92,7 @@ Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
-Changelog = "https://github.com/langchain-ai/deepagents/blob/master/libs/cli/CHANGELOG.md"
+Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
 Twitter = "https://x.com/LangChain"
 
 [dependency-groups]
@@ -146,7 +168,7 @@ convention = "google"
 ignore-var-parameters = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN001", "ANN201", "D1", "DOC", "F401", "PLC1901", "PLC2701", "PLR2004", "PLR6201", "PLR6301", "PLW0108", "RUF001", "S", "SLF"]
+"tests/**" = ["ANN001", "ANN201", "D1", "DOC", "F401", "PLC0415", "PLC1901", "PLC2701", "PLR2004", "PLR6201", "PLR6301", "PLW0108", "RUF001", "S", "SLF"]
 "tests/unit_tests/test_imports.py" = ["PLC0415"]  # Imports inside function ARE the test
 "scripts/**" = ["BLE001", "INP", "S", "T201"]
 "deepagents_cli/agent.py" = [

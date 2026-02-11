@@ -473,7 +473,7 @@ class FilesystemMiddleware(AgentMiddleware):
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
         """
         # Use provided backend or default to StateBackend factory
-        self.backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+        self.backend = backend if backend is not None else (StateBackend)
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt

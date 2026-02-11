@@ -9,6 +9,7 @@ import os
 # S404: subprocess is required for user-initiated shell commands via ! prefix
 import subprocess  # noqa: S404
 import uuid
+import webbrowser
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from rich.text import Text
 from textual.app import App
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
@@ -23,13 +25,26 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_cli.agent import create_cli_agent
 from deepagents_cli.clipboard import copy_selection_to_clipboard
 from deepagents_cli.config import (
+    DOCS_URL,
     SHELL_TOOL_NAMES,
     CharsetMode,
     _detect_charset_mode,
+    create_model,
+    detect_provider,
     is_shell_command_allowed,
     settings,
+)
+from deepagents_cli.model_config import (
+    ModelConfigError,
+    ModelSpec,
+    clear_default_model,
+    get_credential_env_var,
+    has_provider_credentials,
+    save_default_model,
+    save_recent_model,
 )
 from deepagents_cli.textual_adapter import TextualUIAdapter, execute_task_textual
 from deepagents_cli.widgets.approval import ApprovalMenu
@@ -44,6 +59,7 @@ from deepagents_cli.widgets.messages import (
     ToolCallMessage,
     UserMessage,
 )
+from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 from deepagents_cli.widgets.status import StatusBar
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
@@ -52,15 +68,16 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents.backends import CompositeBackend
+    from deepagents.backends.sandbox import SandboxBackendProtocol
     from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import Click, MouseUp, Resize
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
-
-logger = logging.getLogger(__name__)
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -205,6 +222,12 @@ class TextualSessionState:
         self.thread_id = uuid.uuid4().hex[:8]
         return self.thread_id
 
+
+_COMMAND_URLS: dict[str, str] = {
+    "/changelog": "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md",
+    "/docs": DOCS_URL,
+    "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
+}
 
 # Prompt for /remember command - triggers agent to review conversation and update
 # memory/skills
@@ -370,11 +393,15 @@ class DeepAgentsApp(App):
         *,
         agent: Pregel | None = None,
         assistant_id: str | None = None,
-        backend: Any = None,  # CompositeBackend
+        backend: CompositeBackend | None = None,
         auto_approve: bool = False,
         cwd: str | Path | None = None,
         thread_id: str | None = None,
         initial_prompt: str | None = None,
+        checkpointer: BaseCheckpointSaver | None = None,
+        tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+        sandbox: SandboxBackendProtocol | None = None,
+        sandbox_type: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -387,6 +414,10 @@ class DeepAgentsApp(App):
             cwd: Current working directory to display
             thread_id: Optional thread ID for session persistence
             initial_prompt: Optional prompt to auto-submit when session starts
+            checkpointer: Checkpointer for session persistence (enables model hot-swap)
+            tools: Tools used to create the agent (for model hot-swap)
+            sandbox: Sandbox backend (for model hot-swap)
+            sandbox_type: Type of sandbox provider (for model hot-swap)
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -398,6 +429,11 @@ class DeepAgentsApp(App):
         # Avoid collision with App._thread_id
         self._lc_thread_id = thread_id
         self._initial_prompt = initial_prompt
+        # Store for model hot-swap
+        self._checkpointer = checkpointer
+        self._tools = tools or []
+        self._sandbox = sandbox
+        self._sandbox_type = sandbox_type
         self._status_bar: StatusBar | None = None
         self._chat_input: ChatInput | None = None
         self._quit_pending = False
@@ -792,13 +828,8 @@ class DeepAgentsApp(App):
                         )
                         await self._mount_before_queued(messages, auto_msg)
                     self._scroll_chat_to_bottom()
-                except NoMatches:
-                    # Cosmetic only: approval already granted via result_future.
-                    logger.warning(
-                        "Could not find #messages container to display "
-                        "auto-approval notification for commands: %s",
-                        approved_commands,
-                    )
+                except Exception:  # noqa: S110
+                    pass  # Don't fail if we can't show the message
 
                 return result_future
 
@@ -956,6 +987,20 @@ class DeepAgentsApp(App):
         except OSError as e:
             await self._mount_message(ErrorMessage(str(e)))
 
+    async def _open_url_command(self, command: str, cmd: str) -> None:
+        """Open a URL in the browser and display a clickable link.
+
+        Args:
+            command: The raw command text (displayed as user message).
+            cmd: The normalized slash command used to look up the URL.
+        """
+        url = _COMMAND_URLS[cmd]
+        await self._mount_message(UserMessage(command))
+        webbrowser.open(url)
+        link = Text(url, style="dim italic")
+        link.stylize(f"link {url}", 0)
+        await self._mount_message(AppMessage(link))
+
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
 
@@ -968,8 +1013,9 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
-            help_text = (
-                "Commands: /quit, /clear, /remember, /tokens, /threads, /help\n\n"
+            help_text = Text(
+                "Commands: /quit, /clear, /model [--default], /remember, "
+                "/tokens, /threads, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -977,10 +1023,14 @@ class DeepAgentsApp(App):
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run bash commands directly\n\n"
-                "Docs: https://docs.langchain.com/oss/python/deepagents/cli"
+                f"Docs: {DOCS_URL}",
+                style="dim italic",
             )
+            help_text.stylize(f"link {DOCS_URL}", help_text.plain.index(DOCS_URL))
             await self._mount_message(AppMessage(help_text))
 
+        elif cmd in {"/changelog", "/docs", "/feedback"}:
+            await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
             # Show CLI package version
@@ -1050,9 +1100,52 @@ class DeepAgentsApp(App):
             # Send as a user message to the agent
             await self._handle_user_message(final_prompt)
             return  # _handle_user_message already mounts the message
+        elif cmd == "/model" or cmd.startswith("/model "):
+            model_arg = None
+            set_default = False
+            if cmd.startswith("/model "):
+                raw_arg = command.strip()[len("/model ") :].strip()
+                if raw_arg.startswith("--default"):
+                    set_default = True
+                    model_arg = raw_arg[len("--default") :].strip() or None
+                else:
+                    model_arg = raw_arg
+
+            if set_default:
+                await self._mount_message(UserMessage(command))
+                if model_arg == "--clear":
+                    await self._clear_default_model()
+                elif model_arg:
+                    await self._set_default_model(model_arg)
+                else:
+                    await self._mount_message(
+                        AppMessage(
+                            "Usage: /model --default provider:model\n"
+                            "       /model --default --clear"
+                        )
+                    )
+            elif model_arg:
+                # Direct switch: /model claude-sonnet-4-5
+                await self._mount_message(UserMessage(command))
+                await self._switch_model(model_arg)
+            else:
+                await self._show_model_selector()
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
+
+        # Scroll to bottom after command output is rendered.
+        # Use call_after_refresh so the layout pass completes first;
+        # otherwise max_scroll_y is still stale.
+        def _scroll_after_command() -> None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+                if chat.max_scroll_y > 0:
+                    chat.scroll_end(animate=False)
+            except NoMatches:
+                pass
+
+        self.call_after_refresh(_scroll_after_command)
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
@@ -1568,16 +1661,226 @@ class DeepAgentsApp(App):
         """Copy selection to clipboard on mouse release."""
         copy_selection_to_clipboard(self)
 
+    # =========================================================================
+    # Model Switching
+    # =========================================================================
+
+    async def _show_model_selector(self) -> None:
+        """Show interactive model selector as a modal screen."""
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            """Handle the model selector result."""
+            if result is not None:
+                model_spec, _ = result
+                self.call_later(self._switch_model, model_spec)
+            # Refocus input after modal closes
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ModelSelectorScreen(
+            current_model=settings.model_name,
+            current_provider=settings.model_provider,
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _switch_model(self, model_spec: str) -> None:
+        """Switch to a new model, preserving conversation history.
+
+        Args:
+            model_spec: The model specification to switch to.
+
+                Can be in `provider:model` format
+                (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
+                for auto-detection.
+        """
+        logger.info("Switching model to %s", model_spec)
+
+        # Strip leading colon — treat ":claude-opus-4-6" as "claude-opus-4-6"
+        model_spec = model_spec.removeprefix(":")
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if parsed:
+            provider: str | None = parsed.provider
+            model_name = parsed.model
+        else:
+            model_name = model_spec
+            provider = detect_provider(model_spec)
+
+        # Check credentials
+        if provider and has_provider_credentials(provider) is False:
+            env_var = get_credential_env_var(provider)
+            if env_var:
+                detail = f"{env_var} is not set or is empty"
+            else:
+                detail = (
+                    f"provider '{provider}' is not recognized. "
+                    "Add it to ~/.deepagents/config.toml with an api_key_env field"
+                )
+            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
+            return
+
+        # Check if already using this exact model
+        if model_name == settings.model_name and (
+            not provider or provider == settings.model_provider
+        ):
+            current = f"{settings.model_provider}:{settings.model_name}"
+            await self._mount_message(AppMessage(f"Already using {current}"))
+            return
+
+        # Check if we have what we need for hot-swap
+        if not self._checkpointer:
+            # No checkpointer means we can't hot-swap
+            # Save the preference and notify user
+            if save_recent_model(model_spec):
+                await self._mount_message(
+                    AppMessage(
+                        f"Model preference set to {model_spec}. "
+                        "Restart the CLI for the change to take effect."
+                    )
+                )
+            else:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Could not save model preference. "
+                        "Check permissions for ~/.deepagents/"
+                    )
+                )
+            return
+
+        try:
+            result = create_model(model_spec)
+        except ModelConfigError as e:
+            await self._mount_message(ErrorMessage(str(e)))
+            return
+        except Exception as e:
+            logger.exception("Failed to create model from spec %s", model_spec)
+            await self._mount_message(ErrorMessage(f"Failed to create model: {e}"))
+            return
+
+        # When switching models, settings must be updated before
+        # create_cli_agent because it builds the system prompt from global
+        # settings (model name, provider, context limit). Otherwise the
+        # prompt would describe the old model to the new one.
+        #
+        # Save previous values for rollback if agent creation fails.
+        prev_name = settings.model_name
+        prev_provider = settings.model_provider
+        prev_context_limit = settings.model_context_limit
+        result.apply_to_settings()
+
+        try:
+            new_agent, new_backend = create_cli_agent(
+                model=result.model,
+                assistant_id=self._assistant_id or "default",
+                tools=self._tools,
+                sandbox=self._sandbox,
+                sandbox_type=self._sandbox_type,
+                auto_approve=self._auto_approve,
+                checkpointer=self._checkpointer,
+            )
+        except Exception as e:
+            # Roll back settings so the running agent isn't misrepresented.
+            settings.model_name = prev_name
+            settings.model_provider = prev_provider
+            settings.model_context_limit = prev_context_limit
+            logger.exception("Failed to create agent for model switch")
+            await self._mount_message(ErrorMessage(f"Model switch failed: {e}"))
+            return
+
+        # Swap agent
+        self._agent = new_agent
+        self._backend = new_backend
+
+        # Post-swap: update UI and save config
+        display = f"{settings.model_provider}:{settings.model_name}"
+        if self._status_bar:
+            self._status_bar.set_model(display)
+
+        config_saved = save_recent_model(display)
+        if config_saved:
+            await self._mount_message(AppMessage(f"Switched to {display}"))
+        else:
+            await self._mount_message(
+                AppMessage(
+                    f"Switched to {display} (preference not saved - "
+                    "check ~/.deepagents/ permissions)"
+                )
+            )
+
+        logger.info("Model switched to %s", display)
+
+        # Scroll to bottom so the confirmation message is visible
+        def _scroll_after_switch() -> None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+                if chat.max_scroll_y > 0:
+                    chat.scroll_end(animate=False)
+            except NoMatches:
+                pass
+
+        self.call_after_refresh(_scroll_after_switch)
+
+    async def _set_default_model(self, model_spec: str) -> None:
+        """Set the default model in config without switching the current session.
+
+        Updates `[models].default` in `~/.deepagents/config.toml` so that
+        future CLI launches use this model. Does not affect the running session.
+
+        Args:
+            model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
+        """
+        model_spec = model_spec.removeprefix(":")
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if not parsed:
+            provider = detect_provider(model_spec)
+            if provider:
+                model_spec = f"{provider}:{model_spec}"
+
+        if save_default_model(model_spec):
+            await self._mount_message(AppMessage(f"Default model set to {model_spec}"))
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not save default model. Check permissions for ~/.deepagents/"
+                )
+            )
+
+    async def _clear_default_model(self) -> None:
+        """Remove the default model from config.
+
+        After clearing, future launches fall back to `[models].recent` or
+        environment auto-detection.
+        """
+        if clear_default_model():
+            await self._mount_message(
+                AppMessage(
+                    "Default model cleared. "
+                    "Future launches will use recent model or auto-detect."
+                )
+            )
+        else:
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not clear default model. "
+                    "Check permissions for ~/.deepagents/"
+                )
+            )
+
 
 async def run_textual_app(
     *,
     agent: Pregel | None = None,
     assistant_id: str | None = None,
-    backend: Any = None,  # CompositeBackend
+    backend: CompositeBackend | None = None,
     auto_approve: bool = False,
     cwd: str | Path | None = None,
     thread_id: str | None = None,
     initial_prompt: str | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
+    tools: list[Callable[..., Any] | dict[str, Any]] | None = None,
+    sandbox: SandboxBackendProtocol | None = None,
+    sandbox_type: str | None = None,
 ) -> int:
     """Run the Textual application.
 
@@ -1589,6 +1892,10 @@ async def run_textual_app(
         cwd: Current working directory to display
         thread_id: Optional thread ID for session persistence
         initial_prompt: Optional prompt to auto-submit when session starts
+        checkpointer: Checkpointer for session persistence (enables model hot-swap)
+        tools: Tools used to create the agent (for model hot-swap)
+        sandbox: Sandbox backend (for model hot-swap)
+        sandbox_type: Type of sandbox provider (for model hot-swap)
 
     Returns:
         The app's return code (0 for success, non-zero for error).
@@ -1601,6 +1908,10 @@ async def run_textual_app(
         cwd=cwd,
         thread_id=thread_id,
         initial_prompt=initial_prompt,
+        checkpointer=checkpointer,
+        tools=tools,
+        sandbox=sandbox,
+        sandbox_type=sandbox_type,
     )
     await app.run_async()
     return app.return_code or 0

@@ -1,4 +1,5 @@
 """Deep Agents come with planning, filesystem, and subagents."""
+# ruff: noqa: ERA001
 
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -144,12 +145,28 @@ def create_deep_agent(
     if model is None:
         model = get_default_model()
     elif isinstance(model, str):
-        model = init_chat_model(model)
+        if model.startswith("openai:"):
+            # Use Responses API by default. To use chat completions, use
+            # `model=init_chat_model("openai:...")`
+            # To disable data retention with the Responses API, use
+            # ```
+            # model=init_chat_model(
+            #     "openai:...",
+            #     use_responses_api=True,
+            #     store=False,
+            #     include=["reasoning.encrypted_content"],
+            # )
+            # ```
+            model_init_params: dict = {"use_responses_api": True}
+        else:
+            model_init_params = {}
+
+        model = init_chat_model(model, **model_init_params)
 
     # Compute summarization defaults based on model profile
     summarization_defaults = _compute_summarization_defaults(model)
 
-    backend = backend if backend is not None else (lambda rt: StateBackend(rt))
+    backend = backend if backend is not None else (StateBackend)
 
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware] = [

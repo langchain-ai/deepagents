@@ -94,7 +94,10 @@ class CompletionController(Protocol):
 
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
+    ("/changelog", "Open changelog in browser"),
     ("/clear", "Clear chat and start new thread"),
+    ("/docs", "Open documentation in browser"),
+    ("/feedback", "Submit a bug report or feature request"),
     ("/model", "Switch model, show selector, or set default (--default)"),
     ("/remember", "Update memory and skills from conversation"),
     ("/quit", "Exit app"),
@@ -161,9 +164,6 @@ class SlashCommandController:
             for cmd, desc in self._commands
             if cmd.lower().startswith("/" + search)
         ]
-
-        if len(suggestions) > MAX_SUGGESTIONS:
-            suggestions = suggestions[:MAX_SUGGESTIONS]
 
         if suggestions:
             self._suggestions = suggestions

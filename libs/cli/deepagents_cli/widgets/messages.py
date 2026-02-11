@@ -1241,14 +1241,17 @@ class AppMessage(Static):
     }
     """
 
-    def __init__(self, message: str, **kwargs: Any) -> None:
+    def __init__(self, message: str | Text, **kwargs: Any) -> None:
         """Initialize a system message.
 
         Args:
-            message: The system message
+            message: The system message as a string or pre-styled Rich Text.
             **kwargs: Additional arguments passed to parent
         """
         # Store raw content for serialization
         self._content = message
         # Use Text object to safely render message without markup parsing
-        super().__init__(Text(message, style="dim italic"), **kwargs)
+        content = (
+            message if isinstance(message, Text) else Text(message, style="dim italic")
+        )
+        super().__init__(content, **kwargs)

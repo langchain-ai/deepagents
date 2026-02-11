@@ -14,6 +14,7 @@ import contextlib
 import functools
 import importlib.util
 import json
+import logging
 import os
 import sys
 import traceback
@@ -27,6 +28,8 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarnin
 from rich.text import Text
 
 from deepagents_cli._version import __version__
+
+logger = logging.getLogger(__name__)
 
 # Now safe to import agent (which imports LangChain modules)
 from deepagents_cli.agent import (
@@ -300,7 +303,15 @@ def parse_args() -> argparse.Namespace:
         "--quiet",
         action="store_true",
         help="Clean output for piping — only the agent's response "
-        "goes to stdout. Requires -n.",
+        "goes to stdout. Requires -n or piped stdin.",
+    )
+
+    parser.add_argument(
+        "--no-stream",
+        dest="no_stream",
+        action="store_true",
+        help="Buffer the full response and write it to stdout at once "
+        "instead of streaming token-by-token. Requires -n or piped stdin.",
     )
 
     parser.add_argument(
@@ -353,12 +364,7 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(show_help),
     )
 
-    args = parser.parse_args()
-
-    if args.quiet and not args.non_interactive_message:
-        parser.error("--quiet requires --non-interactive (-n)")
-
-    return args
+    return parser.parse_args()
 
 
 async def run_textual_cli_async(
@@ -482,6 +488,120 @@ async def run_textual_cli_async(
         return return_code
 
 
+def apply_stdin_pipe(args: argparse.Namespace) -> None:
+    r"""Read piped stdin and merge it into the parsed CLI arguments.
+
+    When stdin is not a TTY (i.e. input is piped), reads all available text
+    and applies it to the argument namespace. If stdin is a TTY or the piped
+    input is empty/whitespace-only, the function returns without modifying
+    `args`. Leading and trailing whitespace is stripped from piped input.
+
+    - If `non_interactive_message` is already set (`-n`), prepends the
+        piped text to it (the CLI still runs non-interactively):
+
+        ```bash
+        cat context.txt | deepagents -n "summarize this"
+        # non_interactive_message = "{contents of context.txt}\n\nsummarize this"
+        ```
+
+    - If `initial_prompt` is already set (`-m`, but not `-n`), prepends
+        the piped text to it (the CLI still runs interactively):
+
+        ```bash
+        cat error.log | deepagents -m "explain this"
+        # initial_prompt = "{contents of error.log}\n\nexplain this"
+        ```
+
+    - Otherwise, sets `non_interactive_message` to the piped text, causing
+        the CLI to run non-interactively with it as the prompt:
+
+        ```bash
+        echo "fix the typo in README.md" | deepagents
+        # non_interactive_message = "fix the typo in README.md"
+        ```
+
+    Args:
+        args: The parsed argument namespace (mutated in place).
+    """
+    if sys.stdin is None:
+        return
+
+    try:
+        is_tty = sys.stdin.isatty()
+    except (ValueError, OSError):
+        return
+
+    if is_tty:
+        return
+
+    max_stdin_bytes = 10 * 1024 * 1024  # 10 MiB
+
+    try:
+        stdin_text = sys.stdin.read(max_stdin_bytes + 1)
+    except UnicodeDecodeError:
+        msg = "Could not read piped input — ensure the input is valid text"
+        console.print(f"[bold red]Error:[/bold red] {msg}")
+        sys.exit(1)
+    except (OSError, ValueError) as exc:
+        msg = f"Failed to read piped input: {exc}"
+        console.print(f"[bold red]Error:[/bold red] {msg}")
+        sys.exit(1)
+
+    if len(stdin_text) > max_stdin_bytes:
+        msg = (
+            f"Piped input exceeds {max_stdin_bytes // (1024 * 1024)} MiB limit. "
+            "Consider writing the content to a file and referencing it instead."
+        )
+        console.print(f"[bold red]Error:[/bold red] {msg}")
+        sys.exit(1)
+
+    stdin_text = stdin_text.strip()
+
+    if not stdin_text:
+        return
+
+    if args.non_interactive_message:
+        args.non_interactive_message = f"{stdin_text}\n\n{args.non_interactive_message}"
+    elif args.initial_prompt:
+        args.initial_prompt = f"{stdin_text}\n\n{args.initial_prompt}"
+    else:
+        args.non_interactive_message = stdin_text
+
+    # Restore stdin from the real terminal so the interactive Textual app
+    # (used by the -m path) can read keyboard/mouse input normally.
+    # Textual's driver reads from file descriptor 0 directly (not sys.stdin),
+    # so we must replace the underlying fd with /dev/tty using os.dup2.
+    try:
+        tty_fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        # No controlling terminal (CI, Docker, headless). Non-interactive
+        # path still works; interactive -m path will fail later with a
+        # clear "not a terminal" error from Textual.
+        return
+
+    try:
+        os.dup2(tty_fd, 0)
+        os.close(tty_fd)
+        sys.stdin = open(0, encoding="utf-8", closefd=False)  # noqa: SIM115
+    except OSError:
+        console.print(
+            "[yellow]Warning:[/yellow] TTY restoration failed. "
+            "Interactive mode (-m) may not work correctly."
+        )
+        logger.warning(
+            "TTY restoration failed after opening /dev/tty",
+            exc_info=True,
+        )
+        try:
+            os.close(tty_fd)
+        except OSError:
+            logger.warning(
+                "Failed to close TTY fd %d during cleanup",
+                tty_fd,
+                exc_info=True,
+            )
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -521,6 +641,26 @@ def cli_main() -> None:
                     "[bold red]Error:[/bold red] --model-params must be a JSON object"
                 )
                 sys.exit(1)
+
+        apply_stdin_pipe(args)
+
+        if (args.quiet or args.no_stream) and not args.non_interactive_message:
+            # Print to stderr (not the module-level stdout console) and exit
+            # with code 2 to match the POSIX convention for usage errors, as
+            # argparse's parser.error() would.
+            from rich.console import Console as _Console
+
+            flags = []
+            if args.quiet:
+                flags.append("--quiet")
+            if args.no_stream:
+                flags.append("--no-stream")
+            flag = " and ".join(flags)
+            _Console(stderr=True).print(
+                f"[bold red]Error:[/bold red] {flag} requires "
+                "--non-interactive (-n) or piped stdin"
+            )
+            sys.exit(2)
 
         # Handle --default-model / --clear-default-model (headless, no session)
         if args.clear_default_model:
@@ -608,6 +748,7 @@ def cli_main() -> None:
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
                     quiet=args.quiet,
+                    stream=not args.no_stream,
                 )
             )
             sys.exit(exit_code)

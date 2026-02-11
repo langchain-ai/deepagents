@@ -24,15 +24,15 @@ requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents",
     "modal",
-] 
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_modal"]
 
 [project.urls]
-Homepage = "https://github.com/langchain-ai/deepagents/tree/master/libs/partners/modal"
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/modal"
 Repository = "https://github.com/langchain-ai/deepagents"
-Documentation = "https://github.com/langchain-ai/deepagents/tree/master/libs/partners/modal"
+Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/modal"
 
 [dependency-groups]
 test = [
@@ -42,7 +42,7 @@ test = [
     "pytest-xdist",
     "pytest-timeout>=2.3.1,<3.0.0",
     "pytest-asyncio>=1.3.0",
-    "ruff>=0.13.1,<0.14.0",
+    "ruff>=0.13.1,<0.16.0",
     "mypy>=1.17.1,<2.0.0",
     "langchain-tests",
 ]

@@ -43,6 +43,8 @@ from deepagents_cli.model_config import (  # noqa: E402
     ModelSpec,
 )
 
+DOCS_URL = "https://docs.langchain.com/oss/python/deepagents/cli"
+
 # Color scheme
 COLORS = {
     "primary": "#10b981",
@@ -527,16 +529,6 @@ class Settings:
         return self.tavily_api_key is not None
 
     @property
-    def has_deepagents_langchain_project(self) -> bool:
-        """Check if deepagents LangChain project name is configured."""
-        return self.deepagents_langchain_project is not None
-
-    @property
-    def has_project(self) -> bool:
-        """Check if currently in a git project."""
-        return self.project_root is not None
-
-    @property
     def user_deepagents_dir(self) -> Path:
         """Get the base user-level .deepagents directory.
 
@@ -624,19 +616,6 @@ class Settings:
         agent_dir = self.get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
         return agent_dir
-
-    def ensure_project_deepagents_dir(self) -> Path | None:
-        """Ensure the project .deepagents directory exists and return its path.
-
-        Returns:
-            Path to project .deepagents directory, or None if not in a project
-        """
-        if not self.project_root:
-            return None
-
-        project_deepagents_dir = self.project_root / ".deepagents"
-        project_deepagents_dir.mkdir(parents=True, exist_ok=True)
-        return project_deepagents_dir
 
     def get_user_skills_dir(self, agent_name: str) -> Path:
         """Get user-level skills directory path for a specific agent.
@@ -1269,8 +1248,7 @@ class ModelResult:
         """Commit this result's metadata to global `settings`."""
         settings.model_name = self.model_name
         settings.model_provider = self.provider
-        if self.context_limit is not None:
-            settings.model_context_limit = self.context_limit
+        settings.model_context_limit = self.context_limit
 
 
 def create_model(

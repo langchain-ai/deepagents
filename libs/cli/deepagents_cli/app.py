@@ -994,7 +994,7 @@ class DeepAgentsApp(App):
             docs_url = "https://docs.langchain.com/oss/python/deepagents/cli"
             help_text = Text(
                 "Commands: /quit, /clear, /model [--default], /remember, "
-                "/tokens, /threads, /help\n\n"
+                "/tokens, /threads, /changelog, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 "  Ctrl+J          Insert newline\n"
@@ -1008,6 +1008,26 @@ class DeepAgentsApp(App):
             help_text.stylize(f"link {docs_url}", help_text.plain.index(docs_url))
             await self._mount_message(AppMessage(help_text))
 
+        elif cmd == "/changelog":
+            await self._mount_message(UserMessage(command))
+            import webbrowser
+
+            changelog_url = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
+            webbrowser.open(changelog_url)
+            changelog_text = Text(changelog_url, style="dim italic")
+            changelog_text.stylize(f"link {changelog_url}", 0)
+            await self._mount_message(AppMessage(changelog_text))
+        elif cmd == "/feedback":
+            await self._mount_message(UserMessage(command))
+            import webbrowser
+
+            feedback_url = (
+                "https://github.com/langchain-ai/deepagents/issues/new/choose"
+            )
+            webbrowser.open(feedback_url)
+            feedback_text = Text(feedback_url, style="dim italic")
+            feedback_text.stylize(f"link {feedback_url}", 0)
+            await self._mount_message(AppMessage(feedback_text))
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
             # Show CLI package version

@@ -94,7 +94,9 @@ class CompletionController(Protocol):
 
 SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show help"),
+    ("/changelog", "Open changelog in browser"),
     ("/clear", "Clear chat and start new thread"),
+    ("/feedback", "Submit a bug report or feature request"),
     ("/model", "Switch model, show selector, or set default (--default)"),
     ("/remember", "Update memory and skills from conversation"),
     ("/quit", "Exit app"),

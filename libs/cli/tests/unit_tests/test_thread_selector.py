@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Container
+from textual.containers import Container, Vertical
 from textual.screen import ModalScreen
+from textual.widgets import Static
 
 from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
@@ -488,7 +489,74 @@ class TestThreadSelectorFormatLabel:
         label = ThreadSelectorScreen._format_option_label(
             MOCK_THREADS[0], selected=False, current=False
         )
-        assert "5 msgs" in label
+        assert "5" in label
+
+    def test_columns_align_with_header(self) -> None:
+        """Option labels should align with the column header."""
+        header = ThreadSelectorScreen._format_header()
+        label = ThreadSelectorScreen._format_option_label(
+            MOCK_THREADS[0], selected=False, current=False
+        )
+        # "Thread" column starts at the same offset as the thread ID
+        assert header.index("Thread") == label.index("abc12345")
+
+    def test_long_values_are_truncated(self) -> None:
+        """Thread ID and agent name exceeding column width are truncated."""
+        thread = {
+            "thread_id": "abcdef1234567890",
+            "agent_name": "very-long-agent-name-here",
+            "updated_at": None,
+            "message_count": 0,
+        }
+        label = ThreadSelectorScreen._format_option_label(
+            thread, selected=False, current=False
+        )
+        # Thread ID column is 10 chars, agent column is 14 chars
+        assert "abcdef1234567890" not in label
+        assert "abcdef1234" in label
+        assert "very-long-agent-name-here" not in label
+        assert "very-long-agen" in label
+
+
+class TestThreadSelectorColumnHeader:
+    """Tests for the anchored column header."""
+
+    def test_header_contains_column_names(self) -> None:
+        """Column header string should contain all column names."""
+        header = ThreadSelectorScreen._format_header()
+        assert "Thread" in header
+        assert "Agent" in header
+        assert "Msgs" in header
+        assert "Updated" in header
+
+    @pytest.mark.asyncio
+    async def test_header_widget_is_mounted(self) -> None:
+        """Column header widget should be present in the mounted screen."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                screen.query_one(".thread-list-header", Static)
+
+    @pytest.mark.asyncio
+    async def test_header_stays_outside_scroll(self) -> None:
+        """Header should be outside VerticalScroll (anchored, not scrollable)."""
+        with _patch_list_threads():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                header = screen.query_one(".thread-list-header", Static)
+                # Header's parent should be the Vertical, not VerticalScroll
+                assert isinstance(header.parent, Vertical)
 
 
 class TestThreadSelectorErrorHandling:

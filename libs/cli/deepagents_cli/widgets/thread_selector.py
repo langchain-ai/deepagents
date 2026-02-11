@@ -23,6 +23,11 @@ from deepagents_cli.sessions import _format_timestamp, list_threads
 
 logger = logging.getLogger(__name__)
 
+# Column widths for aligned formatting
+_COL_TID = 10
+_COL_AGENT = 14
+_COL_MSGS = 4
+
 
 class ThreadOption(Static):
     """A clickable thread option in the selector."""
@@ -114,6 +119,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         margin-bottom: 1;
     }
 
+    ThreadSelectorScreen .thread-list-header {
+        height: 1;
+        padding: 0 2 0 1;
+        color: $text-muted;
+        text-style: bold;
+    }
+
     ThreadSelectorScreen .thread-list {
         height: 1fr;
         min-height: 5;
@@ -185,6 +197,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 else "Select Thread"
             )
             yield Static(title, classes="thread-selector-title")
+            yield Static(self._format_header(), classes="thread-list-header")
 
             with VerticalScroll(classes="thread-list"):
                 yield Static(
@@ -278,6 +291,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 selected_widget.scroll_visible(animate=False)
 
     @staticmethod
+    def _format_header() -> str:
+        """Build the column header label.
+
+        Returns:
+            Formatted header string with column names.
+        """
+        return (
+            f"  {'Thread':<{_COL_TID}}  {'Agent':<{_COL_AGENT}}"
+            f"  {'Msgs':>{_COL_MSGS}}  Updated"
+        )
+
+    @staticmethod
     def _format_option_label(
         thread: dict,
         *,
@@ -297,14 +322,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
-        tid = thread["thread_id"]
-        agent = thread.get("agent_name") or "unknown"
-        msgs = thread.get("message_count", 0)
+        tid = thread["thread_id"][:_COL_TID]
+        agent = (thread.get("agent_name") or "unknown")[:_COL_AGENT]
+        msgs = str(thread.get("message_count", 0))
         timestamp = _format_timestamp(thread.get("updated_at"))
 
-        label = f"{cursor}{tid}  {agent}  {msgs} msgs"
-        if timestamp:
-            label += f"  {timestamp}"
+        label = (
+            f"{cursor}{tid:<{_COL_TID}}  {agent:<{_COL_AGENT}}"
+            f"  {msgs:>{_COL_MSGS}}  {timestamp}"
+        )
         if current:
             label += " [dim](current)[/dim]"
         return label

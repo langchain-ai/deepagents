@@ -66,6 +66,34 @@ class TestRunAgent:
                 mock_run.assert_called_once_with(mock_agent)
 
     @pytest.mark.asyncio
+    async def test_run_agent_passes_model_to_agent(self) -> None:
+        """Test that run_agent passes the model parameter to ACPDeepAgent."""
+        with patch("deepagents_acp.agent.run_acp_agent", new_callable=AsyncMock) as mock_run:
+            with patch("deepagents_acp.agent.ACPDeepAgent") as mock_agent_class:
+                mock_agent = MagicMock()
+                mock_agent_class.return_value = mock_agent
+
+                await run_agent("/test/root", model="openai:gpt-5")
+
+                # Verify ACPDeepAgent was initialized with the model
+                mock_agent_class.assert_called_once()
+                call_kwargs = mock_agent_class.call_args[1]
+                assert call_kwargs["model"] == "openai:gpt-5"
+
+    @pytest.mark.asyncio
+    async def test_run_agent_default_model_is_none(self) -> None:
+        """Test that run_agent defaults to model=None when not specified."""
+        with patch("deepagents_acp.agent.run_acp_agent", new_callable=AsyncMock) as mock_run:
+            with patch("deepagents_acp.agent.ACPDeepAgent") as mock_agent_class:
+                mock_agent = MagicMock()
+                mock_agent_class.return_value = mock_agent
+
+                await run_agent("/test/root")
+
+                call_kwargs = mock_agent_class.call_args[1]
+                assert call_kwargs["model"] is None
+
+    @pytest.mark.asyncio
     async def test_run_agent_creates_new_memory_saver(self) -> None:
         """Test that run_agent creates a fresh MemorySaver for each invocation."""
         checkpointers = []
@@ -169,6 +197,43 @@ class TestACPDeepAgentInitialization:
                     "write_file": {"allowed_decisions": ["approve", "reject"]},
                     "write_todos": {"allowed_decisions": ["approve", "reject"]},
                 }
+
+    def test_initialization_with_model(self) -> None:
+        """Test that ACPDeepAgent passes model to create_deep_agent."""
+        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+            mock_create.return_value = MagicMock()
+            checkpointer = MemorySaver()
+
+            agent = ACPDeepAgent(
+                root_dir="/test/root",
+                mode="ask_before_edits",
+                checkpointer=checkpointer,
+                model="openai:gpt-5",
+            )
+
+            assert agent._model == "openai:gpt-5"
+
+            # Verify create_deep_agent was called with the model
+            call_kwargs = mock_create.call_args[1]
+            assert call_kwargs["model"] == "openai:gpt-5"
+
+    def test_initialization_without_model_defaults_to_none(self) -> None:
+        """Test that ACPDeepAgent defaults model to None (uses create_deep_agent default)."""
+        with patch("deepagents_acp.agent.create_deep_agent") as mock_create:
+            mock_create.return_value = MagicMock()
+            checkpointer = MemorySaver()
+
+            agent = ACPDeepAgent(
+                root_dir="/test/root",
+                mode="ask_before_edits",
+                checkpointer=checkpointer,
+            )
+
+            assert agent._model is None
+
+            # Verify create_deep_agent was called with model=None
+            call_kwargs = mock_create.call_args[1]
+            assert call_kwargs["model"] is None
 
     def test_initialization_with_auto_mode(self) -> None:
         """Test that ACPDeepAgent can be initialized with auto mode."""

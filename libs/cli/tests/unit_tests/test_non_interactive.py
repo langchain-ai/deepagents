@@ -482,9 +482,11 @@ class TestQuietMode:
         assert "Calling tool" not in stdout
         assert "Task completed" not in stdout
         assert "Running task" not in stdout
-        # Diagnostic messages go to stderr
+        # Tool notifications still go to stderr
         assert "Calling tool" in stderr or "read_file" in stderr
-        assert "Task completed" in stderr
+        # Header and completion messages are fully suppressed in quiet mode
+        assert "Task completed" not in stderr
+        assert "Running task" not in stderr
 
 
 async def _async_iter(items: list[object]) -> AsyncIterator[object]:  # noqa: RUF029

@@ -468,8 +468,6 @@ async def _run_agent_loop(
     if not quiet:
         console.print()
         console.print("[green]✓ Task completed[/green]")
-    else:
-        console.print("[green]✓ Task completed (response written to stdout)[/green]")
 
 
 def _build_non_interactive_header(assistant_id: str, thread_id: str) -> Text:
@@ -600,13 +598,11 @@ async def run_non_interactive(
         },
     }
 
-    if quiet:
-        console.print("[dim]Running task non-interactively (quiet mode)...[/dim]")
-    else:
+    if not quiet:
         console.print("[dim]Running task non-interactively...[/dim]")
-    header = _build_non_interactive_header(assistant_id, thread_id)
-    console.print(header)
-    console.print()
+        header = _build_non_interactive_header(assistant_id, thread_id)
+        console.print(header)
+        console.print()
 
     sandbox_backend = None
     exit_stack = contextlib.ExitStack()

@@ -300,7 +300,7 @@ def parse_args() -> argparse.Namespace:
         "--quiet",
         action="store_true",
         help="Clean output for piping — only the agent's response "
-        "goes to stdout. Requires -n.",
+        "goes to stdout. Requires -n or piped stdin.",
     )
 
     parser.add_argument(
@@ -353,12 +353,7 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(show_help),
     )
 
-    args = parser.parse_args()
-
-    if args.quiet and not args.non_interactive_message:
-        parser.error("--quiet requires --non-interactive (-n)")
-
-    return args
+    return parser.parse_args()
 
 
 async def run_textual_cli_async(
@@ -482,6 +477,82 @@ async def run_textual_cli_async(
         return return_code
 
 
+def apply_stdin_pipe(args: argparse.Namespace) -> None:
+    r"""Read piped stdin and merge it into the parsed CLI arguments.
+
+    When stdin is not a TTY (i.e. input is piped), reads all available text
+    and applies it to the argument namespace. If stdin is a TTY or the piped
+    input is empty/whitespace-only, the function returns without modifying
+    `args`. Leading and trailing whitespace is stripped from piped input.
+
+    - If `non_interactive_message` is already set (`-n`), prepends the
+        piped text to it (the CLI still runs non-interactively):
+
+        ```bash
+        cat context.txt | deepagents -n "summarize this"
+        # non_interactive_message = "<context.txt>\n\nsummarize this"
+        ```
+
+    - If `initial_prompt` is already set (`-m`, but not `-n`), prepends
+        the piped text to it (the CLI still runs interactively):
+
+        ```bash
+        cat error.log | deepagents -m "explain this"
+        # initial_prompt = "<error.log>\n\nexplain this"
+        ```
+
+    - Otherwise, sets `non_interactive_message` to the piped text, causing
+        the CLI to run non-interactively with it as the prompt:
+
+        ```bash
+        echo "fix the typo in README.md" | deepagents
+        # non_interactive_message = "fix the typo in README.md"
+        ```
+
+    Args:
+        args: The parsed argument namespace (mutated in place).
+    """
+    if sys.stdin is None:
+        return
+
+    try:
+        is_tty = sys.stdin.isatty()
+    except (ValueError, OSError):
+        return
+
+    if is_tty:
+        return
+
+    try:
+        stdin_text = sys.stdin.read().strip()
+    except UnicodeDecodeError:
+        msg = "Could not read piped input — ensure the input is valid text"
+        console.print(f"[bold red]Error:[/bold red] {msg}")
+        sys.exit(1)
+    except (OSError, ValueError):
+        return
+
+    if not stdin_text:
+        return
+
+    if args.non_interactive_message:
+        args.non_interactive_message = f"{stdin_text}\n\n{args.non_interactive_message}"
+    elif args.initial_prompt:
+        args.initial_prompt = f"{stdin_text}\n\n{args.initial_prompt}"
+    else:
+        args.non_interactive_message = stdin_text
+
+    # Restore stdin from the real terminal so the interactive Textual app
+    # (used by the -m path) can read keyboard/mouse input normally.
+    # Textual's driver reads from file descriptor 0 directly (not sys.stdin),
+    # so we must replace the underlying fd with /dev/tty using os.dup2.
+    with contextlib.suppress(OSError):
+        tty_fd = os.open("/dev/tty", os.O_RDONLY)
+        os.dup2(tty_fd, 0)
+        os.close(tty_fd)
+        sys.stdin = open(0, encoding="utf-8", closefd=False)  # noqa: SIM115
+
+
 def cli_main() -> None:
     """Entry point for console script."""
     # Fix for gRPC fork issue on macOS
@@ -521,6 +592,20 @@ def cli_main() -> None:
                     "[bold red]Error:[/bold red] --model-params must be a JSON object"
                 )
                 sys.exit(1)
+
+        apply_stdin_pipe(args)
+
+        if args.quiet and not args.non_interactive_message:
+            # Print to stderr (not the module-level stdout console) and exit
+            # with code 2 to match the POSIX convention for usage errors, as
+            # argparse's parser.error() would.
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --quiet requires "
+                "--non-interactive (-n) or piped stdin"
+            )
+            sys.exit(2)
 
         # Handle --default-model / --clear-default-model (headless, no session)
         if args.clear_default_model:

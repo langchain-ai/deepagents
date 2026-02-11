@@ -25,6 +25,7 @@ from typing import Any
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
+from rich.style import Style
 from rich.text import Text
 
 from deepagents_cli._version import __version__
@@ -43,6 +44,8 @@ from deepagents_cli.agent import (
 from deepagents_cli.config import (
     console,
     create_model,
+    fetch_langsmith_project_url,
+    get_langsmith_project_name,
     settings,
 )
 from deepagents_cli.integrations.sandbox_factory import create_sandbox
@@ -840,6 +843,23 @@ def cli_main() -> None:
                 console.print(error_msg)
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
+
+            # Show LangSmith thread link when tracing is configured and the
+            # thread actually has checkpointed content (mirrors the condition
+            # used to surface threads in `/threads`).
+            if thread_id and asyncio.run(thread_exists(thread_id)):
+                project_name = get_langsmith_project_name()
+                if project_name:
+                    project_url = fetch_langsmith_project_url(project_name)
+                    if project_url:
+                        thread_url = f"{project_url.rstrip('/')}/t/{thread_id}"
+                        console.print()
+                        ls_hint = Text("View this thread in LangSmith: ", style="dim")
+                        ls_hint.append(
+                            thread_url,
+                            style=Style(dim=True, link=thread_url),
+                        )
+                        console.print(ls_hint)
 
             # Show resume hint on exit (only for new threads with successful exit)
             if thread_id and not is_resumed and return_code == 0:

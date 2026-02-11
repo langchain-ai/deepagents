@@ -1,0 +1,33 @@
+[project]
+name = "deepagents-workspace"
+version = "0.0.0"
+requires-python = ">=3.11,<4.0"
+
+[tool.uv.workspace]
+members = [
+    "libs/deepagents",
+    "libs/cli",
+    "libs/harbor",
+    "libs/acp",
+    "libs/partners/*",
+]
+
+[tool.uv]
+override-dependencies = [
+    "openai>=1.109.1,<2.0.0",
+    "e2b==2.4.3",
+    "python-multipart>=0.0.22",
+    "protobuf>=6.33.5",
+]
+constraint-dependencies = [
+    "urllib3>=2.6.3",
+]
+
+[tool.uv.sources]
+deepagents = { workspace = true }
+deepagents-cli = { workspace = true }
+deepagents-harbor = { workspace = true }
+deepagents-acp = { workspace = true }
+langchain-daytona = { workspace = true }
+langchain-modal = { workspace = true }
+langchain-runloop = { workspace = true }

@@ -48,10 +48,7 @@ test = [
 ]
 
 [tool.uv.sources]
-deepagents = { path = "../../deepagents", editable = true }
-
-[tool.uv]
-constraint-dependencies = ["urllib3>=2.6.3"]
+deepagents = { workspace = true }
 
 [tool.mypy]
 disallow_untyped_defs = true

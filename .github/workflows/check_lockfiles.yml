@@ -29,25 +29,16 @@ jobs:
       - name: "🐍 Set up UV"
         uses: astral-sh/setup-uv@v7
 
-      - name: "🔍 Check all lockfiles"
+      - name: "🔍 Check workspace lockfile"
+        run: uv lock --check
+
+      - name: "🔍 Check example lockfiles"
         run: |
           set -e
-
-          # Find all directories containing uv.lock
-          lockfile_dirs=$(find . -name "uv.lock" -type f -exec dirname {} \; | sort)
-
           failed_dirs=""
-          for dir in $lockfile_dirs; do
+          for dir in examples/text-to-sql-agent examples/content-builder-agent examples/deep_research; do
             echo "::group::Checking $dir"
-
-            # Use appropriate Python version based on project requirements
-            if [ "$dir" = "./libs/acp" ]; then
-              python_version="3.14"
-            else
-              python_version="3.12"
-            fi
-
-            if ! uv lock --check --directory "$dir" --python "$python_version" 2>&1; then
+            if ! uv lock --check --directory "$dir" 2>&1; then
               echo "::error file=$dir/uv.lock::Lockfile is out of sync. Run 'uv lock' in $dir"
               failed_dirs="$failed_dirs $dir"
             else
@@ -58,21 +49,13 @@ jobs:
 
           if [ -n "$failed_dirs" ]; then
             echo ""
-            echo "❌ The following lockfiles are out of sync with their pyproject.toml:"
-            echo ""
+            echo "❌ The following example lockfiles are out of sync:"
             for dir in $failed_dirs; do
               echo "  - $dir/uv.lock"
             done
             echo ""
-            echo "To fix, run these commands:"
-            echo ""
-            for dir in $failed_dirs; do
-              echo "  uv lock --directory $dir"
-            done
-            echo ""
-            echo "Then commit the updated lockfile(s)."
+            echo "To fix, run: uv lock --directory <dir>"
             exit 1
           fi
 
-          echo ""
           echo "✅ All lockfiles are up-to-date!"

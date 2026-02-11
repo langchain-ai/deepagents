@@ -33,7 +33,8 @@ runs:
         python-version: ${{ inputs.python-version }}
         enable-cache: ${{ inputs.enable-cache }}
         cache-dependency-glob: |
+          pyproject.toml
+          uv.lock
           ${{ inputs.working-directory }}/pyproject.toml
-          ${{ inputs.working-directory }}/uv.lock
           ${{ inputs.working-directory }}/requirements*.txt
         cache-suffix: ${{ inputs.cache-suffix }}

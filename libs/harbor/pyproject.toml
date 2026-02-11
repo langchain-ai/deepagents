@@ -56,19 +56,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["deepagents_harbor*"]
 
-[tool.uv]
-override-dependencies = [
-    "openai>=1.109.1,<2.0.0",
-    "e2b==2.4.3",
-    # CVE-2026-24486: path traversal vulnerability in < 0.0.22
-    "python-multipart>=0.0.22",
-    # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
-    "protobuf>=6.33.5",
-]
-
 [tool.uv.sources]
-deepagents-cli = { path = "../cli" }
-deepagents = { path = "../deepagents", editable = true }
+deepagents-cli = { workspace = true }
+deepagents = { workspace = true }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../cli"]

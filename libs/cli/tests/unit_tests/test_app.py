@@ -518,7 +518,11 @@ class TestTraceCommand:
                 "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
             )
             app_msgs = app.query(AppMessage)
-            assert any("smith.langchain.com" in str(w._content) for w in app_msgs)
+            assert any(  # not a URL check—just verifying the link was rendered
+                "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread-123"
+                in str(w._content)
+                for w in app_msgs
+            )
 
     @pytest.mark.asyncio
     async def test_trace_shows_error_when_not_configured(self) -> None:
@@ -574,7 +578,10 @@ class TestTraceCommand:
                 await pilot.pause()
 
             app_msgs = app.query(AppMessage)
-            assert any("smith.langchain.com" in str(w._content) for w in app_msgs)
+            assert any(  # not a URL check—just verifying the link was rendered
+                "https://smith.langchain.com/t/test-thread-123" in str(w._content)
+                for w in app_msgs
+            )
 
     @pytest.mark.asyncio
     async def test_trace_shows_error_when_url_build_raises(self) -> None:

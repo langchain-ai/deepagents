@@ -1003,6 +1003,36 @@ class DeepAgentsApp(App):
         link.stylize(f"link {url}", 0)
         await self._mount_message(AppMessage(link))
 
+    @staticmethod
+    async def _build_thread_message(prefix: str, thread_id: str) -> str | Text:
+        """Build a thread status message, hyperlinking the ID when possible.
+
+        Attempts to resolve the LangSmith thread URL with a short timeout.
+        Falls back to plain text if tracing is not configured or resolution
+        fails.
+
+        Args:
+            prefix: Label before the thread ID (e.g. `'Resumed thread'`).
+            thread_id: The thread identifier.
+
+        Returns:
+            A Rich `Text` with a clickable thread ID, or a plain string.
+        """
+        try:
+            url = await asyncio.wait_for(
+                asyncio.to_thread(build_langsmith_thread_url, thread_id),
+                timeout=2.0,
+            )
+        except (TimeoutError, Exception):
+            url = None
+
+        if url:
+            return Text.assemble(
+                f"{prefix}: ",
+                (thread_id, f"link {url}"),
+            )
+        return f"{prefix}: {thread_id}"
+
     async def _handle_trace_command(self, command: str) -> None:
         """Open the current thread in LangSmith.
 
@@ -1395,10 +1425,12 @@ class DeepAgentsApp(App):
                 if widget:
                     widget.set_rejected()  # Shows as interrupted/rejected in UI
 
-            # Show system message indicating this is a resumed thread
-            await self._mount_message(
-                AppMessage(f"Resumed thread: {self._lc_thread_id}")
+            # Show system message indicating this is a resumed thread,
+            # with a clickable LangSmith link when tracing is configured.
+            thread_msg = await self._build_thread_message(
+                "Resumed thread", self._lc_thread_id
             )
+            await self._mount_message(AppMessage(thread_msg))
 
             # Scroll to bottom after UI fully renders
             # Use set_timer to ensure layout is complete (Markdown rendering is async)

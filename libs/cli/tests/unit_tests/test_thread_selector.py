@@ -937,3 +937,61 @@ class TestResumeThread:
             "Failed to switch" in _get_widget_text(call.args[0])
             for call in app._mount_message.call_args_list  # type: ignore[union-attr]
         )
+
+
+class TestBuildThreadMessage:
+    """Tests for DeepAgentsApp._build_thread_message."""
+
+    @pytest.mark.asyncio
+    async def test_plain_text_when_tracing_not_configured(self) -> None:
+        """Returns plain string when LangSmith URL is not available."""
+        app = DeepAgentsApp()
+        with patch("deepagents_cli.app.build_langsmith_thread_url", return_value=None):
+            result = await app._build_thread_message("Resumed thread", "tid-123")
+
+        assert result == "Resumed thread: tid-123"
+        assert isinstance(result, str)
+
+    @pytest.mark.asyncio
+    async def test_hyperlinked_when_tracing_configured(self) -> None:
+        """Returns Rich Text with hyperlink when LangSmith URL is available."""
+        from rich.text import Text
+
+        app = DeepAgentsApp()
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
+        with patch("deepagents_cli.app.build_langsmith_thread_url", return_value=url):
+            result = await app._build_thread_message("Resumed thread", "tid-123")
+
+        assert isinstance(result, Text)
+        assert "Resumed thread: " in result.plain
+        assert "tid-123" in result.plain
+        # Verify the thread ID span has the link style
+        spans = [s for s in result._spans if s.style and "link" in str(s.style)]
+        assert len(spans) == 1
+        assert url in str(spans[0].style)
+
+    @pytest.mark.asyncio
+    async def test_fallback_on_timeout(self) -> None:
+        """Returns plain string when URL resolution times out."""
+        app = DeepAgentsApp()
+        with patch(
+            "deepagents_cli.app.asyncio.wait_for",
+            side_effect=TimeoutError,
+        ):
+            result = await app._build_thread_message("Resumed thread", "t-1")
+
+        assert isinstance(result, str)
+        assert result == "Resumed thread: t-1"
+
+    @pytest.mark.asyncio
+    async def test_fallback_on_exception(self) -> None:
+        """Returns plain string when URL resolution raises an exception."""
+        app = DeepAgentsApp()
+        with patch(
+            "deepagents_cli.app.build_langsmith_thread_url",
+            side_effect=OSError("network error"),
+        ):
+            result = await app._build_thread_message("Resumed thread", "t-1")
+
+        assert isinstance(result, str)
+        assert result == "Resumed thread: t-1"

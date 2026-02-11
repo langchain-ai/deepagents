@@ -3,4 +3,4 @@
 # Captures the current working directory where Zed invoked this script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
-uv run deepagents-acp --root-dir "${1:-$OLDPWD}"
+uv run python -m deepagents_acp --root-dir "${1:-$OLDPWD}"

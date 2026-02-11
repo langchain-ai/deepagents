@@ -9,18 +9,16 @@ from typing import TYPE_CHECKING, ClassVar
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
-from textual.events import (
-    Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
-)
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+    from textual.events import Click
 
 from deepagents_cli.config import CharsetMode, _detect_charset_mode, get_glyphs
-from deepagents_cli.sessions import ThreadInfo, _format_timestamp, list_threads
+from deepagents_cli.sessions import ThreadInfo, format_timestamp, list_threads
 
 logger = logging.getLogger(__name__)
 
@@ -223,15 +221,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._threads = await list_threads(limit=20, include_message_count=True)
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
-            scroll = self.query_one(".thread-list", VerticalScroll)
-            await scroll.remove_children()
-            await scroll.mount(
-                Static(
-                    f"[red]Failed to load threads: {exc}. Press Esc to close.[/red]",
-                    classes="thread-empty",
-                )
-            )
-            self.focus()
+            await self._show_mount_error(str(exc))
+            return
+        except Exception as exc:
+            logger.exception("Unexpected error loading threads for thread selector")
+            await self._show_mount_error(str(exc))
             return
 
         for i, t in enumerate(self._threads):
@@ -240,6 +234,28 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 break
 
         await self._build_list()
+        self.focus()
+
+    async def _show_mount_error(self, detail: str) -> None:
+        """Display an error message inside the thread list and refocus.
+
+        Args:
+            detail: Human-readable error detail to show.
+        """
+        try:
+            scroll = self.query_one(".thread-list", VerticalScroll)
+            await scroll.remove_children()
+            await scroll.mount(
+                Static(
+                    f"[red]Failed to load threads: {detail}. Press Esc to close.[/red]",
+                    classes="thread-empty",
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Could not display error message in thread selector UI",
+                exc_info=True,
+            )
         self.focus()
 
     async def _build_list(self) -> None:
@@ -325,7 +341,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         tid = thread["thread_id"][:_COL_TID]
         agent = (thread.get("agent_name") or "unknown")[:_COL_AGENT]
         msgs = str(thread.get("message_count", 0))
-        timestamp = _format_timestamp(thread.get("updated_at"))
+        timestamp = format_timestamp(thread.get("updated_at"))
 
         label = (
             f"{cursor}{tid:<{_COL_TID}}  {agent:<{_COL_AGENT}}"
@@ -396,13 +412,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             scroll = self.query_one(".thread-list", VerticalScroll)
             height = scroll.size.height
         except NoMatches:
+            logger.debug(
+                "Thread list widget not found in _visible_page_size; "
+                "using default page size %d",
+                default_page_size,
+            )
             return default_page_size
         if height <= 0:
             return default_page_size
         return max(1, height)
 
     def action_page_up(self) -> None:
-        """Move selection up by one visible page."""
+        """Move selection up by one visible page.
+
+        Unlike single-step navigation, page jumps clamp to the list boundaries
+        instead of wrapping around.
+        """
         if not self._threads:
             return
         page = self._visible_page_size()
@@ -412,7 +437,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._move_selection(delta)
 
     def action_page_down(self) -> None:
-        """Move selection down by one visible page."""
+        """Move selection down by one visible page.
+
+        Unlike single-step navigation, page jumps clamp to the list boundaries
+        instead of wrapping around.
+        """
         if not self._threads:
             return
         count = len(self._threads)
@@ -434,8 +463,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Args:
             event: The clicked message with thread ID and index.
         """
-        self._selected_index = event.index
-        self.dismiss(event.thread_id)
+        if 0 <= event.index < len(self._threads):
+            self._selected_index = event.index
+            self.dismiss(event.thread_id)
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

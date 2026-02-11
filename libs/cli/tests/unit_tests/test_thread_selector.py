@@ -466,15 +466,17 @@ class TestThreadSelectorClickHandling:
                 # exercise the handler directly for an exact-widget test.)
                 from deepagents_cli.widgets.thread_selector import ThreadOption
 
-                if len(screen._option_widgets) > 1:
-                    second = screen._option_widgets[1]
-                    second.post_message(
-                        ThreadOption.Clicked(second.thread_id, second.index)
-                    )
-                    await pilot.pause()
+                assert len(screen._option_widgets) > 1, (
+                    "Expected option widgets to be built"
+                )
+                second = screen._option_widgets[1]
+                second.post_message(
+                    ThreadOption.Clicked(second.thread_id, second.index)
+                )
+                await pilot.pause()
 
-                    assert app.dismissed is True
-                    assert app.result == "def67890"
+                assert app.dismissed is True
+                assert app.result == "def67890"
 
 
 class TestThreadSelectorFormatLabel:
@@ -729,6 +731,36 @@ class TestResumeThread:
         assert app._lc_thread_id == "old-thread"
         assert app._session_state.thread_id == "old-thread"
         # Should show error message
+        assert any(
+            "Failed to switch" in _get_widget_text(call.args[0])
+            for call in app._mount_message.call_args_list  # type: ignore[union-attr]
+        )
+
+    @pytest.mark.asyncio
+    async def test_failure_during_load_history_restores_ids(self) -> None:
+        """If _load_thread_history raises, thread IDs should be rolled back."""
+        from textual.css.query import NoMatches as _NoMatches
+
+        app = DeepAgentsApp(thread_id="old-thread")
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "old-thread"
+        app._pending_messages = MagicMock()
+        app._queued_widgets = MagicMock()
+        app._clear_messages = AsyncMock()  # type: ignore[assignment]
+        app._token_tracker = MagicMock()
+        app._update_status = MagicMock()  # type: ignore[assignment]
+        # First call (in try block) fails; second call (in rollback) succeeds
+        app._load_thread_history = AsyncMock(  # type: ignore[assignment]
+            side_effect=[RuntimeError("checkpoint corrupt"), None]
+        )
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app.query_one = MagicMock(side_effect=_NoMatches())  # type: ignore[assignment]
+
+        await app._resume_thread("new-thread")
+
+        assert app._lc_thread_id == "old-thread"
+        assert app._session_state.thread_id == "old-thread"
         assert any(
             "Failed to switch" in _get_widget_text(call.args[0])
             for call in app._mount_message.call_args_list  # type: ignore[union-attr]

@@ -53,8 +53,11 @@ if not hasattr(aiosqlite.Connection, "is_alive"):
     aiosqlite.Connection.is_alive = _is_alive  # type: ignore[attr-defined]
 
 
-def _format_timestamp(iso_timestamp: str | None) -> str:
+def format_timestamp(iso_timestamp: str | None) -> str:
     """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
+
+    Args:
+        iso_timestamp: ISO 8601 timestamp string, or `None`.
 
     Returns:
         Formatted timestamp string or empty string if invalid.
@@ -70,6 +73,11 @@ def _format_timestamp(iso_timestamp: str | None) -> str:
             .replace("pm", "pm")
         )
     except (ValueError, TypeError):
+        logger.debug(
+            "Failed to parse timestamp %r; displaying as blank",
+            iso_timestamp,
+            exc_info=True,
+        )
         return ""
 
 
@@ -206,7 +214,7 @@ async def _count_messages_from_checkpoint(
             messages = channel_values.get("messages", [])
             return len(messages)
         except (ValueError, TypeError, KeyError):
-            logger.debug(
+            logger.warning(
                 "Failed to deserialize checkpoint for thread %s; "
                 "message count will show as 0",
                 thread_id,
@@ -390,7 +398,7 @@ async def list_threads_command(
             t["thread_id"],
             t["agent_name"] or "unknown",
             str(t.get("message_count", 0)),
-            _format_timestamp(t.get("updated_at")),
+            format_timestamp(t.get("updated_at")),
         )
 
     console.print()

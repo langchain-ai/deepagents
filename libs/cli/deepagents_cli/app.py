@@ -1750,7 +1750,7 @@ class DeepAgentsApp(App):
             # Load thread history
             await self._load_thread_history()
 
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to switch to thread %s", thread_id)
             # Restore previous thread IDs so the user can retry
             self._session_state.thread_id = prev_session_thread
@@ -1759,10 +1759,23 @@ class DeepAgentsApp(App):
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.update_thread_id(prev_session_thread)
             except NoMatches:
-                pass
+                logger.warning(
+                    "Welcome banner not found during rollback to thread %s; "
+                    "banner may display stale thread ID",
+                    prev_session_thread,
+                )
+            # Attempt to restore the previous thread's visible history
+            try:
+                await self._load_thread_history()
+            except Exception:
+                logger.debug(
+                    "Could not restore previous thread history after "
+                    "failed switch to %s",
+                    thread_id,
+                )
             await self._mount_message(
                 AppMessage(
-                    f"Failed to switch to thread {thread_id}. "
+                    f"Failed to switch to thread {thread_id}: {exc}. "
                     "Use /threads to try again."
                 )
             )

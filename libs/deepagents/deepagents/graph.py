@@ -15,7 +15,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
-from langgraph.graph.state import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph, RunnableConfig
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 
@@ -66,6 +66,7 @@ def create_deep_agent(
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    config: RunnableConfig | None = None,
 ) -> CompiledStateGraph:
     """Create a deep agent.
 
@@ -138,6 +139,7 @@ def create_deep_agent(
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
+        config: The config to use for the agent. Passed through to `create_agent`. Defaults to `{"recursion_limit": 1000}`.
 
     Returns:
         A configured deep agent.
@@ -285,6 +287,9 @@ def create_deep_agent(
         # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + BASE_AGENT_PROMPT
 
+    if config is None:
+        config = {"recursion_limit": 1000}
+
     return create_agent(
         model,
         system_prompt=final_system_prompt,
@@ -297,4 +302,4 @@ def create_deep_agent(
         debug=debug,
         name=name,
         cache=cache,
-    ).with_config({"recursion_limit": 1000})
+    ).with_config(config)

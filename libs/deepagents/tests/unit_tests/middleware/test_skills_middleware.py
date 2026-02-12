@@ -1100,6 +1100,7 @@ def test_skills_middleware_with_state_backend_factory() -> None:
     runtime = ToolRuntime(
         state={"messages": [], "files": {}},
         tool_call_id="test",
+        context=None,
         store=None,
         stream_writer=lambda _: None,
         config={},
@@ -1131,6 +1132,7 @@ def test_skills_middleware_with_store_backend_factory() -> None:
     runtime = ToolRuntime(
         state={"messages": []},
         tool_call_id="test",
+        context=None,
         store=store,
         stream_writer=lambda _: None,
         config={},
@@ -1663,6 +1665,7 @@ def test_skill_tool_inline_loads_skill(tmp_path: Path) -> None:
     runtime = ToolRuntime(
         state={"messages": [], "skills_metadata": skills_metadata, "loaded_skills": {}},
         tool_call_id="test-call-id",
+        context=None,
         store=None,
         stream_writer=lambda _: None,
         config={},
@@ -1691,6 +1694,7 @@ def test_skill_tool_not_found(tmp_path: Path) -> None:
     runtime = ToolRuntime(
         state={"messages": [], "skills_metadata": [], "loaded_skills": {}},
         tool_call_id="test-call-id",
+        context=None,
         store=None,
         stream_writer=lambda _: None,
         config={},
@@ -1821,6 +1825,7 @@ description: A large skill with many lines
     runtime = ToolRuntime(
         state={"messages": [], "skills_metadata": skills_metadata, "loaded_skills": {}},
         tool_call_id="test-call-id",
+        context=None,
         store=None,
         stream_writer=lambda _: None,
         config={},

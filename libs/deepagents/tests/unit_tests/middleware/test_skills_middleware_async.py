@@ -59,7 +59,6 @@ async def test_alist_skills_from_backend_single_skill(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -149,7 +148,6 @@ async def test_alist_skills_from_backend_missing_skill_md(tmp_path: Path) -> Non
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -190,7 +188,6 @@ Content
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "context": None,
         }
     ]
 
@@ -277,7 +274,6 @@ async def test_abefore_agent_skill_override(tmp_path: Path) -> None:
         "license": None,
         "compatibility": None,
         "allowed_tools": [],
-        "context": None,
     }
 
 

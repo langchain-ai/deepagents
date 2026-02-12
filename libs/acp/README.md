@@ -2,11 +2,9 @@
 
 This repo contains an [Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) connector that allows you to run a Python [DeepAgent](https://docs.langchain.com/oss/python/deepagents/overview) within a text editor that supports ACP such as [Zed](https://zed.dev/).
 
-The Deep Agent lives as code in `deepagents_acp/server.py`, and can interact with the files of a project you have open in your ACP-compatible editor.
-
 ![Deep Agents ACP Demo](./static/img/deepagentsacp.gif)
 
-Out of the box, your agent uses Anthropic's Claude models to do things like write code with its built-in filesystem tools, but you can also extend it with additional tools or agent architectures!
+It includes an example coding agent that uses Anthropic's Claude models to write code with its built-in filesystem tools and shell, but you can also connect any Deep Agent with additional tools or different agent architectures!
 
 ## Getting started
 

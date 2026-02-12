@@ -1,7 +1,7 @@
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from acp import (
@@ -57,6 +57,9 @@ from deepagents_acp.utils import (
     convert_image_block_to_content_blocks,
     convert_resource_block_to_content_blocks,
     convert_text_block_to_content_blocks,
+    extract_command_types,
+    format_execute_result,
+    truncate_execute_command_for_display,
 )
 
 
@@ -93,6 +96,9 @@ class AgentServerACP(ACPAgent):
         self._cancelled = False
         self._session_plans: dict[str, list[dict[str, Any]]] = {}
         self._session_cwds: dict[str, str] = {}
+        self._allowed_command_types: dict[
+            str, set[tuple[str, Optional[str]]]
+        ] = {}  # Track allowed command types per session
 
     def on_connect(self, conn: Client) -> None:
         self._conn = conn
@@ -323,6 +329,7 @@ class AgentServerACP(ACPAgent):
             "ls": "search",
             "glob": "search",
             "grep": "search",
+            "execute": "execute",
         }
         tool_kind = kind_map.get(tool_name, "other")
 
@@ -373,6 +380,18 @@ class AgentServerACP(ACPAgent):
                 title=title,
                 kind=tool_kind,
                 status="pending",
+            )
+        elif tool_name == "execute" and isinstance(tool_args, dict):
+            command = tool_args.get("command", "")
+            # Truncate long commands for display
+            display_command = truncate_execute_command_for_display(command=command)
+            title = f"Execute: `{display_command}`" if command else "Execute command"
+            return start_tool_call(
+                tool_call_id=tool_id,
+                title=title,
+                kind=tool_kind,
+                status="pending",
+                raw_input=tool_args,
             )
         else:
             title = tool_name
@@ -526,10 +545,22 @@ class AgentServerACP(ACPAgent):
                         if active_tool_calls[tool_call_id].get("name") != "edit_file":
                             # Update the tool call with completion status and result
                             content = getattr(message_chunk, "content", "")
+                            tool_info = active_tool_calls[tool_call_id]
+                            tool_name = tool_info.get("name")
+
+                            # Format execute tool results specially
+                            if tool_name == "execute":
+                                tool_args = tool_info.get("args", {})
+                                command = tool_args.get("command", "")
+                                formatted_content = format_execute_result(
+                                    command=command, result=str(content)
+                                )
+                            else:
+                                formatted_content = str(content)
                             update = update_tool_call(
                                 tool_call_id=tool_call_id,
                                 status="completed",
-                                content=[tool_content(text_block(str(content)))],
+                                content=[tool_content(text_block(formatted_content))],
                             )
                             await self._conn.session_update(
                                 session_id=session_id, update=update, source="DeepAgent"
@@ -598,6 +629,26 @@ class AgentServerACP(ACPAgent):
                                 user_decisions.append({"type": "approve"})
                                 continue
 
+                    if session_id in self._allowed_command_types:
+                        if tool_name == "execute" and isinstance(tool_args, dict):
+                            command = tool_args.get("command", "")
+                            command_types = extract_command_types(command)
+
+                            if command_types:
+                                # Check if ALL command types are already allowed for this session
+                                all_allowed = all(
+                                    ("execute", cmd_type) in self._allowed_command_types[session_id]
+                                    for cmd_type in command_types
+                                )
+                                if all_allowed:
+                                    # Auto-approve this command
+                                    user_decisions.append({"type": "approve"})
+                                    continue
+                        else:
+                            if (tool_name, None) in self._allowed_command_types[session_id]:
+                                user_decisions.append({"type": "approve"})
+                                continue
+
                     # Create a title for the permission request
                     if tool_name == "write_todos":
                         title = "Review Plan"
@@ -614,8 +665,28 @@ class AgentServerACP(ACPAgent):
                     elif tool_name == "write_file" and isinstance(tool_args, dict):
                         file_path = tool_args.get("file_path", "file")
                         title = f"Write `{file_path}`"
+                    elif tool_name == "execute" and isinstance(tool_args, dict):
+                        command = tool_args.get("command", "")
+                        # Truncate long commands for display
+                        display_command = truncate_execute_command_for_display(command=command)
+                        title = f"Execute: `{display_command}`" if command else "Execute command"
                     else:
                         title = tool_name
+
+                    desc = tool_name
+                    if tool_name == "execute" and isinstance(tool_args, dict):
+                        command = tool_args.get("command", "")
+                        command_types = extract_command_types(command)
+                        if command_types:
+                            # Create a descriptive name based on the command types
+                            if len(command_types) == 1:
+                                desc = f"`{command_types[0]}`"
+                            else:
+                                # Show all unique command types
+                                unique_types = list(
+                                    dict.fromkeys(command_types)
+                                )  # Preserve order, remove duplicates
+                                desc = ", ".join(f"`{ct}`" for ct in unique_types)
 
                     # Create permission options
                     options = [
@@ -628,6 +699,11 @@ class AgentServerACP(ACPAgent):
                             option_id="reject",
                             name="Reject",
                             kind="reject_once",
+                        ),
+                        PermissionOption(
+                            option_id="approve_always",
+                            name=f"Always allow {desc} commands",
+                            kind="allow_always",
                         ),
                     ]
 
@@ -646,7 +722,22 @@ class AgentServerACP(ACPAgent):
                         decision_type = response.outcome.option_id
 
                         # If rejecting a plan, clear it and provide feedback
-                        if tool_name == "write_todos" and decision_type == "reject":
+                        if decision_type == "approve_always":
+                            if session_id not in self._allowed_command_types:
+                                self._allowed_command_types[session_id] = set()
+                            if tool_name == "execute":
+                                command = tool_args.get("command", "")
+                                command_types = extract_command_types(command)
+                                if command_types:
+                                    for cmd_type in command_types:
+                                        self._allowed_command_types[session_id].add(
+                                            ("execute", cmd_type)
+                                        )
+                            else:
+                                self._allowed_command_types[session_id].add((tool_name, None))
+                            # Approve this command
+                            user_decisions.append({"type": "approve"})
+                        elif tool_name == "write_todos" and decision_type == "reject":
                             await self._clear_plan(session_id)
                             user_decisions.append(
                                 {
@@ -674,7 +765,7 @@ class AgentServerACP(ACPAgent):
             return user_decisions
 
 
-async def _serve_test_agent(root_dir: str) -> None:
+async def _serve_test_agent() -> None:
     """Run test agent from the root of the repository with ACP integration."""
     from dotenv import load_dotenv
 

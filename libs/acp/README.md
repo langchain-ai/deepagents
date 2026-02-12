@@ -22,7 +22,7 @@ Then, navigate into the newly created folder and run `uv sync`:
 
 ```sh
 cd deepagents/libs/acp
-uv sync
+uv sync --all-groups
 ```
 
 Rename the `.env.example` file to `.env` and add your [Anthropic](https://claude.com/platform/api) API key. You may also optionally set up tracing for your DeepAgent using [LangSmith](https://smith.langchain.com/) by populating the other env vars in the example file:
@@ -44,16 +44,16 @@ Finally, add this to your Zed `settings.json`:
   "agent_servers": {
     "DeepAgents": {
       "type": "custom",
-      "command": "/your/absolute/path/to/deepagents-acp/run.sh"
+      "command": "/your/absolute/path/to/deepagents-acp/run_demo_agent.sh"
     }
   }
 }
 ```
 
-You must also make sure that the `run.sh` entrypoint file is executable - this should be the case by default, but if you see permissions issues, run:
+You must also make sure that the `run_demo_agent.sh` entrypoint file is executable - this should be the case by default, but if you see permissions issues, run:
 
 ```sh
-chmod +x run.sh
+chmod +x run_demo_agent.sh
 ```
 
 Now, open Zed's Agents Panel (e.g. with `CMD + Shift + ?`). You should see an option to create a new DeepAgent thread:
@@ -106,4 +106,3 @@ toad acp "python path/to/your_server.py" .
 # or
 toad acp "uv run python path/to/your_server.py" .
 ```
-

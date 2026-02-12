@@ -16,6 +16,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.exceptions import EmptyContentError
 from deepagents.middleware._utils import append_to_system_message
 
 
@@ -377,49 +378,32 @@ def _extract_message_content(messages: list) -> str:
     Implements a multi-tier extraction strategy:
     - Tier 1 (Priority): Extract from AIMessage with backward iteration
     - Tier 2 (Fallback): Extract from ToolMessage when no AIMessage has content
-    - Tier 3 (Default): Return empty string
+    - Tier 3 (Error): Raise EmptyContentError if no content found
 
     Args:
         messages: List of message objects to extract content from.
 
     Returns:
-        Extracted message content as a string, or empty string if no content found.
-    """
-    message_text = ""
-    tool_fallback = ""
+        Extracted message content as a string.
 
+    Raises:
+        EmptyContentError: If no content found in any message.
+    """
     # Iterate backward through messages to find the last message with content
     for msg in reversed(messages):
         msg_type = getattr(msg, "type", None)
 
-        # Check AIMessage first (most common case)
-        if msg_type == "ai":
-            content = getattr(msg, "content", None) or getattr(msg, "text", None)
-            if content:
-                # String content
-                if isinstance(content, str):
-                    stripped = content.strip()
-                    if stripped:
-                        message_text = stripped
-                        break
-                # List content (Anthropic format)
-                elif isinstance(content, list):
-                    text_parts = (
-                        block.get("text", "") if isinstance(block, dict) and block.get("type") == "text" else block if isinstance(block, str) else ""
-                        for block in content
-                    )
-                    joined = " ".join(filter(None, text_parts))
-                    if joined:
-                        message_text = joined
-                        break
+        # Check AIMessage first, then ToolMessage as fallback
+        if msg_type in ("ai", "tool"):
+            text = getattr(msg, "text", None)
+            if text and isinstance(text, str) and (stripped := text.strip()):
+                return stripped
 
-        # Check ToolMessage as fallback
-        elif msg_type == "tool" and not tool_fallback:
-            content = getattr(msg, "content", None) or getattr(msg, "text", None)
-            if content and isinstance(content, str) and (stripped := content.strip()):
-                tool_fallback = stripped
-
-    return message_text or tool_fallback
+    # If we get here, no content was found - this is an error
+    raise EmptyContentError(
+        "No content found in subagent messages. "
+        "This may indicate the LLM failed to respond properly."
+    )
 
 
 def _build_task_tool(
@@ -494,7 +478,10 @@ def _build_task_tool(
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        try:
+            return _return_command_with_state_update(result, runtime.tool_call_id)
+        except EmptyContentError as e:
+            return f"Error: {e}"
 
     async def atask(
         description: Annotated[
@@ -512,7 +499,10 @@ def _build_task_tool(
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        try:
+            return _return_command_with_state_update(result, runtime.tool_call_id)
+        except EmptyContentError as e:
+            return f"Error: {e}"
 
     return StructuredTool.from_function(
         name="task",

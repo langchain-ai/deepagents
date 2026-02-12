@@ -1605,7 +1605,7 @@ class TestMessageExtractionFromSubagents:
     """
 
     @staticmethod
-    def _create_mock_message(message_type: str, text_content: str, content: Any = None) -> Mock:
+    def _create_mock_message(message_type: str, text_content: str, content: list[Any] | None = None) -> Mock:
         """Create a mock message with .text property.
 
         Args:

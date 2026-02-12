@@ -17,3 +17,10 @@ class EmptyContentError(ValueError):
     The error is caught internally and converted to an error string that allows
     the conversation to continue gracefully.
     """
+
+    def __init__(self) -> None:
+        """Initialize with standard error message."""
+        super().__init__(
+            "No content found in subagent messages. "
+            "This may indicate the LLM failed to respond properly."
+        )

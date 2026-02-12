@@ -389,7 +389,6 @@ def _extract_message_content(messages: list) -> str:
     Raises:
         EmptyContentError: If no content found in any message.
     """
-    # Iterate backward through messages to find the last message with content
     for msg in reversed(messages):
         msg_type = getattr(msg, "type", None)
 
@@ -399,11 +398,7 @@ def _extract_message_content(messages: list) -> str:
             if text and isinstance(text, str) and (stripped := text.strip()):
                 return stripped
 
-    # If we get here, no content was found - this is an error
-    raise EmptyContentError(
-        "No content found in subagent messages. "
-        "This may indicate the LLM failed to respond properly."
-    )
+    raise EmptyContentError
 
 
 def _build_task_tool(

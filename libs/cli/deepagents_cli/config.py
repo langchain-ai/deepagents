@@ -1039,7 +1039,7 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
     if not project_url:
         return None
 
-    return f"{project_url.rstrip('/')}/t/{thread_id}"
+    return f"{project_url.rstrip('/')}/t/{thread_id}?utm_source=deepagents-cli"
 
 
 def reset_langsmith_url_cache() -> None:

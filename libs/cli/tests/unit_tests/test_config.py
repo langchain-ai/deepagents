@@ -623,7 +623,8 @@ class TestBuildLangsmithThreadUrl:
             result = build_langsmith_thread_url("thread-123")
 
         assert (
-            result == "https://smith.langchain.com/o/org/projects/p/proj/t/thread-123"
+            result
+            == "https://smith.langchain.com/o/org/projects/p/proj/t/thread-123?utm_source=deepagents-cli"
         )
 
     def test_strips_trailing_slash(self) -> None:
@@ -643,7 +644,8 @@ class TestBuildLangsmithThreadUrl:
             result = build_langsmith_thread_url("thread-123")
 
         assert (
-            result == "https://smith.langchain.com/o/org/projects/p/proj/t/thread-123"
+            result
+            == "https://smith.langchain.com/o/org/projects/p/proj/t/thread-123?utm_source=deepagents-cli"
         )
 
     def test_returns_none_when_no_project_name(self) -> None:
